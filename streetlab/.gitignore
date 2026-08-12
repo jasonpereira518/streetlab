@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+
+# Claude Code session state. `.claude/worktrees/` in particular holds nested git
+# worktrees of this same repository — committing them would recurse.
+.claude/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Test artifacts
+test-results/
+playwright-report/
+blob-report/
+.playwright/

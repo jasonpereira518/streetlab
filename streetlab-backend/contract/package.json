@@ -1,0 +1,10 @@
+{
+  "name": "streetlab-contract",
+  "private": true,
+  "type": "module",
+  "description": "Bidirectional wire-contract harness between schema.ts and schema.py. Reads the frontend; never modifies it.",
+  "scripts": {
+    "capture": "../../streetlab/node_modules/.bin/vite-node capture.ts",
+    "validate": "../../streetlab/node_modules/.bin/vite-node validate.ts"
+  }
+}

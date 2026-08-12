@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "StreetLab",
+  "version": "0.1.0",
+  "identifier": "com.streetlab.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "StreetLab",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1180,
+        "minHeight": 760,
+        "resizable": true,
+        "maximizable": true,
+        "fullscreen": false,
+        "center": true,
+        "theme": "Light",
+        "titleBarStyle": "Visible",
+        "backgroundColor": "#F3F5F8"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "app",
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

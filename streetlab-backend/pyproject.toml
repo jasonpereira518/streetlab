@@ -1,0 +1,33 @@
+[project]
+name = "streetlab-backend"
+version = "0.1.0"
+description = "StreetLab simulator backend — Cycle 1 walking skeleton"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "pydantic>=2.9",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "websockets>=13",
+    "numpy>=2.0",
+]
+
+[project.scripts]
+streetlab = "server.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error"]
+
+[tool.setuptools]
+packages = ["server", "sim", "map", "perception", "plan"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,9 @@
+{
+  "type": "ack",
+  "protocol": 1,
+  "id": "cap-2",
+  "cmd": "load_scenario",
+  "ok": false,
+  "message": "unknown scenario no-such-scenario",
+  "t": 6.883
+}

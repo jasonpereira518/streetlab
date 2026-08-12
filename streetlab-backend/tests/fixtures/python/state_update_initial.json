@@ -1,0 +1,629 @@
+{
+  "type": "state_update",
+  "protocol": 1,
+  "seq": 0,
+  "t": 0.0,
+  "sim_rate_hz": 60.0,
+  "paused": false,
+  "assist_active": true,
+  "scenario_id": "grid-merge",
+  "ego": {
+    "pose": {
+      "x": 7.799999999999999,
+      "y": 1.799999999999999,
+      "heading": 3.043417883165112
+    },
+    "speed_mps": 0.0,
+    "accel_mps2": 0.0,
+    "steering_angle": 0.0,
+    "yaw_rate": 0.0,
+    "throttle": 0.0,
+    "brake": 0.0,
+    "gear": "D",
+    "speed_limit_mps": 11.176,
+    "cruise": {
+      "mode": "fsd",
+      "set_speed_mps": 3.3689758816059947
+    },
+    "size": {
+      "length": 4.7,
+      "width": 1.9,
+      "height": 1.45
+    }
+  },
+  "detections": [
+    {
+      "id": "veh_00",
+      "cls": "car",
+      "pose": {
+        "x": 1.7999999999999994,
+        "y": 34.23244895156794,
+        "heading": 1.5707963267948966
+      },
+      "size": {
+        "length": 4.6,
+        "width": 1.9,
+        "height": 1.45
+      },
+      "velocity": [
+        5.958027133934992e-16,
+        9.730196719712495
+      ],
+      "speed_mps": 9.730196719712495,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_01",
+      "cls": "car",
+      "pose": {
+        "x": 6.453565833556238,
+        "y": 78.03135535645794,
+        "heading": 0.2945243112740435
+      },
+      "size": {
+        "length": 4.9,
+        "width": 1.95,
+        "height": 1.5
+      },
+      "velocity": [
+        9.13936795814189,
+        2.772396960369554
+      ],
+      "speed_mps": 9.55061419910662,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_02",
+      "cls": "truck",
+      "pose": {
+        "x": 39.26435071618905,
+        "y": 81.8,
+        "heading": 0.0
+      },
+      "size": {
+        "length": 7.8,
+        "width": 2.4,
+        "height": 3.1
+      },
+      "velocity": [
+        8.525733713173173,
+        0.0
+      ],
+      "speed_mps": 8.525733713173173,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 1
+    },
+    {
+      "id": "veh_03",
+      "cls": "car",
+      "pose": {
+        "x": 78.2,
+        "y": 50.490254302778894,
+        "heading": -1.5707963267948966
+      },
+      "size": {
+        "length": 4.3,
+        "width": 1.82,
+        "height": 1.42
+      },
+      "velocity": [
+        7.257997629278151e-16,
+        -11.853209650866603
+      ],
+      "speed_mps": 11.853209650866603,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_04",
+      "cls": "bus",
+      "pose": {
+        "x": 78.2,
+        "y": 11.980332607246268,
+        "heading": -1.5707963267948966
+      },
+      "size": {
+        "length": 11.5,
+        "width": 2.55,
+        "height": 3.3
+      },
+      "velocity": [
+        4.774046746152707e-16,
+        -7.796610009476339
+      ],
+      "speed_mps": 7.796610009476339,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_05",
+      "cls": "motorcycle",
+      "pose": {
+        "x": 52.16055962321684,
+        "y": -1.8000000000000012,
+        "heading": 3.141592653589793
+      },
+      "size": {
+        "length": 2.1,
+        "width": 0.8,
+        "height": 1.3
+      },
+      "velocity": [
+        -11.129845149082364,
+        1.3630129236829412e-15
+      ],
+      "speed_mps": 11.129845149082364,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 1
+    }
+  ],
+  "plan": {
+    "polyline": [
+      [
+        7.799999999999999,
+        1.799999999999999
+      ],
+      [
+        4.9327772206185445,
+        2.561993972905374
+      ],
+      [
+        2.7550995114909873,
+        4.571502168337143
+      ],
+      [
+        1.8401522776788926,
+        7.3923270832756165
+      ],
+      [
+        1.7999999999999998,
+        10.390354528362185
+      ],
+      [
+        1.7999999999999998,
+        13.390354528362185
+      ],
+      [
+        1.7999999999999996,
+        16.390354528362185
+      ],
+      [
+        1.7999999999999996,
+        19.390354528362185
+      ],
+      [
+        1.7999999999999996,
+        22.390354528362185
+      ],
+      [
+        1.7999999999999996,
+        25.39035452836218
+      ],
+      [
+        1.7999999999999996,
+        28.39035452836218
+      ],
+      [
+        1.7999999999999996,
+        31.39035452836218
+      ],
+      [
+        1.7999999999999994,
+        34.39035452836218
+      ],
+      [
+        1.7999999999999994,
+        37.39035452836218
+      ],
+      [
+        1.7999999999999994,
+        40.39035452836218
+      ],
+      [
+        1.7999999999999994,
+        43.39035452836218
+      ]
+    ],
+    "target_speed_mps": 3.3689758816059947,
+    "maneuver": "turn_right",
+    "confidence": 1.0
+  },
+  "telemetry": {
+    "radar": [
+      {
+        "id": "veh_00",
+        "azimuth": -1.2897,
+        "range_m": 32.98,
+        "range_rate_mps": 9.73,
+        "rcs_db": 9.36,
+        "tracked": true
+      },
+      {
+        "id": "veh_01",
+        "azimuth": -1.455,
+        "range_m": 76.24,
+        "range_rate_mps": 9.55,
+        "rcs_db": 5.9,
+        "tracked": true
+      },
+      {
+        "id": "veh_02",
+        "azimuth": -1.8473,
+        "range_m": 85.97,
+        "range_rate_mps": 8.53,
+        "rcs_db": 5.12,
+        "tracked": true
+      },
+      {
+        "id": "veh_03",
+        "azimuth": -2.4383,
+        "range_m": 85.6,
+        "range_rate_mps": 11.85,
+        "rcs_db": 5.15,
+        "tracked": true
+      },
+      {
+        "id": "veh_04",
+        "azimuth": -2.8998,
+        "range_m": 71.13,
+        "range_rate_mps": 7.8,
+        "rcs_db": 6.31,
+        "tracked": true
+      },
+      {
+        "id": "veh_05",
+        "azimuth": -3.1244,
+        "range_m": 44.51,
+        "range_rate_mps": 11.13,
+        "rcs_db": 8.44,
+        "tracked": true
+      },
+      {
+        "id": null,
+        "azimuth": -0.9,
+        "range_m": 14.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -6.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": -0.54,
+        "range_m": 25.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -7.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": -0.18,
+        "range_m": 36.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -8.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": 0.18,
+        "range_m": 47.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -9.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": 0.54,
+        "range_m": 58.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -10.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": 0.9,
+        "range_m": 69.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -11.0,
+        "tracked": false
+      }
+    ],
+    "lane": {
+      "lane_index": 0,
+      "lane_count": 2,
+      "lane_width_m": 3.6,
+      "offset_m": -0.0,
+      "heading_error": 0.0,
+      "left_marking": "double_yellow",
+      "right_marking": "solid_white",
+      "neighbors": [
+        {
+          "id": "veh_00",
+          "cls": "car",
+          "lane_offset": 0,
+          "longitudinal_m": 35.84,
+          "lateral_m": 0.0,
+          "speed_mps": 9.730196719712495,
+          "hazard": false
+        },
+        {
+          "id": "veh_01",
+          "cls": "car",
+          "lane_offset": 0,
+          "longitudinal_m": 81.86,
+          "lateral_m": 0.0,
+          "speed_mps": 9.55061419910662,
+          "hazard": false
+        },
+        {
+          "id": "veh_02",
+          "cls": "truck",
+          "lane_offset": 1,
+          "longitudinal_m": 114.68,
+          "lateral_m": 3.6,
+          "speed_mps": 8.525733713173173,
+          "hazard": false
+        },
+        {
+          "id": "veh_03",
+          "cls": "car",
+          "lane_offset": 0,
+          "longitudinal_m": -116.5,
+          "lateral_m": 0.0,
+          "speed_mps": 11.853209650866603,
+          "hazard": false
+        },
+        {
+          "id": "veh_04",
+          "cls": "bus",
+          "lane_offset": 0,
+          "longitudinal_m": -77.99,
+          "lateral_m": 0.0,
+          "speed_mps": 7.796610009476339,
+          "hazard": false
+        },
+        {
+          "id": "veh_05",
+          "cls": "motorcycle",
+          "lane_offset": 1,
+          "longitudinal_m": -44.36,
+          "lateral_m": 3.6,
+          "speed_mps": 11.129845149082364,
+          "hazard": false
+        }
+      ]
+    },
+    "ttc_s": null,
+    "vehicle": {
+      "battery_pct": 92.0,
+      "range_km": 404.8,
+      "motor_temp_c": 38.0,
+      "tire_pressure_kpa": [
+        248.0,
+        247.0,
+        245.0,
+        246.0
+      ],
+      "subsystems": [
+        {
+          "key": "perception",
+          "label": "Perception",
+          "status": "ok",
+          "detail": "ground truth"
+        },
+        {
+          "key": "planner",
+          "label": "Planner",
+          "status": "ok",
+          "detail": "centerline"
+        },
+        {
+          "key": "control",
+          "label": "Control",
+          "status": "ok",
+          "detail": null
+        },
+        {
+          "key": "battery",
+          "label": "Battery",
+          "status": "ok",
+          "detail": null
+        }
+      ],
+      "overall": "ok"
+    },
+    "trajectory": {
+      "horizon_s": 4.0,
+      "planned": [
+        {
+          "t": 0.25,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 0.5,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 0.75,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 1.0,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 1.25,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 1.5,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 1.75,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 2.0,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 2.25,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 2.5,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 2.75,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 3.0,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 3.25,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 3.5,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 3.75,
+          "lateral_m": -0.0
+        },
+        {
+          "t": 4.0,
+          "lateral_m": -0.0
+        }
+      ],
+      "cutin": null,
+      "cutin_label": null
+    }
+  },
+  "signals": [
+    {
+      "id": "tl_-80_0_n",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_-80_0_s",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_-80_0_e",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_-80_0_w",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_0_-80_n",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_0_-80_s",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_0_-80_e",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_0_-80_w",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_0_0_n",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_0_0_s",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_0_0_e",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_0_0_w",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_0_80_n",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_0_80_s",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_0_80_e",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_0_80_w",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_80_0_n",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_80_0_s",
+      "phase": "green",
+      "time_to_change_s": 12.0
+    },
+    {
+      "id": "tl_80_0_e",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    },
+    {
+      "id": "tl_80_0_w",
+      "phase": "red",
+      "time_to_change_s": 16.0
+    }
+  ],
+  "events": []
+}

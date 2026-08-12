@@ -1,0 +1,1141 @@
+{
+  "type": "state_update",
+  "protocol": 1,
+  "seq": 398,
+  "t": 6.633333333333315,
+  "sim_rate_hz": 60.0,
+  "paused": false,
+  "assist_active": true,
+  "scenario_id": "grid-merge",
+  "ego": {
+    "pose": {
+      "x": 1.8154862266551541,
+      "y": 25.708716676872445,
+      "heading": 1.567103984716083
+    },
+    "speed_mps": 9.403418037738446,
+    "accel_mps2": 1.619618036584162,
+    "steering_angle": 0.004862279810404686,
+    "yaw_rate": 0.015766348273706512,
+    "throttle": 0.7361900166291645,
+    "brake": 0.0,
+    "gear": "D",
+    "speed_limit_mps": 11.176,
+    "cruise": {
+      "mode": "fsd",
+      "set_speed_mps": 11.176
+    },
+    "size": {
+      "length": 4.7,
+      "width": 1.9,
+      "height": 1.45
+    }
+  },
+  "detections": [
+    {
+      "id": "veh_00",
+      "cls": "car",
+      "pose": {
+        "x": 1.7999999999999992,
+        "y": 63.09681725187606,
+        "heading": 1.5707963267948966
+      },
+      "size": {
+        "length": 4.6,
+        "width": 1.9,
+        "height": 1.45
+      },
+      "velocity": [
+        0.0,
+        0.0
+      ],
+      "speed_mps": 0.0,
+      "confidence": 1.0,
+      "hazard": true,
+      "hazard_label": "Closing on lead vehicle",
+      "ttc_s": 3.97601174646869,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_01",
+      "cls": "car",
+      "pose": {
+        "x": 63.95649121952219,
+        "y": 78.2,
+        "heading": 0.0
+      },
+      "size": {
+        "length": 4.9,
+        "width": 1.95,
+        "height": 1.5
+      },
+      "velocity": [
+        3.5100983463883426,
+        0.0
+      ],
+      "speed_mps": 3.5100983463883426,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": 19.014312116608814,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_03",
+      "cls": "car",
+      "pose": {
+        "x": 76.71215778919185,
+        "y": 3.885766851962382,
+        "heading": -2.2580197197676632
+      },
+      "size": {
+        "length": 4.3,
+        "width": 1.82,
+        "height": 1.42
+      },
+      "velocity": [
+        -2.2740149639539333,
+        -2.770895250817686
+      ],
+      "speed_mps": 3.584550815275244,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_04",
+      "cls": "bus",
+      "pose": {
+        "x": 47.88134631724304,
+        "y": 1.799999999999999,
+        "heading": 3.141592653589793
+      },
+      "size": {
+        "length": 11.5,
+        "width": 2.55,
+        "height": 3.3
+      },
+      "velocity": [
+        -7.796610009476339,
+        9.548093492305415e-16
+      ],
+      "speed_mps": 7.796610009476339,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_05",
+      "cls": "motorcycle",
+      "pose": {
+        "x": 2.403524437220475,
+        "y": -0.15282971673843235,
+        "heading": 2.454369260617026
+      },
+      "size": {
+        "length": 2.1,
+        "width": 0.8,
+        "height": 1.3
+      },
+      "velocity": [
+        -3.4730925732126763,
+        2.850293413420179
+      ],
+      "speed_mps": 4.49294386395952,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": 1
+    }
+  ],
+  "plan": {
+    "polyline": [
+      [
+        1.7999999999999996,
+        25.70871667687244
+      ],
+      [
+        1.7999999999999996,
+        28.70871667687244
+      ],
+      [
+        1.7999999999999996,
+        31.70871667687244
+      ],
+      [
+        1.7999999999999994,
+        34.70871667687244
+      ],
+      [
+        1.7999999999999994,
+        37.70871667687244
+      ],
+      [
+        1.7999999999999994,
+        40.70871667687244
+      ],
+      [
+        1.7999999999999994,
+        43.70871667687244
+      ],
+      [
+        1.7999999999999994,
+        46.70871667687244
+      ],
+      [
+        1.7999999999999992,
+        49.70871667687244
+      ],
+      [
+        1.7999999999999992,
+        52.70871667687244
+      ],
+      [
+        1.7999999999999992,
+        55.70871667687244
+      ],
+      [
+        1.7999999999999992,
+        58.70871667687244
+      ],
+      [
+        1.7999999999999992,
+        61.70871667687244
+      ],
+      [
+        1.799999999999999,
+        64.70871667687244
+      ],
+      [
+        1.799999999999999,
+        67.70871667687244
+      ],
+      [
+        1.799999999999999,
+        70.70871667687244
+      ]
+    ],
+    "target_speed_mps": 11.176,
+    "maneuver": "keep_lane",
+    "confidence": 1.0
+  },
+  "telemetry": {
+    "radar": [
+      {
+        "id": "veh_00",
+        "azimuth": 0.0041,
+        "range_m": 37.39,
+        "range_rate_mps": -9.4,
+        "rcs_db": 9.01,
+        "tracked": true
+      },
+      {
+        "id": "veh_01",
+        "azimuth": -0.8657,
+        "range_m": 81.34,
+        "range_rate_mps": -5.89,
+        "rcs_db": 5.49,
+        "tracked": true
+      },
+      {
+        "id": "veh_03",
+        "azimuth": -1.8506,
+        "range_m": 78.01,
+        "range_rate_mps": -5.82,
+        "rcs_db": 5.76,
+        "tracked": true
+      },
+      {
+        "id": "veh_04",
+        "azimuth": -2.0458,
+        "range_m": 51.9,
+        "range_rate_mps": -1.61,
+        "rcs_db": 7.85,
+        "tracked": true
+      },
+      {
+        "id": "veh_05",
+        "azimuth": -3.1152,
+        "range_m": 25.87,
+        "range_rate_mps": -4.91,
+        "rcs_db": 9.93,
+        "tracked": true
+      },
+      {
+        "id": null,
+        "azimuth": -0.9,
+        "range_m": 14.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -6.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": -0.54,
+        "range_m": 25.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -7.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": -0.18,
+        "range_m": 36.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -8.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": 0.18,
+        "range_m": 47.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -9.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": 0.54,
+        "range_m": 58.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -10.0,
+        "tracked": false
+      },
+      {
+        "id": null,
+        "azimuth": 0.9,
+        "range_m": 69.0,
+        "range_rate_mps": 0.0,
+        "rcs_db": -11.0,
+        "tracked": false
+      }
+    ],
+    "lane": {
+      "lane_index": 0,
+      "lane_count": 2,
+      "lane_width_m": 3.6,
+      "offset_m": -0.015486226655154534,
+      "heading_error": -0.0036923420788135264,
+      "left_marking": "double_yellow",
+      "right_marking": "solid_white",
+      "neighbors": [
+        {
+          "id": "veh_00",
+          "cls": "car",
+          "lane_offset": 0,
+          "longitudinal_m": 37.39,
+          "lateral_m": 0.0,
+          "speed_mps": 0.0,
+          "hazard": true
+        },
+        {
+          "id": "veh_01",
+          "cls": "car",
+          "lane_offset": 0,
+          "longitudinal_m": 112.06,
+          "lateral_m": 0.0,
+          "speed_mps": 3.5100983463883426,
+          "hazard": false
+        },
+        {
+          "id": "veh_03",
+          "cls": "car",
+          "lane_offset": 0,
+          "longitudinal_m": -96.85,
+          "lateral_m": 0.0,
+          "speed_mps": 3.584550815275244,
+          "hazard": false
+        },
+        {
+          "id": "veh_04",
+          "cls": "bus",
+          "lane_offset": 0,
+          "longitudinal_m": -67.4,
+          "lateral_m": 0.0,
+          "speed_mps": 7.796610009476339,
+          "hazard": false
+        },
+        {
+          "id": "veh_05",
+          "cls": "motorcycle",
+          "lane_offset": 1,
+          "longitudinal_m": -23.79,
+          "lateral_m": 3.6,
+          "speed_mps": 4.49294386395952,
+          "hazard": false
+        }
+      ]
+    },
+    "ttc_s": 3.976,
+    "vehicle": {
+      "battery_pct": 91.87,
+      "range_km": 404.2,
+      "motor_temp_c": 38.1,
+      "tire_pressure_kpa": [
+        248.0,
+        247.0,
+        245.0,
+        246.0
+      ],
+      "subsystems": [
+        {
+          "key": "perception",
+          "label": "Perception",
+          "status": "ok",
+          "detail": "ground truth"
+        },
+        {
+          "key": "planner",
+          "label": "Planner",
+          "status": "ok",
+          "detail": "centerline"
+        },
+        {
+          "key": "control",
+          "label": "Control",
+          "status": "ok",
+          "detail": null
+        },
+        {
+          "key": "battery",
+          "label": "Battery",
+          "status": "ok",
+          "detail": null
+        }
+      ],
+      "overall": "ok"
+    },
+    "trajectory": {
+      "horizon_s": 4.0,
+      "planned": [
+        {
+          "t": -2.0,
+          "lateral_m": 0.317
+        },
+        {
+          "t": -1.983,
+          "lateral_m": 0.316
+        },
+        {
+          "t": -1.967,
+          "lateral_m": 0.315
+        },
+        {
+          "t": -1.95,
+          "lateral_m": 0.313
+        },
+        {
+          "t": -1.933,
+          "lateral_m": 0.312
+        },
+        {
+          "t": -1.917,
+          "lateral_m": 0.31
+        },
+        {
+          "t": -1.9,
+          "lateral_m": 0.308
+        },
+        {
+          "t": -1.883,
+          "lateral_m": 0.307
+        },
+        {
+          "t": -1.867,
+          "lateral_m": 0.304
+        },
+        {
+          "t": -1.85,
+          "lateral_m": 0.302
+        },
+        {
+          "t": -1.833,
+          "lateral_m": 0.3
+        },
+        {
+          "t": -1.817,
+          "lateral_m": 0.298
+        },
+        {
+          "t": -1.8,
+          "lateral_m": 0.295
+        },
+        {
+          "t": -1.783,
+          "lateral_m": 0.292
+        },
+        {
+          "t": -1.767,
+          "lateral_m": 0.29
+        },
+        {
+          "t": -1.75,
+          "lateral_m": 0.287
+        },
+        {
+          "t": -1.733,
+          "lateral_m": 0.284
+        },
+        {
+          "t": -1.717,
+          "lateral_m": 0.281
+        },
+        {
+          "t": -1.7,
+          "lateral_m": 0.278
+        },
+        {
+          "t": -1.683,
+          "lateral_m": 0.274
+        },
+        {
+          "t": -1.667,
+          "lateral_m": 0.271
+        },
+        {
+          "t": -1.65,
+          "lateral_m": 0.268
+        },
+        {
+          "t": -1.633,
+          "lateral_m": 0.264
+        },
+        {
+          "t": -1.617,
+          "lateral_m": 0.261
+        },
+        {
+          "t": -1.6,
+          "lateral_m": 0.257
+        },
+        {
+          "t": -1.583,
+          "lateral_m": 0.253
+        },
+        {
+          "t": -1.567,
+          "lateral_m": 0.25
+        },
+        {
+          "t": -1.55,
+          "lateral_m": 0.246
+        },
+        {
+          "t": -1.533,
+          "lateral_m": 0.242
+        },
+        {
+          "t": -1.517,
+          "lateral_m": 0.238
+        },
+        {
+          "t": -1.5,
+          "lateral_m": 0.234
+        },
+        {
+          "t": -1.483,
+          "lateral_m": 0.23
+        },
+        {
+          "t": -1.467,
+          "lateral_m": 0.226
+        },
+        {
+          "t": -1.45,
+          "lateral_m": 0.222
+        },
+        {
+          "t": -1.433,
+          "lateral_m": 0.218
+        },
+        {
+          "t": -1.417,
+          "lateral_m": 0.214
+        },
+        {
+          "t": -1.4,
+          "lateral_m": 0.21
+        },
+        {
+          "t": -1.383,
+          "lateral_m": 0.206
+        },
+        {
+          "t": -1.367,
+          "lateral_m": 0.202
+        },
+        {
+          "t": -1.35,
+          "lateral_m": 0.198
+        },
+        {
+          "t": -1.333,
+          "lateral_m": 0.193
+        },
+        {
+          "t": -1.317,
+          "lateral_m": 0.189
+        },
+        {
+          "t": -1.3,
+          "lateral_m": 0.185
+        },
+        {
+          "t": -1.283,
+          "lateral_m": 0.181
+        },
+        {
+          "t": -1.267,
+          "lateral_m": 0.177
+        },
+        {
+          "t": -1.25,
+          "lateral_m": 0.173
+        },
+        {
+          "t": -1.233,
+          "lateral_m": 0.168
+        },
+        {
+          "t": -1.217,
+          "lateral_m": 0.164
+        },
+        {
+          "t": -1.2,
+          "lateral_m": 0.16
+        },
+        {
+          "t": -1.183,
+          "lateral_m": 0.156
+        },
+        {
+          "t": -1.167,
+          "lateral_m": 0.152
+        },
+        {
+          "t": -1.15,
+          "lateral_m": 0.148
+        },
+        {
+          "t": -1.133,
+          "lateral_m": 0.144
+        },
+        {
+          "t": -1.117,
+          "lateral_m": 0.14
+        },
+        {
+          "t": -1.1,
+          "lateral_m": 0.136
+        },
+        {
+          "t": -1.083,
+          "lateral_m": 0.132
+        },
+        {
+          "t": -1.067,
+          "lateral_m": 0.128
+        },
+        {
+          "t": -1.05,
+          "lateral_m": 0.124
+        },
+        {
+          "t": -1.033,
+          "lateral_m": 0.12
+        },
+        {
+          "t": -1.017,
+          "lateral_m": 0.116
+        },
+        {
+          "t": -1.0,
+          "lateral_m": 0.113
+        },
+        {
+          "t": -0.983,
+          "lateral_m": 0.109
+        },
+        {
+          "t": -0.967,
+          "lateral_m": 0.105
+        },
+        {
+          "t": -0.95,
+          "lateral_m": 0.102
+        },
+        {
+          "t": -0.933,
+          "lateral_m": 0.098
+        },
+        {
+          "t": -0.917,
+          "lateral_m": 0.094
+        },
+        {
+          "t": -0.9,
+          "lateral_m": 0.091
+        },
+        {
+          "t": -0.883,
+          "lateral_m": 0.087
+        },
+        {
+          "t": -0.867,
+          "lateral_m": 0.084
+        },
+        {
+          "t": -0.85,
+          "lateral_m": 0.081
+        },
+        {
+          "t": -0.833,
+          "lateral_m": 0.077
+        },
+        {
+          "t": -0.817,
+          "lateral_m": 0.074
+        },
+        {
+          "t": -0.8,
+          "lateral_m": 0.071
+        },
+        {
+          "t": -0.783,
+          "lateral_m": 0.068
+        },
+        {
+          "t": -0.767,
+          "lateral_m": 0.065
+        },
+        {
+          "t": -0.75,
+          "lateral_m": 0.062
+        },
+        {
+          "t": -0.733,
+          "lateral_m": 0.059
+        },
+        {
+          "t": -0.717,
+          "lateral_m": 0.056
+        },
+        {
+          "t": -0.7,
+          "lateral_m": 0.053
+        },
+        {
+          "t": -0.683,
+          "lateral_m": 0.05
+        },
+        {
+          "t": -0.667,
+          "lateral_m": 0.047
+        },
+        {
+          "t": -0.65,
+          "lateral_m": 0.045
+        },
+        {
+          "t": -0.633,
+          "lateral_m": 0.042
+        },
+        {
+          "t": -0.617,
+          "lateral_m": 0.04
+        },
+        {
+          "t": -0.6,
+          "lateral_m": 0.037
+        },
+        {
+          "t": -0.583,
+          "lateral_m": 0.035
+        },
+        {
+          "t": -0.567,
+          "lateral_m": 0.032
+        },
+        {
+          "t": -0.55,
+          "lateral_m": 0.03
+        },
+        {
+          "t": -0.533,
+          "lateral_m": 0.028
+        },
+        {
+          "t": -0.517,
+          "lateral_m": 0.025
+        },
+        {
+          "t": -0.5,
+          "lateral_m": 0.023
+        },
+        {
+          "t": -0.483,
+          "lateral_m": 0.021
+        },
+        {
+          "t": -0.467,
+          "lateral_m": 0.019
+        },
+        {
+          "t": -0.45,
+          "lateral_m": 0.017
+        },
+        {
+          "t": -0.433,
+          "lateral_m": 0.015
+        },
+        {
+          "t": -0.417,
+          "lateral_m": 0.013
+        },
+        {
+          "t": -0.4,
+          "lateral_m": 0.012
+        },
+        {
+          "t": -0.383,
+          "lateral_m": 0.01
+        },
+        {
+          "t": -0.367,
+          "lateral_m": 0.008
+        },
+        {
+          "t": -0.35,
+          "lateral_m": 0.007
+        },
+        {
+          "t": -0.333,
+          "lateral_m": 0.005
+        },
+        {
+          "t": -0.317,
+          "lateral_m": 0.004
+        },
+        {
+          "t": -0.3,
+          "lateral_m": 0.002
+        },
+        {
+          "t": -0.283,
+          "lateral_m": 0.001
+        },
+        {
+          "t": -0.267,
+          "lateral_m": -0.001
+        },
+        {
+          "t": -0.25,
+          "lateral_m": -0.002
+        },
+        {
+          "t": -0.233,
+          "lateral_m": -0.003
+        },
+        {
+          "t": -0.217,
+          "lateral_m": -0.004
+        },
+        {
+          "t": -0.2,
+          "lateral_m": -0.005
+        },
+        {
+          "t": -0.183,
+          "lateral_m": -0.007
+        },
+        {
+          "t": -0.167,
+          "lateral_m": -0.008
+        },
+        {
+          "t": -0.15,
+          "lateral_m": -0.009
+        },
+        {
+          "t": -0.133,
+          "lateral_m": -0.01
+        },
+        {
+          "t": -0.117,
+          "lateral_m": -0.01
+        },
+        {
+          "t": -0.1,
+          "lateral_m": -0.011
+        },
+        {
+          "t": -0.083,
+          "lateral_m": -0.012
+        },
+        {
+          "t": -0.067,
+          "lateral_m": -0.013
+        },
+        {
+          "t": -0.05,
+          "lateral_m": -0.014
+        },
+        {
+          "t": -0.033,
+          "lateral_m": -0.014
+        },
+        {
+          "t": -0.017,
+          "lateral_m": -0.015
+        },
+        {
+          "t": 0.0,
+          "lateral_m": -0.015
+        },
+        {
+          "t": 0.25,
+          "lateral_m": -0.013
+        },
+        {
+          "t": 0.5,
+          "lateral_m": -0.01
+        },
+        {
+          "t": 0.75,
+          "lateral_m": -0.008
+        },
+        {
+          "t": 1.0,
+          "lateral_m": -0.007
+        },
+        {
+          "t": 1.25,
+          "lateral_m": -0.005
+        },
+        {
+          "t": 1.5,
+          "lateral_m": -0.004
+        },
+        {
+          "t": 1.75,
+          "lateral_m": -0.004
+        },
+        {
+          "t": 2.0,
+          "lateral_m": -0.003
+        },
+        {
+          "t": 2.25,
+          "lateral_m": -0.002
+        },
+        {
+          "t": 2.5,
+          "lateral_m": -0.002
+        },
+        {
+          "t": 2.75,
+          "lateral_m": -0.002
+        },
+        {
+          "t": 3.0,
+          "lateral_m": -0.001
+        },
+        {
+          "t": 3.25,
+          "lateral_m": -0.001
+        },
+        {
+          "t": 3.5,
+          "lateral_m": -0.001
+        },
+        {
+          "t": 3.75,
+          "lateral_m": -0.001
+        },
+        {
+          "t": 4.0,
+          "lateral_m": -0.001
+        }
+      ],
+      "cutin": [
+        {
+          "t": 0.0,
+          "lateral_m": 3.6
+        },
+        {
+          "t": 0.25,
+          "lateral_m": 3.047
+        },
+        {
+          "t": 0.5,
+          "lateral_m": 2.58
+        },
+        {
+          "t": 0.75,
+          "lateral_m": 2.184
+        },
+        {
+          "t": 1.0,
+          "lateral_m": 1.848
+        },
+        {
+          "t": 1.25,
+          "lateral_m": 1.565
+        },
+        {
+          "t": 1.5,
+          "lateral_m": 1.324
+        },
+        {
+          "t": 1.75,
+          "lateral_m": 1.121
+        },
+        {
+          "t": 2.0,
+          "lateral_m": 0.949
+        },
+        {
+          "t": 2.25,
+          "lateral_m": 0.803
+        },
+        {
+          "t": 2.5,
+          "lateral_m": 0.68
+        },
+        {
+          "t": 2.75,
+          "lateral_m": 0.576
+        },
+        {
+          "t": 3.0,
+          "lateral_m": 0.487
+        },
+        {
+          "t": 3.25,
+          "lateral_m": 0.412
+        },
+        {
+          "t": 3.5,
+          "lateral_m": 0.349
+        },
+        {
+          "t": 3.75,
+          "lateral_m": 0.296
+        },
+        {
+          "t": 4.0,
+          "lateral_m": 0.25
+        }
+      ],
+      "cutin_label": "Closing on lead vehicle"
+    }
+  },
+  "signals": [
+    {
+      "id": "tl_-80_0_n",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_-80_0_s",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_-80_0_e",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_-80_0_w",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_0_-80_n",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_0_-80_s",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_0_-80_e",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_0_-80_w",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_0_0_n",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_0_0_s",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_0_0_e",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_0_0_w",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_0_80_n",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_0_80_s",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_0_80_e",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_0_80_w",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_80_0_n",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_80_0_s",
+      "phase": "green",
+      "time_to_change_s": 5.37
+    },
+    {
+      "id": "tl_80_0_e",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    },
+    {
+      "id": "tl_80_0_w",
+      "phase": "red",
+      "time_to_change_s": 9.37
+    }
+  ],
+  "events": []
+}
