@@ -31,7 +31,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx', '../contract/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
   },
 });

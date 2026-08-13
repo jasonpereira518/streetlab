@@ -1,10 +1,12 @@
-"""schema.py must ingest and re-emit the frontend's own wire messages byte-for-byte.
+"""schema.py must ingest and re-emit the wire messages byte-for-byte.
 
-The fixtures under tests/fixtures/ were produced by the real TypeScript mock and
-validated by the real zod schema before being written, so they are canonical.
-Round-tripping them through pydantic and comparing dict-equality catches drift in
-both directions at once: a field pydantic drops disappears from the dump, and a
-field pydantic invents appears in it.
+The fixtures loaded via ``load_fixture`` live in ``contract/fixtures/`` at the
+git root — the canonical set shared with the TypeScript validator
+(``contract/validate_ts.test.ts``), generated from the real Python
+``Simulation`` and kept honest by ``contract/validate_py_test.py``.
+Round-tripping them through pydantic and comparing dict-equality catches drift
+in both directions at once: a field pydantic drops disappears from the dump,
+and a field pydantic invents appears in it.
 """
 
 import math

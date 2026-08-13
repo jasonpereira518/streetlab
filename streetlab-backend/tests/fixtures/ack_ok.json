@@ -1,9 +1,0 @@
-{
-  "type": "ack",
-  "protocol": 1,
-  "id": "cap-1",
-  "cmd": "set_paused",
-  "ok": true,
-  "message": "paused",
-  "t": 6.883
-}

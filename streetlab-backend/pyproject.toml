@@ -21,12 +21,13 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "../contract"]
 asyncio_mode = "auto"
 filterwarnings = ["error"]
 
 [tool.setuptools]
 packages = ["server", "sim", "map", "perception", "plan"]
+py-modules = ["schema"]
 
 [build-system]
 requires = ["setuptools>=68"]
