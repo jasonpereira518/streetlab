@@ -12,14 +12,20 @@ traceback or a silently missing subcommand.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
+import socket
 import sys
+import threading
 from dataclasses import dataclass
 
 from map.scene_build import SyntheticGrid
+from schema import PROTOCOL_VERSION
 from sim.loop import DEFAULT_DT, SimLoop, Simulation
 
 MPS_TO_MPH = 2.236936292054402
+DEFAULT_PORT = 8765
 
 # Subcommands that belong to a later cycle, and which cycle that is.
 DEFERRED = {
@@ -38,7 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = sub.add_parser("serve", help="run the WebSocket server for the frontend")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="0 for an ephemeral port; omit to use STREETLAB_PORT or 8765",
+    )
     serve.add_argument("--scenario", default=None)
     serve.add_argument("--seed", type=int, default=0)
     serve.add_argument("--sim-hz", type=float, default=1 / DEFAULT_DT)
@@ -99,11 +110,49 @@ def _scenarios() -> int:
     return 0
 
 
+def _resolve_port(requested: int | None) -> int:
+    if requested is not None:
+        return requested
+    env = os.environ.get("STREETLAB_PORT")
+    return int(env) if env else DEFAULT_PORT
+
+
+def _bind(host: str, port: int) -> socket.socket:
+    """Bind (but do not listen on) a socket the way uvicorn's own
+    ``Config.bind_socket`` does, so ``--port 0`` resolves to a real ephemeral
+    port before anything is printed. Listening is left to uvicorn's own
+    ``asyncio.loop.create_server``, which is handed this socket directly.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.set_inheritable(True)
+    return sock
+
+
+def _start_stdin_watchdog() -> None:
+    """Exit the moment the parent's stdin pipe closes.
+
+    Tauri gives this process a piped stdin; when the app dies the pipe
+    closes, the blocking read returns EOF, and the process exits itself. This
+    is the layer that survives a ``SIGKILL`` of the parent app — no Rust
+    teardown hook runs in that case, so nothing else would catch it.
+    """
+
+    def _watch() -> None:
+        sys.stdin.read()
+        os._exit(0)
+
+    threading.Thread(target=_watch, daemon=True, name="stdin-watchdog").start()
+
+
 def _serve(args) -> int:
     import uvicorn
 
     from server.ws_server import create_app
 
+    # The human-readable lines below go to stderr so that stdout carries
+    # exactly one line — STREETLAB_READY — for the parent process to parse.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
         sim = Simulation(SyntheticGrid(), args.scenario, seed=args.seed, dt=1 / args.sim_hz)
@@ -111,14 +160,31 @@ def _serve(args) -> int:
         print(f"error: {exc}")
         return 1
 
+    port = _resolve_port(args.port)
+    sock = _bind(args.host, port)
+    real_port = sock.getsockname()[1]
+
     loop = SimLoop(sim, hz=args.sim_hz)
     app = create_app(loop, tick_hz=args.tick_hz)
+
     print(
         f"StreetLab serving {sim.scene.description.scenario_id} on "
-        f"ws://{args.host}:{args.port} (sim {args.sim_hz:g} Hz, tick {args.tick_hz:g} Hz)"
+        f"ws://{args.host}:{real_port} (sim {args.sim_hz:g} Hz, tick {args.tick_hz:g} Hz)",
+        file=sys.stderr,
     )
-    print(f"Point the frontend at:  ?backend=ws://{args.host}:{args.port}")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    print(f"Point the frontend at:  ?backend=ws://{args.host}:{real_port}", file=sys.stderr)
+
+    _start_stdin_watchdog()
+
+    ready = {
+        "ws": f"ws://{args.host}:{real_port}",
+        "http": f"http://{args.host}:{real_port}",
+        "pid": os.getpid(),
+        "protocol": PROTOCOL_VERSION,
+    }
+    print(f"STREETLAB_READY {json.dumps(ready)}", flush=True)
+
+    uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
     return 0
 
 
