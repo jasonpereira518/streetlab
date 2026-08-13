@@ -23,6 +23,7 @@ import math
 import queue
 import threading
 import time
+from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field, replace
 from typing import Any, Sequence
@@ -666,6 +667,9 @@ class SimLoop:
         self._commands: queue.Queue[tuple[Any, Future]] = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Wall-clock cost of `sim.step()` + `sim.state_update()`, the last
+        # ~300 ticks (~5s at 60Hz). Read by /health for the perf overlay.
+        self._step_times_ms: deque[float] = deque(maxlen=300)
 
     @property
     def running(self) -> bool:
@@ -675,6 +679,12 @@ class SimLoop:
     def latest(self) -> StateUpdate | None:
         with self._lock:
             return self._latest
+
+    def step_time_percentiles_ms(self) -> tuple[float, float]:
+        """p50/p95 wall-clock step time over the recent window, in ms."""
+        with self._lock:
+            samples = sorted(self._step_times_ms)
+        return _percentile(samples, 50.0), _percentile(samples, 95.0)
 
     def start(self) -> None:
         if self.running:
@@ -707,10 +717,13 @@ class SimLoop:
         next_at = time.monotonic()
         while not self._stop.is_set():
             self._drain_commands()
+            step_start = time.perf_counter()
             self.sim.step()
             frame = self.sim.state_update()
+            step_ms = (time.perf_counter() - step_start) * 1000.0
             with self._lock:
                 self._latest = frame
+                self._step_times_ms.append(step_ms)
             self._published.set()
 
             next_at += period
@@ -741,6 +754,17 @@ class SimLoop:
             # and silently stop the world.
             if future.set_running_or_notify_cancel():
                 future.set_result(outcome)
+
+
+def _percentile(sorted_samples: list[float], pct: float) -> float:
+    """Nearest-rank percentile of an already-sorted list. 0.0 if empty."""
+    if not sorted_samples:
+        return 0.0
+    k = (len(sorted_samples) - 1) * (pct / 100.0)
+    lo, hi = math.floor(k), math.ceil(k)
+    if lo == hi:
+        return sorted_samples[int(k)]
+    return sorted_samples[lo] * (hi - k) + sorted_samples[hi] * (k - lo)
 
 
 def make_ack(command_id: str, cmd: str, outcome: CommandOutcome, t: float) -> Ack:

@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import resource
+import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -29,6 +31,16 @@ log = logging.getLogger("streetlab.server")
 DEFAULT_TICK_HZ = 60.0
 
 
+def _rss_mb() -> float:
+    """Resident set size of this process, in MB.
+
+    ``ru_maxrss`` units are platform-dependent: bytes on Darwin/BSD, KB on
+    Linux. No ``psutil`` dependency needed for a number this simple.
+    """
+    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
+
+
 def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -39,15 +51,26 @@ def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
             loop.stop()
 
     app = FastAPI(title="StreetLab", version=str(PROTOCOL_VERSION), lifespan=lifespan)
+    # A plain int would need `nonlocal` in each closure below; a single-key
+    # dict sidesteps that. Not part of the zod `ServerMessage` union, so
+    # extending /health is never a wire-schema change.
+    clients = {"count": 0}
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
         frame = loop.latest
+        p50, p95 = loop.step_time_percentiles_ms()
         return {
             "ok": loop.running,
             "protocol": PROTOCOL_VERSION,
             "scenario": loop.sim.scene.description.scenario_id,
             "t": round(frame.t, 2) if frame else 0.0,
+            "sim_hz": loop.hz,
+            "tick_hz": tick_hz,
+            "sim_step_p50_ms": round(p50, 3),
+            "sim_step_p95_ms": round(p95, 3),
+            "rss_mb": round(_rss_mb(), 1),
+            "clients": clients["count"],
         }
 
     # The frontend connects to a bare `ws://host:port`, so the root path is the
@@ -55,11 +78,11 @@ def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
     # endpoint.
     @app.websocket("/")
     async def root(ws: WebSocket) -> None:
-        await _serve(ws, loop, tick_hz)
+        await _serve(ws, loop, tick_hz, clients)
 
     @app.websocket("/ws")
     async def ws_path(ws: WebSocket) -> None:
-        await _serve(ws, loop, tick_hz)
+        await _serve(ws, loop, tick_hz, clients)
 
     return app
 
@@ -150,27 +173,31 @@ class _Connection:
             return CommandOutcome(ok=False, message="simulation busy")
 
 
-async def _serve(ws: WebSocket, loop: SimLoop, tick_hz: float) -> None:
+async def _serve(ws: WebSocket, loop: SimLoop, tick_hz: float, clients: dict[str, int]) -> None:
     await ws.accept()
-    conn = _Connection(ws, loop, tick_hz)
-
+    clients["count"] += 1
     try:
-        await conn.send_model(loop.sim.scene_description())
-    except Exception:
-        log.exception("failed to deliver the scene; closing")
-        return
+        conn = _Connection(ws, loop, tick_hz)
 
-    stream = asyncio.create_task(conn.stream(), name="streetlab-stream")
-    receive = asyncio.create_task(conn.receive(), name="streetlab-receive")
+        try:
+            await conn.send_model(loop.sim.scene_description())
+        except Exception:
+            log.exception("failed to deliver the scene; closing")
+            return
 
-    done, pending = await asyncio.wait(
-        {stream, receive}, return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+        stream = asyncio.create_task(conn.stream(), name="streetlab-stream")
+        receive = asyncio.create_task(conn.receive(), name="streetlab-receive")
 
-    for task in done:
-        exc = task.exception()
-        if exc is not None and not isinstance(exc, WebSocketDisconnect):
-            log.warning("connection ended: %r", exc)
+        done, pending = await asyncio.wait(
+            {stream, receive}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+        for task in done:
+            exc = task.exception()
+            if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                log.warning("connection ended: %r", exc)
+    finally:
+        clients["count"] -= 1

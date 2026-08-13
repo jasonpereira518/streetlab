@@ -9,6 +9,7 @@ import asyncio
 import json
 import socket
 import threading
+import urllib.request
 
 import pytest
 import uvicorn
@@ -131,6 +132,37 @@ async def test_a_disconnect_leaves_the_simulation_running(server):
         for _ in range(10):
             after = max(after, (await recv_typed(ws, "state_update")).t)
     assert after > before
+
+
+async def _get_health(server: str) -> dict:
+    """`/health` is plain HTTP, not part of the zod ServerMessage union."""
+    url = server.replace("ws://", "http://") + "health"
+    loop = asyncio.get_running_loop()
+    raw = await loop.run_in_executor(None, lambda: urllib.request.urlopen(url, timeout=5).read())
+    return json.loads(raw)
+
+
+async def test_health_reports_perf_and_process_info(server):
+    async with connect(server) as ws:
+        await recv_typed(ws, "scene_description")
+        for _ in range(5):
+            await recv_typed(ws, "state_update")
+        payload = await _get_health(server)
+        assert payload["ok"] is True
+        assert payload["protocol"] == 1
+        assert payload["sim_hz"] == 120
+        assert payload["tick_hz"] == 120
+        assert payload["sim_step_p50_ms"] >= 0
+        assert payload["sim_step_p95_ms"] >= payload["sim_step_p50_ms"]
+        assert payload["rss_mb"] > 0
+
+
+async def test_health_client_count_reflects_active_connections(server):
+    before = await _get_health(server)
+    async with connect(server) as ws:
+        await recv_typed(ws, "scene_description")
+        during = await _get_health(server)
+        assert during["clients"] >= before["clients"] + 1
 
 
 # -- commands --------------------------------------------------------------- #
