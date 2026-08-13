@@ -16,7 +16,7 @@ test.beforeEach(async ({ page }) => {
   page.on('pageerror', (err) => {
     throw new Error(`uncaught page error: ${err.message}`);
   });
-  await page.goto('/');
+  await page.goto('/?mock=1');
 });
 
 test('boots on the mock with no backend present', async ({ page }) => {

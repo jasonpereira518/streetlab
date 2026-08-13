@@ -1,4 +1,6 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import {
   createTransportFromLocation,
   createWebSocketTransport,
@@ -85,26 +87,95 @@ function collector() {
 /* ------------------------------------------------------------------ */
 
 describe('transport selection', () => {
-  it('defaults to the in-process mock when no backend is given', () => {
-    expect(createTransportFromLocation('').kind).toBe('mock');
-    expect(createTransportFromLocation('?scenario=x').kind).toBe('mock');
+  afterEach(() => {
+    clearMocks();
+    delete (globalThis as { isTauri?: boolean }).isTauri;
   });
 
-  it('switches to a WebSocket for ?backend=ws://…', () => {
-    const t = createTransportFromLocation('?backend=ws://localhost:8765');
+  it('uses the mock for ?mock=1, explicitly', async () => {
+    expect((await createTransportFromLocation('?mock=1')).kind).toBe('mock');
+  });
+
+  it('switches to a WebSocket for ?backend=ws://…', async () => {
+    const t = await createTransportFromLocation('?backend=ws://localhost:8765');
     expect(t.kind).toBe('ws');
     expect(t.label).toBe('ws://localhost:8765');
   });
 
-  it('accepts wss:// too', () => {
-    expect(createTransportFromLocation('?backend=wss://sim.example/ws').kind).toBe('ws');
+  it('accepts wss:// too', async () => {
+    expect((await createTransportFromLocation('?backend=wss://sim.example/ws')).kind).toBe(
+      'ws',
+    );
   });
 
-  it('falls back to the mock for a non-WebSocket URL', () => {
-    expect(createTransportFromLocation('?backend=http://localhost:8765').kind).toBe(
-      'mock',
+  it('falls back to the mock for a non-WebSocket URL', async () => {
+    expect(
+      (await createTransportFromLocation('?backend=http://localhost:8765')).kind,
+    ).toBe('mock');
+    expect((await createTransportFromLocation('?backend=')).kind).toBe('mock');
+  });
+
+  it('defaults to the browser-dev backend when no param and no Tauri IPC', async () => {
+    const t = await createTransportFromLocation('');
+    expect(t.kind).toBe('ws');
+    expect(t.label).toBe('ws://127.0.0.1:8765');
+
+    const t2 = await createTransportFromLocation('?scenario=x');
+    expect(t2.kind).toBe('ws');
+    expect(t2.label).toBe('ws://127.0.0.1:8765');
+  });
+
+  it('?mock=1 wins even when Tauri IPC is present', async () => {
+    (globalThis as { isTauri?: boolean }).isTauri = true;
+    mockIPC(() => ({
+      ws: 'ws://127.0.0.1:54321',
+      http: 'http://127.0.0.1:54321',
+      pid: 1,
+      protocol: PROTOCOL_VERSION,
+    }));
+    expect((await createTransportFromLocation('?mock=1')).kind).toBe('mock');
+  });
+
+  it('uses backend_url() from the sidecar handshake when Tauri IPC is present', async () => {
+    (globalThis as { isTauri?: boolean }).isTauri = true;
+    mockIPC((cmd) => {
+      if (cmd === 'backend_url') {
+        return {
+          ws: 'ws://127.0.0.1:54321',
+          http: 'http://127.0.0.1:54321',
+          pid: 4242,
+          protocol: PROTOCOL_VERSION,
+        };
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+
+    const t = await createTransportFromLocation('');
+    expect(t.kind).toBe('ws');
+    expect(t.label).toBe('ws://127.0.0.1:54321');
+  });
+
+  it('rejects with a clear message when the sidecar handshake fails', async () => {
+    (globalThis as { isTauri?: boolean }).isTauri = true;
+    mockIPC(() => {
+      throw new Error('sidecar exited before READY');
+    });
+
+    await expect(createTransportFromLocation('')).rejects.toThrow(
+      /simulator did not start/,
     );
-    expect(createTransportFromLocation('?backend=').kind).toBe('mock');
+  });
+
+  it('rejects with a clear message on a protocol mismatch', async () => {
+    (globalThis as { isTauri?: boolean }).isTauri = true;
+    mockIPC(() => ({
+      ws: 'ws://127.0.0.1:54321',
+      http: 'http://127.0.0.1:54321',
+      pid: 1,
+      protocol: PROTOCOL_VERSION + 1,
+    }));
+
+    await expect(createTransportFromLocation('')).rejects.toThrow(/protocol/);
   });
 });
 

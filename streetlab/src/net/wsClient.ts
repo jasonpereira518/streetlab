@@ -6,10 +6,31 @@
  * visible warning rather than a corrupted scene. Outbound commands are
  * validated too, and queued while the socket is down.
  */
-import { parseCommand, parseServerMessage } from '../schema';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { PROTOCOL_VERSION, parseCommand, parseServerMessage } from '../schema';
 import type { Command } from '../schema';
 import type { Transport, TransportHandlers } from './transport';
 import { createMockTransport } from './mockServer';
+
+/** The CLI's own default port — used so `npm run dev` + `streetlab serve`
+ * works with no arguments on either side. */
+const BROWSER_DEV_DEFAULT_URL = 'ws://127.0.0.1:8765';
+
+interface BackendHandshake {
+  ws: string;
+  http: string;
+  pid: number;
+  protocol: number;
+}
+
+function isBackendHandshake(v: unknown): v is BackendHandshake {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).ws === 'string' &&
+    typeof (v as Record<string, unknown>).protocol === 'number'
+  );
+}
 
 export interface WebSocketTransportOptions {
   url: string;
@@ -138,22 +159,58 @@ export function createWebSocketTransport(
 }
 
 /**
- * Pick a transport from the page URL. `?backend=ws://host:port` switches to the
- * real simulator; anything else keeps the in-process mock, so the app runs
- * standalone with no backend present.
+ * Pick a transport from the page URL, with the sidecar handshake as the
+ * default inside the packaged app. Precedence:
+ *
+ *   ?mock=1            in-process mock, explicit — offline dev, and what the
+ *                       test suite and Playwright specs use.
+ *   ?backend=ws://…     explicit override, for dev against a hand-started
+ *                       server.
+ *   Tauri IPC present   `backend_url()` from the sidecar handshake.
+ *   otherwise           the CLI's own default (`ws://127.0.0.1:8765`), so
+ *                       `npm run dev` + `streetlab serve` works with no
+ *                       arguments on either side.
+ *
+ * Throws when Tauri IPC is present but the handshake fails or reports a
+ * protocol this build doesn't speak — the caller turns that into a startup
+ * error state with a one-click mock fallback, rather than a confusing stream
+ * of connection failures.
  */
-export function createTransportFromLocation(
+export async function createTransportFromLocation(
   search: string = typeof window === 'undefined' ? '' : window.location.search,
-): Transport {
+): Promise<Transport> {
   const params = new URLSearchParams(search);
-  const backend = params.get('backend');
-  if (!backend) return createMockTransport();
 
-  if (!/^wss?:\/\//i.test(backend)) {
-    console.warn(
-      `[streetlab] ignoring ?backend=${backend} — expected a ws:// or wss:// URL`,
-    );
-    return createMockTransport();
+  if (params.get('mock') === '1') return createMockTransport();
+
+  if (params.has('backend')) {
+    const backend = params.get('backend') ?? '';
+    if (!/^wss?:\/\//i.test(backend)) {
+      console.warn(
+        `[streetlab] ignoring ?backend=${backend} — expected a ws:// or wss:// URL`,
+      );
+      return createMockTransport();
+    }
+    return createWebSocketTransport({ url: backend });
   }
-  return createWebSocketTransport({ url: backend });
+
+  if (isTauri()) {
+    let handshake: unknown;
+    try {
+      handshake = await invoke('backend_url');
+    } catch (err) {
+      throw new Error(`simulator did not start: ${String(err)}`);
+    }
+    if (!isBackendHandshake(handshake)) {
+      throw new Error('simulator returned a malformed handshake');
+    }
+    if (handshake.protocol !== PROTOCOL_VERSION) {
+      throw new Error(
+        `backend speaks protocol ${handshake.protocol}, this build expects ${PROTOCOL_VERSION}`,
+      );
+    }
+    return createWebSocketTransport({ url: handshake.ws });
+  }
+
+  return createWebSocketTransport({ url: BROWSER_DEV_DEFAULT_URL });
 }
