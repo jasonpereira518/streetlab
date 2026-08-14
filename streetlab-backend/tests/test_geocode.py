@@ -142,6 +142,12 @@ def test_raw_sends_the_required_user_agent_and_expected_params(monkeypatch):
 
     assert result == [{"lat": "1", "lon": "2"}]
     assert captured["params"]["q"] == "1600 Amphitheatre Parkway"
+    assert captured["params"]["format"] == "json"
+    # limit=1 is why parse_nominatim's first-valid-entry scan never actually
+    # walks past index 0 through the real client: Nominatim only ever hands
+    # back one candidate. That's what makes the fallback loop a defensive
+    # library-level choice rather than a workaround for a real problem.
+    assert captured["params"]["limit"] == 1
     # Nominatim's usage policy requires a descriptive User-Agent identifying
     # the application — this is enforced by the client, not left to callers.
     assert "StreetLab" in captured["headers"]["User-Agent"]
@@ -200,6 +206,30 @@ def test_sequential_calls_wait_at_least_the_minimum_interval():
     start = time.monotonic()
     geocoder._throttle()
     assert time.monotonic() - start >= 0.1 * 0.9
+
+
+def test_raw_applies_the_throttle_on_the_real_request_path(monkeypatch):
+    """The three tests above all call `geocoder._throttle()` directly, which
+    proves the throttle *works* but not that `raw()` actually *calls* it.
+    Deleting `self._throttle()` from `raw()` would leave every other test in
+    this file passing — including the User-Agent/params test above, which
+    uses `min_interval_s=0.0` and so is throttle-blind either way. This test
+    goes through `raw()` itself, with `httpx.get` faked out so no network is
+    touched, and checks that two calls are still spaced apart by
+    `min_interval_s`."""
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        return _FakeResponse([{"lat": "1", "lon": "2"}])
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    geocoder = NominatimGeocoder(min_interval_s=0.1)
+
+    geocoder.raw("first query")
+    start = time.monotonic()
+    geocoder.raw("second query")
+    elapsed = time.monotonic() - start
+
+    assert elapsed >= 0.1 * 0.9
 
 
 def test_throttle_serializes_concurrent_callers():
