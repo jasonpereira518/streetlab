@@ -36,6 +36,17 @@ by running the real Nob Hill fixture rather than only synthetic data:
   canopy-overlap distance of each other, since neither placement knows about
   the other. `_procedural_verge_trees` now skips any candidate whose position
   falls within `_TREE_MIN_SPACING_M` of an already-placed tagged tree.
+- Clearing a tree's *own* parent way is not the same as clearing the road
+  network: a verge tree placed correctly against a narrow side street can
+  still land inside a different, wider way's carriageway a few metres away --
+  the common case is near an intersection. Measured on the real fixture: 27
+  procedural trees sat inside some carriageway that was not the one they were
+  generated against, the worst by 0.14 m inside a Broadway segment.
+  `_procedural_verge_trees` now checks every candidate against every drivable
+  way's actual road surface (segment distance, not the parent way's line
+  alone), not only its own. Tagged trees are never checked or dropped by this
+  -- a `natural=tree` node in a median or plaza is OSM's own survey data, not
+  something this pipeline should second-guess.
 """
 
 from __future__ import annotations
@@ -203,6 +214,13 @@ def _new_tree(id_: str, position: tuple[float, float], seed: str) -> Tree:
 _TREE_MIN_SPACING_M = 8.0
 
 
+def _carriageway_half_width_m(tags: dict[str, str]) -> float:
+    """Half the total carriageway width -- centreline to kerb -- for a way."""
+    cls = road_class(tags) or "residential"
+    forward, backward = lane_counts(tags, cls)
+    return (forward + backward) * LANE_W / 2
+
+
 def _verge_offset_m(tags: dict[str, str]) -> float:
     """Distance from a way's centreline to plant a verge tree, clear of the
     carriageway.
@@ -216,11 +234,40 @@ def _verge_offset_m(tags: dict[str, str]) -> float:
     verge margin) so the common one-lane-each-way street keeps today's
     spacing rather than pulling its trees in closer than before.
     """
-    cls = road_class(tags) or "residential"
-    forward, backward = lane_counts(tags, cls)
-    half_width = (forward + backward) * LANE_W / 2
     verge_margin_m = 2.0
-    return max(half_width + verge_margin_m, LANE_W + 2.0)
+    return max(_carriageway_half_width_m(tags) + verge_margin_m, LANE_W + 2.0)
+
+
+def _point_to_segment_distance(
+    point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    """Distance from `point` to the segment `a`-`b` (clamped, not the infinite line)."""
+    px, py = point
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    length_sq = dx * dx + dy * dy
+    if length_sq < 1e-12:  # a and b coincide
+        return math.dist(point, a)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length_sq))
+    return math.dist(point, (ax + t * dx, ay + t * dy))
+
+
+def _inside_any_carriageway(
+    point: tuple[float, float],
+    ways_geometry: list[tuple[list[tuple[float, float]], float]],
+) -> bool:
+    """True if `point` falls on the road surface of any way, clearing that
+    way's own half-width -- not just the way the candidate was generated
+    against. A verge tree that clears its parent way can still land inside a
+    different, wider way's carriageway a few metres away, most often near an
+    intersection; checking only the parent missed that case.
+    """
+    for points, half_width in ways_geometry:
+        for a, b in zip(points, points[1:]):
+            if _point_to_segment_distance(point, a, b) < half_width:
+                return True
+    return False
 
 
 def _procedural_verge_trees(
@@ -230,11 +277,26 @@ def _procedural_verge_trees(
 
     `avoid` is the set of already-placed tagged-tree positions; a candidate
     within `_TREE_MIN_SPACING_M` of one is dropped rather than doubling up on
-    the same spot with visibly overlapping canopies.
+    the same spot with visibly overlapping canopies. A candidate is also
+    dropped if it falls inside *any* drivable way's carriageway, not only the
+    way it was generated against -- see `_inside_any_carriageway`.
     """
+    ways = drivable_ways(graph)
+    # Each way's local points and half-width, computed once and reused both
+    # as the outer loop's own geometry and as every other candidate's
+    # cross-way carriageway check -- a brute-force all-pairs scan, not a
+    # spatial index, per the ~790 candidates x 264 ways this fixture has,
+    # which is trivial either way.
+    ways_geometry = [
+        (
+            [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)],
+            _carriageway_half_width_m(way.tags),
+        )
+        for way in ways
+    ]
+
     trees: list[Tree] = []
-    for way in drivable_ways(graph):
-        points = [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)]
+    for way, (points, _half_width) in zip(ways, ways_geometry):
         offset = _verge_offset_m(way.tags)
         for i, (a, b) in enumerate(zip(points, points[1:])):
             length = math.dist(a, b)
@@ -245,6 +307,8 @@ def _procedural_verge_trees(
                 px = a[0] + ux * length * 0.5 - uy * side * offset
                 py = a[1] + uy * length * 0.5 + ux * side * offset
                 if any(math.dist((px, py), p) < _TREE_MIN_SPACING_M for p in avoid):
+                    continue
+                if _inside_any_carriageway((px, py), ways_geometry):
                     continue
                 trees.append(
                     _new_tree(

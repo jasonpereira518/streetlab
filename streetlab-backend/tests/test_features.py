@@ -233,11 +233,13 @@ def test_procedural_verge_trees_supplement_sparse_tagged_coverage(graph):
     # Verified directly against the fixture: the unfiltered verge fallback
     # would place 798 trees -- almost 20x the tagged count, which is the
     # whole point of making it additive rather than an either/or fallback.
-    # 8 of those 798 land within `_TREE_MIN_SPACING_M` of a tagged tree and
+    # Of those 798: 8 land within `_TREE_MIN_SPACING_M` of a tagged tree and
     # are dropped by the dedup filter (see
-    # `test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree`
-    # for a synthetic, exact-position proof of that filter), leaving 790.
-    assert len(procedural) == 790
+    # `test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree`),
+    # and a further 27 land inside some *other* drivable way's carriageway
+    # and are dropped by the cross-way clearance check (see
+    # `test_procedural_verge_trees_clear_the_carriageway`), leaving 763.
+    assert len(procedural) == 763
 
 
 def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
@@ -259,11 +261,11 @@ def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
     assert any(t.id.startswith("osm_tv_10_") for t in trees)
 
 
-# --- Regression tests for the two review-round findings --------------------
+# --- Regression tests for the three review-round findings ------------------
 #
-# Both are geometry gaps inherited from the task brief's reference code, but
-# dormant until the additive-trees change above made the procedural fallback
-# run on every real scene build instead of never running at all.
+# All three are geometry gaps inherited from the task brief's reference code,
+# but dormant until the additive-trees change above made the procedural
+# fallback run on every real scene build instead of never running at all.
 #
 # 1. Fixed-offset verge trees ignored a way's actual width. Measured directly:
 #    6 of the real fixture's 264 drivable ways (California St x4, Pine St,
@@ -271,60 +273,77 @@ def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
 #    fixed offset (5.6 m) -- their trees landed 1.6 m inside the road.
 # 2. Tagged and procedural trees were placed independently, with no check
 #    that they don't land close enough for their canopies to overlap.
+# 3. Clearing a tree's own *parent* way is not the same as clearing the road
+#    network: a verge tree correctly placed against a narrow side street can
+#    still land inside a different, wider way's carriageway a few metres
+#    away -- most often near an intersection. Measured directly: 27 of the
+#    real fixture's procedural trees sat inside some carriageway that was not
+#    the one they were generated against, the worst 0.14 m inside a Broadway
+#    segment. Tagged trees are exempt from this check on purpose -- a real
+#    `natural=tree` node in a median or plaza is OSM's own survey data, not
+#    something to second-guess.
 
 
-def _parse_verge_tree_id(tree_id: str) -> tuple[int, int, int]:
-    """Reverses `f"osm_tv_{way.id}_{i}_{int(side)}"` back into its parts."""
-    rest = tree_id.removeprefix("osm_tv_")
-    way_id_str, i_str, side_str = rest.rsplit("_", 2)
-    return int(way_id_str), int(i_str), int(side_str)
-
-
-def _perp_distance(point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Distance from `point` to the infinite line through `a` and `b`."""
-    (ax, ay), (bx, by) = a, b
+def _point_to_segment_distance(
+    point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    """Distance from `point` to the segment `a`-`b` (clamped, not the infinite
+    line) -- written independently of `map.features._point_to_segment_distance`
+    so this test checks the geometry itself, not just that the two copies of
+    the formula agree.
+    """
     px, py = point
+    ax, ay = a
+    bx, by = b
     dx, dy = bx - ax, by - ay
-    return abs(dx * (py - ay) - dy * (px - ax)) / math.hypot(dx, dy)
+    length_sq = dx * dx + dy * dy
+    if length_sq < 1e-12:
+        return math.dist(point, a)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length_sq))
+    return math.dist(point, (ax + t * dx, ay + t * dy))
 
 
 def test_procedural_verge_trees_clear_the_carriageway(graph):
-    """Every procedural verge tree on the real fixture must sit at or beyond
-    its own way's actual carriageway half-width -- not the old one-size-fits-
-    all 5.6 m offset, which put trees 1.6 m inside California St, Pine St and
-    Broadway (each >= 4 total lanes, 7.2 m half-width).
+    """Every procedural verge tree on the real fixture must sit outside
+    *every* drivable way's carriageway -- not only the way it was generated
+    against.
 
-    Recomputes each tree's exact perpendicular distance to the road segment
-    it was placed against, independent of `_verge_offset_m`'s own formula, so
-    this checks the geometry the way a renderer would -- not just that the
-    offset function returns a number that happens to be large enough.
+    A parent-way-only version of this check passed even though 27 procedural
+    trees on the real fixture landed inside a different, nearby way's road
+    surface: correctly cleared of the narrow side street they were placed
+    against, but standing inside a wider way a few metres away, typically
+    near an intersection. This widens the check to all 264 drivable ways, and
+    recomputes the point-to-segment distance independently of both
+    `_verge_offset_m`'s and `_inside_any_carriageway`'s own logic, so it
+    checks the geometry the way a renderer would -- not just that production
+    code's own formula returns a number it considers large enough.
     """
-    ways_by_id = {w.id: w for w in drivable_ways(graph)}
-    trees = build_trees(graph, ORIGIN)
-    procedural = [t for t in trees if t.id.startswith("osm_tv_")]
-    assert len(procedural) == 790  # sanity: this is the real, filtered set
-
-    checked_a_wide_road = False
-    for t in procedural:
-        way_id, i, _side = _parse_verge_tree_id(t.id)
-        way = ways_by_id[way_id]
+    ways = drivable_ways(graph)
+    ways_geometry = []
+    for way in ways:
         points = [to_local(lat, lon, ORIGIN) for lat, lon in graph.way_points(way)]
-        a, b = points[i], points[i + 1]
-
         cls = road_class(way.tags)
         forward, backward = lane_counts(way.tags, cls)
         half_width = (forward + backward) * LANE_W / 2
-        if half_width >= LANE_W + 2.0:
-            checked_a_wide_road = True
+        ways_geometry.append((way.tags.get("name", str(way.id)), points, half_width))
 
-        distance = _perp_distance(t.position, a, b)
-        assert distance >= half_width - 1e-9, (
-            f"{t.id} on {way.tags.get('name', way_id)} sits {distance:.2f} m from the "
-            f"centreline, inside its {half_width:.2f} m carriageway half-width"
-        )
-    # Not vacuous: at least one checked tree actually belongs to one of the
-    # >= 4-lane roads the old fixed offset got wrong.
-    assert checked_a_wide_road
+    # Not vacuous: some real way here is wide enough that the old fixed
+    # 5.6 m offset would have failed to clear it (California St, Pine St,
+    # Broadway all qualify).
+    assert any(half_width >= LANE_W + 2.0 for _, _, half_width in ways_geometry)
+
+    trees = build_trees(graph, ORIGIN)
+    procedural = [t for t in trees if t.id.startswith("osm_tv_")]
+    assert len(procedural) == 763  # sanity: this is the real, filtered set
+
+    for t in procedural:
+        for name, points, half_width in ways_geometry:
+            for a, b in zip(points, points[1:]):
+                distance = _point_to_segment_distance(t.position, a, b)
+                assert distance >= half_width - 1e-9, (
+                    f"{t.id} sits {distance:.2f} m from a segment of {name}, "
+                    f"inside its {half_width:.2f} m carriageway half-width"
+                )
 
 
 def test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree():
