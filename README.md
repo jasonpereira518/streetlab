@@ -27,13 +27,12 @@ and a single generic hazard instead of the full scenario set. The
 covers the full cycle breakdown; the short version is in
 [Roadmap](#roadmap) below.
 
-**What's real today:** the frontend and backend talk to each other over a
-real WebSocket, validated on both ends against the same schema. Run
-`streetlab serve` and open the frontend with no arguments — the frontend
-defaults to `ws://127.0.0.1:8765` when no Tauri sidecar and no explicit
-`?backend=`/`?mock=1` is present, matching the CLI's own default port. There
-is no packaged `.app` yet (see [Roadmap](#roadmap)) — running it today means
-two processes, as [`DEMO.md`](DEMO.md) walks through.
+**What's real today:** `StreetLab.app` is a real, double-clickable native
+macOS app — launch it and it spawns its own Python sidecar, connects to it,
+and renders a live scene with zero configuration. Quitting the app (or
+force-quitting it) leaves no orphaned process behind. For development, the
+frontend and backend also run as two plain processes talking over a real,
+schema-validated WebSocket — see [`DEMO.md`](DEMO.md) for both paths.
 
 ## Architecture
 
@@ -65,19 +64,22 @@ process — not fixed targets. Sim step time and RSS come from the backend's
 
 | Metric | Source | Status |
 |---|---|---|
-| Render FPS | Frontend render loop | Live in the overlay |
-| Observed tick Hz | `StateUpdate` inter-arrival | Live in the overlay |
+| Render FPS | Frontend render loop | Live in the overlay (typically 30–60) |
+| Observed tick Hz | `StateUpdate` inter-arrival | Live in the overlay (~60 Hz) |
 | WS frame bytes (p95) | Wire size at receipt | Live in the overlay |
-| Sim step p50/p95 | Backend `/health` | Live in the overlay |
-| Backend RSS | Backend `/health` | Live in the overlay |
-| Sidecar binary size | `scripts/build_app.sh` | **TBD** — Track B not yet built |
-| `.app` size | `scripts/build_app.sh` | **TBD** — Track B not yet built |
+| Sim step p50/p95 | Backend `/health` | Live in the overlay (~1 ms / ~2 ms on an M-series Mac) |
+| Sidecar binary size | `scripts/build_app.sh` | **16 MB** (measured, `aarch64-apple-darwin`) |
+| `.app` bundle size | `scripts/build_app.sh` | **20 MB** (measured, includes the sidecar) |
+| Backend RSS | Backend `/health` | **~59 MB** measured at startup; live in the overlay |
+| Frontend RSS | `ps` on the running `.app` | **~58–72 MB** measured at startup |
 | Detector inference ms | — | Not measurable this cycle — no model runs |
 | Model disk budget | — | **Target for Cycle 4**: ~172 MB detector |
 | Map cache budget | — | **Target for Cycle 2**: ~99 MB |
 
 GPU/ANE utilisation isn't reported: with no model running there's nothing to
-report, and a zero would be misleading.
+report, and a zero would be misleading. Measured figures are one run on an
+Apple Silicon Mac, not a benchmark suite — treat them as a ballpark, not a
+guarantee.
 
 ## Running it
 

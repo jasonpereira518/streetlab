@@ -6,25 +6,35 @@ Python simulator over a validated WebSocket contract.
 
 ## What this walks through
 
-Launch both halves, connect them, load a scenario, and inject a hazard —
-watch the planner react. This is what's actually built today (Cycle 1): a
-synthetic 3×3 grid, scripted traffic, ground-truth perception, and a
-centerline-following planner. See the root [`README.md`](README.md#roadmap)
-for what's deliberately not built yet.
+Launch it, load a scenario, and inject a hazard — watch the planner react.
+This is what's actually built today (Cycle 1): a synthetic 3×3 grid, scripted
+traffic, ground-truth perception, and a centerline-following planner. See the
+root [`README.md`](README.md#roadmap) for what's deliberately not built yet.
 
-**There is no packaged `.app` yet** — that's the next cycle of work
-(`docs/superpowers/specs/2026-08-12-streetlab-integration-design.md`, Track
-B). Today, running it means two terminals.
+Two ways to run it — pick one:
 
-## Prerequisites
+## Option A: the packaged app (fastest)
 
-- Node ≥ 20, and `npm install` run once in `streetlab/`
-- Python 3.11 and [`uv`](https://docs.astral.sh/uv/); `uv sync` run once in
-  `streetlab-backend/`
-- A Rust toolchain is **not** required for this walkthrough — it's only
-  needed for the native `.app` build, which doesn't exist yet.
+```bash
+bash scripts/build_app.sh
+open streetlab/src-tauri/target/release/bundle/macos/StreetLab.app
+```
 
-## 1. Start the backend
+That's it — no arguments, no second terminal. The app spawns its own Python
+sidecar as a subprocess, connects to it over an ephemeral port, and renders a
+live scene. Quitting the app (⌘Q, or force-quitting it) leaves no orphaned
+sidecar process behind — verified by launching, quitting normally, and
+separately `kill -9`-ing the app itself, confirming the sidecar exits either
+way.
+
+Requires a Rust toolchain (`rustup`) and Python 3.11 + [`uv`](https://docs.astral.sh/uv/)
+to build; nothing extra to run the built `.app` afterward.
+
+## Option B: two plain processes (for development)
+
+Useful when iterating on either side with hot reload.
+
+**Start the backend:**
 
 ```bash
 cd streetlab-backend
@@ -42,9 +52,7 @@ Point the frontend at:  ?backend=ws://127.0.0.1:8765
 `STREETLAB_READY {...}`, for a parent process to parse — see the backend
 design doc if you're curious why.)
 
-## 2. Start the frontend
-
-In a second terminal:
+**Start the frontend**, in a second terminal:
 
 ```bash
 cd streetlab
@@ -59,7 +67,7 @@ toolbar's connection chip shows `ws://127.0.0.1:8765` once connected.
 (To force the offline in-process mock instead — no backend required —
 open `http://localhost:1420/?mock=1`.)
 
-## 3. Watch it drive itself
+## Watch it drive itself
 
 The left sidebar lists the backend's scenario catalog (`Nob Hill Loop`,
 `California Arterial`, `Signal Ladder`, `Hyde Street Merge`, `Outer Circuit`).
@@ -68,7 +76,7 @@ centerline planner, with a blue plan ribbon ahead of it; the six telemetry
 cards along the bottom (speed, lane position, radar, vehicle status,
 trajectory, steering) update live from the real simulation, not the mock.
 
-## 4. Inject a hazard
+## Inject a hazard
 
 Open the right panel's **Parameters** tab and click **Inject cut-in hazard**.
 The backend's Cycle 1 hazard model brakes the nearest lead vehicle hard; the
@@ -81,17 +89,17 @@ curve shows the predicted path.
 every `inject_hazard` call produces the same generic hard-brake response,
 regardless of the `kind` requested from the UI.)
 
-## 5. See it survive a dropped connection
+## See it survive a dropped connection
 
-Kill the backend process (Ctrl-C in its terminal) while the frontend is still
-open. The toolbar's connection chip goes to `reconnecting`, the 3D view and
-telemetry cards keep rendering their last known state rather than crashing,
-and restarting `uv run streetlab serve` gets you a fresh scene automatically
-— no page reload needed. (`e2e/faultInjection.spec.ts` proves this
-programmatically against a real backend subprocess, not just a mocked
-socket.)
+With Option B running, kill the backend process (Ctrl-C in its terminal)
+while the frontend is still open. The toolbar's connection chip goes to
+`reconnecting`, the 3D view and telemetry cards keep rendering their last
+known state rather than crashing, and restarting `uv run streetlab serve`
+gets you a fresh scene automatically — no page reload needed.
+(`e2e/faultInjection.spec.ts` proves this programmatically against a real
+backend subprocess, not just a mocked socket.)
 
-## 6. Check the performance overlay
+## Check the performance overlay
 
 Click the activity-icon button in the toolbar. It shows live FPS, the
 observed `StateUpdate` tick rate, p95 wire frame size, and — polled from the
@@ -106,4 +114,5 @@ processes, not fixture data.
   agents follow their routes regardless of what the ego does.
 - A trained perception model (Cycle 4) — detections are ground truth read
   directly off the simulation state, not inferred from any sensor data.
-- A packaged, double-clickable `.app` — see the root README's roadmap.
+- Code signing or notarization — the built `.app` is unsigned, fine for local
+  use but not for distributing to another machine.
