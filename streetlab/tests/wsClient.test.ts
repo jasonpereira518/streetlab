@@ -255,6 +255,33 @@ describe('WebSocket transport', () => {
     t.close();
   });
 
+  it('picks up a fresh scene from a restarted server after reconnecting', async () => {
+    const t = createWebSocketTransport({ url: 'ws://x/4b', maxBackoffMs: 10 });
+    const c = collector();
+    t.connect(c.handlers);
+
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    const sim1 = new MockSim();
+    first.receive(sim1.scene);
+    first.serverClose();
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(1);
+
+    // A restarted server: a brand new socket, delivering its own fresh scene.
+    const second = FakeWebSocket.instances.at(-1)!;
+    second.open();
+    const sim2 = new MockSim();
+    sim2.step();
+    second.receive(sim2.scene);
+
+    const scenes = c.messages.filter((m) => m.type === 'scene_description');
+    expect(scenes).toHaveLength(2);
+    expect(c.statuses).toContain('open');
+    t.close();
+  });
+
   it('does not reconnect after the client closes it', async () => {
     const t = createWebSocketTransport({ url: 'ws://x/5' });
     const c = collector();
