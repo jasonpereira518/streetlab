@@ -73,3 +73,30 @@ def test_elements_missing_required_fields_are_skipped():
 
 def test_empty_graph_is_falsy_by_way_count():
     assert OsmGraph(nodes={}, ways=()).ways == ()
+
+
+def test_oversized_numeric_coordinate_is_skipped_not_raised():
+    """JSON has no integer size limit; json.loads can hand back a Python int
+    too large to convert to float (float() raises OverflowError). The node
+    must be skipped, not propagate an exception out of parse_overpass."""
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 10**400, "lon": 0},
+            {"type": "node", "id": 2, "lat": 1.0, "lon": 2.0},
+        ]}
+    )
+    assert set(graph.nodes) == {2}
+
+
+def test_bool_id_is_rejected_for_both_nodes_and_ways():
+    """`id: true`/`id: false` must not be silently treated as id 1/0 — bools
+    are ints in Python, so this needs an explicit exclusion in both _node and
+    _way, matching the exclusion way's node_ids list already had."""
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": True, "lat": 1.0, "lon": 2.0},
+            {"type": "way", "id": False, "nodes": [1, 2]},
+        ]}
+    )
+    assert graph.nodes == {}
+    assert graph.ways == ()

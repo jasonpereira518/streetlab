@@ -51,16 +51,24 @@ def _tags(raw: object) -> dict[str, str]:
 
 def _node(el: dict) -> OsmNode | None:
     nid, lat, lon = el.get("id"), el.get("lat"), el.get("lon")
-    if not isinstance(nid, int) or isinstance(lat, bool) or isinstance(lon, bool):
+    if not isinstance(nid, int) or isinstance(nid, bool):
+        return None
+    if isinstance(lat, bool) or isinstance(lon, bool):
         return None
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         return None
-    return OsmNode(id=nid, lat=float(lat), lon=float(lon), tags=_tags(el.get("tags")))
+    try:
+        # JSON integers are arbitrary-precision; one too large to represent as
+        # a float raises OverflowError rather than producing inf.
+        lat_f, lon_f = float(lat), float(lon)
+    except OverflowError:
+        return None
+    return OsmNode(id=nid, lat=lat_f, lon=lon_f, tags=_tags(el.get("tags")))
 
 
 def _way(el: dict) -> OsmWay | None:
     wid, nodes = el.get("id"), el.get("nodes")
-    if not isinstance(wid, int) or not isinstance(nodes, list):
+    if not isinstance(wid, int) or isinstance(wid, bool) or not isinstance(nodes, list):
         return None
     node_ids = tuple(n for n in nodes if isinstance(n, int) and not isinstance(n, bool))
     if len(node_ids) < 2:
