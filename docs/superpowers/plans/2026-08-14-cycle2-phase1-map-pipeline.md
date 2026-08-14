@@ -268,6 +268,31 @@ def test_malformed_payloads_yield_an_empty_graph_rather_than_raising():
         assert graph.ways == ()
 
 
+def test_oversized_integer_coordinates_do_not_raise():
+    """JSON has no integer size limit; float() on a huge int raises OverflowError.
+
+    Structural malformation is the obvious attack on a parser, and it is what the
+    test above covers. This is the numeric one, and it is the shape that actually
+    reached an exception in review.
+    """
+    graph = parse_overpass(
+        {"elements": [{"type": "node", "id": 1, "lat": 10**400, "lon": 0}]}
+    )
+    assert graph.nodes == {}
+
+
+def test_boolean_ids_are_rejected_everywhere():
+    """`bool` subclasses `int`, so a naive isinstance check accepts True as id 1."""
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": True, "lat": 1.0, "lon": 2.0},
+            {"type": "way", "id": False, "nodes": [1, 2]},
+        ]}
+    )
+    assert graph.nodes == {}
+    assert graph.ways == ()
+
+
 def test_elements_missing_required_fields_are_skipped():
     graph = parse_overpass(
         {"elements": [
@@ -347,20 +372,36 @@ def _tags(raw: object) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items()}
 
 
+def _osm_id(raw: object) -> int | None:
+    """An OSM id, or None. `bool` subclasses `int`, so it must be excluded first."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw
+
+
 def _node(el: dict) -> OsmNode | None:
-    nid, lat, lon = el.get("id"), el.get("lat"), el.get("lon")
-    if not isinstance(nid, int) or isinstance(lat, bool) or isinstance(lon, bool):
+    nid = _osm_id(el.get("id"))
+    lat, lon = el.get("lat"), el.get("lon")
+    if nid is None or isinstance(lat, bool) or isinstance(lon, bool):
         return None
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         return None
-    return OsmNode(id=nid, lat=float(lat), lon=float(lon), tags=_tags(el.get("tags")))
+    try:
+        # JSON has no integer size limit, so a coordinate may arrive as an
+        # arbitrary-precision int that float() cannot represent. This is the one
+        # conversion in the module that can raise, and a trust boundary is
+        # exactly where it must not.
+        lat_f, lon_f = float(lat), float(lon)
+    except OverflowError:
+        return None
+    return OsmNode(id=nid, lat=lat_f, lon=lon_f, tags=_tags(el.get("tags")))
 
 
 def _way(el: dict) -> OsmWay | None:
-    wid, nodes = el.get("id"), el.get("nodes")
-    if not isinstance(wid, int) or not isinstance(nodes, list):
+    wid, nodes = _osm_id(el.get("id")), el.get("nodes")
+    if wid is None or not isinstance(nodes, list):
         return None
-    node_ids = tuple(n for n in nodes if isinstance(n, int) and not isinstance(n, bool))
+    node_ids = tuple(n for n in nodes if _osm_id(n) is not None)
     if len(node_ids) < 2:
         return None
     return OsmWay(id=wid, node_ids=node_ids, tags=_tags(el.get("tags")))
