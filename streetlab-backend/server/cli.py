@@ -26,10 +26,21 @@ import sys
 import threading
 from dataclasses import dataclass
 
-from map.osm_source import BUNDLED, default_source
+from map.cache import DiskCache, default_cache_dir
+from map.geocode import GeocodeError, NominatimGeocoder
+from map.lanes import NoDrivableRoad
+from map.osm_source import LocationSpec, OsmSceneSource, default_source
+from map.overpass import HttpxFetcher, OverpassClient, OverpassError
 from map.scene_build import SceneSource, SyntheticGrid
 from schema import PROTOCOL_VERSION
 from sim.loop import DEFAULT_DT, SimLoop, Simulation
+
+# Every failure mode a real-network SceneSource build can raise, on top of the
+# KeyError an unknown scenario id already produced when the source was always
+# SyntheticGrid. Caught wherever `Simulation(...)` or `OsmSceneSource.build`
+# runs so a DNS failure or an Overpass outage prints one clean line instead
+# of a raw traceback.
+_SOURCE_ERRORS = (KeyError, GeocodeError, OverpassError, NoDrivableRoad)
 
 MPS_TO_MPH = 2.236936292054402
 DEFAULT_PORT = 8765
@@ -127,11 +138,41 @@ def _scenarios() -> int:
     return 0
 
 
-def _build(args) -> int:
-    source = default_source()
-    place = source.geocoder.lookup(args.address)
-    print(f"resolved: {place.display_name}")
-    scene = source.build(BUNDLED[0].id)
+def _build_source(address: str, radius: float) -> OsmSceneSource:
+    """The real `OsmSceneSource` for whatever address the caller typed, not
+    one of the bundled catalog's fixed locations.
+
+    Building an ad-hoc `LocationSpec` around the actual input is what makes
+    `address` and `--radius` do what they say. An earlier version geocoded
+    `address`, printed the resolved place, and then unconditionally built
+    `BUNDLED[0]` (Nob Hill) regardless of what was typed or resolved — so
+    `streetlab build "Times Square, New York"` printed a New York address
+    and then silently fetched and cached San Francisco. `--radius` reached
+    nothing for the same reason: `BUNDLED[0]`'s own fixed 500 m always won.
+    """
+    spec = LocationSpec("cli-adhoc", address, address, radius)
+    return OsmSceneSource(
+        NominatimGeocoder(),
+        OverpassClient(HttpxFetcher(), DiskCache(default_cache_dir())),
+        locations=(spec,),
+    )
+
+
+def _build(args, source: OsmSceneSource | None = None) -> int:
+    """`source` is overridable so a test can substitute a `StubGeocoder` and
+    a replay `OverpassClient` without touching the network; `main()` always
+    calls this with `source=None`, so the CLI itself goes through the real
+    `_build_source`.
+    """
+    source = source or _build_source(args.address, args.radius)
+    spec_id = source.locations[0].id
+    try:
+        scene = source.build(spec_id)
+    except _SOURCE_ERRORS as exc:
+        print(f"error: {exc}")
+        return 1
+
+    print(f"resolved: {scene.description.location}")
     print(
         f"built {len(scene.description.roads)} roads, "
         f"{len(scene.description.buildings)} buildings, "
@@ -188,7 +229,7 @@ def _serve(args) -> int:
         sim = Simulation(
             scene_source_for(args.source), args.scenario, seed=args.seed, dt=1 / args.sim_hz
         )
-    except KeyError as exc:
+    except _SOURCE_ERRORS as exc:
         print(f"error: {exc}")
         return 1
 
@@ -237,7 +278,7 @@ def _run(args) -> int:
         sim = Simulation(
             scene_source_for(args.source), args.scenario, seed=args.seed, dt=1 / args.hz
         )
-    except KeyError as exc:
+    except _SOURCE_ERRORS as exc:
         print(f"error: {exc}")
         return 1
 

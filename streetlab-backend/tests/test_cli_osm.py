@@ -8,6 +8,14 @@ is 1182.29 m; `test_full_lap_route_projection_stays_continuous` below drives
 far enough to complete a lap, because a route-geometry regression sitting
 ~479 m in (as `bfdfcdc` found and fixed) is unreachable from the smoke test
 alone.
+
+The `test_build_*` and `test_*_reports_a_clean_error_*` tests below were
+added after the Task 11 review found `_build` geocoded whatever address it
+was given, printed the result, and then unconditionally built `BUNDLED[0]`
+(Nob Hill) regardless — and that `_serve`/`_run` caught only `KeyError`,
+so a `GeocodeError`/`OverpassError`/`NoDrivableRoad` from a real network
+failure produced a raw traceback instead of the CLI's usual clean
+`error: ...` line.
 """
 
 import json
@@ -16,9 +24,11 @@ from pathlib import Path
 import pytest
 
 from map.cache import DiskCache
-from map.geocode import Place, StubGeocoder
-from map.osm_source import BUNDLED, OsmSceneSource
-from map.overpass import OverpassClient
+from map.geocode import GeocodeError, Place, StubGeocoder
+from map.lanes import NoDrivableRoad
+from map.osm_source import BUNDLED, LocationSpec, OsmSceneSource
+from map.overpass import OverpassClient, OverpassError
+from server import cli
 from server.cli import build_parser, scene_source_for
 from sim.loop import Simulation
 
@@ -52,6 +62,128 @@ def test_scene_source_for_returns_the_synthetic_grid_by_default():
     from map.scene_build import SyntheticGrid
 
     assert isinstance(scene_source_for("synthetic"), SyntheticGrid)
+
+
+def test_build_source_threads_address_and_radius_into_an_ad_hoc_spec():
+    """`_build_source` is what makes `address` and `--radius` real. Confirms
+    both land on the `LocationSpec` it constructs, without touching the
+    network: building `NominatimGeocoder`/`HttpxFetcher`/`DiskCache`
+    performs no I/O of its own -- only their `.lookup()`/`.fetch()` methods
+    do, and neither is called here.
+    """
+    source = cli._build_source("Golden Gate Bridge, San Francisco", 750.0)
+    spec = source.locations[0]
+    assert spec.query == "Golden Gate Bridge, San Francisco"
+    assert spec.radius_m == 750.0
+    # Not one of the bundled catalog's fixed ids -- this must be its own,
+    # address-specific location, not BUNDLED[0] ("osm-nob-hill") in disguise.
+    assert spec.id != BUNDLED[0].id
+
+
+def test_build_builds_the_location_it_was_actually_given(tmp_path, capsys):
+    """Regression pin for the Task 11 review's Important 1+2: an earlier
+    `_build` geocoded `args.address`, printed the resolved place, and then
+    unconditionally called `source.build(BUNDLED[0].id)` -- always Nob Hill,
+    regardless of what was typed or resolved.
+
+    Injects a source whose *only* location is a distinctly-named ad-hoc spec
+    (not `BUNDLED[0].id`). The old behaviour would have raised
+    `KeyError: unknown location: osm-nob-hill` against a source that has no
+    such id at all; the fixed `_build` succeeds, because it builds whichever
+    location the injected source actually offers.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    place = Place(
+        lat=40.7580, lon=-73.9855, display_name="Times Square, New York, NY, USA"
+    )
+    spec = LocationSpec("cli-adhoc", "Times Square, New York", "Times Square", 250.0)
+    source = OsmSceneSource(
+        StubGeocoder(place),
+        OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path)),
+        locations=(spec,),
+    )
+
+    args = build_parser().parse_args(["build", "Times Square, New York", "--radius", "250"])
+    code = cli._build(args, source=source)
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "Times Square" in out
+    assert "roads" in out and "route" in out
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        lambda: GeocodeError("nominatim: connection refused"),
+        lambda: OverpassError("overpass: 504 Gateway Timeout"),
+        lambda: NoDrivableRoad("no drivable junctions in this extract"),
+    ],
+    ids=["GeocodeError", "OverpassError", "NoDrivableRoad"],
+)
+def test_build_reports_a_clean_error_instead_of_a_traceback(tmp_path, capsys, make_error):
+    """Important 3 from the Task 11 review: a real network or data failure
+    must produce the CLI's usual `error: ...` + exit-1 pattern, not a raw
+    traceback. Verified for all three failure modes `OsmSceneSource.build`
+    can actually raise, not just the one that happened to be hit live.
+    """
+
+    class FailingGeocoder:
+        def lookup(self, query: str):
+            raise make_error()
+
+    spec = LocationSpec("cli-adhoc", "nowhere in particular", "nowhere", 500.0)
+    source = OsmSceneSource(
+        FailingGeocoder(),
+        OverpassClient(ReplayFetcher({}), DiskCache(tmp_path)),
+        locations=(spec,),
+    )
+
+    args = build_parser().parse_args(["build", "nowhere in particular"])
+    code = cli._build(args, source=source)
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert out.strip().startswith("error:")
+
+
+def test_run_reports_a_clean_error_when_the_source_cannot_build(monkeypatch, capsys):
+    """Same failure class as above, but through `_run` -- before this fix it
+    caught only `KeyError`, which was the sole failure mode when the source
+    was always `SyntheticGrid`. `scene_source_for` is monkeypatched so this
+    is exercised without touching the network.
+    """
+
+    class BrokenSource:
+        def scenarios(self):
+            raise OverpassError("simulated Overpass outage")
+
+    monkeypatch.setattr(cli, "scene_source_for", lambda source: BrokenSource())
+
+    code = cli.main(["run", "--source", "osm", "--duration", "1"])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert out.strip().startswith("error:")
+    assert "outage" in out.lower()
+
+
+def test_serve_reports_a_clean_error_when_the_source_cannot_build(monkeypatch, capsys):
+    """Same as above, through `_serve`. Fails before `_bind`/uvicorn ever
+    run, so no port is actually opened.
+    """
+
+    class BrokenSource:
+        def scenarios(self):
+            raise GeocodeError("simulated geocode failure")
+
+    monkeypatch.setattr(cli, "scene_source_for", lambda source: BrokenSource())
+
+    code = cli.main(["serve", "--source", "osm", "--port", "0"])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert out.strip().startswith("error:")
 
 
 def test_simulation_drives_a_real_osm_scene(tmp_path):
