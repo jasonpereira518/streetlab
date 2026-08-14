@@ -27,15 +27,19 @@ LANE_W = 3.6
 # anywhere a driver would notice.
 SIMPLIFY_TOLERANCE_M = 1.0
 
-# Below this extent, a set of points cannot represent a real centerline. A
-# way that reuses one node id at both ends (a closed ring) always simplifies
-# to bit-identical endpoints, since to_local() is a pure function of the
-# same (lat, lon) -- an exact-equality check catches that fine. But OSM also
-# has ways between two *distinct* node ids sitting a hair apart (a
-# duplicate-node import artifact) with a small bulge simplification erases;
-# that collapses to two endpoints that are numerically close but not equal,
-# which an exact-equality/`set()` check misses. An extent check does not:
-# every point must actually be more than a micrometre from the first.
+# Below this extent, a set of points cannot represent a real centerline.
+# This is a defensive generalisation, not a fix for something the current
+# pipeline can produce: an exact-equality/`set()` check already catches the
+# only degenerate case reachable today (a way that reuses one node id at
+# both ends -- to_local() is a pure function, so a shared node always
+# projects to bit-identical points). Two *distinct* OSM node ids cannot sit
+# closer than ~1 cm apart in practice: OSM stores coordinates quantised to
+# 1e-7 degrees, which is ~0.011 m of latitude and ~0.009 m of longitude at
+# this origin, and simplify() only ever selects a subset of its input
+# coordinates -- Douglas-Peucker never interpolates a new, closer point. An
+# extent check costs nothing and also covers a future data source (e.g. a
+# hand-edited fixture, or an Overpass response with looser precision) that
+# doesn't respect that quantisation floor.
 _MIN_ROAD_EXTENT_M = 1e-6
 
 
@@ -63,12 +67,14 @@ def _is_degenerate(points: list[tuple[float, float]]) -> bool:
 def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
     """Every drivable way as a wire `Road`, in local metres."""
     roads: list[Road] = []
+    dropped = 0
     for way in drivable_ways(graph):
         cls = road_class(way.tags)
         if cls is None:
             continue  # unreachable: drivable_ways() already filtered on this
         points = _simplify(_local_points(graph, way, origin))
         if len(points) < 2 or _is_degenerate(points):
+            dropped += 1
             continue
 
         forward, backward = lane_counts(way.tags, cls)
@@ -90,4 +96,6 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
                 has_sidewalk=cls != "service",
             )
         )
+    if dropped:
+        log.debug("dropped %d degenerate drivable way(s)", dropped)
     return roads

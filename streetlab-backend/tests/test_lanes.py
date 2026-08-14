@@ -79,19 +79,20 @@ def test_degenerate_ways_are_dropped():
 
 
 def test_a_sliver_between_two_near_coincident_nodes_is_dropped():
-    """OSM occasionally has two distinct node ids sitting almost on top of
-    each other -- a duplicate-node import artifact -- with a small bulge
-    between them that simplification (tolerance 1.0 m) erases. The result is
-    a "road" whose two endpoints are ~1 nanometre apart: not a real
-    centerline, but not identical floats either, since they come from two
-    different source nodes rather than one node reused (which *is* what a
-    closed OSM ring looks like, and bit-identical duplicates there are
-    already caught by exact-equality dedup).
+    """Characterises `_is_degenerate()` directly -- it does NOT reproduce a
+    defect reachable from real Overpass data. OSM quantises coordinates to
+    1e-7 degrees (~0.01 m at this latitude), and shapely's simplify() only
+    ever selects a subset of its input coordinates rather than interpolating
+    new ones, so two distinct real node ids can never end up closer than
+    that ~1 cm floor after simplification -- meaning a `set()`-based
+    exact-equality check and this extent-based check are behaviourally
+    identical on any input `parse_overpass` can actually produce.
 
-    A `set()`-based duplicate check (float equality) misses this sliver
-    because the two endpoints are numerically distinct. An extent-based
-    check catches it regardless, since 1e-9 m is still well under any
-    plausible "is this a road" threshold.
+    This test manufactures a synthetic gap (~1 nanometre, unreachable via
+    real coordinate quantisation) purely to pin `_is_degenerate()`'s own
+    behaviour as defensive hardening -- e.g. against a future data source
+    with looser precision than Overpass -- so a change that silently
+    narrows or removes the guard doesn't go unnoticed.
     """
     lat1, lon1 = to_latlon(0.0, 0.0, ORIGIN)
     lat2, lon2 = to_latlon(1e-9, 0.0, ORIGIN)  # ~1 nanometre from node 1
