@@ -1,9 +1,11 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
 
 from map.features import (
+    _TREE_MIN_SPACING_M,
     _tagged_nodes,
     build_buildings,
     build_crosswalks,
@@ -12,8 +14,10 @@ from map.features import (
     build_trees,
     signal_groups,
 )
+from map.lanes import LANE_W, drivable_ways
 from map.osm_model import parse_overpass
-from map.projection import LatLon, signed_area_x2
+from map.projection import LatLon, signed_area_x2, to_latlon, to_local
+from map.tags import lane_counts, road_class
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
 ORIGIN = LatLon(lat=37.7945, lon=-122.4156)
@@ -112,8 +116,16 @@ def test_signal_groups_assign_every_light_to_ns_or_ew():
     assert len(groups) == 2
 
 
-def test_trees_are_generated_even_when_osm_has_none(graph):
-    """OSM tree coverage is sparse; a street with no trees still gets some."""
+def test_trees_have_valid_geometry_on_the_real_fixture(graph):
+    """Every tree `build_trees` emits -- tagged or procedural -- has sane,
+    schema-valid geometry.
+
+    Renamed from `test_trees_are_generated_even_when_osm_has_none`: the real
+    fixture this runs against tags 43 real `natural=tree` nodes, so it never
+    actually exercised a "no OSM trees" case -- that mismatch between name and
+    behaviour was flagged rather than hidden, and is fixed here now that this
+    area is already being edited for the two findings below.
+    """
     trees = build_trees(graph, ORIGIN)
     assert trees
     for t in trees:
@@ -218,11 +230,14 @@ def test_procedural_verge_trees_supplement_sparse_tagged_coverage(graph):
     tagged = [t for t in trees if t.id.startswith("osm_tr_")]
     procedural = [t for t in trees if t.id.startswith("osm_tv_")]
     assert len(tagged) == 43
-    # Verified directly against the fixture: the procedural fallback, if it
-    # ran, contributes exactly 798 verge trees -- almost 20x the tagged
-    # count, which is the whole point of making it additive rather than an
-    # either/or fallback.
-    assert len(procedural) == 798
+    # Verified directly against the fixture: the unfiltered verge fallback
+    # would place 798 trees -- almost 20x the tagged count, which is the
+    # whole point of making it additive rather than an either/or fallback.
+    # 8 of those 798 land within `_TREE_MIN_SPACING_M` of a tagged tree and
+    # are dropped by the dedup filter (see
+    # `test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree`
+    # for a synthetic, exact-position proof of that filter), leaving 790.
+    assert len(procedural) == 790
 
 
 def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
@@ -242,6 +257,105 @@ def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
     trees = build_trees(graph, ORIGIN)
     assert any(t.id == "osm_tr_1" for t in trees)
     assert any(t.id.startswith("osm_tv_10_") for t in trees)
+
+
+# --- Regression tests for the two review-round findings --------------------
+#
+# Both are geometry gaps inherited from the task brief's reference code, but
+# dormant until the additive-trees change above made the procedural fallback
+# run on every real scene build instead of never running at all.
+#
+# 1. Fixed-offset verge trees ignored a way's actual width. Measured directly:
+#    6 of the real fixture's 264 drivable ways (California St x4, Pine St,
+#    Broadway) have a carriageway half-width (7.2 m) that exceeds the old
+#    fixed offset (5.6 m) -- their trees landed 1.6 m inside the road.
+# 2. Tagged and procedural trees were placed independently, with no check
+#    that they don't land close enough for their canopies to overlap.
+
+
+def _parse_verge_tree_id(tree_id: str) -> tuple[int, int, int]:
+    """Reverses `f"osm_tv_{way.id}_{i}_{int(side)}"` back into its parts."""
+    rest = tree_id.removeprefix("osm_tv_")
+    way_id_str, i_str, side_str = rest.rsplit("_", 2)
+    return int(way_id_str), int(i_str), int(side_str)
+
+
+def _perp_distance(point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Distance from `point` to the infinite line through `a` and `b`."""
+    (ax, ay), (bx, by) = a, b
+    px, py = point
+    dx, dy = bx - ax, by - ay
+    return abs(dx * (py - ay) - dy * (px - ax)) / math.hypot(dx, dy)
+
+
+def test_procedural_verge_trees_clear_the_carriageway(graph):
+    """Every procedural verge tree on the real fixture must sit at or beyond
+    its own way's actual carriageway half-width -- not the old one-size-fits-
+    all 5.6 m offset, which put trees 1.6 m inside California St, Pine St and
+    Broadway (each >= 4 total lanes, 7.2 m half-width).
+
+    Recomputes each tree's exact perpendicular distance to the road segment
+    it was placed against, independent of `_verge_offset_m`'s own formula, so
+    this checks the geometry the way a renderer would -- not just that the
+    offset function returns a number that happens to be large enough.
+    """
+    ways_by_id = {w.id: w for w in drivable_ways(graph)}
+    trees = build_trees(graph, ORIGIN)
+    procedural = [t for t in trees if t.id.startswith("osm_tv_")]
+    assert len(procedural) == 790  # sanity: this is the real, filtered set
+
+    checked_a_wide_road = False
+    for t in procedural:
+        way_id, i, _side = _parse_verge_tree_id(t.id)
+        way = ways_by_id[way_id]
+        points = [to_local(lat, lon, ORIGIN) for lat, lon in graph.way_points(way)]
+        a, b = points[i], points[i + 1]
+
+        cls = road_class(way.tags)
+        forward, backward = lane_counts(way.tags, cls)
+        half_width = (forward + backward) * LANE_W / 2
+        if half_width >= LANE_W + 2.0:
+            checked_a_wide_road = True
+
+        distance = _perp_distance(t.position, a, b)
+        assert distance >= half_width - 1e-9, (
+            f"{t.id} on {way.tags.get('name', way_id)} sits {distance:.2f} m from the "
+            f"centreline, inside its {half_width:.2f} m carriageway half-width"
+        )
+    # Not vacuous: at least one checked tree actually belongs to one of the
+    # >= 4-lane roads the old fixed offset got wrong.
+    assert checked_a_wide_road
+
+
+def test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree():
+    """A procedural verge tree must not double-plant on top of a tagged one.
+
+    A straight 100 m way (one segment, comfortably over the 20 m minimum)
+    places its procedural trees at a known offset either side of the
+    centreline (5.6 m for this default residential way -- one lane each way).
+    A tagged tree is placed exactly where the north-side (`side=1`) verge tree
+    would land: well within `_TREE_MIN_SPACING_M` (8.0 m), in fact at zero
+    distance, so this holds regardless of the exact threshold chosen. Only
+    the untouched south-side (`side=-1`) procedural tree should survive, and
+    the tagged tree itself is never removed.
+    """
+    a_lat, a_lon = to_latlon(0.0, 0.0, ORIGIN)
+    b_lat, b_lon = to_latlon(100.0, 0.0, ORIGIN)
+    tagged_lat, tagged_lon = to_latlon(50.0, 5.6, ORIGIN)  # the north verge tree's own spot
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": a_lat, "lon": a_lon},
+            {"type": "node", "id": 2, "lat": b_lat, "lon": b_lon},
+            {"type": "node", "id": 3, "lat": tagged_lat, "lon": tagged_lon,
+             "tags": {"natural": "tree"}},
+            {"type": "way", "id": 10, "nodes": [1, 2], "tags": {"highway": "residential"}},
+        ]}
+    )
+    trees = build_trees(graph, ORIGIN)
+    tagged_ids = [t.id for t in trees if t.id.startswith("osm_tr_")]
+    procedural_ids = [t.id for t in trees if t.id.startswith("osm_tv_")]
+    assert tagged_ids == ["osm_tr_3"]
+    assert procedural_ids == ["osm_tv_10_0_-1"]
 
 
 def test_counts_on_the_real_fixture_match_verified_osm_tag_counts(graph):

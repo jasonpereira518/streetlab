@@ -9,8 +9,8 @@ All randomness is seeded from OSM ids through sha256. Python salts `hash()` per
 process, so using it would make the same location build differently on every
 launch -- exactly the determinism property SyntheticGrid established.
 
-Two things this module gets right that an earlier draft did not, both found by
-running the real Nob Hill fixture rather than only synthetic data:
+Several things this module gets right that an earlier draft did not, all found
+by running the real Nob Hill fixture rather than only synthetic data:
 
 - `schema.Building.footprint` is documented as a CCW ring, but OSM does not
   constrain which way a `building` way winds. Measured on the fixture: of its
@@ -26,6 +26,16 @@ running the real Nob Hill fixture rather than only synthetic data:
   zero, which makes the fallback dead code on every fixture (including this
   one) that has *any* real tagged trees. `build_trees` now always adds
   procedural verge fill on top of whatever OSM tags exist.
+- Making that fallback always-on promoted a second, previously dormant defect:
+  it placed every verge tree at one fixed offset (`LANE_W + 2.0` = 5.6 m) from
+  the centreline, regardless of the way's actual width. On the real fixture
+  California St, Pine St and Broadway all carry >= 4 total lanes -- a 7.2 m
+  carriageway half-width -- so their trees landed 1.6 m *inside* the road.
+  `_verge_offset_m` derives the offset from the way's own lane count instead.
+- A tagged tree and a procedural verge tree can independently land within
+  canopy-overlap distance of each other, since neither placement knows about
+  the other. `_procedural_verge_trees` now skips any candidate whose position
+  falls within `_TREE_MIN_SPACING_M` of an already-placed tagged tree.
 """
 
 from __future__ import annotations
@@ -37,6 +47,7 @@ from random import Random
 from map.lanes import LANE_W, drivable_ways
 from map.osm_model import OsmGraph, OsmNode
 from map.projection import LatLon, signed_area_x2, to_local
+from map.tags import lane_counts, road_class
 from schema import Building, Crosswalk, StopSign, TrafficLight, Tree
 
 METRES_PER_LEVEL = 3.2
@@ -182,20 +193,59 @@ def _new_tree(id_: str, position: tuple[float, float], seed: str) -> Tree:
     )
 
 
-def _procedural_verge_trees(graph: OsmGraph, origin: LatLon) -> list[Tree]:
-    """Trees along the verges of drivable ways, filling in where OSM has none."""
+# Minimum distance a procedural verge tree must keep from any tagged tree.
+# Canopy radius maxes out at 3.4 m for either kind of tree (`_new_tree`'s
+# range is shared), so two maximal canopies first touch at a 6.8 m centre
+# separation. 8.0 m is a coarse, round-number floor comfortably past that
+# worst case -- not a tight per-pair canopy check, which would need the
+# canopy radii before they exist (they are only assigned once a `Tree` is
+# actually constructed).
+_TREE_MIN_SPACING_M = 8.0
+
+
+def _verge_offset_m(tags: dict[str, str]) -> float:
+    """Distance from a way's centreline to plant a verge tree, clear of the
+    carriageway.
+
+    A fixed offset put a tree inside any road wider than one lane each way --
+    on the real fixture, California St, Pine St and Broadway (each carrying
+    >= 4 total lanes, a 7.2 m carriageway half-width) would plant trees 1.6 m
+    inside the road surface. The offset is derived from the way's own lane
+    count instead, and floored at the old constant (`LANE_W + 2.0` = 5.6 m,
+    which is exactly a one-lane-each-way road's 3.6 m half-width plus a 2 m
+    verge margin) so the common one-lane-each-way street keeps today's
+    spacing rather than pulling its trees in closer than before.
+    """
+    cls = road_class(tags) or "residential"
+    forward, backward = lane_counts(tags, cls)
+    half_width = (forward + backward) * LANE_W / 2
+    verge_margin_m = 2.0
+    return max(half_width + verge_margin_m, LANE_W + 2.0)
+
+
+def _procedural_verge_trees(
+    graph: OsmGraph, origin: LatLon, avoid: list[tuple[float, float]]
+) -> list[Tree]:
+    """Trees along the verges of drivable ways, filling in where OSM has none.
+
+    `avoid` is the set of already-placed tagged-tree positions; a candidate
+    within `_TREE_MIN_SPACING_M` of one is dropped rather than doubling up on
+    the same spot with visibly overlapping canopies.
+    """
     trees: list[Tree] = []
     for way in drivable_ways(graph):
         points = [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)]
+        offset = _verge_offset_m(way.tags)
         for i, (a, b) in enumerate(zip(points, points[1:])):
             length = math.dist(a, b)
             if length < 20.0:
                 continue
             ux, uy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
             for side in (-1.0, 1.0):
-                offset = LANE_W + 2.0
                 px = a[0] + ux * length * 0.5 - uy * side * offset
                 py = a[1] + uy * length * 0.5 + ux * side * offset
+                if any(math.dist((px, py), p) < _TREE_MIN_SPACING_M for p in avoid):
+                    continue
                 trees.append(
                     _new_tree(
                         f"osm_tv_{way.id}_{i}_{int(side)}",
@@ -215,11 +265,12 @@ def build_trees(graph: OsmGraph, origin: LatLon) -> list[Tree]:
     the two sources are additive, not either/or: tagged trees are trusted as
     ground truth for the exact spots OSM says a tree stands, and the
     procedural verge fill runs unconditionally to thicken every drivable way,
-    whether or not OSM tagged anything nearby.
+    whether or not OSM tagged anything nearby -- skipping only the verge spots
+    that would double up on a tagged tree already there.
     """
-    trees = [
+    tagged = [
         _new_tree(f"osm_tr_{node.id}", to_local(node.lat, node.lon, origin), f"tree:{node.id}")
         for node in _tagged_nodes(graph, "natural", "tree")
     ]
-    trees.extend(_procedural_verge_trees(graph, origin))
-    return trees
+    tagged_positions = [t.position for t in tagged]
+    return tagged + _procedural_verge_trees(graph, origin, tagged_positions)
