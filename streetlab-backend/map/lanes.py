@@ -108,6 +108,12 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
 # Junction graph and route selection                                           #
 # --------------------------------------------------------------------------- #
 
+# An OSM node id, used as the identifier for a junction in `RouteGraph`. A
+# plain alias, not a `NewType` -- nothing here needs the extra strictness, and
+# the codebase's other id-like fields (`OsmNode.id`, `OsmWay.id`) are bare
+# `int` too, so this is documentation, not a new invariant to enforce.
+Junction = int
+
 MIN_LOOP_M = 300.0
 MAX_LOOP_M = 1200.0
 TURN_RADIUS_M = 6.0
@@ -126,7 +132,7 @@ class NoDrivableRoad(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class Edge:
-    to: int
+    to: Junction
     polyline: list[tuple[float, float]]
     length_m: float
     class_rank: int
@@ -134,8 +140,8 @@ class Edge:
 
 @dataclass
 class RouteGraph:
-    adjacency: dict[int, list[Edge]] = field(default_factory=dict)
-    points: dict[int, tuple[float, float]] = field(default_factory=dict)
+    adjacency: dict[Junction, list[Edge]] = field(default_factory=dict)
+    points: dict[Junction, tuple[float, float]] = field(default_factory=dict)
 
 
 def _polyline_length(points: list[tuple[float, float]]) -> float:
@@ -168,7 +174,7 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
         resolvable = [nid for nid in way.node_ids if nid in graph.nodes]
 
         run: list[tuple[float, float]] = []
-        run_start: int | None = None
+        run_start: Junction | None = None
         for nid in resolvable:
             node = graph.nodes[nid]
             point = to_local(node.lat, node.lon, origin)
@@ -198,7 +204,7 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
     return rg
 
 
-def _nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> int:
+def _nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> Junction:
     candidates = [nid for nid in rg.adjacency if nid in rg.points]
     if not candidates:
         raise NoDrivableRoad("no drivable junctions in this extract")
@@ -209,7 +215,7 @@ def _nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> int:
 class _LoopFrame:
     """One level of `_find_loop`'s explicit DFS stack."""
 
-    node: int
+    node: Junction
     path: list[tuple[float, float]]
     length: float
     via: Edge | None  # the edge arrived on; None only for the start frame
@@ -220,7 +226,7 @@ class _LoopFrame:
 class _StemFrame:
     """One level of `_out_and_back`'s explicit DFS stack."""
 
-    node: int
+    node: Junction
     path: list[tuple[float, float]]
     length: float
     edge_idx: int = 0
@@ -237,7 +243,7 @@ def _reverses(edge: Edge, via: Edge | None) -> bool:
     return via is not None and edge.polyline == via.polyline[::-1]
 
 
-def _find_loop(rg: RouteGraph, start: int) -> list[tuple[float, float]] | None:
+def _find_loop(rg: RouteGraph, start: Junction) -> list[tuple[float, float]] | None:
     """Depth-first search for a circuit back to `start` within the length band.
 
     Iterative rather than recursive. Two reasons, not one: a dense extract's
@@ -267,6 +273,17 @@ def _find_loop(rg: RouteGraph, start: int) -> list[tuple[float, float]] | None:
         frame.edge_idx += 1
         expansions += 1
         if expansions > _MAX_EXPANSIONS:
+            # Distinct from the `return None` below the loop: reaching *that*
+            # one means the search space was genuinely exhausted with no
+            # circuit found. Reaching *this* one means the budget ran out
+            # first -- the fallback that follows is not evidence the road
+            # network has no loop, only that this one wasn't found in time.
+            log.warning(
+                "_find_loop hit its expansion budget (%d) before finding a "
+                "circuit; falling back to an out-and-back route even though "
+                "a real loop may exist beyond the search budget",
+                _MAX_EXPANSIONS,
+            )
             return None
         if _reverses(edge, frame.via):
             continue
@@ -285,7 +302,7 @@ def _find_loop(rg: RouteGraph, start: int) -> list[tuple[float, float]] | None:
     return None
 
 
-def _out_and_back(rg: RouteGraph, start: int) -> list[tuple[float, float]]:
+def _out_and_back(rg: RouteGraph, start: Junction) -> list[tuple[float, float]]:
     """The longest simple stem from `start`, driven out and back again.
 
     Also iterative, and also capped by `_MAX_EXPANSIONS` -- unlike `_find_loop`
@@ -296,6 +313,7 @@ def _out_and_back(rg: RouteGraph, start: int) -> list[tuple[float, float]]:
     so far, which is a safe, if possibly suboptimal, answer.
     """
     expansions = 0
+    budget_logged = False  # log the cap exactly once, not once per stranded edge
     best: list[tuple[float, float]] = []
     best_len = 0.0
 
@@ -317,6 +335,19 @@ def _out_and_back(rg: RouteGraph, start: int) -> list[tuple[float, float]]:
             continue
         expansions += 1
         if expansions > _MAX_EXPANSIONS:
+            if not budget_logged:
+                budget_logged = True
+                # Unlike `_find_loop`, this search has no "genuine absence"
+                # return path to confuse this with -- it always returns a
+                # stem. But a stem found under budget pressure may not be the
+                # longest one actually available, which is worth knowing when
+                # a fallback route looks shorter than expected.
+                log.warning(
+                    "_out_and_back hit its expansion budget (%d); returning "
+                    "the longest stem found so far, not necessarily the "
+                    "longest one available",
+                    _MAX_EXPANSIONS,
+                )
             continue  # let the remaining frames unwind without exploring further
 
         total = frame.length + edge.length_m

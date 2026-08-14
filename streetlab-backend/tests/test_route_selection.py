@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import time
 from pathlib import Path
@@ -70,6 +71,24 @@ def test_falls_back_to_out_and_back_when_no_loop_exists():
     # it is roughly twice the stem length rather than a true circuit.
     assert route.length_m > 0
     assert len(route.points) >= 3
+    # The final, post-offset, post-fillet output -- not just the raw
+    # pre-fillet points `_out_and_back` itself returns. This is the highest-
+    # risk geometry in the whole module: both ring "corners" at the stem's
+    # far end and back at the origin are exact 180-degree reversals (a real
+    # U-turn, not a gentle bend), and `Route.fillet()`'s `tan(turn / 2)` blows
+    # up right at that angle. It doesn't crash -- the existing
+    # `min(trim, half-leg-length)` clamp catches it -- but finiteness was
+    # previously only checked on the real fixture's *loop* path, which never
+    # exercises a cusp this sharp. Assert it here, on the path that does.
+    assert route.closed is True
+    assert all(math.isfinite(x) and math.isfinite(y) for x, y in route.points)
+    # A generous, structurally-justified ceiling rather than a tight
+    # empirical one: `_out_and_back` bounds each leg to `MAX_LOOP_M / 2`, so
+    # the raw out-and-back ring can never exceed `MAX_LOOP_M`, and fillet()
+    # only ever shortens a path (it replaces each corner with a chord-like
+    # arc, never a longer one) -- so this bound holds regardless of exactly
+    # how much length the two 180-degree cusps end up trimming away below.
+    assert route.length_m <= MAX_LOOP_M
 
 
 def test_empty_graph_raises_no_drivable_road():
@@ -143,6 +162,44 @@ def test_find_loop_rejects_an_immediate_uturn_as_a_fake_cycle():
     rg = build_route_graph(_dead_end_graph(), ORIGIN)
     start = _nearest_junction(rg, (0.0, 0.0))
     assert _find_loop(rg, start) is None
+
+
+def _couplet_graph():
+    """Two junctions connected by two *distinct* ways -- a divided road or a
+    one-way pair, common in real cities. Way 100 runs node 1 to node 2
+    directly; way 101 connects the same two nodes but via an offset node 3,
+    giving it different (non-collinear) geometry -- a stand-in for a second,
+    physically separate carriageway rather than the same road mapped twice.
+    """
+    d_lon = 0.004  # ~352 m east
+    d_lat = 0.0001  # ~11 m north, the second carriageway's offset
+    elements = [
+        {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+        {"type": "node", "id": 2, "lat": 37.7945, "lon": -122.4156 + d_lon},
+        {"type": "node", "id": 3, "lat": 37.7945 + d_lat, "lon": -122.4156 + d_lon / 2},
+        {"type": "way", "id": 100, "nodes": [1, 2], "tags": {"highway": "residential"}},
+        {"type": "way", "id": 101, "nodes": [1, 3, 2], "tags": {"highway": "residential"}},
+    ]
+    return parse_overpass({"elements": elements})
+
+
+def test_find_loop_treats_two_distinct_ways_as_a_real_loop_not_a_uturn():
+    """`_reverses` (the fix for defect (1)) compares polylines, not node ids or
+    way ids on purpose -- two junctions connected by two genuinely different
+    roads must still close a loop, even though `edge.to` is the same neighbour
+    both times. This is the case that would break if `_reverses` were instead
+    implemented as "revisiting the node I arrived from," which is the more
+    obvious-looking but wrong fix: `_couplet_graph` has no other topology, so
+    a loop is found here if and only if the two ways' edges are told apart.
+    """
+    rg = build_route_graph(_couplet_graph(), ORIGIN)
+    start = _nearest_junction(rg, (0.0, 0.0))
+    loop = _find_loop(rg, start)
+    assert loop is not None
+    # Out one way (the direct 352 m carriageway) and back the other (the
+    # offset ~353 m carriageway via node 3) -- not a there-and-back over one
+    # physical road.
+    assert MIN_LOOP_M <= sum(math.dist(a, b) for a, b in zip(loop, loop[1:])) <= MAX_LOOP_M
 
 
 def _square_graph_ccw():
@@ -274,6 +331,47 @@ def test_find_loop_does_not_recurse_on_a_dense_ring():
         recursive_walk(start, 0.0, {start}, None)
 
 
+def _mesh_grid(n: int, spacing: float, diagonals: bool = False) -> tuple[RouteGraph, int]:
+    """An `n` x `n` mesh grid, `spacing` metres between orthogonal neighbours.
+
+    4-connected by default (branching factor ~3-4, matching a dense street
+    grid); `diagonals=True` adds the two diagonal neighbours too (~7-8), which
+    is what it takes to make `_find_loop` exhaust its budget rather than
+    close a short loop quickly -- the 4-connected grid closes one fast enough
+    that it doesn't exercise that path. Returns `(graph, start)` with `start`
+    an interior node of maximum degree.
+    """
+    rg = RouteGraph()
+
+    def nid(i: int, j: int) -> int:
+        return i * n + j
+
+    for i in range(n):
+        for j in range(n):
+            rg.points[nid(i, j)] = (i * spacing, j * spacing)
+
+    deltas = [(1, 0), (0, 1)]
+    if diagonals:
+        deltas += [(1, 1), (1, -1)]
+
+    for i in range(n):
+        for j in range(n):
+            a = nid(i, j)
+            for di, dj in deltas:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < n and 0 <= nj < n:
+                    b = nid(ni, nj)
+                    length = math.dist(rg.points[a], rg.points[b])
+                    fwd = Edge(to=b, polyline=[rg.points[a], rg.points[b]], length_m=length, class_rank=1)
+                    back = Edge(to=a, polyline=[rg.points[b], rg.points[a]], length_m=length, class_rank=1)
+                    rg.adjacency.setdefault(a, []).append(fwd)
+                    rg.adjacency.setdefault(b, []).append(back)
+    for edges in rg.adjacency.values():
+        edges.sort(key=lambda e: (-e.class_rank, e.to))
+
+    return rg, nid(n // 2, n // 2)
+
+
 def test_out_and_back_completes_quickly_on_a_densely_branching_grid():
     """Regression test for Risk 1 (unbounded expansion in `_out_and_back`).
 
@@ -286,34 +384,7 @@ def test_out_and_back_completes_quickly_on_a_densely_branching_grid():
     in any time reasonable for a scene build. `_MAX_EXPANSIONS` is what keeps
     this test itself fast rather than a demonstration of the hang.
     """
-    rg = RouteGraph()
-    n, spacing = 15, 15.0
-
-    def nid(i: int, j: int) -> int:
-        return i * n + j
-
-    for i in range(n):
-        for j in range(n):
-            rg.points[nid(i, j)] = (i * spacing, j * spacing)
-    for i in range(n):
-        for j in range(n):
-            a = nid(i, j)
-            for di, dj in ((1, 0), (0, 1)):
-                ni, nj = i + di, j + dj
-                if ni < n and nj < n:
-                    b = nid(ni, nj)
-                    fwd = Edge(
-                        to=b, polyline=[rg.points[a], rg.points[b]], length_m=spacing, class_rank=1
-                    )
-                    back = Edge(
-                        to=a, polyline=[rg.points[b], rg.points[a]], length_m=spacing, class_rank=1
-                    )
-                    rg.adjacency.setdefault(a, []).append(fwd)
-                    rg.adjacency.setdefault(b, []).append(back)
-    for edges in rg.adjacency.values():
-        edges.sort(key=lambda e: (-e.class_rank, e.to))
-
-    start = nid(7, 7)  # an interior node, degree 4
+    rg, start = _mesh_grid(n=15, spacing=15.0)
     t0 = time.perf_counter()
     points = _out_and_back(rg, start)
     elapsed = time.perf_counter() - t0
@@ -323,3 +394,51 @@ def test_out_and_back_completes_quickly_on_a_densely_branching_grid():
     # million expansions in under a second; this should be two-plus orders
     # of magnitude faster.
     assert elapsed < 2.0
+
+
+def test_out_and_back_warns_when_the_search_budget_is_exhausted(caplog):
+    """`_out_and_back` never fails outright -- it always returns *some* stem --
+    so a silently-truncated search is easy to miss downstream: the caller sees
+    a normal-looking route, not an error. The same dense grid as the timing
+    test above genuinely exhausts `_MAX_EXPANSIONS` (confirmed by the
+    assertion below, not assumed), so this checks the operator-facing signal
+    that a scene builder debugging a suspiciously short fallback route would
+    actually need: a single WARNING naming the real cause and the budget
+    value, not a silent truncation or a flood of one warning per abandoned
+    branch.
+    """
+    rg, start = _mesh_grid(n=15, spacing=15.0)
+    with caplog.at_level(logging.WARNING, logger="streetlab.map"):
+        _out_and_back(rg, start)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "_out_and_back" in warnings[0].message
+    assert "20000" in warnings[0].message
+
+
+def test_find_loop_warns_when_the_search_budget_is_exhausted(caplog):
+    """Companion to the `_out_and_back` warning test above, for the case the
+    controller flagged as most misleading: `_find_loop` returning `None`
+    means two very different things -- "this graph has no such loop" and "the
+    search ran out of budget before it could tell" -- and `select_ego_route`
+    reacts to both identically (falls back to an out-and-back route). Without
+    this warning, a denser future extract would make the pipeline silently
+    ship a worse route while the logs claimed the road network simply had no
+    circuit, when the search budget was the real limiting factor.
+
+    An 8-connected mesh (diagonals included, so branching factor ~7-8 instead
+    of the 4-connected grid's ~3-4) is needed to force this specific search to
+    exhaust its budget without closing a loop first -- the 4-connected grid
+    above closes a loop quickly instead, which is why `_out_and_back`'s test
+    needs a different graph shape to reliably exhaust its own budget.
+    """
+    rg, start = _mesh_grid(n=15, spacing=15.0, diagonals=True)
+    with caplog.at_level(logging.WARNING, logger="streetlab.map"):
+        loop = _find_loop(rg, start)
+
+    assert loop is None
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "_find_loop" in warnings[0].message
+    assert "20000" in warnings[0].message
