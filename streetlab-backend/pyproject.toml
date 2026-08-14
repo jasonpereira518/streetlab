@@ -9,6 +9,8 @@ dependencies = [
     "uvicorn>=0.32",
     "websockets>=13",
     "numpy>=2.0",
+    "httpx>=0.27",
+    "shapely>=2.0",
 ]
 
 [project.scripts]
