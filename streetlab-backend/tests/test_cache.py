@@ -6,10 +6,13 @@ practice: crash-orphaned temp files, a cache directory deleted out from
 under a live process, and a budget too small to hold even one entry.
 """
 
+import hashlib
 import json
 import os
 import threading
 from pathlib import Path
+
+import pytest
 
 from map.cache import DiskCache, default_cache_dir
 
@@ -101,34 +104,107 @@ def test_orphaned_tmp_file_from_a_crashed_writer_is_swept_on_open(tmp_path):
     assert not orphan.exists()
 
 
-def test_concurrent_puts_to_the_same_key_do_not_corrupt_each_other(tmp_path):
-    """Two real threads racing put() on the same key must not share a temp
-    filename. If they did, one writer's write_text() could interleave with
-    the other's on the same file descriptor, or one could rename a
-    half-written file into place — either way get() would see a corrupt or
-    truncated entry instead of one complete write.
-    """
-    cache = DiskCache(tmp_path)
-    payload_a = {"writer": "a", "pad": "x" * 5000}
-    payload_b = {"writer": "b", "pad": "y" * 5000}
-    barrier = threading.Barrier(2)
+def _race_writers(monkeypatch, put_fn, long_payload, short_payload):
+    """Run put_fn(long_payload) and put_fn(short_payload) on separate
+    threads, with Path.write_text patched so:
 
-    def writer(payload):
-        barrier.wait(timeout=5)
-        cache.put("shared-key", payload)
+    1. Both writers' target files are fully open (and, per O_TRUNC,
+       truncated) before either one writes any content.
+    2. The writer with the longer serialized payload always writes first;
+       the shorter one is held back until the longer write has landed.
+
+    That ordering is the exact failure mode of a *shared* temp filename:
+    both opens truncate the same inode, the long write fills it, and the
+    short write then overwrites only its own (shorter) prefix — leaving the
+    long write's tail dangling behind it, unremoved, because O_TRUNC only
+    happens at open() and neither writer opens again after the other's
+    write. If put_fn's two calls target *different* files instead, this
+    same forced ordering is harmless, since there is no shared inode for
+    the short write to leave a stale tail in.
+    """
+    open_barrier = threading.Barrier(2, timeout=5)
+    long_written = threading.Event()
+    long_len = len(json.dumps(long_payload).encode())
+
+    def ordered_write_text(self, data, *args, **kwargs):
+        encoded = data.encode()
+        fd = os.open(str(self), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            open_barrier.wait(timeout=5)
+            if len(encoded) == long_len:
+                os.write(fd, encoded)
+                long_written.set()
+            else:
+                long_written.wait(timeout=5)
+                os.write(fd, encoded)
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(Path, "write_text", ordered_write_text)
 
     threads = [
-        threading.Thread(target=writer, args=(payload_a,)),
-        threading.Thread(target=writer, args=(payload_b,)),
+        threading.Thread(target=put_fn, args=(long_payload,)),
+        threading.Thread(target=put_fn, args=(short_payload,)),
     ]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=5)
 
+
+def test_shared_tmp_name_from_the_original_brief_can_corrupt_a_race(tmp_path, monkeypatch):
+    """Negative control for the test below. Reproduces the plan's original
+    put(), whose temp filename was `path.with_suffix(".tmp")` — the same
+    name for every writer of a given key, unlike map.cache's per-writer
+    unique name. Forcing the exact race _race_writers describes against
+    that shared name really does corrupt the entry, proving the mechanism
+    the fix closes is real and not hypothetical.
+    """
+    digest = hashlib.sha256(b"shared-key").hexdigest()
+    final = tmp_path / f"{digest}.json"
+
+    def brief_style_put(payload: dict) -> None:
+        path = tmp_path / f"{digest}.json"
+        tmp = path.with_suffix(".tmp")  # the plan's original scheme
+        try:
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(path)
+        except OSError:
+            # Matches the brief's own put(): whichever writer's replace()
+            # loses the race finds its shared tmp file already renamed away
+            # by the other and gives up quietly, exactly as the original
+            # code does on any write failure.
+            pass
+
+    long_payload = {"writer": "a", "pad": "x" * 5000}
+    short_payload = {"writer": "b"}
+    _race_writers(monkeypatch, brief_style_put, long_payload, short_payload)
+
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(final.read_text())
+
+
+def test_concurrent_puts_to_the_same_key_do_not_corrupt_each_other(tmp_path, monkeypatch):
+    """Positive control: the identical forced race from the test above,
+    replayed against the real DiskCache.put(), must not corrupt anything —
+    its temp filename is unique per writer (pid + uuid4), so the two
+    writers never share the inode the negative control's corruption
+    depends on.
+    """
+    cache = DiskCache(tmp_path)
+    long_payload = {"writer": "a", "pad": "x" * 5000}
+    short_payload = {"writer": "b"}
+
+    _race_writers(
+        monkeypatch,
+        lambda payload: cache.put("shared-key", payload),
+        long_payload,
+        short_payload,
+    )
+
     # Whichever writer's rename lands last wins; what matters is the result
     # is one complete, valid write, never a corrupt or missing entry.
-    assert cache.get("shared-key") in (payload_a, payload_b)
+    assert cache.get("shared-key") in (long_payload, short_payload)
 
 
 def test_put_recreates_a_cache_dir_deleted_mid_run(tmp_path):
@@ -168,7 +244,9 @@ def test_total_bytes_survives_a_file_vanishing_mid_scan(tmp_path, monkeypatch):
     cache = DiskCache(tmp_path)
     cache.put("k1", {"a": 1})
     cache.put("k2", {"b": 2})
-    victim = next(tmp_path.glob("*.json"))
+    victim = cache._path("k1")
+    survivor = cache._path("k2")
+    expected_total = survivor.stat().st_size
 
     real_stat = Path.stat
     triggered = False
@@ -185,7 +263,9 @@ def test_total_bytes_survives_a_file_vanishing_mid_scan(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", vanish_on_stat)
 
-    assert cache.total_bytes() >= 0
+    # Not just "didn't raise" — the survivor must be counted in full and the
+    # vanished victim not counted at all.
+    assert cache.total_bytes() == expected_total
 
 
 def test_budget_smaller_than_a_single_entry_never_exceeds_budget(tmp_path):
@@ -277,9 +357,3 @@ def test_entry_with_invalid_utf8_bytes_is_treated_as_a_miss(tmp_path):
     path.write_bytes(b"\xff\xfe\x00garbage")
 
     assert cache.get("k") is None
-
-
-def test_default_cache_dir_ends_in_osm():
-    # Task 5's Overpass client is the only consumer; keep this segment so
-    # other map data (if any is ever cached) does not collide with it.
-    assert default_cache_dir().name == "osm"

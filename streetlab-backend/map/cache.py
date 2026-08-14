@@ -89,9 +89,12 @@ class DiskCache:
         # place.
         tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid4().hex}.tmp")
         try:
-            # A cache directory deleted out from under a live process (the OS
-            # clearing it, the user emptying it by hand) should not silently
-            # disable caching for the rest of the process's life.
+            # Deliberate extra resilience, not a fix for a promise this
+            # module makes elsewhere: nothing requires the cache to survive
+            # its own directory being deleted out from under a live process
+            # (the OS clearing it, the user emptying it by hand). Recreating
+            # it here is cheap and avoids put() going silently dark for the
+            # rest of the process's life, so it is worth doing anyway.
             self.root.mkdir(parents=True, exist_ok=True)
             tmp.write_text(json.dumps(payload))
             tmp.replace(path)
