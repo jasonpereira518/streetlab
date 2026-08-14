@@ -10,6 +10,8 @@ dist/
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
+# The sidecar binary is a build output (scripts/build_app.sh), not source.
+src-tauri/bin/
 
 # Test artifacts
 test-results/
