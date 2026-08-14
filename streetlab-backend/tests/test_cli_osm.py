@@ -28,6 +28,7 @@ from map.geocode import GeocodeError, Place, StubGeocoder
 from map.lanes import NoDrivableRoad
 from map.osm_source import BUNDLED, LocationSpec, OsmSceneSource
 from map.overpass import OverpassClient, OverpassError
+from schema import PROTOCOL_VERSION
 from server import cli
 from server.cli import build_parser, scene_source_for
 from sim.loop import Simulation
@@ -203,7 +204,7 @@ def test_simulation_drives_a_real_osm_scene(tmp_path):
     assert sim.ego.speed_mps > 0
 
     frame = sim.state_update()
-    assert frame.protocol == 1
+    assert frame.protocol == PROTOCOL_VERSION
     assert frame.ego.speed_mps > 0
     # The NaN guard must never have had to fire.
     assert all(abs(v) < 1e6 for v in (frame.ego.pose.x, frame.ego.pose.y))

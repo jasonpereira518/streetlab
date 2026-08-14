@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -161,6 +161,8 @@ export const SceneDescriptionSchema = z.object({
   name: z.string(),
   /** Human-readable neighbourhood, e.g. "Nob Hill". */
   location: z.string(),
+  // ODbL requires crediting OpenStreetMap wherever its data is shown.
+  attribution: z.string(),
   origin: z.object({ lat: z.number(), lon: z.number() }),
   bounds: z.object({
     min_x: z.number(),
@@ -395,6 +397,11 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('step'), frames: z.number().int().positive() }),
   cmd({ cmd: z.literal('reset') }),
   cmd({ cmd: z.literal('load_scenario'), scenario_id: z.string() }),
+  cmd({
+    cmd: z.literal('load_location'),
+    query: z.string().min(1),
+    radius_m: z.number().positive().optional(),
+  }),
   cmd({
     cmd: z.literal('set_param'),
     key: z.string(),

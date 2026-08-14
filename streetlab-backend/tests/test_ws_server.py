@@ -16,7 +16,7 @@ import uvicorn
 from websockets.asyncio.client import connect
 
 from map.scene_build import SyntheticGrid
-from schema import parse_server_message
+from schema import PROTOCOL_VERSION, parse_server_message
 from server.ws_server import create_app
 from sim.loop import SimLoop, Simulation
 
@@ -149,7 +149,7 @@ async def test_health_reports_perf_and_process_info(server):
             await recv_typed(ws, "state_update")
         payload = await _get_health(server)
         assert payload["ok"] is True
-        assert payload["protocol"] == 1
+        assert payload["protocol"] == PROTOCOL_VERSION
         assert payload["sim_hz"] == 120
         assert payload["tick_hz"] == 120
         assert payload["sim_step_p50_ms"] >= 0

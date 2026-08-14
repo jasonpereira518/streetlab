@@ -61,7 +61,10 @@ def test_build_sets_the_real_origin_and_attribution(source):
     assert scene.description.origin.lat == pytest.approx(37.7945, abs=0.01)
     assert scene.description.origin.lon == pytest.approx(-122.4156, abs=0.01)
     # ODbL: the credit must actually reach the wire, not just exist as a constant.
-    assert "OpenStreetMap" in scene.description.location
+    # It has its own field — `location` carries only the place name.
+    assert "OpenStreetMap" in scene.description.attribution
+    assert scene.description.location == NOB_HILL.display_name
+    assert "OpenStreetMap" not in scene.description.location
 
 
 def test_built_scene_has_a_drivable_route_and_speed_limit(source):

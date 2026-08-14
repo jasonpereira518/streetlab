@@ -72,9 +72,69 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 1
+    assert dumped["protocol"] == PROTOCOL_VERSION == 2
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
+
+
+def test_protocol_is_two():
+    from schema import PROTOCOL_VERSION
+
+    assert PROTOCOL_VERSION == 2
+
+
+def test_load_location_parses_with_and_without_radius():
+    from schema import parse_command
+
+    a = parse_command({"cmd": "load_location", "id": "c1", "query": "Nob Hill"})
+    assert a.ok and a.value.query == "Nob Hill" and a.value.radius_m is None
+    b = parse_command(
+        {"cmd": "load_location", "id": "c2", "query": "Nob Hill", "radius_m": 400.0}
+    )
+    assert b.ok and b.value.radius_m == 400.0
+
+
+def test_load_location_rejects_an_empty_query():
+    from schema import parse_command
+
+    assert not parse_command({"cmd": "load_location", "id": "c", "query": ""}).ok
+
+
+def test_load_location_rejects_a_non_positive_radius():
+    from schema import parse_command
+
+    assert not parse_command(
+        {"cmd": "load_location", "id": "c", "query": "x", "radius_m": 0}
+    ).ok
+
+
+def test_load_location_rejects_a_negative_radius():
+    from schema import parse_command
+
+    assert not parse_command(
+        {"cmd": "load_location", "id": "c", "query": "x", "radius_m": -5}
+    ).ok
+
+
+def test_load_location_accepts_an_explicit_null_radius_as_absent():
+    """Python is the receiving end of Command, so it is deliberately more
+    lenient than the zod side that guards what goes on the wire: `Pos | None`
+    accepts an explicit `null`, treating it the same as a missing key. See
+    schema.test.ts's mirror of this, which pins that zod's `.optional()`
+    rejects explicit `null` — that asymmetry is intentional, not a bug."""
+    from schema import parse_command
+
+    parsed = parse_command({"cmd": "load_location", "id": "c", "query": "x", "radius_m": None})
+    assert parsed.ok and parsed.value.radius_m is None
+
+
+def test_scene_description_requires_attribution():
+    raw = load_fixture("scene_description")
+    assert "attribution" in raw
+    missing = dict(raw)
+    del missing["attribution"]
+    with pytest.raises(ValueError):
+        SceneDescription.model_validate(missing)
 
 
 COMMANDS = [
@@ -82,6 +142,7 @@ COMMANDS = [
     {"id": "c2", "cmd": "step", "frames": 4},
     {"id": "c3", "cmd": "reset"},
     {"id": "c4", "cmd": "load_scenario", "scenario_id": "nob-hill-loop"},
+    {"id": "c4b", "cmd": "load_location", "query": "Nob Hill", "radius_m": 400.0},
     {"id": "c5", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 35},
     {"id": "c6", "cmd": "set_param", "key": "hazard_color", "value": "#FF7A1A"},
     {"id": "c7", "cmd": "set_param", "key": "assist_enabled", "value": False},

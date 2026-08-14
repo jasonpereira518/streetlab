@@ -857,6 +857,10 @@ export class MockSim {
         this.nextCutinAt = this.t;
         this.cutinPhase = 'idle';
         return { ok: true, message: `hazard ${command.kind} queued` };
+      case 'load_location':
+        // The mock (in-process, offline) simulator has no geocoder or real
+        // map data behind it; only a real backend can service this command.
+        return { ok: false, message: 'load_location requires a real backend' };
     }
   }
 }

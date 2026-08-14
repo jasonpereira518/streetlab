@@ -210,6 +210,7 @@ class SyntheticGrid:
             scenario_id=scenario.id,
             name=scenario.name,
             location="Synthetic Grid",
+            attribution="Synthetic scene — no map data",
             # Nob Hill, San Francisco — a plausible anchor so the frame is
             # geographically meaningful before Cycle 2 supplies a real one.
             origin=Origin(lat=37.7930, lon=-122.4161),

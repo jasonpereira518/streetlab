@@ -179,6 +179,16 @@ describe('mock commands', () => {
     });
     expect(res.ok).toBe(true);
   });
+
+  it('does not crash on load_location — the mock has no geocoder', () => {
+    // The mock is the fully in-process, offline transport, so it never
+    // implements load_location itself; it must still return a well-formed
+    // ack rather than crashing the switch that dispatches Command variants.
+    const sim = new MockSim();
+    const res = sim.apply({ id: '7', cmd: 'load_location', query: 'Nob Hill' });
+    expect(res).toBeDefined();
+    expect(res.ok).toBe(false);
+  });
 });
 
 describe('mock transport', () => {

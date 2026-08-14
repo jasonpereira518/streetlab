@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -191,6 +191,8 @@ class SceneDescription(Wire):
     name: str
     # Human-readable neighbourhood, e.g. "Nob Hill".
     location: str
+    # ODbL requires crediting OpenStreetMap wherever its data is shown.
+    attribution: str
     origin: Origin
     bounds: Bounds
     roads: list[Road]
@@ -431,6 +433,14 @@ class LoadScenario(_Cmd):
     scenario_id: str
 
 
+class LoadLocation(_Cmd):
+    cmd: Literal["load_location"] = "load_location"
+    query: Annotated[str, Field(min_length=1)]
+    # Absent means "use the location's default". zod `.optional()` allows the
+    # key to be missing, unlike `.nullable()` which would require it present.
+    radius_m: Pos | None = None
+
+
 class SetParam(_Cmd):
     cmd: Literal["set_param"] = "set_param"
     key: str
@@ -459,6 +469,7 @@ Command = Annotated[
         Step,
         Reset,
         LoadScenario,
+        LoadLocation,
         SetParam,
         ToggleLayer,
         SetCamera,

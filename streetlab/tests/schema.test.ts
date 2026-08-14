@@ -11,6 +11,40 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
+it('is protocol 2', () => {
+  expect(PROTOCOL_VERSION).toBe(2);
+});
+
+it('accepts load_location with and without a radius', () => {
+  expect(parseCommand({ cmd: 'load_location', id: 'c1', query: 'Nob Hill' }).ok).toBe(true);
+  expect(
+    parseCommand({ cmd: 'load_location', id: 'c2', query: 'Nob Hill', radius_m: 400 }).ok,
+  ).toBe(true);
+});
+
+it('rejects an empty load_location query', () => {
+  expect(parseCommand({ cmd: 'load_location', id: 'c', query: '' }).ok).toBe(false);
+});
+
+it('rejects a non-positive load_location radius', () => {
+  expect(
+    parseCommand({ cmd: 'load_location', id: 'c', query: 'x', radius_m: 0 }).ok,
+  ).toBe(false);
+  expect(
+    parseCommand({ cmd: 'load_location', id: 'c', query: 'x', radius_m: -5 }).ok,
+  ).toBe(false);
+});
+
+it('rejects an explicit null radius_m (optional means absent, not null)', () => {
+  // The Cycle 1 design doc's warning, pinned as a test: `.optional()` allows
+  // the key to be missing but not present-and-null — that would need
+  // `.nullable()`. Python's receiving side is deliberately more lenient (see
+  // schema.py's LoadLocation), but this schema — the one that guards what we
+  // put on the wire — must not emit or accept `null` here.
+  const res = parseCommand({ cmd: 'load_location', id: 'c', query: 'x', radius_m: null });
+  expect(res.ok).toBe(false);
+});
+
 /** A minimal but complete StateUpdate, written by hand rather than generated. */
 const sample: StateUpdate = {
   type: 'state_update',
@@ -170,6 +204,14 @@ describe('SceneDescription', () => {
     bad.buildings[0].footprint = [[0, 0], [1, 1]];
     expect(SceneDescriptionSchema.safeParse(bad).success).toBe(false);
   });
+
+  it('requires attribution', () => {
+    const scene = buildScene('nob-hill-loop');
+    expect(typeof scene.attribution).toBe('string');
+    const bad = structuredClone(scene) as Record<string, unknown>;
+    delete bad.attribution;
+    expect(SceneDescriptionSchema.safeParse(bad).success).toBe(false);
+  });
 });
 
 describe('Command', () => {
@@ -179,6 +221,7 @@ describe('Command', () => {
       { id: 'c2', cmd: 'step', frames: 3 },
       { id: 'c3', cmd: 'reset' },
       { id: 'c4', cmd: 'load_scenario', scenario_id: 'hyde-descent' },
+      { id: 'c4b', cmd: 'load_location', query: 'Nob Hill', radius_m: 400 },
       { id: 'c5', cmd: 'set_param', key: 'cutin_period_s', value: 12 },
       { id: 'c6', cmd: 'toggle_layer', layer: 'detections', visible: false },
       { id: 'c7', cmd: 'set_camera', view: 'overhead' },

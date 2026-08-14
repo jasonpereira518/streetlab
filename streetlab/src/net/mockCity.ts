@@ -528,6 +528,7 @@ export function buildScene(scenarioId: string): SceneDescription {
     scenario_id: scenario.id,
     name: scenario.name,
     location: scenario.location,
+    attribution: 'Synthetic scene — no map data',
     origin: { lat: 37.7919, lon: -122.4139 },
     bounds: {
       min_x: -MAP_EXTENT,
