@@ -33,6 +33,10 @@ and renders a live scene with zero configuration. Quitting the app (or
 force-quitting it) leaves no orphaned process behind. For development, the
 frontend and backend also run as two plain processes talking over a real,
 schema-validated WebSocket — see [`DEMO.md`](DEMO.md) for both paths.
+`streetlab serve --source osm` renders real OpenStreetMap geometry — actual
+street layouts and building footprints, not the synthetic grid — into the
+same unmodified frontend, with `© OpenStreetMap contributors` attribution
+carried through to the scene.
 
 ## Architecture
 
@@ -102,7 +106,7 @@ cycle drops in behind an existing seam (`SceneSource`, `PerceptionSource`,
 | Cycle | Adds | Status |
 |---|---|---|
 | 1 | Synthetic grid, scripted traffic, ground-truth perception, centerline planner, real-time WS server, native sidecar integration | **Built** |
-| 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | Not started |
+| 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | **Phase 1 built** — OSM ingest behind the SceneSource seam; in-app address entry lands in Phase 2 |
 | 3 | Reactive traffic (IDM/MOBIL), full hazard scenario set (cut-in, jaywalker, emergency vehicle, obstacle) | Not started |
 | 4 | ML perception (RT-DETRv2 on MPS) replacing ground truth | Not started |
 | 5 | Sim-generated training dataset, fine-tuning, evaluation | Not started |

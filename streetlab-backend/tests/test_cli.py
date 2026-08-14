@@ -79,11 +79,10 @@ def test_run_never_leaves_the_lane(capsys):
 
 @pytest.mark.parametrize(
     "command,cycle",
-    [("build", "2"), ("export-dataset", "5"), ("train", "5"), ("eval", "5")],
+    [("export-dataset", "5"), ("train", "5"), ("eval", "5")],
 )
 def test_unimplemented_commands_explain_themselves(capsys, command, cycle):
-    argv = [command, "somewhere"] if command == "build" else [command]
-    code, out = run(capsys, *argv)
+    code, out = run(capsys, command)
     assert code != 0
     assert "not yet implemented" in out.lower()
     assert f"cycle {cycle}" in out.lower()
