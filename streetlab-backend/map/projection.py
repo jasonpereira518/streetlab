@@ -36,3 +36,25 @@ def to_latlon(x: float, y: float, origin: LatLon) -> tuple[float, float]:
     lat = origin.lat + math.degrees(y / EARTH_R)
     lon = origin.lon + math.degrees(x / (EARTH_R * math.cos(math.radians(origin.lat))))
     return (lat, lon)
+
+
+def signed_area_x2(points: list[tuple[float, float]]) -> float:
+    """Twice the shoelace-formula signed area of a (possibly open) ring.
+
+    Positive means counter-clockwise, negative clockwise -- the standard
+    mathematical convention, and the one this codebase uses everywhere a ring
+    or loop needs an orientation. `points` need not repeat its first vertex as
+    its last; the closing edge is implicit.
+
+    Two callers share this, wanting opposite signs for unrelated reasons:
+    `map/lanes.py` normalises a discovered route loop to *clockwise*
+    (negative), matching `SyntheticGrid`'s convention so a negative lane
+    offset lands in the right-hand lane; `map/features.py` normalises a
+    building footprint to *counter-clockwise* (positive), because
+    `schema.Building.footprint` documents a CCW ring. Same helper, opposite
+    target sign, so read the caller's own comment for which one applies.
+    """
+    total = 0.0
+    for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1]):
+        total += x1 * y2 - x2 * y1
+    return total

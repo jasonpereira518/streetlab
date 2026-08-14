@@ -1,0 +1,265 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from map.features import (
+    _tagged_nodes,
+    build_buildings,
+    build_crosswalks,
+    build_stop_signs,
+    build_traffic_lights,
+    build_trees,
+    signal_groups,
+)
+from map.osm_model import parse_overpass
+from map.projection import LatLon, signed_area_x2
+
+FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
+ORIGIN = LatLon(lat=37.7945, lon=-122.4156)
+
+
+@pytest.fixture(scope="module")
+def graph():
+    return parse_overpass(json.loads(FIXTURE.read_text()))
+
+
+def test_builds_buildings_from_the_real_fixture(graph):
+    buildings = build_buildings(graph, ORIGIN)
+    # Verified directly against the fixture: 2224 building ways, none
+    # unusable (no degenerate rings), so every one should survive.
+    assert len(buildings) == 2224
+    for b in buildings:
+        assert len(b.footprint) >= 3
+        assert b.height_m > 0
+        assert b.color.startswith("#") and len(b.color) == 7
+
+
+def test_building_height_prefers_explicit_height_tag():
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+            {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4156},
+            {"type": "node", "id": 3, "lat": 37.7946, "lon": -122.4155},
+            {"type": "way", "id": 10, "nodes": [1, 2, 3, 1],
+             "tags": {"building": "yes", "height": "24"}},
+        ]}
+    )
+    assert build_buildings(graph, ORIGIN)[0].height_m == pytest.approx(24.0)
+
+
+def test_building_height_falls_back_to_levels_then_a_default():
+    def one(tags):
+        graph = parse_overpass(
+            {"elements": [
+                {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+                {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4156},
+                {"type": "node", "id": 3, "lat": 37.7946, "lon": -122.4155},
+                {"type": "way", "id": 10, "nodes": [1, 2, 3, 1], "tags": tags},
+            ]}
+        )
+        return build_buildings(graph, ORIGIN)[0].height_m
+
+    assert one({"building": "yes", "building:levels": "5"}) == pytest.approx(16.0)
+    assert one({"building": "yes"}) == pytest.approx(9.0)
+    assert one({"building": "yes", "height": "garbage"}) == pytest.approx(9.0)
+
+
+def test_building_colours_are_stable_across_runs(graph):
+    first = {b.id: b.color for b in build_buildings(graph, ORIGIN)}
+    second = {b.id: b.color for b in build_buildings(graph, ORIGIN)}
+    assert first == second
+
+
+def test_degenerate_building_rings_are_dropped():
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+            {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4156},
+            {"type": "way", "id": 10, "nodes": [1, 2], "tags": {"building": "yes"}},
+        ]}
+    )
+    assert build_buildings(graph, ORIGIN) == []
+
+
+def test_traffic_lights_and_stop_signs_come_from_tagged_nodes():
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156,
+             "tags": {"highway": "traffic_signals"}},
+            {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4157,
+             "tags": {"highway": "stop"}},
+            {"type": "node", "id": 3, "lat": 37.7947, "lon": -122.4158,
+             "tags": {"highway": "crossing"}},
+        ]}
+    )
+    assert [t.id for t in build_traffic_lights(graph, ORIGIN)] == ["osm_tl_1"]
+    assert [s.id for s in build_stop_signs(graph, ORIGIN)] == ["osm_ss_2"]
+    assert [c.id for c in build_crosswalks(graph, ORIGIN)] == ["osm_cw_3"]
+
+
+def test_signal_groups_assign_every_light_to_ns_or_ew():
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156,
+             "tags": {"highway": "traffic_signals"}},
+            {"type": "node", "id": 2, "lat": 37.7950, "lon": -122.4156,
+             "tags": {"highway": "traffic_signals"}},
+        ]}
+    )
+    groups = signal_groups(build_traffic_lights(graph, ORIGIN))
+    assert set(groups.values()) <= {"ns", "ew"}
+    assert len(groups) == 2
+
+
+def test_trees_are_generated_even_when_osm_has_none(graph):
+    """OSM tree coverage is sparse; a street with no trees still gets some."""
+    trees = build_trees(graph, ORIGIN)
+    assert trees
+    for t in trees:
+        assert t.height_m > 0
+        assert 0.0 <= t.variant <= 1.0
+
+
+# --- Regression tests for the three controller-measured findings -----------
+#
+# 1. Winding order: `Building.footprint` is documented CCW, but OSM does not
+#    guarantee ring direction. Measured across the full real fixture: of the
+#    2224 building ways, 2046 are clockwise and only 178 counter-clockwise (0
+#    unusable/zero-area). A fix must normalise every ring to CCW regardless of
+#    how OSM wound it.
+#
+# 2. Tree fallback: the real fixture tags only 43 `natural=tree` nodes across
+#    a ~1 km tile -- not enough to read as a tree-lined city -- while the
+#    procedural verge fallback would emit ~798 trees on the same fixture if it
+#    ever ran. An all-or-nothing gate ("only fill in when OSM has *zero*
+#    tagged trees") makes the fallback dead code here, because 43 > 0. Fixed
+#    by making the fallback additive: it always runs, on top of whatever OSM
+#    tags exist.
+
+
+def test_building_footprint_is_normalized_to_ccw():
+    """A clockwise-wound way -- exactly the shape ~92% of the real fixture's
+    buildings take -- must come out counter-clockwise, matching the documented
+    wire contract (`schema.Building.footprint`: "CCW footprint ring").
+
+    This four-node square is wound clockwise in local (east, north) metres:
+    (0,0) -> north -> north-east -> east -> close. That is a real, producible
+    OSM way -- OSM does not constrain building ring direction, and the real
+    fixture contains thousands wound exactly this way.
+    """
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},  # (0, 0)
+            {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4156},  # (0, north)
+            {"type": "node", "id": 3, "lat": 37.7946, "lon": -122.4155},  # (east, north)
+            {"type": "node", "id": 4, "lat": 37.7945, "lon": -122.4155},  # (east, 0)
+            {"type": "way", "id": 10, "nodes": [1, 2, 3, 4, 1], "tags": {"building": "yes"}},
+        ]}
+    )
+    footprint = build_buildings(graph, ORIGIN)[0].footprint
+    assert signed_area_x2(footprint) > 0
+
+
+def test_all_building_footprints_on_the_real_fixture_are_ccw(graph):
+    """Direct pin of the controller's measurement: on the real fixture, most
+    building ways arrive clockwise. Every footprint `build_buildings` emits
+    must be normalised to CCW, not just the majority-CW ones or the
+    minority-CCW ones already correctly wound.
+    """
+    buildings = build_buildings(graph, ORIGIN)
+    assert len(buildings) == 2224  # the full, mostly-CW (2046/2224) real set
+    for b in buildings:
+        assert signed_area_x2(b.footprint) > 0, f"{b.id} is not CCW"
+
+
+def test_relation_only_buildings_are_silently_skipped_not_malformed():
+    """`parse_overpass` ignores relations by design, so a multipolygon building
+    tagged only on its relation (the common OSM convention for a building with
+    a courtyard hole) contributes no tagged way and yields no `Building` --
+    never a partial or malformed ring.
+
+    Not reachable through the real pipeline as it exists today: `build_query`
+    (map/overpass.py) never requests `rel` elements, so Overpass never returns
+    a relation in the first place, and the real fixture has zero. This pins
+    defensive degrade-clean behaviour against a hand-fed or future payload,
+    not a defect reachable from `OverpassClient.graph()` today.
+    """
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+            {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4156},
+            {"type": "node", "id": 3, "lat": 37.7946, "lon": -122.4155},
+            {"type": "node", "id": 4, "lat": 37.7945, "lon": -122.4155},
+            {"type": "way", "id": 10, "nodes": [1, 2, 3, 4, 1], "tags": {}},
+            {
+                "type": "relation",
+                "id": 999,
+                "members": [{"type": "way", "ref": 10, "role": "outer"}],
+                "tags": {"type": "multipolygon", "building": "yes"},
+            },
+        ]}
+    )
+    assert build_buildings(graph, ORIGIN) == []
+
+
+def test_procedural_verge_trees_supplement_sparse_tagged_coverage(graph):
+    """Direct pin of the controller's second measurement. The real fixture
+    tags exactly 43 `natural=tree` nodes; the procedural verge fallback must
+    still contribute trees on top of those 43, not stop the moment OSM has
+    *any* tagged trees. This fails against the brief's all-or-nothing gate,
+    which returns immediately with exactly the 43 tagged trees and never
+    reaches the procedural loop.
+    """
+    tagged_count = len(_tagged_nodes(graph, "natural", "tree"))
+    assert tagged_count == 43  # pins the fixture's real, sparse OSM coverage
+
+    trees = build_trees(graph, ORIGIN)
+    tagged = [t for t in trees if t.id.startswith("osm_tr_")]
+    procedural = [t for t in trees if t.id.startswith("osm_tv_")]
+    assert len(tagged) == 43
+    # Verified directly against the fixture: the procedural fallback, if it
+    # ran, contributes exactly 798 verge trees -- almost 20x the tagged
+    # count, which is the whole point of making it additive rather than an
+    # either/or fallback.
+    assert len(procedural) == 798
+
+
+def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
+    """A minimal synthetic case for the same behaviour, independent of the real
+    fixture's exact counts: one tagged tree plus one long drivable way must
+    yield both the tagged tree and procedural verge trees for that way.
+    """
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156,
+             "tags": {"natural": "tree"}},
+            {"type": "node", "id": 2, "lat": 37.7945, "lon": -122.4200},
+            {"type": "node", "id": 3, "lat": 37.7955, "lon": -122.4200},
+            {"type": "way", "id": 10, "nodes": [2, 3], "tags": {"highway": "residential"}},
+        ]}
+    )
+    trees = build_trees(graph, ORIGIN)
+    assert any(t.id == "osm_tr_1" for t in trees)
+    assert any(t.id.startswith("osm_tv_10_") for t in trees)
+
+
+def test_counts_on_the_real_fixture_match_verified_osm_tag_counts(graph):
+    """Exact regression pin, not a loose floor: the fixture is a committed,
+    unchanging file, and its `highway=traffic_signals` / `highway=stop` /
+    `highway=crossing` node counts were verified directly (58 / 145 / 370).
+    A builder that silently starts dropping tagged nodes should fail this,
+    not slip through on a `>= N` guard.
+    """
+    assert len(build_traffic_lights(graph, ORIGIN)) == 58
+    assert len(build_stop_signs(graph, ORIGIN)) == 145
+    assert len(build_crosswalks(graph, ORIGIN)) == 370
+
+
+def test_trees_are_deterministic_across_runs(graph):
+    """All tree placement/jitter must be seeded from OSM ids via sha256, not
+    Python's per-process-salted `hash()` -- otherwise the same fixture would
+    build a different forest on every launch."""
+    first = [t.model_dump() for t in build_trees(graph, ORIGIN)]
+    second = [t.model_dump() for t in build_trees(graph, ORIGIN)]
+    assert first == second

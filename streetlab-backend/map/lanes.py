@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from shapely.geometry import LineString
 
 from map.osm_model import OsmGraph, OsmWay
-from map.projection import LatLon, to_local
+from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import is_oneway, lane_counts, road_class, speed_limit_mps, street_name
 from schema import Road
 from sim.route import Route
@@ -372,14 +372,6 @@ def _out_and_back(rg: RouteGraph, start: Junction) -> list[tuple[float, float]]:
     return best + list(reversed(best))[1:-1]
 
 
-def _signed_area_x2(points: list[tuple[float, float]]) -> float:
-    """Twice the shoelace-formula signed area. Positive means counter-clockwise."""
-    total = 0.0
-    for (x1, y1), (x2, y2) in zip(points, points[1:] + points[:1]):
-        total += x1 * y2 - x2 * y1
-    return total
-
-
 def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
     """A drivable loop near the origin, offset into the right-hand lane."""
     start = _nearest_junction(rg, origin_xy)
@@ -387,7 +379,7 @@ def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
     if points is None:
         log.info("no closed circuit found; falling back to an out-and-back route")
         points = _out_and_back(rg, start)
-    elif _signed_area_x2(points) > 0:
+    elif signed_area_x2(points) > 0:
         # `SyntheticGrid._block_route` (map/scene_build.py) fixes the convention
         # this pipeline offsets against: corners traversed clockwise, so the
         # loop's interior sits on the driver's right and a negative offset below
