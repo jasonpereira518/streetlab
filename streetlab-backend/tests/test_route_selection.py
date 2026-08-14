@@ -5,21 +5,26 @@ import time
 from pathlib import Path
 
 import pytest
+from shapely.geometry import LinearRing
 
 from map.lanes import (
+    LANE_W,
     MAX_LOOP_M,
     MIN_LOOP_M,
     NoDrivableRoad,
     Edge,
     RouteGraph,
     _find_loop,
+    _find_ring_crossing,
     _nearest_junction,
     _out_and_back,
     build_route_graph,
+    remove_self_intersections,
     select_ego_route,
 )
 from map.osm_model import parse_overpass
 from map.projection import LatLon
+from sim.route import Route
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
 ORIGIN = LatLon(lat=37.7945, lon=-122.4156)
@@ -442,3 +447,130 @@ def test_find_loop_warns_when_the_search_budget_is_exhausted(caplog):
     assert len(warnings) == 1
     assert "_find_loop" in warnings[0].message
     assert "20000" in warnings[0].message
+
+
+# --- Self-intersection repair -----------------------------------------------
+#
+# Found by downstream review, not part of the original three risks or the
+# first review's two Important items: `Route.offset()`'s mitre-join logic
+# (shared with `SyntheticGrid`, off limits to change) can push a vertex far
+# enough at a sharp turn that the offset polyline crosses itself. This is not
+# cosmetic -- `Route.project()` (`sim/route.py`) has no continuity guard
+# against the last known arc-length position, and it runs every planner tick
+# (steering lookahead, target speed, lead-vehicle gap, perception's
+# longitudinal ordering). Near a self-crossing, a world point can be nearly
+# equidistant from two segments many indices apart, and as the ego passes
+# through that zone `project()` can flip which one it locks onto -- a
+# discontinuous jump in `s` that the `isfinite` guard cannot catch, since the
+# resulting value is finite, just wrong.
+
+
+def test_ego_route_from_the_real_fixture_is_simple():
+    """The real Nob Hill route self-intersects before repair: two clusters of
+    crossings, one a small artifact near a sharp turn (~80 m into the local
+    frame), the other a ~11 m out-and-back spike roughly 480 m into the lap --
+    far enough into the loop that Task 11's 10-second/~100 m smoke test could
+    never reach it, so this property was never going to be exercised without
+    a dedicated check. The assertion message names the actual crossing
+    indices on failure (verified against the pre-repair code below, in the
+    fix report) rather than a bare `assert False`.
+    """
+    graph = parse_overpass(json.loads(FIXTURE.read_text()))
+    route = select_ego_route(build_route_graph(graph, ORIGIN), (0.0, 0.0))
+    crossing = _find_ring_crossing(route.points)
+    assert crossing is None, f"route self-intersects at segments {crossing[0]} x {crossing[1]}"
+    assert LinearRing(route.points).is_simple
+
+
+def test_agent_left_lane_route_can_also_be_repaired():
+    """The ego route's own repair does not transitively cover a route built
+    by offsetting it again: `map/osm_source.py`'s `_agent_routes` offsets the
+    (already-simple) ego route by `LANE_W` (3.6 m) rather than
+    `EGO_LANE_INSET` (1.8 m) to place traffic in the left lane, and a wider
+    offset can push a sharp turn's mitre join into a self-crossing the
+    narrower offset didn't produce -- confirmed on the real fixture: simple
+    ego route in, self-intersecting left lane out. Traffic agents call
+    `Route.project()` every tick exactly as the ego planner does, so this
+    route needs the same repair, applied separately -- which is exactly what
+    `osm_source.py` now does.
+    """
+    graph = parse_overpass(json.loads(FIXTURE.read_text()))
+    ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (0.0, 0.0))
+    assert LinearRing(ego_route.points).is_simple  # the premise this test isolates
+
+    left_lane_raw = Route(ego_route.points, closed=True).offset(LANE_W)
+    assert not LinearRing(left_lane_raw.points).is_simple  # proves the repair is doing real work
+
+    left_lane = remove_self_intersections(left_lane_raw)
+    assert LinearRing(left_lane.points).is_simple
+    assert left_lane.closed is True
+    assert all(math.isfinite(x) and math.isfinite(y) for x, y in left_lane.points)
+    # Repair should trim a self-crossing artifact, not gut the route -- the
+    # real bug this guards against (see `test_splice_keeps_the_long_arc_...`
+    # below) collapsed a comparable route to a handful of metres.
+    assert left_lane.length_m > left_lane_raw.length_m * 0.5
+
+
+def test_splice_keeps_the_long_arc_even_when_the_crossing_sits_near_the_wrap():
+    """Direct regression test for a defect found (and fixed) while verifying
+    the repair against the agent left-lane route above -- not part of the
+    controller's original ask. `_splice_out_crossing` must cut the *shorter*
+    of the two arcs a crossing splits the ring into, not always the one
+    between the lower and higher segment index. An earlier version always cut
+    "forward" (from the lower index to the higher one), which is correct for
+    a crossing far from the wrap boundary but backwards for one near it: this
+    ring's crossing is between segment 0 and segment 5 (of 7), so the
+    "forward" arc is nearly the whole ring (5 points) and the wrap-around arc
+    is a 2-point sliver. The old always-cut-forward logic kept the sliver and
+    discarded the real loop -- reproduced explicitly below, not asserted from
+    memory -- collapsing this ~417 m ring to ~24 m. This is exactly the shape
+    of bug that made the real left-lane route above collapse to a handful of
+    points before the fix.
+    """
+    # A large rectangle (points 1-5) plus a short two-point "hook" off the
+    # start (point 6) that crosses back over the rectangle's first edge.
+    points = [
+        (0.0, 0.0),  # 0 - start
+        (10.0, 5.0),  # 1
+        (10.0, 100.0),  # 2
+        (100.0, 100.0),  # 3
+        (100.0, 0.0),  # 4
+        (5.0, -5.0),  # 5
+        (5.0, 10.0),  # 6 -- the hook; segment 5 (points[5]->points[6]) crosses segment 0
+    ]
+    route = Route(points, closed=True)
+    assert not LinearRing(route.points).is_simple  # the fixture actually self-intersects
+
+    # The old, buggy behaviour: always splice out the `i+1 .. j` arc.
+    def old_buggy_splice(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        for _ in range(50):
+            if LinearRing(pts).is_simple:
+                return pts
+            crossing = _find_ring_crossing(pts)
+            i, j, ix = crossing
+            pts = pts[: i + 1] + [ix] + pts[j + 1 :]
+        raise AssertionError("did not converge")
+
+    broken = old_buggy_splice(list(points))
+    assert len(broken) == 3  # the bug: collapses to the 2-point hook + intersection
+    assert Route(broken, closed=True).length_m < 30.0  # the real rectangle is gone
+
+    repaired = remove_self_intersections(route)
+    assert LinearRing(repaired.points).is_simple
+    # The rectangle survives: all five of its original corners are still
+    # present, and the hook point (6) is gone.
+    for corner in points[1:6]:
+        assert corner in repaired.points
+    assert points[6] not in repaired.points
+    assert repaired.length_m > 300.0  # most of the ~417 m rectangle perimeter remains
+
+
+def test_remove_self_intersections_is_a_noop_on_an_already_simple_route():
+    """A route that never self-intersects must come back byte-for-byte
+    unchanged -- `remove_self_intersections` runs unconditionally on every
+    `select_ego_route` result, including the common case where nothing is
+    wrong, so it must not be a source of drift on the (large majority of)
+    routes that don't need it.
+    """
+    square = Route([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], closed=True)
+    assert remove_self_intersections(square).points == square.points

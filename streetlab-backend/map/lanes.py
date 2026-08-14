@@ -15,7 +15,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from shapely.geometry import LineString
+from shapely.geometry import LinearRing, LineString
 
 from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
@@ -399,4 +399,180 @@ def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
         raise NoDrivableRoad("route degenerated to fewer than three points")
 
     lane = Route(deduped, closed=True).offset(-EGO_LANE_INSET)
-    return lane.fillet(radius_m=TURN_RADIUS_M)
+    route = lane.fillet(radius_m=TURN_RADIUS_M)
+    return remove_self_intersections(route)
+
+
+# --------------------------------------------------------------------------- #
+# Self-intersection repair                                                     #
+# --------------------------------------------------------------------------- #
+
+# 50 splices is far beyond what any observed input needs (the real Nob Hill
+# fixture resolves in 2), but it exists so a pathological offset artifact
+# degrades the search rather than spinning the scene build.
+_MAX_SPLICE_ITERATIONS = 50
+
+
+def _segment_intersection(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    p4: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Where segment `p1`-`p2` crosses segment `p3`-`p4`, or `None`.
+
+    Standard parametric line intersection: writing both segments as
+    `p1 + t*(p2-p1)` and `p3 + u*(p4-p3)`, the crossing is the unique `(t, u)`
+    solving both simultaneously. `0 <= t <= 1` and `0 <= u <= 1` (with a small
+    epsilon for floating-point boundary cases) means the crossing falls on
+    both segments, not just the infinite lines through them. A zero
+    denominator means the lines are parallel (or collinear) -- treated as no
+    crossing, since a genuine transversal crossing never produces one, and an
+    offset polyline's artifacts are transversal, not collinear-overlapping.
+    """
+    x1, y1 = p1
+    x2, y2 = p2
+    x3, y3 = p3
+    x4, y4 = p4
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-12:
+        return None
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+    u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+    if -1e-9 <= t <= 1 + 1e-9 and -1e-9 <= u <= 1 + 1e-9:
+        return (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+    return None
+
+
+def _find_ring_crossing(
+    points: list[tuple[float, float]],
+) -> tuple[int, int, tuple[float, float]] | None:
+    """The first pair of non-adjacent segments in the closed ring `points`
+    that cross, as `(i, j, crossing_point)` with `i < j` -- or `None` if the
+    ring is simple. Segment `k` runs from `points[k]` to `points[(k+1) % n]`;
+    the wrap-around closing segment (`n - 1`) is adjacent to segment `0` and
+    is excluded from the pairing the same way any other adjacent pair is.
+    """
+    n = len(points)
+    for i in range(n):
+        a1, a2 = points[i], points[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            b1, b2 = points[j], points[(j + 1) % n]
+            hit = _segment_intersection(a1, a2, b1, b2)
+            if hit is not None:
+                return i, j, hit
+    return None
+
+
+def _dedupe_ring(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop consecutive near-duplicate points, including across the wrap."""
+    out = [points[0]]
+    for point in points[1:]:
+        if math.dist(point, out[-1]) > 1e-6:
+            out.append(point)
+    if len(out) >= 2 and math.dist(out[0], out[-1]) <= 1e-6:
+        out.pop()
+    return out
+
+
+def _splice_out_crossing(
+    points: list[tuple[float, float]], i: int, j: int, intersection: tuple[float, float]
+) -> list[tuple[float, float]]:
+    """Cut the shorter of the two arcs a crossing at segments `i`/`j` splits
+    the ring into, replacing it with the crossing point.
+
+    A crossing splits a closed ring into two arcs -- `points[i+1 .. j]`, and
+    the complementary `points[j+1 .. n-1] + points[0 .. i]` that wraps around
+    through the closing edge. Earlier versions of this function always cut
+    the first arc, which is correct for a small spike far from index 0 or
+    `n - 1` (the common case: a sharp turn's mitre join looping back on
+    itself) but is a real bug near the wrap boundary -- a crossing at, say,
+    `i=0, j=n-2` has a *huge* first arc (nearly the whole route) and a tiny
+    second arc (a couple of points), and always cutting the first arc there
+    discards the entire real route and keeps the two-point sliver. Comparing
+    the two arcs' actual lengths and cutting the shorter one handles both
+    cases with the same rule: the short arc is the artifact, regardless of
+    where its indices happen to fall.
+    """
+    n = len(points)
+    forward_arc = points[i + 1 : j + 1]
+    wrap_arc = points[j + 1 :] + points[: i + 1]
+    if _polyline_length(forward_arc) <= _polyline_length(wrap_arc):
+        return points[: i + 1] + [intersection] + points[j + 1 :]
+    return [intersection] + points[i + 1 : j + 1]
+
+
+def remove_self_intersections(
+    route: Route, max_iterations: int = _MAX_SPLICE_ITERATIONS
+) -> Route:
+    """Splice out self-crossings so `route` is a simple closed ring.
+
+    `Route.offset()`'s mitre-join logic (shared with `SyntheticGrid`, and off
+    limits to change here) can push a vertex far enough at a sharp turn that
+    the offset polyline crosses itself: a small, near-zero-area spike where
+    the path runs out a short distance and doubles back over itself. This is
+    not cosmetic. `Route.project()` (`sim/route.py`) does a global
+    nearest-segment search with no continuity guard against the last known
+    position, and it runs every planner tick -- steering lookahead and
+    curvature-based target speed, lead-vehicle gap, and the perception
+    service's longitudinal ordering and lane offset. Near a self-crossing, a
+    world point can sit nearly equidistant from two segments many indices
+    apart -- tens of metres of arc length -- so as the ego moves through that
+    zone, `project()` can flip which segment it locks onto, taking the
+    planner's `s` with it in a discontinuous jump. The existing `isfinite`
+    guard never catches this: the resulting value is finite, just wrong.
+
+    Each crossing is repaired by cutting the *shorter* of the two arcs it
+    splits the ring into (see `_splice_out_crossing`) and replacing it with
+    the crossing point -- exactly as if the route had run straight through
+    rather than looping out and back to itself. Cutting the shorter arc,
+    rather than always the one between the lower and higher index, matters:
+    a crossing near the ring's own start/end wrap can otherwise look like the
+    "spike" is the entire route and the two-point sliver near the wrap is the
+    part to keep, which is backwards. Iterates until simple or
+    `max_iterations` is hit -- bounded the same way the route search itself
+    is (`_MAX_EXPANSIONS`), so a pathological offset artifact cannot spin the
+    scene build.
+
+    `shapely`'s `LinearRing.is_simple` is the authority on "are we done" --
+    not `_find_ring_crossing` returning `None` -- so a subtle bug in this
+    module's own hand-rolled intersection math cannot make the loop declare
+    victory early on a ring shapely would still reject. `_find_ring_crossing`
+    is only trusted to say *where* to splice, once `is_simple` has already
+    said a splice is needed.
+    """
+    if not route.closed or len(route.points) < 3:
+        # `LinearRing` requires at least 3 distinct points (it closes itself);
+        # fewer than that cannot form a self-crossing ring in the first
+        # place, so there is nothing to repair.
+        return route
+
+    points = list(route.points)
+    for _ in range(max_iterations):
+        if LinearRing(points).is_simple:
+            return Route(points, closed=True)
+        crossing = _find_ring_crossing(points)
+        if crossing is None:
+            # shapely says this ring still self-intersects, but this
+            # module's own segment-intersection math cannot find where --
+            # almost certainly a degenerate case (near-parallel or
+            # near-coincident segments) at the edge of both tools'
+            # floating-point tolerance. Stop rather than loop with no
+            # progress; the caller gets shapely's verdict via the warning,
+            # not a silently-still-broken route passed off as repaired.
+            log.warning(
+                "route self-intersection repair could not locate a crossing "
+                "shapely still reports; returning the best-effort result"
+            )
+            return Route(points, closed=True)
+        i, j, intersection = crossing
+        points = _dedupe_ring(_splice_out_crossing(points, i, j, intersection))
+
+    log.warning(
+        "route still self-intersects after %d splice iterations; returning "
+        "the best-effort result rather than looping further",
+        max_iterations,
+    )
+    return Route(points, closed=True)

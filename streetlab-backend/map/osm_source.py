@@ -24,7 +24,7 @@ from map.features import (
     signal_groups,
 )
 from map.geocode import Geocoder, NominatimGeocoder
-from map.lanes import LANE_W, build_roads, build_route_graph, select_ego_route
+from map.lanes import LANE_W, build_roads, build_route_graph, remove_self_intersections, select_ego_route
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
 from map.scene_build import BuiltScene
@@ -204,8 +204,18 @@ class OsmSceneSource:
         return Bounds(min_x=min(xs), min_y=min(ys), max_x=max(xs), max_y=max(ys))
 
     def _agent_routes(self, ego_route: Route, traffic: int) -> list[Route]:
-        """Traffic shares the ego's loop: same lane ahead, or the lane to its left."""
-        left_lane = Route(ego_route.points, closed=True).offset(LANE_W)
+        """Traffic shares the ego's loop: same lane ahead, or the lane to its left.
+
+        `ego_route` is already simple (`select_ego_route` repairs it), but
+        offsetting it again here by a different distance is a distinct
+        geometric operation and does not inherit that guarantee -- a wider
+        offset can push a sharp turn's mitre join into a self-crossing that
+        the narrower ego-lane offset didn't produce. Traffic agents call
+        `Route.project()` every tick exactly as the ego planner does, so an
+        unrepaired left lane is the same discontinuous-`s` hazard, just for a
+        different route.
+        """
+        left_lane = remove_self_intersections(Route(ego_route.points, closed=True).offset(LANE_W))
         return [ego_route if i % 3 != 2 else left_lane for i in range(traffic)]
 
     def _speed_limit(self, roads: list[Road]) -> float:
