@@ -144,3 +144,26 @@ def test_bounds_also_contain_building_and_tree_points_outside_the_road_network(s
     assert bounds.min_y <= -300.0
     assert bounds.max_x >= 510.0
     assert bounds.max_y >= 505.0
+
+
+def test_build_is_deterministic_across_independent_instances(tmp_path):
+    """`test_build_is_deterministic` above calls `build()` twice on the *same*
+    `OsmSceneSource`, whose `_core` memoises per location -- so it can only
+    prove the cache returns an identical object, not that the underlying
+    pipeline (buildings/trees seeded from OSM ids, route selection, etc.) is
+    actually deterministic. This drives two independent instances, each with
+    its own `DiskCache`, so nothing is shared between the two builds other
+    than the fixture payload itself.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    source_a = OsmSceneSource(
+        StubGeocoder(NOB_HILL),
+        OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path / "a")),
+    )
+    source_b = OsmSceneSource(
+        StubGeocoder(NOB_HILL),
+        OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path / "b")),
+    )
+    first = source_a.build(BUNDLED[0].id).description.model_dump()
+    second = source_b.build(BUNDLED[0].id).description.model_dump()
+    assert first == second
