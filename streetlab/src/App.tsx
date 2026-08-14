@@ -4,6 +4,7 @@ import { createTransportFromLocation } from './net/wsClient';
 import { useSimStore } from './store/simStore';
 import { Renderer } from './three/Renderer';
 import { LeftScenarioSidebar } from './ui/LeftScenarioSidebar';
+import { PerfOverlay } from './ui/PerfOverlay';
 import { RightPanel } from './ui/RightPanel';
 import { StartupOverlay } from './ui/StartupOverlay';
 import { TelemetryRow } from './ui/TelemetryRow';
@@ -57,6 +58,7 @@ export default function App() {
         <RightPanel />
       </div>
       <TelemetryRow />
+      <PerfOverlay />
       {boot !== 'ready' && (
         <StartupOverlay
           phase={boot === 'error' ? 'error' : 'starting'}

@@ -133,6 +133,12 @@ export const CheckIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const ActivityIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 12h4l2.5-7 5 14 2.5-7H21" />
+  </Svg>
+);
+
 export const ResetIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M3 12a9 9 0 1 0 2.6-6.4" />

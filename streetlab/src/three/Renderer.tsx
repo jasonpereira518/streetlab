@@ -19,6 +19,7 @@ import {
   uv,
 } from 'three/tsl';
 import type { CameraView, LayerKey, StateUpdate } from '../schema';
+import { perfMetrics } from '../perf/perfMetrics';
 import { frameBus, useSimStore } from '../store/simStore';
 import type { SimStoreState } from '../store/simStore';
 import { color as tokens, lighting } from '../ui/theme';
@@ -515,12 +516,14 @@ function mount(
     fpsFrames++;
     fpsAccum += dt;
     if (now - lastStatsAt > 500) {
+      const fps = Math.round(fpsFrames / Math.max(1e-3, fpsAccum));
       setStats({
         backend,
-        fps: Math.round(fpsFrames / Math.max(1e-3, fpsAccum)),
+        fps,
         drawCalls: renderer.info.render.drawCalls,
         triangles: renderer.info.render.triangles,
       });
+      perfMetrics.reportFps(fps);
       fpsFrames = 0;
       fpsAccum = 0;
       lastStatsAt = now;

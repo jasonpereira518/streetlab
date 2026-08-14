@@ -83,9 +83,11 @@ export function createWebSocketTransport(
 
     socket.onmessage = (ev) => {
       if (!handlers) return;
+      const text = typeof ev.data === 'string' ? ev.data : '';
+      handlers.onRawFrame?.(text.length);
       let raw: unknown;
       try {
-        raw = JSON.parse(typeof ev.data === 'string' ? ev.data : '');
+        raw = JSON.parse(text);
       } catch {
         handlers.onInvalid('message was not valid JSON', ev.data);
         return;

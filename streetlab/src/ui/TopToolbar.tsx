@@ -10,6 +10,7 @@ import { useFrameValue } from '../store/hooks';
 import { useSimStore } from '../store/simStore';
 import { formatTtc, toMph } from '../units';
 import {
+  ActivityIcon,
   BrandMark,
   CameraIcon,
   ChevronDownIcon,
@@ -60,6 +61,8 @@ export function TopToolbar() {
   const resetSim = useSimStore((s) => s.resetSim);
   const setCameraView = useSimStore((s) => s.setCameraView);
   const setRightTab = useSimStore((s) => s.setRightTab);
+  const perfOverlayVisible = useSimStore((s) => s.perfOverlayVisible);
+  const togglePerfOverlay = useSimStore((s) => s.togglePerfOverlay);
 
   const mph = useFrameValue((f) => Math.round(toMph(f.ego.speed_mps)), 12);
   const ttc = useFrameValue(
@@ -140,6 +143,13 @@ export function TopToolbar() {
         <span className={`link-chip link-chip--${status}`} title={`Source: ${sourceLabel}`}>
           {sourceLabel}
         </span>
+        <IconButton
+          label="Toggle performance overlay"
+          active={perfOverlayVisible}
+          onClick={togglePerfOverlay}
+        >
+          <ActivityIcon />
+        </IconButton>
         <CameraMenu view={cameraView} onSelect={setCameraView} />
         <IconButton label="Settings" onClick={() => setRightTab('parameters')}>
           <SettingsIcon />

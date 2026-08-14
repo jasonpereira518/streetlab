@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 from schema import PROTOCOL_VERSION, SceneDescription, StateUpdate
 from sim.loop import CommandOutcome, SimLoop, make_ack
@@ -51,6 +52,17 @@ def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
             loop.stop()
 
     app = FastAPI(title="StreetLab", version=str(PROTOCOL_VERSION), lifespan=lifespan)
+    # /health is plain HTTP, fetched from the Vite dev origin (localhost:1420)
+    # in the browser-dev path — a different origin than the server
+    # (127.0.0.1:8765), so it needs CORS. This is a local dev tool with
+    # nothing sensitive behind it, so a permissive origin is fine; WebSocket
+    # traffic (the actual data) isn't subject to CORS at all.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET"],
+        allow_headers=["*"],
+    )
     # A plain int would need `nonlocal` in each closure below; a single-key
     # dict sidesteps that. Not part of the zod `ServerMessage` union, so
     # extending /health is never a wire-schema change.

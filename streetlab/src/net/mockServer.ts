@@ -883,6 +883,9 @@ export function createMockTransport(
   let last = 0;
   let acc = 0;
 
+  // The mock never touches a real socket, so `onRawFrame` is computed here
+  // for parity — it's what the message would have cost in bytes on the wire,
+  // letting the perf overlay show a real number under ?mock=1 too.
   const emitScene = (scene: SceneDescription) => {
     if (!handlers) return;
     if (validate) {
@@ -891,9 +894,11 @@ export function createMockTransport(
         handlers.onInvalid(formatIssues(res.error), scene);
         return;
       }
+      handlers.onRawFrame?.(JSON.stringify(res.data).length);
       handlers.onMessage(res.data);
       return;
     }
+    handlers.onRawFrame?.(JSON.stringify(scene).length);
     handlers.onMessage(scene);
   };
 
@@ -906,9 +911,11 @@ export function createMockTransport(
         handlers.onInvalid(formatIssues(res.error), f);
         return;
       }
+      handlers.onRawFrame?.(JSON.stringify(res.data).length);
       handlers.onMessage(res.data);
       return;
     }
+    handlers.onRawFrame?.(JSON.stringify(f).length);
     handlers.onMessage(f);
   };
 

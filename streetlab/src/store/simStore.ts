@@ -32,6 +32,7 @@ import type {
 } from '../schema';
 import { LAYER_KEYS } from '../schema';
 import type { ConnectionStatus, Transport } from '../net/transport';
+import { httpUrlForWsLabel, perfMetrics } from '../perf/perfMetrics';
 
 /* ------------------------------------------------------------------ */
 /* Frame bus                                                           */
@@ -223,6 +224,7 @@ export interface SimStoreState {
   params: Record<string, ParamValue>;
   cameraView: CameraView;
   rightTab: 'parameters' | 'map' | 'layers';
+  perfOverlayVisible: boolean;
 
   /* diagnostics */
   events: SimEvent[];
@@ -241,6 +243,7 @@ export interface SimStoreState {
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
   setRightTab(tab: 'parameters' | 'map' | 'layers'): void;
+  togglePerfOverlay(): void;
   resetSim(): void;
   injectHazard(): void;
 }
@@ -267,6 +270,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   params: { ...DEFAULT_PARAMS },
   cameraView: 'chase',
   rightTab: 'parameters',
+  perfOverlayVisible: false,
 
   events: [],
   lastAck: null,
@@ -277,6 +281,8 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   attach(transport) {
     transportRef = transport;
     frameBus.reset();
+    perfMetrics.reset();
+    perfMetrics.watchHealth(httpUrlForWsLabel(transport.label));
     set({
       sourceKind: transport.kind,
       sourceLabel: transport.label,
@@ -291,10 +297,12 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
         console.warn('[streetlab] dropped invalid frame:', error, raw);
         set((s) => ({ invalidCount: s.invalidCount + 1, lastInvalid: error }));
       },
+      onRawFrame: (bytes) => perfMetrics.reportFrameBytes(bytes),
     });
 
     return () => {
       transport.close();
+      perfMetrics.watchHealth(null);
       if (transportRef === transport) transportRef = null;
     };
   },
@@ -342,6 +350,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     set({ rightTab: tab });
   },
 
+  togglePerfOverlay() {
+    set((s) => ({ perfOverlayVisible: !s.perfOverlayVisible }));
+  },
+
   resetSim() {
     get().send({ cmd: 'reset' });
   },
@@ -383,6 +395,7 @@ function applyServerMessage(
       // Hot path. Publish first so the renderer sees the newest frame as early
       // as possible, then mirror only what actually changed into React state.
       frameBus.publish(msg);
+      perfMetrics.reportTick(performance.now());
       const s = get();
       const patch: Partial<SimStoreState> = {};
       if (s.paused !== msg.paused) patch.paused = msg.paused;

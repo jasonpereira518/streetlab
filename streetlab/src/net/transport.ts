@@ -20,6 +20,9 @@ export interface TransportHandlers {
   onStatus(status: ConnectionStatus, detail?: string): void;
   /** A frame arrived but failed validation. Logged, never fatal. */
   onInvalid(error: string, raw: unknown): void;
+  /** Wire size of an inbound message, in bytes, before parsing. Optional —
+   * feeds the perf overlay only; nothing else depends on it. */
+  onRawFrame?(bytes: number): void;
 }
 
 export interface Transport {
