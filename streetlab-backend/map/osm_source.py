@@ -12,6 +12,7 @@ of these at runtime.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import replace
 
 from map.cache import DiskCache, default_cache_dir
@@ -47,6 +48,8 @@ log = logging.getLogger("streetlab.map")
 
 # ODbL requires crediting OpenStreetMap wherever its data is shown.
 ATTRIBUTION = "© OpenStreetMap contributors"
+
+MPH = 0.44704
 
 
 class LocationSpec:
@@ -220,11 +223,25 @@ class OsmSceneSource:
         return [ego_route if i % 3 != 2 else left_lane for i in range(traffic)]
 
     def _speed_limit(self, roads: list[Road]) -> float:
-        """The most common limit on the extract — the one the ego will mostly meet."""
+        """The limit governing the most *metres* of road, not the most roads.
+
+        Counting roads lets a swarm of short service stubs outvote the arterials
+        the ego actually drives — and this single scalar caps the whole route,
+        since the planner reads `PlanLimits.speed_limit_mps` and never consults
+        an individual `Road`. On the Nob Hill extract the unweighted count was
+        109 to 99, i.e. one mis-tagged alley from capping the car at 15 mph.
+        """
         if not roads:
-            return 25 * 0.44704
-        limits = [r.speed_limit_mps for r in roads]
-        return max(set(limits), key=limits.count)
+            return 25 * MPH
+        metres: dict[float, float] = {}
+        for road in roads:
+            length = sum(
+                math.dist(a, b) for a, b in zip(road.centerline, road.centerline[1:])
+            )
+            metres[road.speed_limit_mps] = metres.get(road.speed_limit_mps, 0.0) + length
+        # Ties break toward the higher limit, deterministically — never by
+        # dict/set iteration order.
+        return max(metres, key=lambda limit: (metres[limit], limit))
 
     # -- catalog ------------------------------------------------------------ #
 

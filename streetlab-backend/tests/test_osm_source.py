@@ -8,10 +8,11 @@ from map.geocode import Place, StubGeocoder
 from map.osm_source import BUNDLED, LocationSpec, OsmSceneSource
 from map.overpass import OverpassClient
 from map.scene_build import SceneSource
-from schema import SceneDescription
+from schema import Road, SceneDescription
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
 NOB_HILL = Place(lat=37.7945, lon=-122.4156, display_name="Nob Hill, San Francisco")
+MPH = 0.44704
 
 
 class ReplayFetcher:
@@ -27,6 +28,17 @@ def source(tmp_path):
     payload = json.loads(FIXTURE.read_text())
     client = OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
     return OsmSceneSource(StubGeocoder(NOB_HILL), client)
+
+
+def _road(limit_mph: float, length_m: float, i: int) -> Road:
+    """A straight road of a given length and posted limit."""
+    return Road(
+        id=f"r{i}", name="x", road_class="residential",
+        centerline=[(0.0, 0.0), (float(length_m), 0.0)],
+        lanes_forward=1, lanes_backward=1, lane_width_m=3.6,
+        speed_limit_mps=limit_mph * MPH, oneway=False,
+        center_marking="solid_white", has_sidewalk=True,
+    )
 
 
 def test_satisfies_the_scene_source_protocol(source):
@@ -73,6 +85,75 @@ def test_built_scene_has_a_drivable_route_and_speed_limit(source):
     assert scene.speed_limit_mps > 0
     assert scene.agent_routes
     assert len(scene.agent_routes) == scene.traffic_count
+
+
+def test_speed_limit_is_weighted_by_road_length(source):
+    """A few long arterials must outvote a swarm of short service stubs.
+
+    30 stubs of 5 m at 15 mph is 150 m; 5 arterials of 200 m at 35 mph is
+    1000 m. Counting roads picks 15 mph (30 > 5); counting metres picks 35.
+    """
+    roads = [_road(15, 5, i) for i in range(30)] + [_road(35, 200, 100 + i) for i in range(5)]
+    assert source._speed_limit(roads) == pytest.approx(35 * MPH)
+
+
+def test_speed_limit_ties_break_toward_the_higher_limit(source):
+    """Equal metres at two limits must resolve deterministically, not by dict order."""
+    roads = [_road(25, 100, 1), _road(35, 100, 2)]
+    assert source._speed_limit(roads) == pytest.approx(35 * MPH)
+
+
+def test_speed_limit_tie_break_is_order_independent(source):
+    """The winner must not depend on which road the loop happens to see first.
+
+    `dict`/`set` iteration order for floats is stable within a process but is
+    not something the tie-break should rely on -- the decision has to be an
+    explicit secondary sort key, not an accident of insertion order. Feed the
+    same tied roads in both orders and demand the identical winner.
+    """
+    forward = [_road(25, 100, 1), _road(35, 100, 2)]
+    backward = [_road(35, 100, 2), _road(25, 100, 1)]
+    assert source._speed_limit(forward) == source._speed_limit(backward) == pytest.approx(35 * MPH)
+
+
+def test_speed_limit_of_an_empty_extract_is_a_sane_default(source):
+    assert source._speed_limit([]) == pytest.approx(25 * MPH)
+
+
+def test_speed_limit_of_all_zero_length_roads_does_not_crash(source):
+    """Every centreline a single repeated point -- a degenerate extract must
+    still produce a plain float, not a ZeroDivisionError or NaN.
+
+    `_road(limit, 0, i)` places both centerline points at the origin, i.e. a
+    single repeated point. All roads tie at zero metres, so the tie-break
+    rule (higher limit wins) must still apply deterministically rather than
+    falling over.
+    """
+    roads = [_road(15, 0, 1), _road(25, 0, 2), _road(35, 0, 3)]
+    for road in roads:
+        assert road.centerline[0] == road.centerline[1]  # confirm it's degenerate
+    result = source._speed_limit(roads)
+    assert result == pytest.approx(35 * MPH)
+    assert result == result  # not NaN
+
+
+def test_speed_limit_counts_the_full_multi_segment_centerline(source):
+    """A bent road's length is the sum of every segment, not just the first.
+
+    One road bent through three points totalling 300 m at 35 mph must beat
+    a swarm of short straight roads at 15 mph totalling 250 m -- if the
+    implementation only measured the first segment (100 m), the 15 mph
+    stubs would win instead.
+    """
+    bent = Road(
+        id="bent", name="x", road_class="residential",
+        centerline=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (300.0, 100.0)],
+        lanes_forward=1, lanes_backward=1, lane_width_m=3.6,
+        speed_limit_mps=35 * MPH, oneway=False,
+        center_marking="solid_white", has_sidewalk=True,
+    )
+    stubs = [_road(15, 50, i) for i in range(5)]
+    assert source._speed_limit([bent, *stubs]) == pytest.approx(35 * MPH)
 
 
 def test_every_route_in_the_built_scene_is_simple(source):
