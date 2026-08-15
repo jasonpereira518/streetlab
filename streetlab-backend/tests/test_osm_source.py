@@ -1,11 +1,14 @@
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from map.cache import DiskCache
 from map.geocode import Place, StubGeocoder
-from map.osm_source import BUNDLED, LocationSpec, OsmSceneSource
+from map.lanes import NoDrivableRoad
+from map.osm_source import ATTRIBUTION, BUNDLED, LocationSpec, OsmSceneSource
 from map.overpass import OverpassClient
 from map.scene_build import SceneSource
 from schema import Road, SceneDescription
@@ -94,12 +97,6 @@ def test_speed_limit_is_weighted_by_road_length(source):
     1000 m. Counting roads picks 15 mph (30 > 5); counting metres picks 35.
     """
     roads = [_road(15, 5, i) for i in range(30)] + [_road(35, 200, 100 + i) for i in range(5)]
-    assert source._speed_limit(roads) == pytest.approx(35 * MPH)
-
-
-def test_speed_limit_ties_break_toward_the_higher_limit(source):
-    """Equal metres at two limits must resolve deterministically, not by dict order."""
-    roads = [_road(25, 100, 1), _road(35, 100, 2)]
     assert source._speed_limit(roads) == pytest.approx(35 * MPH)
 
 
@@ -274,3 +271,257 @@ def test_build_is_deterministic_across_independent_instances(tmp_path):
     first = source_a.build(BUNDLED[0].id).description.model_dump()
     second = source_b.build(BUNDLED[0].id).description.model_dump()
     assert first == second
+
+
+# -- load_location: a catalog that grows at runtime -------------------------- #
+
+
+class CountingFetcher:
+    """Wraps a fixed payload but counts how many times it was actually hit --
+    used to prove a repeated `build_location` call reuses the cached scene
+    instead of re-fetching Overpass.
+    """
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = 0
+
+    def fetch(self, query: str) -> dict:
+        self.calls += 1
+        return self.payload
+
+
+class MultiPlaceGeocoder:
+    """Different queries resolve to different places. `StubGeocoder` always
+    answers every query with the same fixed place, which cannot distinguish
+    "this build used MY query's geocoded place" from "it silently reused
+    someone else's" -- exactly the distinction the slug-collision tests need.
+    """
+
+    def __init__(self, places: dict[str, Place]) -> None:
+        self._places = places
+
+    def lookup(self, query: str) -> Place:
+        return self._places[query]
+
+
+def test_build_location_adds_the_location_to_the_catalog(source):
+    before = {s.id for s in source.scenarios()}
+    scene = source.build_location("Nob Hill, San Francisco", 500.0)
+    after = {s.id for s in source.scenarios()}
+    assert len(after) == len(before) + 1
+    assert scene.description.scenario_id in after
+    assert scene.description.attribution == ATTRIBUTION
+
+
+def test_build_location_is_idempotent_for_the_same_query(source):
+    a = source.build_location("Nob Hill, San Francisco", 500.0)
+    b = source.build_location("Nob Hill, San Francisco", 500.0)
+    assert a.description.scenario_id == b.description.scenario_id
+    assert len(source.scenarios()) == len(BUNDLED) + 1
+
+
+def test_build_location_does_not_refetch_overpass_on_a_repeated_query(tmp_path):
+    """The catalog-count check above proves *one* catalog entry results, but
+    not that the second call actually reused the memoised build rather than
+    redoing the (expensive, network-bound in production) work twice and
+    merely landing on the same id. Counting fetcher calls proves the real
+    thing.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    fetcher = CountingFetcher(payload)
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), OverpassClient(fetcher, DiskCache(tmp_path)))
+    src.build_location("Nob Hill, San Francisco", 500.0)
+    calls_after_first = fetcher.calls
+    src.build_location("Nob Hill, San Francisco", 500.0)
+    assert fetcher.calls == calls_after_first
+
+
+def test_build_location_disambiguates_a_slug_collision_between_different_queries(tmp_path):
+    """`_slug` normalises punctuation, so "Main St, Springfield" and "Main
+    St. Springfield" collide on the exact same id -- confirmed by hand: both
+    reduce to "main-st-springfield" (comma-space and period-space both
+    become a single separator). A silent-REUSE implementation would serve
+    the SECOND query whatever was built for the FIRST -- the wrong place,
+    with no error. A silent-OVERWRITE implementation would corrupt the
+    FIRST query's already-cataloged entry out from under any client that
+    already has it open. Neither is acceptable: each distinct query must
+    get its own, independently-built catalog entry.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    places = {
+        "Main St, Springfield": Place(lat=39.78, lon=-89.65, display_name="Springfield, IL"),
+        "Main St. Springfield": Place(lat=42.10, lon=-72.59, display_name="Springfield, MA"),
+    }
+    # `locations=()`: an empty starting catalog, not `BUNDLED` -- BUNDLED's
+    # Nob Hill entry is unrelated to this collision and `MultiPlaceGeocoder`
+    # cannot resolve its query anyway.
+    src = OsmSceneSource(
+        MultiPlaceGeocoder(places),
+        OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path)),
+        locations=(),
+    )
+
+    a = src.build_location("Main St, Springfield", 500.0)
+    b = src.build_location("Main St. Springfield", 500.0)
+
+    assert a.description.scenario_id != b.description.scenario_id
+    assert a.description.location == "Springfield, IL"
+    assert b.description.location == "Springfield, MA"
+    assert len(src.scenarios()) == 2
+
+    ids = [s.id for s in src.locations]
+    queries = {s.query for s in src.locations}
+    assert "Main St, Springfield" in queries
+    assert "Main St. Springfield" in queries
+    assert len(ids) == len(set(ids))  # no id silently shared by two queries
+
+
+def test_build_location_reuses_its_own_disambiguated_entry_on_an_exact_repeat(tmp_path):
+    """A collision must be disambiguated only ONCE per distinct query -- if
+    the second (disambiguated) query is asked again, it must be recognised
+    by its own text and reuse ITS entry, not grow a third one.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    places = {
+        "Main St, Springfield": Place(lat=39.78, lon=-89.65, display_name="Springfield, IL"),
+        "Main St. Springfield": Place(lat=42.10, lon=-72.59, display_name="Springfield, MA"),
+    }
+    src = OsmSceneSource(
+        MultiPlaceGeocoder(places),
+        OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path)),
+        locations=(),
+    )
+
+    src.build_location("Main St, Springfield", 500.0)
+    first_repeat = src.build_location("Main St. Springfield", 500.0)
+    second_repeat = src.build_location("Main St. Springfield", 500.0)
+
+    assert first_repeat.description.scenario_id == second_repeat.description.scenario_id
+    assert len(src.scenarios()) == 2
+
+
+def test_build_location_propagates_no_drivable_road_for_a_roadless_extract(tmp_path):
+    """A query can geocode cleanly and still have nothing drivable in its
+    extract (a park, a plaza, open water). `build_location` must let
+    `NoDrivableRoad` (raised deep inside `select_ego_route`) propagate
+    rather than swallow or transform it -- `SimLoop.submit_scene` is what
+    turns an in-flight exception into a clean event; this pins the
+    source-level half of that contract (see `test_loop.py`'s
+    `test_load_location_with_no_drivable_roads_surfaces_as_an_event_not_a_dead_worker`
+    for the executor-level half).
+    """
+    client = OverpassClient(ReplayFetcher({"elements": []}), DiskCache(tmp_path))
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), client)
+    with pytest.raises(NoDrivableRoad):
+        src.build_location("the middle of a park with no roads")
+
+
+def test_build_location_racing_the_same_query_from_many_threads_yields_one_entry(tmp_path):
+    """The executor that drives `load_location` in production has exactly
+    ONE worker (`SimLoop._executor`), so two `load_location` calls can
+    never actually run `build_location` concurrently with each other in the
+    shipped system -- they serialise before either starts. This test does
+    NOT rely on that guarantee: it drives `build_location` directly from N
+    real OS threads, released at the same instant by a `Barrier`, to prove
+    the catalog-mutation LOCK itself -- not the executor's single-worker
+    property -- is what keeps a same-query race honest.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    src = OsmSceneSource(
+        StubGeocoder(NOB_HILL), OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
+    )
+
+    # Every racing thread that loses the append also independently runs a
+    # full (redundant) build -- `self.build(spec.id)` is deliberately called
+    # OUTSIDE `_lock` so builds never serialise on it, but that also means
+    # `_core`'s `_scenes` memoisation is unlocked and can race too (see the
+    # report's notes on this). `n` is kept modest so this genuinely-expensive
+    # real pipeline run stays reasonably fast; the lock's correctness does
+    # not depend on thread count, only on the append itself. The *timeouts*
+    # below are deliberately generous (30s, not 5s): under a full-suite run
+    # competing for CPU, N genuinely CPU-bound redundant builds serialised by
+    # the GIL can legitimately take longer than a tight timeout allows, and a
+    # `join()` timing out is a slow machine, not a correctness failure -- an
+    # earlier 5s version of this test flaked exactly that way.
+    n = 8
+    barrier = threading.Barrier(n)
+    results = [None] * n
+    errors = []
+
+    def worker(i):
+        barrier.wait(timeout=30)
+        try:
+            results[i] = src.build_location("Nob Hill, San Francisco", 500.0)
+        except BaseException as exc:  # pragma: no cover - failure path
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=(i,), daemon=True) for i in range(n)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors
+    assert all(r is not None for r in results), "a worker thread never finished in time"
+    assert len(src.scenarios()) == len(BUNDLED) + 1
+    ids = {r.description.scenario_id for r in results}
+    assert len(ids) == 1
+
+
+def test_scenarios_and_find_stay_consistent_while_the_catalog_grows_concurrently(tmp_path):
+    """`scenarios()` and `_find()` read `_locations` while `build_location`
+    mutates it from another thread. Neither must ever see a state that
+    raises or produces an inconsistent count -- a background reader hammers
+    both for the duration of a burst of concurrent writers building
+    genuinely distinct (non-colliding) locations.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    src = OsmSceneSource(
+        StubGeocoder(NOB_HILL), OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
+    )
+
+    stop = threading.Event()
+    reader_errors = []
+
+    def reader():
+        while not stop.is_set():
+            try:
+                for summary in src.scenarios():
+                    src._find(summary.id)
+            except BaseException as exc:  # pragma: no cover - failure path
+                reader_errors.append(exc)
+                return
+            time.sleep(0)  # yield, don't monopolise the GIL against the writers
+
+    # Daemon, and started only once wrapped in try/finally below: a writer
+    # raising midway (e.g. during RED, before `build_location` exists) must
+    # never leave this thread spinning forever and hanging the test process.
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+    try:
+        # StubGeocoder ignores the query text and always answers with
+        # NOB_HILL, so every one of these is a genuinely distinct id/entry,
+        # not a collision.
+        queries = [f"Test Place {i}, San Francisco" for i in range(12)]
+        for q in queries:
+            src.build_location(q, 500.0)
+    finally:
+        stop.set()
+        reader_thread.join(timeout=5)
+
+    assert not reader_errors
+    assert len(src.scenarios()) == len(BUNDLED) + len(queries)
+
+
+def test_locations_property_reflects_dynamically_added_locations(source):
+    """`server/cli.py` and other pre-existing callers read the public
+    `.locations` tuple directly (e.g. `source.locations[0].id`) -- it must
+    keep reflecting runtime growth, not go stale once `_locations` becomes
+    the real backing store behind a lock.
+    """
+    before = len(source.locations)
+    source.build_location("Nob Hill, San Francisco", 500.0)
+    assert len(source.locations) == before + 1

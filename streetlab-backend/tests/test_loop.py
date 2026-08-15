@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from map.lanes import NoDrivableRoad
 from map.scene_build import SyntheticGrid
 from schema import StateUpdate, parse_server_message
 from sim.loop import SimLoop, Simulation
@@ -136,6 +137,112 @@ def test_unknown_param_is_accepted_and_ignored(sim):
     outcome = sim.apply_dict({"id": "a", "cmd": "set_param", "key": "hazard_color", "value": "#FF7A1A"})
     assert outcome.ok
     assert outcome.scene is None
+
+
+# -- load_location: ack now, build later ------------------------------------- #
+#
+# `SyntheticGrid` has no `build_location` (and the task's constraints forbid
+# adding one), so it is the right fixture for the "source does not support
+# this" tests but the WRONG one for "the source supports it and the ack must
+# not wait for the build" tests -- `_StubbedLocationSource` below wraps it and
+# adds a `build_location` so those tests actually exercise the path they name.
+
+
+class _StubbedLocationSource:
+    """A `SceneSource` that also implements `build_location`.
+
+    Delegates `scenarios()`/`build()` to a real `SyntheticGrid` so
+    `Simulation.__init__` has something ordinary to load; `build_location`
+    itself is never actually CALLED by the tests that use this (they
+    intercept the build sink before it runs), so its body only needs to be
+    a plausible stand-in, not a faithful geocode+Overpass pipeline.
+    """
+
+    def __init__(self) -> None:
+        self._grid = SyntheticGrid()
+
+    def scenarios(self):
+        return self._grid.scenarios()
+
+    def build(self, scenario_id):
+        return self._grid.build(scenario_id)
+
+    def build_location(self, query, radius_m=None):
+        return self._grid.build("grid-loop")
+
+
+class _FailingLoadSource:
+    """Wraps `SyntheticGrid` the same way, but `build_location` raises the
+    REAL `NoDrivableRoad` a genuine `OsmSceneSource.build_location` would
+    raise for a query that geocodes fine but whose extract has no drivable
+    roads (a park, a plaza, open water) -- see
+    `test_build_location_propagates_no_drivable_road_for_a_roadless_extract`
+    in `test_osm_source.py` for the source-level half of this contract.
+    """
+
+    def __init__(self) -> None:
+        self._grid = SyntheticGrid()
+
+    def scenarios(self):
+        return self._grid.scenarios()
+
+    def build(self, scenario_id):
+        return self._grid.build(scenario_id)
+
+    def build_location(self, query, radius_m=None):
+        raise NoDrivableRoad(f"no drivable junctions in this extract: {query}")
+
+
+def test_load_location_acks_immediately_without_building():
+    """Reference-code note: the task brief's own version of this test
+    constructed `Simulation(SyntheticGrid(), ...)`, but `SyntheticGrid` has
+    no `build_location` -- so `_cmd_load_location`'s
+    `getattr(self._source, "build_location", None) is None` short-circuit
+    would return `ok=False` ("does not support load_location") before ever
+    reaching the build-sink call, making the brief's own `assert out.ok` /
+    `assert len(calls) == 1` unreachable even against a fully correct
+    implementation. A source that actually supports `build_location` is
+    what this test needs to exercise the ack-now/build-later path it names.
+    """
+    sim = Simulation(_StubbedLocationSource(), "grid-loop", seed=0)
+    calls = []
+    sim.set_build_sink(lambda build: calls.append(build))
+    out = sim.apply_dict(
+        {"cmd": "load_location", "id": "c1", "query": "Nob Hill", "radius_m": 400.0}
+    )
+    assert out.ok
+    assert out.scene is None  # the scene arrives later, via the epoch
+    assert len(calls) == 1  # handed to the executor, not run here
+
+
+def test_load_location_without_a_source_that_supports_it_fails_cleanly():
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=0)
+    sim.set_build_sink(lambda build: build())  # run inline to surface the error
+    out = sim.apply_dict({"cmd": "load_location", "id": "c", "query": "anywhere"})
+    assert not out.ok
+    assert "does not support" in (out.message or "")
+
+
+def test_load_location_reports_no_build_executor_attached_when_the_sink_is_unset():
+    """A bare `Simulation` never wired to a `SimLoop` has no build sink at
+    all -- `_cmd_load_location`'s second guard clause, otherwise untested.
+    """
+    sim = Simulation(_StubbedLocationSource(), "grid-loop", seed=0)
+    out = sim.apply_dict({"cmd": "load_location", "id": "c", "query": "anywhere"})
+    assert not out.ok
+    assert out.message == "no build executor attached"
+
+
+def test_load_location_no_longer_falls_back_to_the_generic_client_side_ack(sim):
+    """Before this task, `load_location` had no `_cmd_load_location` handler
+    and fell through to `apply`'s generic `getattr(self, f"_cmd_{cmd}",
+    None)` branch, which acks ANY unrecognised command as a harmless
+    client-side concern (`f"{command.cmd} is a client-side concern"`).
+    Regression pin: that specific message must never come back for
+    `load_location` again, now that it has its own handler.
+    """
+    out = sim.apply_dict({"id": "c", "cmd": "load_location", "query": "anywhere"})
+    assert out.message != "load_location is a client-side concern"
 
 
 def test_speed_cap_lowers_the_planned_target_speed(sim):
@@ -470,6 +577,55 @@ def test_sim_loop_wires_its_submit_scene_as_the_sims_build_sink():
     """
     loop = _loop()
     assert loop.sim._build_sink == loop.submit_scene
+
+
+def test_load_location_with_no_drivable_roads_surfaces_as_an_event_not_a_dead_worker():
+    """Controller probe: a query that geocodes but has no drivable roads in
+    its extract raises `NoDrivableRoad` (real exception, from `map.lanes`,
+    via `_FailingLoadSource` above) deep inside the build callable handed to
+    `submit_scene`. It must (a) still ack `load_location` immediately -- the
+    failure only happens later, off-thread -- (b) surface as a
+    `location_failed` event rather than vanishing, and (c) leave the
+    executor's single worker thread alive to serve a LATER, unrelated,
+    successful build. (a)+(b) are already covered generically by
+    `test_a_failing_build_emits_an_event_and_keeps_the_old_scene` for a bare
+    `RuntimeError`; this is the full, real command-path integration for the
+    specific exception `map.lanes.select_ego_route` actually raises, and (c)
+    is the part a generic events[] check alone cannot prove -- a build
+    thread that silently died here would leave the SECOND `submit_scene`
+    below queued forever with nothing to run it.
+    """
+    loop = SimLoop(Simulation(_FailingLoadSource(), seed=1), hz=20.0)
+    _ACTIVE_LOOPS.append(loop)
+    loop.start()
+    try:
+        outcome = loop.submit(
+            {"id": "c1", "cmd": "load_location", "query": "the middle of a lake"}
+        ).result(timeout=2.0)
+        assert outcome.ok  # acked immediately, independent of the eventual failure
+
+        deadline = time.monotonic() + 5.0
+        seen = []
+        while time.monotonic() < deadline and not seen:
+            frame = loop.latest
+            if frame:
+                seen = [e for e in frame.events if e.code == "location_failed"]
+            time.sleep(0.02)
+        assert seen, "NoDrivableRoad must surface through events[], not vanish"
+        assert "drivable" in seen[0].message.lower()
+
+        before_epoch = loop.scene_epoch
+        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        deadline = time.monotonic() + 5.0
+        while loop.scene_epoch == before_epoch and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert loop.scene_epoch == before_epoch + 1, (
+            "a streetlab-build worker that died on NoDrivableRoad would "
+            "never pick up this later, unrelated, successful build"
+        )
+        assert loop.sim.scene.description.scenario_id == "grid-arterial"
+    finally:
+        loop.stop()
 
 
 def test_a_second_build_overwrites_a_still_pending_first():

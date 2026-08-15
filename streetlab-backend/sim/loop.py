@@ -347,6 +347,27 @@ class Simulation:
         self._emit("scenario_loaded", f"loaded {command.scenario_id}")
         return CommandOutcome(ok=True, message="loaded", scene=self.scene.description)
 
+    def _cmd_load_location(self, command) -> CommandOutcome:
+        """Ack now, build later.
+
+        The build takes seconds — geocode plus an Overpass fetch — so it goes to
+        the executor and the finished scene reaches clients through the epoch
+        push, not through this ack. Failures surface in `events[]`.
+        """
+        builder = getattr(self._source, "build_location", None)
+        if builder is None:
+            return CommandOutcome(
+                ok=False,
+                message=f"{type(self._source).__name__} does not support load_location",
+            )
+        if self._build_sink is None:
+            return CommandOutcome(ok=False, message="no build executor attached")
+
+        query, radius = command.query, command.radius_m
+        self._build_sink(lambda: builder(query, radius))
+        self._emit("location_requested", f"building {query}")
+        return CommandOutcome(ok=True, message=f"building {query}")
+
     def _cmd_set_param(self, command) -> CommandOutcome:
         if command.key not in DEFAULT_PARAMS:
             # Render-only and unknown keys are accepted and ignored, so a newer

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from dataclasses import replace
 
 from map.cache import DiskCache, default_cache_dir
@@ -77,6 +78,14 @@ BUNDLED: tuple[LocationSpec, ...] = (
 )
 
 
+def _slug(query: str) -> str:
+    """A stable, filesystem- and id-safe slug. Not reversible; ids only."""
+    cleaned = "".join(c.lower() if c.isalnum() else "-" for c in query).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    return cleaned[:48] or "location"
+
+
 def default_source() -> OsmSceneSource:
     """The wiring the CLI uses: real geocoder, real Overpass, on-disk cache."""
     return OsmSceneSource(
@@ -94,13 +103,32 @@ class OsmSceneSource:
     ) -> None:
         self.geocoder = geocoder
         self.overpass = overpass
-        self.locations = locations
+        # `build_location` (Task 4) mutates this from the executor thread
+        # while `scenarios()`/`_find()` read it from the sim thread -- every
+        # access goes through `_lock` so a reader never observes a state
+        # that predates or races a concurrent append.
+        self._lock = threading.Lock()
+        self._locations = locations
         self._scenes: dict[str, BuiltScene] = {}
+
+    @property
+    def locations(self) -> tuple[LocationSpec, ...]:
+        """A snapshot of the current catalog specs, oldest (bundled) first.
+
+        Kept as a public read accessor for existing callers (`server/cli.py`)
+        that pre-date `build_location` and never race it -- but still taken
+        under the lock, so it can't return a value from a swap that is only
+        half-applied on some future implementation of the setter.
+        """
+        with self._lock:
+            return self._locations
 
     # -- SceneSource -------------------------------------------------------- #
 
     def scenarios(self) -> list[ScenarioSummary]:
-        return [self._summary(spec, i + 1) for i, spec in enumerate(self.locations)]
+        with self._lock:
+            locations = self._locations
+        return [self._summary(spec, i + 1) for i, spec in enumerate(locations)]
 
     def build(self, scenario_id: str) -> BuiltScene:
         core = self._core(self._find(scenario_id))
@@ -121,7 +149,9 @@ class OsmSceneSource:
         return cached
 
     def _find(self, scenario_id: str) -> LocationSpec:
-        for spec in self.locations:
+        with self._lock:
+            locations = self._locations
+        for spec in locations:
             if spec.id == scenario_id:
                 return spec
         raise KeyError(f"unknown location: {scenario_id}")
@@ -229,7 +259,8 @@ class OsmSceneSource:
         the ego actually drives — and this single scalar caps the whole route,
         since the planner reads `PlanLimits.speed_limit_mps` and never consults
         an individual `Road`. On the Nob Hill extract the unweighted count was
-        109 to 99, i.e. one mis-tagged alley from capping the car at 15 mph.
+        109 to 99 — a 10-road gap, not the single mis-tagged alley an earlier
+        description of this bug claimed.
         """
         if not roads:
             return 25 * MPH
@@ -244,6 +275,81 @@ class OsmSceneSource:
         return max(metres, key=lambda limit: (metres[limit], limit))
 
     # -- catalog ------------------------------------------------------------ #
+
+    def build_location(self, query: str, radius_m: float | None = None) -> BuiltScene:
+        """Geocode an arbitrary address, build it, and add it to the catalog.
+
+        Runs on the executor, never the sim thread. `self._locations` is
+        mutated here and read by `scenarios()`/`_find()` on the sim thread,
+        so both go through `_lock` — a torn read would hand the sidebar a
+        half-written catalog. The whole decide-an-id-then-maybe-append
+        sequence below happens under one lock acquisition, so two calls
+        racing on the same query cannot both decide "not yet known" and
+        both append.
+
+        Two distinct queries can normalise to the same id: `_slug` collapses
+        punctuation, so "Main St, Springfield" and "Main St. Springfield"
+        both reduce to `osm-main-st-springfield`. Silently reusing the first
+        query's cached scene for the second would serve the wrong place with
+        no error; silently overwriting the first's catalog entry would
+        corrupt it out from under a client that already has it open. So a
+        collision on the derived id is resolved by checking whether the
+        entry *already at* that id was built for this exact query -- if so
+        it is a genuine repeat (idempotent reuse); if the id is taken by a
+        DIFFERENT query, this one gets its own `-2`, `-3`, ... id instead,
+        walking forward past any earlier collisions until it either finds a
+        slot this exact query already owns (a repeat of an earlier
+        collision's resolution) or the first free one.
+        """
+        base_id = f"osm-{_slug(query)}"
+        with self._lock:
+            by_id = {s.id: s for s in self._locations}
+            existing = by_id.get(base_id)
+            if existing is not None and existing.query == query:
+                spec = existing
+            elif existing is None:
+                spec = LocationSpec(
+                    id=base_id,
+                    query=query,
+                    name=query,
+                    radius_m=radius_m or 500.0,
+                    traffic=4,
+                )
+                self._locations = self._locations + (spec,)
+            else:
+                spec = self._disambiguate(base_id, query, radius_m, by_id)
+        return self.build(spec.id)
+
+    def _disambiguate(
+        self,
+        base_id: str,
+        query: str,
+        radius_m: float | None,
+        by_id: dict[str, LocationSpec],
+    ) -> LocationSpec:
+        """`base_id` is already taken by a DIFFERENT query (a slug collision).
+
+        Find this exact query among any siblings an earlier collision already
+        disambiguated, or mint the next free `-N` suffix. Caller holds `_lock`
+        and mutates `self._locations` on our behalf via the return value.
+        """
+        n = 2
+        while True:
+            candidate_id = f"{base_id}-{n}"
+            candidate = by_id.get(candidate_id)
+            if candidate is None:
+                spec = LocationSpec(
+                    id=candidate_id,
+                    query=query,
+                    name=query,
+                    radius_m=radius_m or 500.0,
+                    traffic=4,
+                )
+                self._locations = self._locations + (spec,)
+                return spec
+            if candidate.query == query:
+                return candidate
+            n += 1
 
     def _summary(self, spec: LocationSpec, index: int) -> ScenarioSummary:
         scene = self._core(spec)
