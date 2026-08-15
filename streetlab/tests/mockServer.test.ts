@@ -358,24 +358,32 @@ describe('mock transport', () => {
     transport.close();
   });
 
-  it('cancels a pending load_location build on close, so no timer outlives the transport', async () => {
+  it('clears the pending load_location timer handle on close', async () => {
+    // A behavioural check alone (no message arrives after close) would pass
+    // even without cleanup, because emitScene() already no-ops once
+    // handlers is null — that guard exists for other reasons and would mask
+    // a leaked timer. Spying on the global timer functions instead proves
+    // the handle itself gets cleared, not just that its effect is muted, so
+    // it cannot register as a still-pending handle after the test/transport
+    // is torn down.
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+
     const transport = createMockTransport();
-    const messages: ServerMessage[] = [];
-
-    transport.connect({
-      onMessage: (m) => messages.push(m),
-      onStatus: () => {},
-      onInvalid: () => {},
-    });
+    transport.connect({ onMessage: () => {}, onStatus: () => {}, onInvalid: () => {} });
     transport.send({ id: 'z', cmd: 'load_location', query: 'Somewhere' });
-    // Close well before the fake build delay elapses.
-    await new Promise((r) => setTimeout(r, 10));
-    transport.close();
 
-    // Long enough that the build would have completed had it not been
-    // cancelled; onMessage after close must never fire.
-    await new Promise((r) => setTimeout(r, 250));
-    expect(messages.filter((m) => m.type === 'scene_description')).toHaveLength(1);
+    // The transport's frame loop uses requestAnimationFrame/setInterval
+    // under Node, never setTimeout, so this is unambiguously the
+    // load_location build timer.
+    expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+    const timerId = setTimeoutSpy.mock.results[0]!.value;
+
+    transport.close();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(timerId);
+
+    setTimeoutSpy.mockRestore();
+    clearTimeoutSpy.mockRestore();
   });
 });
 
