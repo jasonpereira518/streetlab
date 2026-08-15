@@ -142,13 +142,24 @@ class _Connection:
         toward whatever the latest one holds.
         """
         while True:
-            epoch = self.loop.scene_epoch
+            # `epoch` and `frame` MUST come from one `snapshot()` call, not
+            # `self.loop.scene_epoch` followed separately by `self.loop.latest`.
+            # Two independent lock acquisitions guarantee nothing about their
+            # joint consistency: a swap can land in the gap between them, so
+            # the epoch read is still the old value (no mismatch, scene push
+            # skipped) while the frame read already reflects the new scene —
+            # handing this client a `state_update` for a scenario it was
+            # never sent a `scene_description` for. That is exactly the
+            # ordering bug the epoch mechanism exists to prevent; reading
+            # both fields under the same acquisition is what makes the
+            # invariant hold: a published frame's generation is never ahead
+            # of the epoch this loop iteration also observed.
+            epoch, frame = self.loop.snapshot()
             if epoch != self._sent_epoch:
                 # A location finished building. The client gets the new world
                 # before any frame that describes it.
                 await self.send_model(self.loop.sim.scene_description())
                 self._sent_epoch = epoch
-            frame = self.loop.latest
             if frame is not None:
                 # `seq` is a per-connection counter: a client joining an
                 # hour-old simulation still starts counting from zero.

@@ -9,6 +9,7 @@ import asyncio
 import json
 import socket
 import threading
+import time
 import urllib.request
 
 import pytest
@@ -361,8 +362,13 @@ async def test_a_scene_swap_is_pushed_to_a_connected_client(server, sim_loop):
         first = await recv_typed(ws, "scene_description")
         assert first.type == "scene_description"
         sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
-        # The new scene must arrive unsolicited, with no command sent.
-        for _ in range(600):
+        # The new scene must arrive unsolicited, with no command sent. Bounded
+        # by wall-clock time rather than a message count: a fixed iteration
+        # count times a per-recv timeout compounds into a worst case of
+        # count * timeout (600 * 5s = 3000s here) if the expected message
+        # never arrives — a deadline fails fast instead of stalling CI.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
             msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
             if msg["type"] == "scene_description":
                 assert msg["scenario_id"] == "grid-arterial"
@@ -380,7 +386,10 @@ async def test_a_client_never_sees_a_frame_for_a_scene_it_has_not_received(serve
     sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-signals"))
     async with connect(server) as ws:
         known_scenarios: set[str] = set()
-        for _ in range(600):
+        # See the comment on the previous test: bounded by wall-clock time,
+        # not a message count, so a hang fails fast instead of stalling CI.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
             raw = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
             parsed = parse_server_message(raw)
             assert parsed.ok, parsed.error

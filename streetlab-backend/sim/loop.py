@@ -713,6 +713,27 @@ class SimLoop:
         with self._lock:
             return self._scene_epoch
 
+    def snapshot(self) -> tuple[int, StateUpdate | None]:
+        """The epoch and the latest frame, read together as one pair.
+
+        `scene_epoch` and `latest` are each individually lock-guarded, but
+        reading them as two SEPARATE acquisitions guarantees nothing about
+        their joint consistency. `_take_pending_scene` bumps `_scene_epoch`
+        strictly before the `state_update()` call that produces the frame a
+        later `_latest = frame` publishes — so within one `_run()` iteration,
+        the epoch a reader sees is always at least as new as the frame it is
+        paired with. A caller doing two separate reads can still straddle
+        that ordering: read the OLD epoch (no mismatch, skip the scene push),
+        then have a swap land, then read the NEW `latest` — and end up
+        sending a `state_update` for a scenario it never announced. Taking
+        both under this single `with self._lock:` closes that gap: whatever
+        epoch and frame a caller gets here were never mutated by the sim
+        thread in between, so the frame's generation can never be ahead of
+        the epoch read alongside it.
+        """
+        with self._lock:
+            return self._scene_epoch, self._latest
+
     def step_time_percentiles_ms(self) -> tuple[float, float]:
         """p50/p95 wall-clock step time over the recent window, in ms."""
         with self._lock:

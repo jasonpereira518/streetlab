@@ -552,3 +552,37 @@ def test_a_build_finishing_after_stop_does_not_swap_into_a_dead_loop():
 
     assert loop.sim.scene.description.scenario_id != "grid-arterial"
     assert loop.scene_epoch == 0
+
+
+def test_snapshot_returns_the_epoch_and_a_frame_from_the_same_read():
+    """`ws_server.py`'s `stream()` must read the epoch and the latest frame
+    together, not as `loop.scene_epoch` followed separately by `loop.latest`
+    — two acquisitions guarantee nothing about their joint consistency, and
+    a swap landing between them can hand a client a frame for a scenario it
+    was never sent a `scene_description` for (see `snapshot`'s docstring).
+
+    This cannot deterministically reproduce that race — same bytecode-width
+    window as the connect-time race in Probe 5 — so it only proves
+    `snapshot()`'s basic contract: it matches the individual accessors, and
+    once a swap has actually landed and is visible through it, the paired
+    frame already carries the new scenario rather than lagging behind.
+    """
+    loop = _loop()
+    loop.start()
+    try:
+        loop.await_frame(timeout=2.0)
+        epoch, frame = loop.snapshot()
+        assert epoch == loop.scene_epoch
+        assert isinstance(frame, StateUpdate)
+
+        before = loop.scene_epoch
+        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        deadline = time.monotonic() + 5.0
+        epoch, frame = loop.snapshot()
+        while epoch == before and time.monotonic() < deadline:
+            time.sleep(0.005)
+            epoch, frame = loop.snapshot()
+        assert epoch == before + 1
+        assert frame is not None and frame.scenario_id == "grid-arterial"
+    finally:
+        loop.stop()
