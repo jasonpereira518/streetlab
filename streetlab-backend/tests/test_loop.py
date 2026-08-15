@@ -6,19 +6,26 @@ breaking — above all the NaN guard, whose absence would look like the car
 freezing on screen for no visible reason.
 """
 
+import json
 import logging
 import math
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
+from map.cache import DiskCache
+from map.geocode import Place
 from map.lanes import NoDrivableRoad
+from map.osm_source import LocationSpec, OsmSceneSource
+from map.overpass import BBox, OverpassClient
 from map.scene_build import SyntheticGrid
 from schema import StateUpdate, parse_server_message
 from sim.loop import SimLoop, Simulation
 
 DT = 1 / 60
+OVERPASS_FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
 
 
 @pytest.fixture
@@ -626,6 +633,93 @@ def test_load_location_with_no_drivable_roads_surfaces_as_an_event_not_a_dead_wo
         assert loop.sim.scene.description.scenario_id == "grid-arterial"
     finally:
         loop.stop()
+
+
+def test_reset_never_performs_a_network_fetch_for_a_still_building_location(tmp_path):
+    """Critical (Task 4 review). `_cmd_reset`/`_cmd_load_scenario` call
+    `source.build(...)` SYNCHRONOUSLY on the sim thread, and (before this
+    fix) `OsmSceneSource.build()` attached the catalog by calling
+    `scenarios()`, which force-built every spec in `_locations` that was
+    not already cached -- not just the one requested. So an everyday
+    `reset` issued while a DIFFERENT `load_location` was still building on
+    the executor could drag the sim thread into THAT location's Overpass
+    fetch: the exact "car freezes on screen for no visible reason" failure
+    this file's own docstring names, reachable by an ordinary user action
+    with no contrived timing.
+
+    Reproduces it directly, matching the reviewer's own repro shape.
+    Location A is already loaded and cached (built synchronously below,
+    before `SimLoop` even starts). Location B's `load_location` build is
+    released onto the executor and made to block mid-fetch via an `Event`
+    handshake -- not a sleep-and-hope -- so it is GENUINELY still in flight,
+    not just usually still in flight by luck, at the moment `reset` is
+    issued on the sim thread. Every fetch that ever touches B's bbox is
+    recorded with the calling thread's name; none may be the sim thread's.
+    """
+    payload = json.loads(OVERPASS_FIXTURE.read_text())
+    a_place = Place(lat=37.7945, lon=-122.4156, display_name="A place")
+    b_place = Place(lat=1.0, lon=2.0, display_name="B place, somewhere else entirely")
+    places = {"A Place, San Francisco": a_place, "B Place, Nowhere": b_place}
+    # The exact bbox text `_build_uncached` will compute for B -- not an
+    # approximation, so there is no risk of the marker missing a real match
+    # due to formatting drift between this test and `map/overpass.py`.
+    b_marker = BBox.around(b_place.lat, b_place.lon, 500.0).as_query()
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingFetcher:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, bool]] = []  # (thread name, was this B's fetch)
+
+        def fetch(self, query: str) -> dict:
+            is_b = b_marker in query
+            self.calls.append((threading.current_thread().name, is_b))
+            if is_b:
+                started.set()
+                release.wait(timeout=5)
+            return payload
+
+    class TwoPlaceGeocoder:
+        def lookup(self, query: str) -> Place:
+            return places[query]
+
+    fetcher = BlockingFetcher()
+    a_spec = LocationSpec("existing-a", "A Place, San Francisco", "A", 500.0, 4)
+    source = OsmSceneSource(
+        TwoPlaceGeocoder(), OverpassClient(fetcher, DiskCache(tmp_path)), locations=(a_spec,)
+    )
+
+    # Builds + caches A synchronously, here on the main test thread --
+    # before `SimLoop` exists, so this cannot itself be mistaken for the
+    # bug under test.
+    sim = Simulation(source, a_spec.id, seed=1)
+    loop = SimLoop(sim, hz=20.0)
+    _ACTIVE_LOOPS.append(loop)
+    loop.start()
+    try:
+        loop.submit(
+            {"id": "b1", "cmd": "load_location", "query": "B Place, Nowhere"}
+        ).result(timeout=2.0)
+        assert started.wait(timeout=2.0), "B's build never reached the (blocked) fetch"
+
+        try:
+            outcome = loop.submit({"id": "r1", "cmd": "reset"}).result(timeout=3.0)
+        except TimeoutError:
+            pytest.fail(
+                "reset never returned -- the sim thread appears stuck inside "
+                "B's still-blocked fetch, exactly the bug this test guards against"
+            )
+        assert outcome.ok
+    finally:
+        # Let B's build finish so the executor/loop shut down cleanly,
+        # whatever happened above.
+        release.set()
+        loop.stop()
+
+    assert not any(name == "streetlab-sim" and is_b for name, is_b in fetcher.calls), (
+        f"the sim thread performed a fetch for B's still-in-flight build: {fetcher.calls}"
+    )
 
 
 def test_a_second_build_overwrites_a_still_pending_first():

@@ -126,15 +126,33 @@ class OsmSceneSource:
     # -- SceneSource -------------------------------------------------------- #
 
     def scenarios(self) -> list[ScenarioSummary]:
+        """The catalog, cheap and incapable of triggering a build.
+
+        `build()` calls this to attach the catalog to whatever it just
+        built, and `build()` can run on the SIM THREAD: `_cmd_reset` and
+        `_cmd_load_scenario` (`sim/loop.py`) call `Simulation._load` ->
+        `source.build(...)` synchronously, never through the executor.
+        `scenarios()` used to walk every spec and force-build any that
+        weren't cached yet -- which meant a routine `reset`, or switching
+        to an already-loaded scenario, while a DIFFERENT `load_location`
+        was still building on the executor, could drag the sim thread into
+        THAT location's Overpass fetch: the exact "car freezes on screen
+        for no visible reason" failure Tasks 3 and 4 exist to prevent,
+        reachable by an ordinary user action with no contrived timing.
+        `_summary` only ever reads `self._scenes`; it never calls
+        `_core`/`_build_uncached`.
+        """
         with self._lock:
             locations = self._locations
         return [self._summary(spec, i + 1) for i, spec in enumerate(locations)]
 
     def build(self, scenario_id: str) -> BuiltScene:
         core = self._core(self._find(scenario_id))
-        # The catalog is attached only after the scene exists, so summaries can
-        # be derived from real built geometry. `_core` is memoised, so
-        # `scenarios()` here cannot re-enter the builder.
+        # `scenarios()` never builds (see its docstring), so attaching the
+        # catalog here is a cheap read of whatever is already built -- this
+        # spec (just now, by `_core` above) plus anything else previously
+        # cached -- and can never reach into a network fetch for some OTHER
+        # location that happens to still be in flight elsewhere.
         description = core.description.model_copy(update={"catalog": self.scenarios()})
         return replace(core, description=description)
 
@@ -287,37 +305,44 @@ class OsmSceneSource:
         racing on the same query cannot both decide "not yet known" and
         both append.
 
-        Two distinct queries can normalise to the same id: `_slug` collapses
+        Matched by QUERY TEXT FIRST, across the WHOLE catalog — bundled or
+        dynamic. An exact repeat of any already-known query reuses that
+        entry outright: retyping a bundled location's own address through
+        the freeform load box must not silently build and catalog a second,
+        identical copy of data already on hand. `radius_m` is deliberately
+        NOT part of that match — it is first-write-wins: a repeat with a
+        different radius still reuses the existing entry as-is, matching an
+        idempotence contract defined purely in terms of the query string.
+
+        Two distinct queries can still collide on the DERIVED id even
+        though neither matches an existing query verbatim: `_slug` collapses
         punctuation, so "Main St, Springfield" and "Main St. Springfield"
-        both reduce to `osm-main-st-springfield`. Silently reusing the first
-        query's cached scene for the second would serve the wrong place with
-        no error; silently overwriting the first's catalog entry would
-        corrupt it out from under a client that already has it open. So a
-        collision on the derived id is resolved by checking whether the
-        entry *already at* that id was built for this exact query -- if so
-        it is a genuine repeat (idempotent reuse); if the id is taken by a
-        DIFFERENT query, this one gets its own `-2`, `-3`, ... id instead,
-        walking forward past any earlier collisions until it either finds a
-        slot this exact query already owns (a repeat of an earlier
-        collision's resolution) or the first free one.
+        both reduce to `osm-main-st-springfield`. Once the exact-text check
+        above has ruled out a genuine repeat, a collision on that id is a
+        genuinely different query wanting the same slot — silently reusing
+        the first query's cached scene for the second would serve the wrong
+        place with no error, and silently overwriting the first's catalog
+        entry would corrupt it out from under a client that already has it
+        open. So it gets its own `-2`, `-3`, ... id instead (`_disambiguate`).
         """
-        base_id = f"osm-{_slug(query)}"
         with self._lock:
-            by_id = {s.id: s for s in self._locations}
-            existing = by_id.get(base_id)
-            if existing is not None and existing.query == query:
-                spec = existing
-            elif existing is None:
-                spec = LocationSpec(
-                    id=base_id,
-                    query=query,
-                    name=query,
-                    radius_m=radius_m or 500.0,
-                    traffic=4,
-                )
-                self._locations = self._locations + (spec,)
+            exact = next((s for s in self._locations if s.query == query), None)
+            if exact is not None:
+                spec = exact
             else:
-                spec = self._disambiguate(base_id, query, radius_m, by_id)
+                base_id = f"osm-{_slug(query)}"
+                by_id = {s.id: s for s in self._locations}
+                if base_id not in by_id:
+                    spec = LocationSpec(
+                        id=base_id,
+                        query=query,
+                        name=query,
+                        radius_m=radius_m or 500.0,
+                        traffic=4,
+                    )
+                    self._locations = self._locations + (spec,)
+                else:
+                    spec = self._disambiguate(base_id, query, radius_m, by_id)
         return self.build(spec.id)
 
     def _disambiguate(
@@ -327,32 +352,48 @@ class OsmSceneSource:
         radius_m: float | None,
         by_id: dict[str, LocationSpec],
     ) -> LocationSpec:
-        """`base_id` is already taken by a DIFFERENT query (a slug collision).
-
-        Find this exact query among any siblings an earlier collision already
-        disambiguated, or mint the next free `-N` suffix. Caller holds `_lock`
-        and mutates `self._locations` on our behalf via the return value.
+        """`base_id` is taken by a DIFFERENT query (a slug collision), and
+        the caller has already ruled out this exact query matching ANY
+        existing entry — so this just mints the next free `-N` suffix.
+        Caller holds `_lock` and mutates `self._locations` on our behalf via
+        the return value.
         """
         n = 2
-        while True:
-            candidate_id = f"{base_id}-{n}"
-            candidate = by_id.get(candidate_id)
-            if candidate is None:
-                spec = LocationSpec(
-                    id=candidate_id,
-                    query=query,
-                    name=query,
-                    radius_m=radius_m or 500.0,
-                    traffic=4,
-                )
-                self._locations = self._locations + (spec,)
-                return spec
-            if candidate.query == query:
-                return candidate
+        while f"{base_id}-{n}" in by_id:
             n += 1
+        spec = LocationSpec(
+            id=f"{base_id}-{n}",
+            query=query,
+            name=query,
+            radius_m=radius_m or 500.0,
+            traffic=4,
+        )
+        self._locations = self._locations + (spec,)
+        return spec
 
     def _summary(self, spec: LocationSpec, index: int) -> ScenarioSummary:
-        scene = self._core(spec)
+        # Peek at the memoised cache directly -- NEVER `self._core(spec)`,
+        # which builds on a cache miss. `scenarios()`'s docstring is the
+        # contract this enforces: summarising must not itself trigger the
+        # pipeline for a spec nobody has asked to build yet.
+        scene = self._scenes.get(spec.id)
+        if scene is None:
+            # Not built yet -- an unbuilt location has no real geometry to
+            # preview anyway, so an honest placeholder (`ScenarioSummary`
+            # places no `min_length` on either preview field) is what it
+            # gets until its own build lands, rather than a forced one here.
+            return ScenarioSummary(
+                id=spec.id,
+                index=index,
+                name=spec.name,
+                location=ATTRIBUTION,
+                description=f"Real street geometry around {spec.name}, from OpenStreetMap.",
+                duration_s=240.0,
+                bookmarked=index == 1,
+                difficulty="moderate",
+                preview_paths=[],
+                preview_route=[],
+            )
         b = scene.description.bounds
         span = max(b.max_x - b.min_x, b.max_y - b.min_y) or 1.0
 

@@ -55,12 +55,57 @@ def test_scenarios_lists_the_bundled_locations(source):
 
 
 def test_summaries_carry_real_preview_geometry(source):
+    """`scenarios()` itself never builds (review fix, see
+    `test_scenarios_never_builds_an_unbuilt_location` below) -- so unlike
+    before, the spec has to actually be built first for its summary to
+    carry real geometry rather than the empty-preview placeholder.
+    """
+    source.build(BUNDLED[0].id)
     summary = source.scenarios()[0]
     assert len(summary.preview_paths) > 3
     assert len(summary.preview_route) > 10
     for x, y in summary.preview_route:
         assert 0.0 <= x <= 100.0
         assert 0.0 <= y <= 100.0
+
+
+def test_scenarios_never_builds_an_unbuilt_location(tmp_path):
+    """Critical regression (Task 4 review): `scenarios()` used to attach a
+    catalog by fully building every spec that was not already cached --
+    including ones nobody asked for. That is precisely what let a routine
+    `reset`/`load_scenario`, running synchronously on the SIM THREAD (see
+    `build()`'s catalog-attach step), end up performing a network fetch for
+    a totally different, still-in-flight `load_location` build -- the exact
+    "car freezes on screen for no visible reason" failure Tasks 3 and 4
+    exist to prevent, reachable by an ordinary user action with no
+    contrived timing (see `test_loop.py`'s
+    `test_reset_never_performs_a_network_fetch_for_a_still_building_location`
+    for the full `Simulation`/`SimLoop` reproduction).
+
+    `scenarios()` must be cheap and incapable of building: an unbuilt spec
+    gets an honest placeholder summary (empty preview geometry --
+    `ScenarioSummary` places no `min_length` on either field), never a
+    forced pipeline run. `ExplodingFetcher` makes that a hard guarantee
+    rather than a "probably didn't fetch" one: ANY attempt to fetch, for
+    any reason, fails the test immediately.
+    """
+    class ExplodingFetcher:
+        def fetch(self, query: str) -> dict:
+            raise AssertionError("scenarios() must never perform a fetch")
+
+    unbuilt = LocationSpec("osm-unbuilt", "Nowhere built yet", "Unbuilt", 500.0, 4)
+    src = OsmSceneSource(
+        StubGeocoder(NOB_HILL),
+        OverpassClient(ExplodingFetcher(), DiskCache(tmp_path)),
+        locations=(unbuilt,),
+    )
+
+    summaries = src.scenarios()  # must not raise
+
+    assert len(summaries) == 1
+    assert summaries[0].id == "osm-unbuilt"
+    assert summaries[0].preview_paths == []
+    assert summaries[0].preview_route == []
 
 
 def test_build_produces_a_valid_scene_description(source):
@@ -306,8 +351,16 @@ class MultiPlaceGeocoder:
 
 
 def test_build_location_adds_the_location_to_the_catalog(source):
+    """Uses a query that does NOT match any bundled entry's text -- unlike
+    the brief's original literal "Nob Hill, San Francisco" (which, after
+    the review fix below, is no longer a fresh addition against the
+    `source` fixture's BUNDLED default -- see
+    `test_build_location_is_idempotent_for_the_same_query` and
+    `test_build_location_reuses_a_bundled_entry_for_its_exact_query_text`
+    for that specific, now-deliberate, behaviour).
+    """
     before = {s.id for s in source.scenarios()}
-    scene = source.build_location("Nob Hill, San Francisco", 500.0)
+    scene = source.build_location("Alamo Square, San Francisco", 500.0)
     after = {s.id for s in source.scenarios()}
     assert len(after) == len(before) + 1
     assert scene.description.scenario_id in after
@@ -315,10 +368,17 @@ def test_build_location_adds_the_location_to_the_catalog(source):
 
 
 def test_build_location_is_idempotent_for_the_same_query(source):
+    """"Nob Hill, San Francisco" is BUNDLED[0]'s own query text. Matching is
+    by query text across the WHOLE catalog (review fix: matching by derived
+    id alone missed that retyping a bundled address should reuse it, not
+    build an identical second copy) -- so BOTH calls here resolve to the
+    bundled entry itself, and the catalog never grows at all.
+    """
     a = source.build_location("Nob Hill, San Francisco", 500.0)
     b = source.build_location("Nob Hill, San Francisco", 500.0)
-    assert a.description.scenario_id == b.description.scenario_id
-    assert len(source.scenarios()) == len(BUNDLED) + 1
+    assert a.description.scenario_id == BUNDLED[0].id
+    assert b.description.scenario_id == BUNDLED[0].id
+    assert len(source.scenarios()) == len(BUNDLED)
 
 
 def test_build_location_does_not_refetch_overpass_on_a_repeated_query(tmp_path):
@@ -335,6 +395,29 @@ def test_build_location_does_not_refetch_overpass_on_a_repeated_query(tmp_path):
     calls_after_first = fetcher.calls
     src.build_location("Nob Hill, San Francisco", 500.0)
     assert fetcher.calls == calls_after_first
+
+
+def test_build_location_reuses_a_bundled_entry_for_its_exact_query_text(source):
+    """Explicit pin for the review fix: retyping a BUNDLED location's own
+    query through the freeform `load_location` box must reuse that curated
+    entry -- same id, same cached scene -- rather than silently building
+    and cataloging an identical second copy of data already on hand.
+    """
+    before = len(source.scenarios())
+    scene = source.build_location(BUNDLED[0].query, BUNDLED[0].radius_m)
+    assert scene.description.scenario_id == BUNDLED[0].id
+    assert len(source.scenarios()) == before
+
+
+def test_build_location_ignores_radius_on_a_repeat_of_a_known_query(source):
+    """Matching is by query text alone -- `radius_m` is first-write-wins,
+    not part of the identity check. A repeat with a DIFFERENT radius must
+    still resolve to the SAME already-known entry, not build a competing
+    one at the new radius.
+    """
+    a = source.build_location("Nob Hill, San Francisco", 500.0)
+    b = source.build_location("Nob Hill, San Francisco", 999.0)
+    assert a.description.scenario_id == b.description.scenario_id == BUNDLED[0].id
 
 
 def test_build_location_disambiguates_a_slug_collision_between_different_queries(tmp_path):
@@ -444,6 +527,12 @@ def test_build_location_racing_the_same_query_from_many_threads_yields_one_entry
     # the GIL can legitimately take longer than a tight timeout allows, and a
     # `join()` timing out is a slow machine, not a correctness failure -- an
     # earlier 5s version of this test flaked exactly that way.
+    #
+    # The query text ("Twin Peaks...") is deliberately NOT BUNDLED[0]'s own
+    # ("Nob Hill, San Francisco") -- matching is by query text now (review
+    # fix), so racing on the bundled entry's own text would resolve to it
+    # immediately with no append ever in contention, proving nothing about
+    # the lock this test exists to stress.
     n = 8
     barrier = threading.Barrier(n)
     results = [None] * n
@@ -452,7 +541,7 @@ def test_build_location_racing_the_same_query_from_many_threads_yields_one_entry
     def worker(i):
         barrier.wait(timeout=30)
         try:
-            results[i] = src.build_location("Nob Hill, San Francisco", 500.0)
+            results[i] = src.build_location("Twin Peaks, San Francisco", 500.0)
         except BaseException as exc:  # pragma: no cover - failure path
             errors.append(exc)
 
@@ -494,7 +583,15 @@ def test_scenarios_and_find_stay_consistent_while_the_catalog_grows_concurrently
             except BaseException as exc:  # pragma: no cover - failure path
                 reader_errors.append(exc)
                 return
-            time.sleep(0)  # yield, don't monopolise the GIL against the writers
+            # A real sleep, not `time.sleep(0)`: `scenarios()` is cheap now
+            # (the review fix below -- it no longer builds an uncached
+            # spec), so an unthrottled reader loop is a pure-Python hot loop
+            # with no C-extension calls to release the GIL at, and it can
+            # starve the writer thread's actual (expensive) build work of
+            # CPU time for minutes rather than the seconds this test should
+            # take. `time.sleep(0)` genuinely doesn't grant that headroom
+            # the way it seemed to when `scenarios()` was still slow.
+            time.sleep(0.001)
 
     # Daemon, and started only once wrapped in try/finally below: a writer
     # raising midway (e.g. during RED, before `build_location` exists) must
@@ -520,8 +617,10 @@ def test_locations_property_reflects_dynamically_added_locations(source):
     """`server/cli.py` and other pre-existing callers read the public
     `.locations` tuple directly (e.g. `source.locations[0].id`) -- it must
     keep reflecting runtime growth, not go stale once `_locations` becomes
-    the real backing store behind a lock.
+    the real backing store behind a lock. A genuinely new query (not
+    BUNDLED[0]'s own text -- that path is `test_build_location_reuses_a_
+    bundled_entry_for_its_exact_query_text` and does NOT grow the catalog).
     """
     before = len(source.locations)
-    source.build_location("Nob Hill, San Francisco", 500.0)
+    source.build_location("Golden Gate Park, San Francisco", 500.0)
     assert len(source.locations) == before + 1
