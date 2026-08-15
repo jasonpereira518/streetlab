@@ -213,6 +213,15 @@ export interface SimStoreState {
   sceneEpoch: number;
   catalog: ScenarioSummary[];
   activeScenarioId: string | null;
+  /**
+   * The trimmed query text of an in-flight `load_location` build, or `null`
+   * when none is outstanding. Set the instant the command is sent; cleared
+   * either by the eventual `scene_description` or by a `location_failed`
+   * event — whichever arrives first. Never carries a request id (the wire
+   * protocol has none for this), so it can only ever track "is *something*
+   * building", not which specific query a late event belongs to.
+   */
+  locationPending: string | null;
 
   /* mirrored frame fields (only updated on change) */
   paused: boolean;
@@ -239,6 +248,7 @@ export interface SimStoreState {
   send(command: CommandInput): string;
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
+  loadLocation(query: string): void;
   setParam(key: string, value: ParamValue): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
@@ -261,6 +271,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   sceneEpoch: 0,
   catalog: [],
   activeScenarioId: null,
+  locationPending: null,
 
   paused: false,
   assistActive: false,
@@ -292,7 +303,21 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
 
     transport.connect({
       onMessage: (msg) => applyServerMessage(msg, set, get),
-      onStatus: (status, detail) => set({ status, statusDetail: detail ?? '' }),
+      onStatus: (status, detail) =>
+        set((s) => ({
+          status,
+          statusDetail: detail ?? '',
+          // A transport that has given up for good (`closed`) will never
+          // deliver the scene_description or location_failed event that
+          // would otherwise clear this — without this, a dropped connection
+          // whose reconnect attempts are exhausted (or disabled) would leave
+          // the search box disabled forever. A transient `reconnecting` blip
+          // is left alone: the build may still land once the socket comes
+          // back, and a fresh connection gets its own scene_description
+          // (ws_server.py pushes one on every accept), which already clears
+          // this through the ordinary path.
+          locationPending: status === 'closed' ? null : s.locationPending,
+        })),
       onInvalid: (error, raw) => {
         console.warn('[streetlab] dropped invalid frame:', error, raw);
         set((s) => ({ invalidCount: s.invalidCount + 1, lastInvalid: error }));
@@ -327,6 +352,13 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   loadScenario(scenarioId) {
     set({ activeScenarioId: scenarioId });
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
+  },
+
+  loadLocation(query) {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    set({ locationPending: trimmed });
+    get().send({ cmd: 'load_location', query: trimmed });
   },
 
   setParam(key, value) {
@@ -388,6 +420,7 @@ function applyServerMessage(
         activeScenarioId: msg.scenario_id,
         hasFrames: false,
         events: [],
+        locationPending: null,
       }));
       return;
 
@@ -408,6 +441,17 @@ function applyServerMessage(
       }
       if (msg.events.length) {
         patch.events = [...s.events, ...msg.events].slice(-40);
+        // A geocode/Overpass failure (or a query with no drivable roads)
+        // never produces a new scene — it surfaces here instead, per
+        // sim/loop.py's `submit_scene`. Without this the box would stay
+        // disabled forever on any bad address, the single most likely thing
+        // a first-time user types.
+        if (
+          s.locationPending !== null &&
+          msg.events.some((e) => e.code === 'location_failed')
+        ) {
+          patch.locationPending = null;
+        }
       }
       if (Object.keys(patch).length) set(patch);
       return;

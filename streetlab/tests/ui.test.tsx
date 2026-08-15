@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { TopToolbar } from '../src/ui/TopToolbar';
 import { LeftScenarioSidebar } from '../src/ui/LeftScenarioSidebar';
@@ -10,6 +10,8 @@ import { toMph } from '../src/units';
 import { createHarness, resetStore } from './harness';
 import type { Harness } from './harness';
 import { canvasText, clearCanvasCalls, canvasCalls, flushFrames } from './setup';
+import type { StateUpdate } from '../src/schema';
+import type { Transport, TransportHandlers } from '../src/net/transport';
 
 let harness: Harness | null = null;
 
@@ -145,6 +147,145 @@ describe('LeftScenarioSidebar', () => {
     fireEvent.click(screen.getByLabelText('Remove bookmark for Nob Hill Loop'));
     expect(screen.getByLabelText('Add bookmark for Nob Hill Loop')).toBeTruthy();
     expect(harness.sent).toHaveLength(before);
+  });
+});
+
+describe('Location search box', () => {
+  it('sends load_location on submit and shows a disabling pending state until the scene arrives', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Nob Hill' } });
+    fireEvent.submit(box.closest('form')!);
+
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'load_location', query: 'Nob Hill' }),
+    );
+    expect(screen.getByText(/building nob hill/i)).toBeTruthy();
+    expect(box.disabled).toBe(true);
+    expect(useSimStore.getState().locationPending).toBe('Nob Hill');
+    // The field is cleared right away so a stray resubmit can't replay it.
+    expect(box.value).toBe('');
+
+    // The scene arrives later, through the ordinary epoch push.
+    harness.emitScene();
+    expect(useSimStore.getState().locationPending).toBeNull();
+    expect(box.disabled).toBe(false);
+    expect(screen.queryByText(/building nob hill/i)).toBeNull();
+  });
+
+  it('does not send an empty or whitespace-only query, at the component and the store level', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: '   ' } });
+    fireEvent.submit(box.closest('form')!);
+
+    expect(harness.sent.filter((c) => c.cmd === 'load_location')).toHaveLength(0);
+    expect(useSimStore.getState().locationPending).toBeNull();
+    expect(box.disabled).toBe(false);
+
+    // The store action is the reusable surface — a caller that bypasses the
+    // component (another widget, a future keyboard shortcut) must get the
+    // same guarantee, not just the form's onSubmit.
+    act(() => useSimStore.getState().loadLocation('   '));
+    expect(harness.sent.filter((c) => c.cmd === 'load_location')).toHaveLength(0);
+    expect(useSimStore.getState().locationPending).toBeNull();
+  });
+
+  it('clears the pending state on a location_failed event, without waiting for a scene', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Nonexistent Place' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(useSimStore.getState().locationPending).toBe('Nonexistent Place');
+    expect(box.disabled).toBe(true);
+
+    // A real build failure (bad geocode, empty Overpass extract, no
+    // drivable roads) surfaces as a warn-level event inside a state_update,
+    // per sim/loop.py's `submit_scene` — there is no separate message type.
+    const base = harness.emitFrame(1);
+    const failureFrame: StateUpdate = {
+      ...base,
+      events: [
+        { t: base.t + 0.05, level: 'warn', code: 'location_failed', message: 'geocode failed' },
+      ],
+    };
+    harness.emit(failureFrame);
+
+    expect(useSimStore.getState().locationPending).toBeNull();
+    expect(box.disabled).toBe(false);
+    expect(screen.queryByText(/building nonexistent place/i)).toBeNull();
+    // Recovery is clean: the field is empty and usable for a fresh query.
+    expect(box.value).toBe('');
+    fireEvent.change(box, { target: { value: 'Second Try' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'load_location', query: 'Second Try' }),
+    );
+  });
+
+  it('a second submit while already pending does not send a duplicate command', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Nob Hill' } });
+    const form = box.closest('form')!;
+    fireEvent.submit(form);
+    expect(harness.sent.filter((c) => c.cmd === 'load_location')).toHaveLength(1);
+
+    // A stray double-submit (double Enter, a race in the caller) must not
+    // replay the request or clobber the pending label with an empty query —
+    // the field was already reset to '' after the first submit, and the
+    // store's own trim-guard makes a resubmit with that blank value a no-op.
+    fireEvent.submit(form);
+    expect(harness.sent.filter((c) => c.cmd === 'load_location')).toHaveLength(1);
+    expect(useSimStore.getState().locationPending).toBe('Nob Hill');
+    expect(screen.getByText(/building nob hill/i)).toBeTruthy();
+  });
+
+  it('does not leave the box permanently disabled when the transport drops and never comes back', () => {
+    let handlers: TransportHandlers | null = null;
+    const transport: Transport = {
+      kind: 'ws',
+      label: 'test-ws',
+      connect: (h) => {
+        handlers = h;
+        h.onStatus('open', 'test');
+      },
+      send: vi.fn(),
+      close: vi.fn(),
+    };
+    resetStore();
+    const detach = useSimStore.getState().attach(transport);
+
+    act(() => useSimStore.getState().loadLocation('Nob Hill'));
+    expect(useSimStore.getState().locationPending).toBe('Nob Hill');
+
+    // A brief reconnect blip must not itself clear pending — the build may
+    // still land once the socket comes back, and a real reconnect gets a
+    // fresh scene_description from the server (ws_server.py's `_serve`
+    // pushes one on every accept), which already clears it through the
+    // existing scene_description path.
+    act(() => handlers?.onStatus('reconnecting', 'closed (1006) — retrying in 400 ms'));
+    expect(useSimStore.getState().locationPending).toBe('Nob Hill');
+
+    // But once the transport gives up for good (`closed`), nothing will
+    // ever deliver the scene or the location_failed event that would
+    // otherwise clear it — the box must not stay disabled forever.
+    act(() => handlers?.onStatus('closed', 'gave up retrying'));
+    expect(useSimStore.getState().locationPending).toBeNull();
+
+    detach();
   });
 });
 

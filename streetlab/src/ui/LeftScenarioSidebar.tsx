@@ -14,7 +14,10 @@ export function LeftScenarioSidebar() {
   const activeId = useSimStore((s) => s.activeScenarioId);
   const location = useSimStore((s) => s.scene?.location ?? '—');
   const loadScenario = useSimStore((s) => s.loadScenario);
+  const loadLocation = useSimStore((s) => s.loadLocation);
+  const locationPending = useSimStore((s) => s.locationPending);
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState('');
 
   const isBookmarked = (s: ScenarioSummary) => bookmarks[s.id] ?? s.bookmarked;
 
@@ -27,6 +30,27 @@ export function LeftScenarioSidebar() {
           {catalog.length} saved scenario{catalog.length === 1 ? '' : 's'}
         </p>
       </header>
+
+      <form
+        className="location-search"
+        onSubmit={(e) => {
+          e.preventDefault();
+          loadLocation(query);
+          setQuery('');
+        }}
+      >
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Address or place…"
+          aria-label="Load a location"
+          disabled={locationPending !== null}
+        />
+        {locationPending !== null && (
+          <p className="location-pending">Building {locationPending}…</p>
+        )}
+      </form>
 
       <div className="scenario-list" role="list">
         {catalog.length === 0 && (

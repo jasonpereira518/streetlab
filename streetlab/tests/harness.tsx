@@ -28,6 +28,7 @@ const INITIAL = {
   scene: null,
   catalog: [],
   activeScenarioId: null,
+  locationPending: null,
   paused: false,
   assistActive: false,
   hasFrames: false,
