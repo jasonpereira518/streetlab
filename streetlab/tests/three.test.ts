@@ -369,16 +369,29 @@ describe('ChaseCamera', () => {
       expect(d).toBeGreaterThan(1);
     });
 
-    it('does not clamp when the geometry is farther than the desired trail', () => {
+    // NOTE ON THE NEXT TWO TESTS: neither can fail against the pre-fix
+    // chaseCam.ts, which ignores `blockers` entirely — any geometry placed
+    // beyond the ray's `far` bound produces identical output whether the
+    // occlusion feature exists or not, by construction. They are regression
+    // guards against a *different* bug (over-eager or unconditionally wrong
+    // clamping), not proof that occlusion works — that proof is the two
+    // tests above. Kept and labelled honestly rather than deleted, per
+    // task-8 review round 1.
+
+    it('regression: a blocker just past the farthest possible trail is not treated as a hit', () => {
       const cam = new ChaseCamera(16 / 9);
       cam.reset(p);
-      // Standing at 0 m/s the rest distance is CHASE.distNear (8.4 m); put the
-      // wall well past even the fastest (14.5 m) trail distance.
-      const wall = wallAt(40);
-      for (let i = 0; i < 60; i++) cam.update(p, 0, 'chase', 1 / 60, wall);
+      // Top speed puts the rest distance at CHASE.distFar (14.5 m); the wall's
+      // near face sits a full metre past that — tight enough to catch an
+      // off-by-one on the `raycaster.far = desiredDist` bound (e.g. treating
+      // it as inclusive when it shouldn't be, or a stray +margin on the far
+      // side), without sitting exactly on the boundary where float rounding
+      // could make the assertion flaky.
+      const wall = wallAt(15.5);
+      for (let i = 0; i < 60; i++) cam.update(p, 30, 'chase', 1 / 60, wall);
 
       const d = Math.hypot(cam.camera.position.x, cam.camera.position.z);
-      expect(d).toBeGreaterThan(8);
+      expect(d).toBeGreaterThan(13);
     });
 
     it('opens back up smoothly and without overshoot once the building is gone', () => {
@@ -431,9 +444,20 @@ describe('ChaseCamera', () => {
       expect(maxStep).toBeLessThan(0.1);
     });
 
-    it('does not disturb the synthetic grid, which always has open space behind the car', () => {
+    it('regression: does not disturb the synthetic grid, which always has open space behind the car', () => {
       // Reproduces the actual call shape used against SyntheticGrid: buildings
-      // exist (blockers is non-null) but are inset well behind the trail.
+      // exist (blockers is non-null) but are inset well behind the trail. See
+      // the NOTE above the previous test — this also cannot fail against the
+      // pre-fix code (it never reads `blockers` either), so it isn't proof
+      // the feature works, only proof it stays out of the way when it
+      // shouldn't engage. The real guarantee this documents is structural,
+      // not just empirical: `pullback` eases a *delta* from the natural
+      // distance (`dist - clampTrailDistance(...)`), and that delta is
+      // exactly 0 — not merely close to 0 — every frame nothing is hit,
+      // because `desiredDist - desiredDist` is exact IEEE-754 zero and
+      // `damp(0, 0, s, dt)` is exactly 0 for any `s`/`dt` (see `units.ts`'s
+      // `damp`/`lerp`). This test is the black-box confirmation of that
+      // white-box argument.
       const withBlocker = new ChaseCamera(16 / 9);
       withBlocker.reset(p);
       const farWall = wallAt(200);
@@ -446,6 +470,42 @@ describe('ChaseCamera', () => {
       expect(withBlocker.camera.position.distanceTo(withoutBlocker.camera.position)).toBeLessThan(
         1e-6,
       );
+    });
+
+    it('known limitation: does not clamp when the car itself starts inside a blocker', () => {
+      // Pins current behaviour rather than asserting a fix — see task-8
+      // review round 1, "Important 2". clampTrailDistance always casts
+      // outward from the car; that is correct for entering a wall from
+      // outside (the normal case, and the only one covered by the tests
+      // above), but if the car's own position is already inside a blocker's
+      // volume — e.g. an OSM building footprint overlapping the drivable
+      // lane — the ray would need to register an *exiting* hit against an
+      // interior-facing triangle. `world.ts`'s `buildingMaterial()` sets no
+      // `side`, so it defaults to `THREE.FrontSide`, and a FrontSide
+      // raycast from inside a solid mesh cannot see faces whose front
+      // (outward) normal points the same way as the ray — they're
+      // back-facing from the ray's perspective and get culled. Deliberately
+      // not fixed with a second ray: see task-8-report.md's fix-report
+      // section for the reachability assessment and cost tradeoff.
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+
+      // A solid, FrontSide box that *encloses the car itself* — the
+      // rest-pose ray origin (vx, height, vz) = (0, ~3.1, 0) sits well
+      // inside it — with an exit face at z=3, comfortably inside the ~8.4 m
+      // desired trail distance.
+      const enclosing = new THREE.Mesh(new THREE.BoxGeometry(40, 20, 6), new THREE.MeshBasicMaterial());
+      enclosing.position.set(0, 10, 0);
+      enclosing.updateMatrixWorld(true);
+
+      for (let i = 0; i < 30; i++) cam.update(p, 0, 'chase', 1 / 60, enclosing);
+
+      // If this ever starts failing because the distance came back clamped,
+      // that's good news — it means the limitation above got fixed, and
+      // this test should be deleted (or flipped into a real regression
+      // test) rather than "fixed" to keep passing.
+      const d = Math.hypot(cam.camera.position.x, cam.camera.position.z);
+      expect(d).toBeGreaterThan(8);
     });
   });
 });

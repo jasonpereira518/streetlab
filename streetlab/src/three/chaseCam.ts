@@ -138,6 +138,17 @@ export class ChaseCamera {
    * a no-op (not just a coincidentally-large clamp) on scenes with no
    * blocker geometry or with geometry farther away than the trail — i.e. the
    * synthetic grid, which insets buildings behind sidewalks and lot margins.
+   *
+   * Known limitation: this only sees a ray *entering* a blocker from
+   * outside. `world.ts`'s `buildingMaterial()` sets no `side`, so it
+   * defaults to `THREE.FrontSide` — if the car's own position is ever
+   * inside a blocker's volume (e.g. an OSM building footprint that overlaps
+   * the drivable lane), the exit face is back-facing from the ray's point of
+   * view and gets culled, so this silently returns `desiredDist` unclamped.
+   * Deliberately not covered by a second ray here: see task-8-report.md's
+   * fix-report section for the reachability assessment and cost tradeoff.
+   * Pinned (not asserted-fixed) by the "known limitation" test in
+   * `three.test.ts`.
    */
   private clampTrailDistance(
     ex: number,
