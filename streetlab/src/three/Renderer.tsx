@@ -352,6 +352,10 @@ function mount(
   let world: World | null = null;
   let builtEpoch = -1;
   let sunDir = new THREE.Vector3(0.6, 0.8, 0.4);
+  // The merged building mesh (see world.ts), reused as the chase camera's
+  // occlusion geometry so it never has to build its own spatial structure.
+  // Captured once per scene build rather than looked up every frame.
+  let buildings: THREE.Object3D | null = null;
 
   /* ---- store wiring (imperative, no React re-render) ---- */
 
@@ -404,6 +408,7 @@ function mount(
     world = buildWorld(state.scene);
     scene.add(world.root);
     builtEpoch = state.sceneEpoch;
+    buildings = world.root.getObjectByName('buildings') ?? null;
     applyLayers(state.layers);
     cameraReset = true;
   };
@@ -501,13 +506,13 @@ function mount(
     const frame = frameBus.latest;
     if (frame) {
       if (cameraReset) {
-        cam.reset(frame.ego.pose);
+        cam.reset(frame.ego.pose, buildings);
         cameraReset = false;
       }
       // Re-run scene-graph updates every display frame even if the simulator
       // has not produced a new one: damping still has work to do.
       applyFrame(frame, dt);
-      cam.update(frame.ego.pose, frame.ego.speed_mps, cameraView, dt);
+      cam.update(frame.ego.pose, frame.ego.speed_mps, cameraView, dt, buildings);
       lastSeq = frame.seq;
     }
 

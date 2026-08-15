@@ -339,6 +339,115 @@ describe('ChaseCamera', () => {
     for (let i = 0; i < 400; i++) cam.update(p, 8, 'overhead', 1 / 60);
     expect(cam.camera.position.y).toBeGreaterThan(30);
   });
+
+  describe('building occlusion', () => {
+    // Heading pi/2 is "north" in this rig's convention (see the test above):
+    // forward is three.js -z, so the trail sits behind the car at +z.
+    const p = pose(0, 0, Math.PI / 2);
+
+    /** A flush-to-kerb wall, the shape SyntheticGrid never produces but real OSM does. */
+    function wallAt(z: number): THREE.Mesh {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(40, 20, 1), new THREE.MeshBasicMaterial());
+      wall.position.set(0, 10, z);
+      // Standalone (not parented into a rendered scene), so nothing else
+      // will ever sync its matrixWorld from `position` for the raycaster.
+      wall.updateMatrixWorld(true);
+      return wall;
+    }
+
+    it('pulls the camera in rather than sitting inside a building', () => {
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      // Near face at z=3.5 — well inside the ~8.4 m rest distance, so an
+      // unclamped camera would end up on the far side of the wall.
+      const wall = wallAt(4);
+      for (let i = 0; i < 60; i++) cam.update(p, 0, 'chase', 1 / 60, wall);
+
+      const d = Math.hypot(cam.camera.position.x, cam.camera.position.z);
+      expect(d).toBeLessThan(4);
+      // And it should not have been clamped down to nothing either.
+      expect(d).toBeGreaterThan(1);
+    });
+
+    it('does not clamp when the geometry is farther than the desired trail', () => {
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      // Standing at 0 m/s the rest distance is CHASE.distNear (8.4 m); put the
+      // wall well past even the fastest (14.5 m) trail distance.
+      const wall = wallAt(40);
+      for (let i = 0; i < 60; i++) cam.update(p, 0, 'chase', 1 / 60, wall);
+
+      const d = Math.hypot(cam.camera.position.x, cam.camera.position.z);
+      expect(d).toBeGreaterThan(8);
+    });
+
+    it('opens back up smoothly and without overshoot once the building is gone', () => {
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      const wall = wallAt(4);
+      // Sit behind the wall long enough to fully pull in.
+      for (let i = 0; i < 60; i++) cam.update(p, 0, 'chase', 1 / 60, wall);
+      const pulledIn = Math.hypot(cam.camera.position.x, cam.camera.position.z);
+      expect(pulledIn).toBeLessThan(4);
+
+      // The building is gone (car has turned a corner) — track the distance
+      // opening back up frame by frame: it should climb steadily and never
+      // overshoot past the natural rest distance.
+      let prev = pulledIn;
+      let sawGradualStep = false;
+      for (let i = 0; i < 90; i++) {
+        cam.update(p, 0, 'chase', 1 / 60, null);
+        const d = Math.hypot(cam.camera.position.x, cam.camera.position.z);
+        expect(d).toBeGreaterThanOrEqual(prev - 1e-6); // monotonically opening up
+        expect(d).toBeLessThanOrEqual(8.4 + 1e-6); // never overshoots the rest distance
+        const step = d - prev;
+        if (step > 1e-6 && step < 1) sawGradualStep = true;
+        prev = d;
+      }
+      expect(sawGradualStep).toBe(true);
+      expect(prev).toBeGreaterThan(8);
+    });
+
+    it('damps out a flickering ray instead of chattering every frame', () => {
+      // Rounding a building corner, the ray can toggle hit/no-hit from one
+      // frame to the next as it grazes the edge. A hard clamp would recompute
+      // `desired` all the way back and forth between the clamped and full
+      // distance every single frame; proven below by running the identical
+      // scenario against a hard-clamped variant, whose peak step is ~18x
+      // larger (see task-8-report.md for the measured numbers).
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      const wall = wallAt(4);
+
+      let prev = cam.camera.position.clone();
+      let maxStep = 0;
+      for (let i = 0; i < 240; i++) {
+        cam.update(p, 0, 'chase', 1 / 60, i % 2 === 0 ? wall : null);
+        if (i > 60) maxStep = Math.max(maxStep, cam.camera.position.distanceTo(prev));
+        prev = cam.camera.position.clone();
+      }
+      // Comfortably above the eased implementation's actual peak (~0.016 m)
+      // and comfortably below a hard clamp's (~0.30 m) for this scenario.
+      expect(maxStep).toBeLessThan(0.1);
+    });
+
+    it('does not disturb the synthetic grid, which always has open space behind the car', () => {
+      // Reproduces the actual call shape used against SyntheticGrid: buildings
+      // exist (blockers is non-null) but are inset well behind the trail.
+      const withBlocker = new ChaseCamera(16 / 9);
+      withBlocker.reset(p);
+      const farWall = wallAt(200);
+      for (let i = 0; i < 120; i++) withBlocker.update(p, 12, 'chase', 1 / 60, farWall);
+
+      const withoutBlocker = new ChaseCamera(16 / 9);
+      withoutBlocker.reset(p);
+      for (let i = 0; i < 120; i++) withoutBlocker.update(p, 12, 'chase', 1 / 60, null);
+
+      expect(withBlocker.camera.position.distanceTo(withoutBlocker.camera.position)).toBeLessThan(
+        1e-6,
+      );
+    });
+  });
 });
 
 describe('TrafficFleet', () => {
