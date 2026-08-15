@@ -104,6 +104,17 @@ interface ControlPoint {
   offset: number;
 }
 
+/**
+ * Normalize a `load_location` query. schema.ts's `query: z.string().min(1)`
+ * lets a whitespace-only string like `"   "` through; trimming is what
+ * decides whether there's actually anything to build, so both `apply()`
+ * (the ack) and `createMockTransport`'s `send()` (the relabelled scene) use
+ * this one function rather than each trimming `command.query` themselves.
+ */
+function normalizeLocationQuery(raw: string): string {
+  return raw.trim();
+}
+
 /* ------------------------------------------------------------------ */
 /* Simulator                                                           */
 /* ------------------------------------------------------------------ */
@@ -865,10 +876,10 @@ export class MockSim {
         // this only decides the ack. The delayed scene swap is the
         // transport wrapper's job (createMockTransport.send(), below),
         // which is the thing that actually owns emitScene and timers.
-        const query = command.query.trim();
+        const query = normalizeLocationQuery(command.query);
         if (!query) {
-          // schema.ts's `query: z.string().min(1)` lets a whitespace-only
-          // string through; don't hand a blank name/location to the UI.
+          // A whitespace-only query normalizes to empty; don't hand a
+          // blank name/location to the UI.
           return { ok: false, message: 'load_location requires a non-empty query' };
         }
         return { ok: true, message: `building ${query}` };
@@ -889,11 +900,15 @@ export interface MockTransportOptions {
 
 /**
  * Fake `load_location` build time. The real backend's build takes seconds
- * (geocode plus an Overpass fetch); the mock just needs a delay long enough
- * that the scene visibly arrives *after* the ack rather than alongside it,
- * so the UI's pending state is genuinely exercised under `?mock=1`.
+ * (geocode plus an Overpass fetch); this just needs to be long enough that
+ * the scene visibly arrives *after* the ack rather than alongside it. A
+ * value under ~100 ms risks disappearing entirely behind a UI's minimum-
+ * visible-duration spinner throttle (a standard pattern), which would
+ * defeat the point — exercising the pending state under `?mock=1` — rather
+ * than merely making it brief. 600 ms sits comfortably clear of that and
+ * matches what Task 6 found perceptible by hand in a running browser.
  */
-const MOCK_LOCATION_BUILD_MS = 80;
+const MOCK_LOCATION_BUILD_MS = 600;
 
 export function createMockTransport(
   opts: MockTransportOptions = {},
@@ -907,9 +922,15 @@ export function createMockTransport(
   let last = 0;
   let acc = 0;
   // At most one load_location build is ever in flight: a newer request
-  // supersedes an older one still pending, mirroring the real backend's
-  // single pending-scene slot (sim/loop.py `_pending_scene`) where the last
-  // build to finish wins and an earlier one is silently dropped.
+  // cancels an older one still pending. This matches the *effect* of the
+  // real backend's single pending-scene slot (sim/loop.py `_pending_scene`,
+  // set — not appended — around line 776-779) — only the latest request's
+  // scene is ever delivered — but not its mechanism: the backend never
+  // cancels an in-flight build; an earlier one keeps running and is
+  // discarded only if a later one *completes* after it, a completion-order
+  // race. Here submission order and completion order coincide because the
+  // delay is fixed, so proactive cancellation and that race land on the
+  // same outcome — they are not the same thing.
   let pendingLocationTimer: ReturnType<typeof setTimeout> | null = null;
 
   // The mock never touches a real socket, so `onRawFrame` is computed here
@@ -1009,9 +1030,11 @@ export function createMockTransport(
       });
 
       if (command.cmd === 'load_location' && res.ok) {
-        // A later request supersedes an earlier one still building.
+        // A later request cancels an earlier one still building — see the
+        // `pendingLocationTimer` declaration above for how this compares to
+        // the real backend's behaviour.
         if (pendingLocationTimer != null) clearTimeout(pendingLocationTimer);
-        const query = command.query.trim();
+        const query = normalizeLocationQuery(command.query);
         pendingLocationTimer = setTimeout(() => {
           pendingLocationTimer = null;
           // Relabelling the existing mock city is the right level of

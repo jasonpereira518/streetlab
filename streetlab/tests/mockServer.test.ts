@@ -280,7 +280,7 @@ describe('mock transport', () => {
           messages.filter((m) => m.type === 'scene_description').length,
         ).toBeGreaterThan(1);
       },
-      { timeout: 1000 },
+      { timeout: 2000 },
     );
 
     const scenes = messages.filter(
@@ -318,7 +318,7 @@ describe('mock transport', () => {
           messages.filter((m) => m.type === 'scene_description').length,
         ).toBeGreaterThan(1);
       },
-      { timeout: 1000 },
+      { timeout: 2000 },
     );
     // Give a wrongly-still-pending first timer a chance to also fire.
     await new Promise((r) => setTimeout(r, 300));
@@ -351,8 +351,9 @@ describe('mock transport', () => {
     const ack = messages.find((m) => m.type === 'ack' && m.id === 'ws');
     expect(ack).toMatchObject({ ok: false });
 
-    // Long enough to catch a build that should never have been scheduled.
-    await new Promise((r) => setTimeout(r, 250));
+    // Longer than the fake build delay, so a build that should never have
+    // been scheduled would have fired and been caught by now.
+    await new Promise((r) => setTimeout(r, 900));
     expect(messages.filter((m) => m.type === 'scene_description')).toHaveLength(1);
 
     transport.close();
