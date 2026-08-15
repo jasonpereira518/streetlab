@@ -857,10 +857,22 @@ export class MockSim {
         this.nextCutinAt = this.t;
         this.cutinPhase = 'idle';
         return { ok: true, message: `hazard ${command.kind} queued` };
-      case 'load_location':
-        // The mock (in-process, offline) simulator has no geocoder or real
-        // map data behind it; only a real backend can service this command.
-        return { ok: false, message: 'load_location requires a real backend' };
+      case 'load_location': {
+        // The mock has no geocoder or map pipeline, so it never builds
+        // anything new — it fakes the *shape* of a real build instead. A
+        // real backend acks immediately and delivers the finished scene
+        // later through the epoch push (sim/loop.py `_cmd_load_location`);
+        // this only decides the ack. The delayed scene swap is the
+        // transport wrapper's job (createMockTransport.send(), below),
+        // which is the thing that actually owns emitScene and timers.
+        const query = command.query.trim();
+        if (!query) {
+          // schema.ts's `query: z.string().min(1)` lets a whitespace-only
+          // string through; don't hand a blank name/location to the UI.
+          return { ok: false, message: 'load_location requires a non-empty query' };
+        }
+        return { ok: true, message: `building ${query}` };
+      }
     }
   }
 }
@@ -875,6 +887,14 @@ export interface MockTransportOptions {
   validate?: boolean;
 }
 
+/**
+ * Fake `load_location` build time. The real backend's build takes seconds
+ * (geocode plus an Overpass fetch); the mock just needs a delay long enough
+ * that the scene visibly arrives *after* the ack rather than alongside it,
+ * so the UI's pending state is genuinely exercised under `?mock=1`.
+ */
+const MOCK_LOCATION_BUILD_MS = 80;
+
 export function createMockTransport(
   opts: MockTransportOptions = {},
 ): Transport {
@@ -886,6 +906,11 @@ export function createMockTransport(
   let timerId: ReturnType<typeof setInterval> | null = null;
   let last = 0;
   let acc = 0;
+  // At most one load_location build is ever in flight: a newer request
+  // supersedes an older one still pending, mirroring the real backend's
+  // single pending-scene slot (sim/loop.py `_pending_scene`) where the last
+  // build to finish wins and an earlier one is silently dropped.
+  let pendingLocationTimer: ReturnType<typeof setTimeout> | null = null;
 
   // The mock never touches a real socket, so `onRawFrame` is computed here
   // for parity — it's what the message would have cost in bytes on the wire,
@@ -982,11 +1007,28 @@ export function createMockTransport(
         if (res.scene) emitScene(res.scene);
         handlers.onMessage(ack);
       });
+
+      if (command.cmd === 'load_location' && res.ok) {
+        // A later request supersedes an earlier one still building.
+        if (pendingLocationTimer != null) clearTimeout(pendingLocationTimer);
+        const query = command.query.trim();
+        pendingLocationTimer = setTimeout(() => {
+          pendingLocationTimer = null;
+          // Relabelling the existing mock city is the right level of
+          // fidelity here — the mock has no map pipeline to actually run.
+          sim.scene = { ...sim.scene, name: query, location: query };
+          emitScene(sim.scene);
+        }, MOCK_LOCATION_BUILD_MS);
+      }
     },
     close() {
       running = false;
       if (rafId) cancelAnimationFrame(rafId);
       if (timerId) clearInterval(timerId);
+      if (pendingLocationTimer != null) {
+        clearTimeout(pendingLocationTimer);
+        pendingLocationTimer = null;
+      }
       handlers?.onStatus('closed');
       handlers = null;
     },

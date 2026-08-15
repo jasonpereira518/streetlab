@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MockSim, createMockTransport } from '../src/net/mockServer';
 import { SCENARIOS } from '../src/net/mockCity';
 import { StateUpdateSchema, parseServerMessage } from '../src/schema';
-import type { ServerMessage, StateUpdate } from '../src/schema';
+import type { SceneDescription, ServerMessage, StateUpdate } from '../src/schema';
 import { makeRectRoute } from '../src/net/route';
 
 describe('mock scene', () => {
@@ -180,14 +180,35 @@ describe('mock commands', () => {
     expect(res.ok).toBe(true);
   });
 
-  it('does not crash on load_location — the mock has no geocoder', () => {
-    // The mock is the fully in-process, offline transport, so it never
-    // implements load_location itself; it must still return a well-formed
-    // ack rather than crashing the switch that dispatches Command variants.
+  it('acks load_location immediately without touching the scene yet', () => {
+    // apply() only decides the ack — "ack now, scene later" — so the scene
+    // swap must not happen synchronously here; that's the transport
+    // wrapper's job (see the `mock transport` describe block below), which
+    // is what actually owns the delayed emitScene.
     const sim = new MockSim();
+    const before = sim.scene.name;
     const res = sim.apply({ id: '7', cmd: 'load_location', query: 'Nob Hill' });
-    expect(res).toBeDefined();
+    expect(res.ok).toBe(true);
+    expect(res.message).toBe('building Nob Hill');
+    expect(res.scene).toBeUndefined();
+    expect(sim.scene.name).toBe(before);
+  });
+
+  it('rejects a whitespace-only load_location query', () => {
+    // schema.ts's `query: z.string().min(1)` lets a whitespace-only string
+    // like "   " through — the mock must not rely on the schema to have
+    // caught that, since createMockTransport.send() never runs commands
+    // through CommandSchema before calling apply() (unlike wsClient.send()).
+    const sim = new MockSim();
+    const res = sim.apply({ id: '8', cmd: 'load_location', query: '   ' });
     expect(res.ok).toBe(false);
+  });
+
+  it('trims a padded query for the ack message', () => {
+    const sim = new MockSim();
+    const res = sim.apply({ id: '9', cmd: 'load_location', query: '  Nob Hill  ' });
+    expect(res.ok).toBe(true);
+    expect(res.message).toBe('building Nob Hill');
   });
 });
 
@@ -227,6 +248,134 @@ describe('mock transport', () => {
     const acks = messages.filter((m) => m.type === 'ack');
     expect(acks).toHaveLength(1);
     expect(acks[0]).toMatchObject({ id: 'p', cmd: 'set_paused', ok: true });
+  });
+
+  it('acks load_location immediately and then emits a relabelled scene', async () => {
+    const transport = createMockTransport();
+    const messages: ServerMessage[] = [];
+
+    transport.connect({
+      onMessage: (m) => messages.push(m),
+      onStatus: () => {},
+      onInvalid: (e) => {
+        throw new Error(e);
+      },
+    });
+    transport.send({ id: 'c1', cmd: 'load_location', query: 'Anywhere' });
+
+    // The ack arrives on a microtask, well before the fake build delay.
+    await vi.waitFor(() => {
+      expect(messages.some((m) => m.type === 'ack' && m.id === 'c1')).toBe(true);
+    });
+    const ack = messages.find((m) => m.type === 'ack' && m.id === 'c1');
+    expect(ack).toMatchObject({ ok: true, cmd: 'load_location' });
+
+    // Only the connect-time scene has arrived so far — the second one is
+    // genuinely delayed, not just deferred to a microtask alongside the ack.
+    expect(messages.filter((m) => m.type === 'scene_description')).toHaveLength(1);
+
+    await vi.waitFor(
+      () => {
+        expect(
+          messages.filter((m) => m.type === 'scene_description').length,
+        ).toBeGreaterThan(1);
+      },
+      { timeout: 1000 },
+    );
+
+    const scenes = messages.filter(
+      (m): m is SceneDescription => m.type === 'scene_description',
+    );
+    expect(scenes).toHaveLength(2);
+    const relabelled = scenes[1];
+    expect(relabelled.name).toBe('Anywhere');
+    expect(relabelled.location).toBe('Anywhere');
+    // Task 1 made attribution required; a scene missing it would fail this.
+    expect(relabelled.attribution.length).toBeGreaterThan(0);
+    expect(parseServerMessage(relabelled).ok).toBe(true);
+
+    transport.close();
+  });
+
+  it('supersedes an in-flight load_location with a later one, rather than emitting both', async () => {
+    const transport = createMockTransport();
+    const messages: ServerMessage[] = [];
+
+    transport.connect({
+      onMessage: (m) => messages.push(m),
+      onStatus: () => {},
+      onInvalid: () => {},
+    });
+
+    transport.send({ id: 'a', cmd: 'load_location', query: 'First Place' });
+    // Still well inside the fake build delay when the second request lands.
+    await new Promise((r) => setTimeout(r, 20));
+    transport.send({ id: 'b', cmd: 'load_location', query: 'Second Place' });
+
+    await vi.waitFor(
+      () => {
+        expect(
+          messages.filter((m) => m.type === 'scene_description').length,
+        ).toBeGreaterThan(1);
+      },
+      { timeout: 1000 },
+    );
+    // Give a wrongly-still-pending first timer a chance to also fire.
+    await new Promise((r) => setTimeout(r, 300));
+
+    const scenes = messages.filter(
+      (m): m is SceneDescription => m.type === 'scene_description',
+    );
+    // Connect-time scene + exactly one relabelled scene — the superseded
+    // first request must never deliver its own scene_description.
+    expect(scenes).toHaveLength(2);
+    expect(scenes[1].name).toBe('Second Place');
+
+    transport.close();
+  });
+
+  it('rejects a whitespace-only load_location query and never schedules a build', async () => {
+    const transport = createMockTransport();
+    const messages: ServerMessage[] = [];
+
+    transport.connect({
+      onMessage: (m) => messages.push(m),
+      onStatus: () => {},
+      onInvalid: () => {},
+    });
+    transport.send({ id: 'ws', cmd: 'load_location', query: '   ' });
+
+    await vi.waitFor(() => {
+      expect(messages.some((m) => m.type === 'ack' && m.id === 'ws')).toBe(true);
+    });
+    const ack = messages.find((m) => m.type === 'ack' && m.id === 'ws');
+    expect(ack).toMatchObject({ ok: false });
+
+    // Long enough to catch a build that should never have been scheduled.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(messages.filter((m) => m.type === 'scene_description')).toHaveLength(1);
+
+    transport.close();
+  });
+
+  it('cancels a pending load_location build on close, so no timer outlives the transport', async () => {
+    const transport = createMockTransport();
+    const messages: ServerMessage[] = [];
+
+    transport.connect({
+      onMessage: (m) => messages.push(m),
+      onStatus: () => {},
+      onInvalid: () => {},
+    });
+    transport.send({ id: 'z', cmd: 'load_location', query: 'Somewhere' });
+    // Close well before the fake build delay elapses.
+    await new Promise((r) => setTimeout(r, 10));
+    transport.close();
+
+    // Long enough that the build would have completed had it not been
+    // cancelled; onMessage after close must never fire.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(messages.filter((m) => m.type === 'scene_description')).toHaveLength(1);
   });
 });
 
