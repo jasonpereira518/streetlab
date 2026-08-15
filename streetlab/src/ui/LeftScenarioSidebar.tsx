@@ -113,8 +113,20 @@ export function LeftScenarioSidebar() {
                 type="button"
                 className="play-btn"
                 onClick={() => loadScenario(s.id)}
+                // Unlike the search input above — where a disabled single
+                // field still lets a form submit (jsdom's fireEvent.submit
+                // proves it, and it's real spec behavior too) — a disabled
+                // button blocks its own click dispatch outright, in jsdom
+                // and in real browsers alike. So `disabled` alone is the
+                // complete guard here; no onClick-level re-check is needed
+                // or, in this repo's test environment, even provable.
+                disabled={locationPending !== null}
                 aria-label={`Load ${s.name}`}
-                title="Load scenario"
+                title={
+                  locationPending !== null
+                    ? `Wait for "${locationPending}" to finish loading`
+                    : 'Load scenario'
+                }
               >
                 <PlayIcon size={13} />
               </button>

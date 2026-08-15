@@ -576,7 +576,6 @@ canvas {
 }
 
 .location-search input:hover:not(:disabled) {
-  border-color: var(--c-border-strong, #d2dae5);
   background: var(--c-surface, #fff);
 }
 
@@ -587,6 +586,11 @@ canvas {
 }
 
 .location-search input:disabled {
+  /* Diverges from .icon-btn:disabled's 0.4/default on purpose: this is a
+     full-width text field sitting right under the location title, not a
+     small toolbar icon, so it stays more legible while pending; and
+     "not-allowed" is the conventional cursor for a field you can't type
+     into right now, vs. "default" for an inert button. */
   opacity: 0.65;
   cursor: not-allowed;
 }
@@ -741,12 +745,17 @@ canvas {
   transition: background 130ms ease, color 130ms ease, transform 130ms ease;
 }
 
-.play-btn:hover {
+.play-btn:hover:not(:disabled) {
   background: var(--c-accent, #0fb5c9);
   color: #fff;
 }
 
-.play-btn:active { transform: scale(0.92); }
+.play-btn:active:not(:disabled) { transform: scale(0.92); }
+
+.play-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 
 .sidebar-foot {
   display: flex;

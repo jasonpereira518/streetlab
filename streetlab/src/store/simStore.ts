@@ -318,13 +318,17 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
           statusDetail: detail ?? '',
           // A transport that has given up for good (`closed`) will never
           // deliver the scene_description or location_failed event that
-          // would otherwise clear this — without this, a dropped connection
-          // whose reconnect attempts are exhausted (or disabled) would leave
-          // the search box disabled forever. A transient `reconnecting` blip
-          // is left alone: the build may still land once the socket comes
-          // back, and a fresh connection gets its own scene_description
-          // (ws_server.py pushes one on every accept), which already clears
-          // this through the ordinary path.
+          // would otherwise clear this. `closed` isn't reachable today from
+          // a flaky connection — wsClient.ts's scheduleRetry() retries
+          // forever with capped backoff, it never gives up on its own;
+          // `closed` only happens via an intentional close() (app teardown)
+          // or a `reconnect: false` config. This is future-proofing for
+          // either of those, not a fix for a currently-reachable stuck
+          // state. A transient `reconnecting` blip is left alone: the build
+          // may still land once the socket comes back, and a fresh
+          // connection gets its own scene_description (ws_server.py pushes
+          // one on every accept), which already clears this through the
+          // ordinary path.
           locationPending: status === 'closed' ? null : s.locationPending,
         })),
       onInvalid: (error, raw) => {

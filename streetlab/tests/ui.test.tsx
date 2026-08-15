@@ -287,6 +287,39 @@ describe('Location search box', () => {
 
     detach();
   });
+
+  it('gates the scenario list while a location search is pending, so its scene cannot silently replace the one being awaited', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: '1600 Amphitheatre Parkway' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(useSimStore.getState().locationPending).toBe('1600 Amphitheatre Parkway');
+
+    // load_scenario resolves near-instantly (mock or real), and its
+    // scene_description would clear locationPending with no check that it's
+    // the one actually being awaited — so the address build's own scene
+    // could land later and silently replace whatever the user just picked,
+    // with no warning since the indicator vanished the moment they clicked.
+    const playBtn = screen.getByLabelText('Load Hyde St Descent') as HTMLButtonElement;
+    expect(playBtn.disabled).toBe(true);
+
+    fireEvent.click(playBtn);
+    expect(harness.sent.filter((c) => c.cmd === 'load_scenario')).toHaveLength(0);
+    expect(useSimStore.getState().activeScenarioId).not.toBe('hyde-descent');
+    // A blocked click must not itself disturb the address search still in flight.
+    expect(useSimStore.getState().locationPending).toBe('1600 Amphitheatre Parkway');
+
+    // Once the address search resolves, the scenario list works normally again.
+    harness.emitScene();
+    expect(playBtn.disabled).toBe(false);
+    fireEvent.click(screen.getByLabelText('Load Hyde St Descent'));
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'hyde-descent' }),
+    );
+  });
 });
 
 describe('Scene attribution', () => {
