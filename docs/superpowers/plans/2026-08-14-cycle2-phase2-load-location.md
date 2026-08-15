@@ -519,17 +519,39 @@ In `stream()`, before sending each frame:
 
 ```python
         while True:
-            epoch = self.loop.scene_epoch
+            # ONE lock acquisition, not two. Reading the epoch and the frame
+            # separately looks obviously correct and is not: a full swap
+            # (epoch bump -> step -> publish) can land between the two reads,
+            # after the mismatch check has already decided not to push. The
+            # client then receives a state_update for a scene it was never
+            # sent — the exact "frame before announcement" miss this mechanism
+            # exists to prevent, recurring every tick rather than once.
+            epoch, frame = self.loop.snapshot()
             if epoch != self._sent_epoch:
                 # A location finished building. The client gets the new world
                 # before any frame that describes it.
                 await self.send_model(self.loop.sim.scene_description())
                 self._sent_epoch = epoch
-            frame = self.loop.latest
             ...
 ```
 
+with, on `SimLoop`:
+
+```python
+    def snapshot(self) -> tuple[int, StateUpdate | None]:
+        """The epoch and the newest frame, consistent with each other.
+
+        The writer side already guarantees a published frame's generation is
+        never ahead of the current epoch. Reading them under one lock is what
+        extends that guarantee to the reader.
+        """
+        with self._lock:
+            return self._scene_epoch, self._latest
+```
+
 Note the ordering guarantee: the scene goes out **before** the next `state_update`, so a client never sees a frame referencing a scene it has not received.
+
+**Connect-time ordering is also load-bearing.** `_Connection.__init__` records `_sent_epoch` **before** `_serve` sends the initial scene. A swap landing in between then sends content newer than the recorded epoch, so `stream()` re-pushes — a harmless duplicate. The reverse order (send, then record) stamps the post-swap epoch onto pre-swap content, the mismatch never fires, and the client is stranded on a stale scene. Do not "tidy" these two statements into the other order.
 
 - [ ] **Step 6: Add the connection-level test**
 
