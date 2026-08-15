@@ -13,6 +13,7 @@ export function LeftScenarioSidebar() {
   const catalog = useSimStore((s) => s.catalog);
   const activeId = useSimStore((s) => s.activeScenarioId);
   const location = useSimStore((s) => s.scene?.location ?? '—');
+  const attribution = useSimStore((s) => s.scene?.attribution);
   const loadScenario = useSimStore((s) => s.loadScenario);
   const loadLocation = useSimStore((s) => s.loadLocation);
   const locationPending = useSimStore((s) => s.locationPending);
@@ -29,6 +30,17 @@ export function LeftScenarioSidebar() {
         <p className="sidebar-sub">
           {catalog.length} saved scenario{catalog.length === 1 ? '' : 's'}
         </p>
+        {/*
+          ODbL requires crediting OpenStreetMap wherever its data is shown;
+          `attribution` is never omitted from the wire shape (SyntheticGrid
+          fills it with "Synthetic scene — no map data" for scenes that
+          carry no real map data at all), so this shows verbatim rather than
+          being wrapped in OSM-specific copy that would misdescribe a
+          synthetic scene. The `&&` guard also keeps an empty string (a
+          defensive case the schema technically allows) from leaving a
+          stray, blank <p> in the DOM.
+        */}
+        {attribution && <p className="scene-attribution">{attribution}</p>}
       </header>
 
       <form

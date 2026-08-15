@@ -8,17 +8,19 @@ import type { LayerKey, ParamValue } from '../schema';
 import { LAYER_KEYS } from '../schema';
 import { useTelemetryCanvas } from '../store/hooks';
 import { PARAM_DEFS, useSimStore } from '../store/simStore';
-import type { ParamDef } from '../store/simStore';
-import { LayersIcon, MapIcon, SlidersIcon } from './Icons';
+import type { ParamDef, RightTab } from '../store/simStore';
+import { EventLog } from './EventLog';
+import { ActivityIcon, LayersIcon, MapIcon, SlidersIcon } from './Icons';
 import { ColorPicker, Field, Select, Slider, Toggle } from './controls';
 import { alpha, classColor, color } from './theme';
 
-type Tab = 'parameters' | 'map' | 'layers';
+type Tab = RightTab;
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof MapIcon }> = [
   { id: 'parameters', label: 'Parameters', icon: SlidersIcon },
   { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'layers', label: 'Layers', icon: LayersIcon },
+  { id: 'events', label: 'Events', icon: ActivityIcon },
 ];
 
 const LAYER_LABELS: Record<LayerKey, string> = {
@@ -70,6 +72,7 @@ export function RightPanel() {
         {tab === 'parameters' && <ParametersTab />}
         {tab === 'map' && <MapTab />}
         {tab === 'layers' && <LayersTab />}
+        {tab === 'events' && <EventLog />}
       </div>
     </aside>
   );

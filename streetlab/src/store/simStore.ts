@@ -200,6 +200,15 @@ const DEFAULT_LAYERS = Object.fromEntries(
 /* Store                                                               */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Right-panel tab identifiers. Defined once here — rather than as a
+ * separately-typed literal union duplicated in `RightPanel.tsx` — so a tab
+ * added to one side and forgotten on the other is a type error, not a
+ * runtime surprise (`setRightTab('events')` compiling while the panel has
+ * nothing registered for it, or vice versa).
+ */
+export type RightTab = 'parameters' | 'map' | 'layers' | 'events';
+
 export interface SimStoreState {
   /* connection */
   status: ConnectionStatus;
@@ -232,7 +241,7 @@ export interface SimStoreState {
   layers: Record<LayerKey, boolean>;
   params: Record<string, ParamValue>;
   cameraView: CameraView;
-  rightTab: 'parameters' | 'map' | 'layers';
+  rightTab: RightTab;
   perfOverlayVisible: boolean;
 
   /* diagnostics */
@@ -252,7 +261,7 @@ export interface SimStoreState {
   setParam(key: string, value: ParamValue): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
-  setRightTab(tab: 'parameters' | 'map' | 'layers'): void;
+  setRightTab(tab: RightTab): void;
   togglePerfOverlay(): void;
   resetSim(): void;
   injectHazard(): void;

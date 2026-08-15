@@ -289,6 +289,154 @@ describe('Location search box', () => {
   });
 });
 
+describe('Scene attribution', () => {
+  it('shows the OpenStreetMap attribution when the scene carries one', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    harness.emit({ ...harness.sim.scene, attribution: '© OpenStreetMap contributors' });
+
+    expect(screen.getByText('© OpenStreetMap contributors')).toBeTruthy();
+  });
+
+  it("shows the synthetic scene's own notice verbatim, not OSM-branded copy", () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    // The mock's scene is always synthetic — see mockCity.ts's buildScene —
+    // so the attribution the sidebar receives here is literally the string
+    // SyntheticGrid uses on the real backend (map/scene_build.py). Anything
+    // that dresses it up as an OSM credit would misrepresent the data.
+    expect(screen.getByText('Synthetic scene — no map data')).toBeTruthy();
+  });
+
+  it('renders no attribution element before any scene has arrived', () => {
+    harness = createHarness();
+    const { container } = render(<LeftScenarioSidebar />);
+    // No harness.emitScene() call — the store's `scene` is still null.
+
+    expect(container.querySelector('.scene-attribution')).toBeNull();
+  });
+
+  it('renders no attribution element for an empty (but present) attribution string', () => {
+    harness = createHarness();
+    const { container } = render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    harness.emit({ ...harness.sim.scene, attribution: '' });
+
+    // Guards against `{cond && <p>{cond}</p>}` leaving a stray empty <p> —
+    // a real risk with falsy-but-defined values like ''.
+    expect(container.querySelector('.scene-attribution')).toBeNull();
+  });
+});
+
+describe('Event log', () => {
+  it('renders buffered sim events, newest first, with the level in the className', async () => {
+    harness = createHarness();
+    render(<RightPanel />);
+
+    act(() =>
+      useSimStore.setState({
+        events: [
+          { t: 1, level: 'info', code: 'location_requested', message: 'building Nob Hill' },
+          { t: 2, level: 'warn', code: 'location_failed', message: 'no results' },
+        ],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: /events/i }));
+
+    const items = screen.getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain('no results');
+    expect(items[0].className).toMatch(/event-warn/);
+    expect(items[1].textContent).toContain('building Nob Hill');
+    expect(items[1].className).toMatch(/event-info/);
+
+    // Task 10's Playwright specs target this text directly — a
+    // `location_failed` event must be discoverable by its code, not just
+    // its human-readable message.
+    expect(screen.getByText('location_failed')).toBeTruthy();
+  });
+
+  it('reads as the normal startup state, not an error, before any event arrives', () => {
+    harness = createHarness();
+    render(<RightPanel />);
+
+    fireEvent.click(screen.getByRole('tab', { name: /events/i }));
+
+    expect(screen.getByText(/no events yet/i)).toBeTruthy();
+    expect(screen.queryByRole('listitem')).toBeNull();
+    // Nothing warn/critical-colored should be present for an empty log.
+    expect(screen.queryByText(/error|failed/i)).toBeNull();
+  });
+
+  it('keeps every list item distinct even when two events share the same t and code', () => {
+    // `t` is sim-seconds and resets to 0 on `reset`/`load_scenario`
+    // (mockServer.ts's resetDynamics); `reset` does not itself clear the
+    // event buffer (no scene_description follows it), so two genuinely
+    // different events *can* land in the same 40-entry buffer sharing both
+    // `t` and `code`. If the list key ever loses its disambiguating index,
+    // React would warn about duplicate keys and (worse) misattribute DOM
+    // identity across renders.
+    harness = createHarness();
+    render(<RightPanel />);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    act(() =>
+      useSimStore.setState({
+        events: [
+          { t: 0, level: 'info', code: 'location_requested', message: 'first build' },
+          { t: 0, level: 'info', code: 'location_requested', message: 'second build, after reset' },
+        ],
+      }),
+    );
+    fireEvent.click(screen.getByRole('tab', { name: /events/i }));
+
+    const items = screen.getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain('second build, after reset');
+    expect(items[1].textContent).toContain('first build');
+
+    const duplicateKeyWarning = errorSpy.mock.calls.some((args) =>
+      /same key/i.test(String(args[0])),
+    );
+    expect(duplicateKeyWarning).toBe(false);
+
+    errorSpy.mockRestore();
+  });
+
+  it('the 40-event cap can silently evict an older event once enough newer ones arrive', () => {
+    // This documents a real, pre-existing limitation of simStore.ts's
+    // `.slice(-40)` (Task 3/4), not something Task 7 introduces or fixes:
+    // there is no "N events truncated" indicator, so a `location_failed` a
+    // user hasn't yet seen can scroll off the end of a long session.
+    harness = createHarness();
+    render(<RightPanel />);
+    harness.emitScene();
+    const base = harness.emitFrame(1);
+
+    for (let i = 0; i < 41; i++) {
+      harness.emit({
+        ...base,
+        seq: base.seq + i + 1,
+        events: [{ t: base.t + i, level: 'info', code: 'tick', message: `event ${i}` }],
+      });
+    }
+
+    // Only the newest 40 of the 41 survive; the very first one is gone.
+    expect(useSimStore.getState().events).toHaveLength(40);
+    expect(useSimStore.getState().events[0].message).toBe('event 1');
+
+    fireEvent.click(screen.getByRole('tab', { name: /events/i }));
+    expect(screen.queryByText('event 0')).toBeNull();
+    expect(screen.getByText('event 40')).toBeTruthy();
+  });
+});
+
 describe('RightPanel', () => {
   it('a slider emits set_param and updates the store', () => {
     harness = createHarness();
