@@ -24,9 +24,9 @@ import queue
 import threading
 import time
 from collections import deque
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.service import GroundTruthPerception, PerceptionSource
@@ -166,12 +166,20 @@ class Simulation:
         self._planner = planner or CenterlineFollower()
         self._model = BicycleModel()
         self.world = WorldState()
+        # How `load_location` reaches the executor without a back-reference
+        # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
+        # itself in.
+        self._build_sink: Callable[[Callable[[], BuiltScene]], None] | None = None
         self._load(scenario_id or source.scenarios()[0].id)
 
     # -- lifecycle --------------------------------------------------------- #
 
     def _load(self, scenario_id: str) -> None:
-        self.scene: BuiltScene = self._source.build(scenario_id)
+        self.adopt_scene(self._source.build(scenario_id))
+
+    def adopt_scene(self, scene: BuiltScene) -> None:
+        """Install an already-built scene. The only mutation point for `scene`."""
+        self.scene: BuiltScene = scene
         self._traffic: TrafficModel = ScriptedTraffic(
             routes=self.scene.agent_routes,
             speed_limit_mps=self.scene.speed_limit_mps,
@@ -180,6 +188,10 @@ class Simulation:
         )
         self._signals = SignalController(self.scene.signal_groups)
         self._reset_dynamics()
+
+    def set_build_sink(self, sink: Callable[[Callable[[], BuiltScene]], None]) -> None:
+        """How `load_location` reaches the executor without a back-reference."""
+        self._build_sink = sink
 
     def _reset_dynamics(self) -> None:
         route = self.scene.ego_route
@@ -670,6 +682,21 @@ class SimLoop:
         # Wall-clock cost of `sim.step()` + `sim.state_update()`, the last
         # ~300 ticks (~5s at 60Hz). Read by /health for the perf overlay.
         self._step_times_ms: deque[float] = deque(maxlen=300)
+        # Slow work — geocoding, Overpass, disk — runs here so the sim thread
+        # never waits on the network. One worker: two concurrent location
+        # builds would race to swap, and the newest would win anyway.
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="streetlab-build"
+        )
+        # Latest-wins: a scene that finished while another was already waiting
+        # is simply the newer answer.
+        self._pending_scene: BuiltScene | None = None
+        self._scene_epoch = 0
+        # Events raised off-thread. `world.events` is rewritten by the sim
+        # thread every frame, so an executor thread appending to it directly
+        # would be a race; a queue is the same shape commands already use.
+        self._events: queue.Queue[SimEvent] = queue.Queue()
+        sim.set_build_sink(self.submit_scene)
 
     @property
     def running(self) -> bool:
@@ -679,6 +706,12 @@ class SimLoop:
     def latest(self) -> StateUpdate | None:
         with self._lock:
             return self._latest
+
+    @property
+    def scene_epoch(self) -> int:
+        """Bumped on every scene swap. Connections compare against it."""
+        with self._lock:
+            return self._scene_epoch
 
     def step_time_percentiles_ms(self) -> tuple[float, float]:
         """p50/p95 wall-clock step time over the recent window, in ms."""
@@ -698,12 +731,38 @@ class SimLoop:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             self._thread = None
+        # `cancel_futures=True` only cancels builds that had not yet started;
+        # one already running keeps going and lands in `_pending_scene`,
+        # where nothing will ever consume it now that the loop is stopped.
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def submit(self, raw: Any) -> Future:
         """Queue a command for application between steps. Returns a Future."""
         future: Future = Future()
         self._commands.put((raw, future))
         return future
+
+    def submit_scene(self, build: Callable[[], BuiltScene]) -> None:
+        """Build a scene off the sim thread and swap it in when it is ready."""
+
+        def run() -> None:
+            try:
+                scene = build()
+            except Exception as exc:
+                log.warning("scene build failed: %s", exc)
+                self._events.put(
+                    SimEvent(
+                        t=round(self.sim.t, 3),
+                        level="warn",
+                        code="location_failed",
+                        message=str(exc),
+                    )
+                )
+                return
+            with self._lock:
+                self._pending_scene = scene
+
+        self._executor.submit(run)
 
     def await_frame(self, timeout: float = 1.0) -> StateUpdate | None:
         """Block until a frame newer than the last one read is published."""
@@ -717,6 +776,8 @@ class SimLoop:
         next_at = time.monotonic()
         while not self._stop.is_set():
             self._drain_commands()
+            self._drain_events()
+            self._take_pending_scene()
             step_start = time.perf_counter()
             self.sim.step()
             frame = self.sim.state_update()
@@ -754,6 +815,25 @@ class SimLoop:
             # and silently stop the world.
             if future.set_running_or_notify_cancel():
                 future.set_result(outcome)
+
+    def _drain_events(self) -> None:
+        while True:
+            try:
+                self.sim.world.events.append(self._events.get_nowait())
+            except queue.Empty:
+                return
+
+    def _take_pending_scene(self) -> None:
+        """Swap at a step boundary — never mid-step, where half the world would
+        belong to the old scene and half to the new."""
+        with self._lock:
+            scene = self._pending_scene
+            self._pending_scene = None
+        if scene is None:
+            return
+        self.sim.adopt_scene(scene)
+        with self._lock:
+            self._scene_epoch += 1
 
 
 def _percentile(sorted_samples: list[float], pct: float) -> float:

@@ -110,6 +110,15 @@ class _Connection:
         # Serialises the streaming task against command replies, so a scene and
         # its ack cannot be split by a frame going out between them.
         self._send_lock = asyncio.Lock()
+        # The epoch the client's most recent scene corresponds to. Read before
+        # the on-connect scene is sent below, in `_serve`: if a background
+        # build swaps in a newer scene in the gap between the two, this stays
+        # stale and `stream()`'s first check below will simply re-push the
+        # (now-current) scene once more — a harmless duplicate. Recording it
+        # the other way around — after the scene is sent — could instead let
+        # the swap land in that same gap and be missed entirely, since the
+        # epoch would already read as "seen" for content the client never got.
+        self._sent_epoch = loop.scene_epoch
 
     async def send_model(self, message: SceneDescription | StateUpdate | Any) -> None:
         async with self._send_lock:
@@ -133,6 +142,12 @@ class _Connection:
         toward whatever the latest one holds.
         """
         while True:
+            epoch = self.loop.scene_epoch
+            if epoch != self._sent_epoch:
+                # A location finished building. The client gets the new world
+                # before any frame that describes it.
+                await self.send_model(self.loop.sim.scene_description())
+                self._sent_epoch = epoch
             frame = self.loop.latest
             if frame is not None:
                 # `seq` is a per-connection counter: a client joining an

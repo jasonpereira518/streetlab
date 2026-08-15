@@ -8,6 +8,8 @@ freezing on screen for no visible reason.
 
 import logging
 import math
+import threading
+import time
 
 import pytest
 
@@ -107,6 +109,20 @@ def test_load_scenario_swaps_the_scene_and_resets_time(sim):
     assert outcome.scene is not None
     assert outcome.scene.scenario_id == "grid-signals"
     assert sim.t == 0.0
+
+
+def test_adopt_scene_installs_the_scene_and_resets_dynamics(sim):
+    """`adopt_scene` is the shared mutation point behind both `_load` (by id)
+    and the executor's swap (an already-built scene) — it must behave the
+    same way `_load` always has: install the scene as-is, and reset the
+    clock and ego state for it.
+    """
+    advance(sim, 3.0)
+    new_scene = SyntheticGrid().build("grid-signals")
+    sim.adopt_scene(new_scene)
+    assert sim.scene is new_scene
+    assert sim.t == 0.0
+    assert sim.scene.description.scenario_id == "grid-signals"
 
 
 def test_unknown_scenario_is_rejected_with_a_message(sim):
@@ -351,3 +367,188 @@ def test_sim_loop_stops_cleanly():
     loop.await_frame(timeout=2.0)
     loop.stop()
     assert not loop.running
+
+
+# -- scene builds off the sim thread ----------------------------------------- #
+#
+# `_loop()` centralises teardown for every threaded test below: `stop()` only
+# cancels QUEUED executor work (`cancel_futures=True`), not a build already
+# running, so a slow build deliberately left in flight (e.g. to test what
+# happens after `stop()`) can still be alive when a test function returns.
+# With `filterwarnings = ["error"]`, a thread exception surfacing during a
+# LATER, unrelated test becomes an unattributable failure — so every loop
+# created here is force-joined in a fixture, not left to the GC.
+
+_ACTIVE_LOOPS: list[SimLoop] = []
+
+
+def _loop(hz: float = 20.0) -> SimLoop:
+    """A fresh threaded loop, registered for teardown.
+
+    `hz` defaults low (50 ms/step) rather than to the production 60 Hz: the
+    events tests below poll `loop.latest` every 20 ms, and an event is only
+    visible in the ONE published frame it rides in before the next
+    `state_update()` clears `world.events` — exactly like a synchronous
+    `_emit()` already behaves (see `test_events_are_drained_after_being_reported`
+    above). A low hz gives that one-frame window enough wall-clock width that
+    a 20 ms poll cannot straddle it.
+    """
+    loop = SimLoop(Simulation(SyntheticGrid(), seed=1), hz=hz)
+    _ACTIVE_LOOPS.append(loop)
+    return loop
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_loops():
+    yield
+    while _ACTIVE_LOOPS:
+        loop = _ACTIVE_LOOPS.pop()
+        loop.stop()
+        # Block until any still-running build actually finishes and the
+        # executor's worker thread exits, so nothing survives past this test.
+        loop._executor.shutdown(wait=True)
+
+
+def test_submit_scene_does_not_block_the_caller():
+    loop = _loop()
+    started = threading.Event()
+
+    def slow():
+        started.set()
+        time.sleep(0.4)
+        return SyntheticGrid().build("grid-arterial")
+
+    t0 = time.perf_counter()
+    loop.submit_scene(slow)
+    assert time.perf_counter() - t0 < 0.1  # returned immediately
+    assert started.wait(1.0)
+
+
+def test_scene_epoch_increments_once_per_swap():
+    loop = _loop()
+    loop.start()
+    try:
+        before = loop.scene_epoch
+        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        deadline = time.monotonic() + 5.0
+        while loop.scene_epoch == before and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert loop.scene_epoch == before + 1
+        assert loop.sim.scene.description.scenario_id == "grid-arterial"
+    finally:
+        loop.stop()
+
+
+def test_a_failing_build_emits_an_event_and_keeps_the_old_scene():
+    loop = _loop()
+    loop.start()
+    try:
+        before_epoch = loop.scene_epoch
+        before_id = loop.sim.scene.description.scenario_id
+
+        def boom():
+            raise RuntimeError("overpass exploded")
+
+        loop.submit_scene(boom)
+        deadline = time.monotonic() + 5.0
+        seen = []
+        while time.monotonic() < deadline and not seen:
+            frame = loop.latest
+            if frame:
+                seen = [e for e in frame.events if e.code == "location_failed"]
+            time.sleep(0.02)
+        assert seen, "a failed build must surface through events[]"
+        assert loop.scene_epoch == before_epoch      # no swap happened
+        assert loop.sim.scene.description.scenario_id == before_id
+    finally:
+        loop.stop()
+
+
+def test_sim_loop_wires_its_submit_scene_as_the_sims_build_sink():
+    """`load_location` (Task 4) reaches the executor through `sim._build_sink`
+    without the `Simulation` holding a back-reference to its `SimLoop`.
+    """
+    loop = _loop()
+    assert loop.sim._build_sink == loop.submit_scene
+
+
+def test_a_second_build_overwrites_a_still_pending_first():
+    """The executor has one worker, so two builds submitted back-to-back
+    serialise — but does the second result correctly overwrite a first that
+    is still sitting unswapped in `_pending_scene`? The sim thread is never
+    started here, which isolates the overwrite itself from any race against
+    the step loop consuming `_pending_scene` concurrently.
+    """
+    loop = _loop()
+
+    loop.submit_scene(lambda: SyntheticGrid().build("grid-loop"))
+    deadline = time.monotonic() + 5.0
+    while loop._pending_scene is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert loop._pending_scene is not None
+    assert loop._pending_scene.description.scenario_id == "grid-loop"
+
+    loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+    deadline = time.monotonic() + 5.0
+    while (
+        loop._pending_scene is None
+        or loop._pending_scene.description.scenario_id != "grid-arterial"
+    ) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert loop._pending_scene.description.scenario_id == "grid-arterial"
+
+    # Simulate the one step boundary that would consume it: exactly one
+    # swap happens, and it lands on the newer scene — the stale first
+    # result, overwritten before anything ever read it, must never surface.
+    loop._take_pending_scene()
+    assert loop.scene_epoch == 1
+    assert loop.sim.scene.description.scenario_id == "grid-arterial"
+
+
+def test_a_build_finishing_after_stop_does_not_swap_into_a_dead_loop():
+    """`stop()` cancels QUEUED executor work but a build already in flight
+    keeps running to completion — it must land somewhere harmless (a stale,
+    never-consumed `_pending_scene`) rather than raising into the executor
+    thread, and `stop()` itself must tear the executor down so that thread
+    does not sit parked on its work queue forever once the build returns.
+
+    Deliberately does NOT call `loop._executor.shutdown()` itself: doing so
+    would make this pass even if `stop()` forgot to, since our own call
+    would clean up regardless. Watching the named worker thread disappear on
+    its own is what actually proves `stop()` did the shutdown — this suite's
+    `_cleanup_loops` fixture calling `shutdown(wait=True)` afterwards is only
+    a backstop, not the thing under test.
+    """
+    loop = _loop()
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(2.0)
+        return SyntheticGrid().build("grid-arterial")
+
+    loop.start()
+    loop.submit_scene(slow)
+    assert started.wait(2.0), "build never started"
+
+    loop.stop()
+    assert not loop.running
+
+    def build_thread_alive() -> bool:
+        return any(t.name.startswith("streetlab-build") for t in threading.enumerate())
+
+    assert build_thread_alive(), "the build should still be in flight here"
+    release.set()
+
+    deadline = time.monotonic() + 2.0
+    while build_thread_alive() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not build_thread_alive(), (
+        "a streetlab-build thread outlived stop() — the build finished but "
+        "the executor was never shut down, so its worker sat parked on the "
+        "queue instead of exiting"
+    )
+
+    assert loop.sim.scene.description.scenario_id != "grid-arterial"
+    assert loop.scene_epoch == 0

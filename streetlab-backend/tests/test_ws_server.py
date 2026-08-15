@@ -28,10 +28,18 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def server():
+def sim_loop():
+    """The `SimLoop` behind `server`, exposed separately so tests can reach
+    into it (e.g. `submit_scene`) without changing every existing test's
+    fixture signature.
+    """
+    return SimLoop(Simulation(SyntheticGrid(), seed=5), hz=120)
+
+
+@pytest.fixture(scope="module")
+def server(sim_loop):
     """One shared world, exactly as the desktop sidecar runs it."""
-    loop = SimLoop(Simulation(SyntheticGrid(), seed=5), hz=120)
-    app = create_app(loop, tick_hz=120)
+    app = create_app(sim_loop, tick_hz=120)
     port = _free_port()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     srv = uvicorn.Server(config)
@@ -337,3 +345,53 @@ async def test_the_server_still_works_after_a_fuzz_run(server):
         await send(ws, {"id": "after-fuzz", "cmd": "set_camera", "view": "chase"})
         ack = await recv_typed(ws, "ack", limit=800)
         assert ack.id == "after-fuzz" and ack.ok
+
+
+# -- scene swaps pushed unsolicited ------------------------------------------ #
+#
+# These run last in the module: both submit a real scene swap through
+# `sim_loop`, which permanently changes the shared world's active scenario
+# for anything that runs afterward — every test above only asserts on
+# scenario-agnostic behaviour, so this ordering is safe, but a new test
+# inserted after this point that hardcodes a scenario id would not be.
+
+
+async def test_a_scene_swap_is_pushed_to_a_connected_client(server, sim_loop):
+    async with connect(server) as ws:
+        first = await recv_typed(ws, "scene_description")
+        assert first.type == "scene_description"
+        sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        # The new scene must arrive unsolicited, with no command sent.
+        for _ in range(600):
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+            if msg["type"] == "scene_description":
+                assert msg["scenario_id"] == "grid-arterial"
+                return
+        raise AssertionError("no unsolicited scene_description arrived")
+
+
+async def test_a_client_never_sees_a_frame_for_a_scene_it_has_not_received(server, sim_loop):
+    """The ordering guarantee in `stream()`: the new scene goes out before any
+    `state_update` that describes it. A client racing a build to connect —
+    the build may finish before or after the initial on-connect scene is
+    sent — must never observe a `state_update` naming a scenario it was
+    never told about, regardless of which side of that race wins.
+    """
+    sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-signals"))
+    async with connect(server) as ws:
+        known_scenarios: set[str] = set()
+        for _ in range(600):
+            raw = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+            parsed = parse_server_message(raw)
+            assert parsed.ok, parsed.error
+            msg = parsed.value
+            if msg.type == "scene_description":
+                known_scenarios.add(msg.scenario_id)
+            elif msg.type == "state_update":
+                assert msg.scenario_id in known_scenarios, (
+                    f"state_update named {msg.scenario_id!r} before any "
+                    f"scene_description announced it (known: {known_scenarios})"
+                )
+                if msg.scenario_id == "grid-signals":
+                    return
+        raise AssertionError("never converged to the swapped scenario")
