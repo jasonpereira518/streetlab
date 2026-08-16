@@ -41,8 +41,48 @@ APPROACH_M = 45.0
 #: rather than a demand it saturates against.
 COMFORT_DECEL_MPS2 = 2.0
 
+#: How far short of the line the ceiling actually reaches zero (Task 7).
+#:
+#: `sqrt(2 * COMFORT_DECEL_MPS2 * distance)` is the speed profile of a car
+#: under CONSTANT deceleration that arrives at `distance == 0` with `v == 0`
+#: -- but `CenterlineFollower` does not brake at a constant rate, it *chases*
+#: this shrinking ceiling with a proportional law
+#: (`accel = SPEED_GAIN * (target - speed)`, `plan/control.py`). A
+#: proportional controller always lags a falling target, and the ceiling
+#: falls fastest exactly where it matters most: its slope in `distance` is
+#: unbounded as `distance -> 0`. The tracker cannot keep pace with an
+#: infinitely steep target, so it is still moving -- and past the line --
+#: by the time it is slow enough to count as stopped.
+#:
+#: Measured on `grid-loop` with `CenterlineFollower` driving in, cruising to
+#: a stop naturally from beyond `APPROACH_M` (not dropped at the line already
+#: at speed), across 4-18 m/s and several approach distances: the car settles
+#: 3.7-4.7 m past where the RAW (un-margined) ceiling reaches zero, almost
+#: independent of approach speed -- the last few metres of the stop are
+#: governed by `COMFORT_DECEL_MPS2` and the tracker's gain, not by how the
+#: approach started. Subtracting `STOP_MARGIN_M` here moves the ceiling's
+#: zero point this far *before* the line, so the tracker's own overshoot
+#: lands close to the line instead of past it -- 6.5 m clears the measured
+#: range with margin. See `STOP_ZONE_M` for the other half of this: the rest
+#: position must also land inside it, or the car never reaches STOP.
+STOP_MARGIN_M = 6.5
+
 #: Close enough to the line, and slow enough, to count as stopped.
-STOP_ZONE_M = 3.0
+#:
+#: Widened from the pre-Task-7 3.0 m alongside `STOP_MARGIN_M`: with the
+#: margin in place the car settles short of the line (see `STOP_MARGIN_M`),
+#: and that rest position must fall inside this zone or the FSM never sees
+#: `distance <= STOP_ZONE_M`, never enters STOP, and never releases on green
+#: -- the car sits at the margin point forever, which is worse than the
+#: overshoot this was meant to fix. On `grid-loop`'s straights the rest gap
+#: measured up to 3.9 m short; on the real, curved, filleted Nob Hill route
+#: (`tests/fixtures/overpass_nob_hill.json`, two close-set stop signs at
+#: s=79.99 and s=88.40) it measured 4.69 m short and stalled forever at
+#: 4.5 m -- geometry the synthetic straight does not exercise. 6.0 m clears
+#: that with a further ~1.3 m of headroom; both this and `STOP_MARGIN_M`
+#: only gate a car that is already essentially stopped (`STOPPED_MPS`), so
+#: widening this cannot cause a moving car to be mistaken for a stopped one.
+STOP_ZONE_M = 6.0
 STOPPED_MPS = 0.3
 
 #: How long a stop sign is honoured at rest.
@@ -149,7 +189,9 @@ class BehaviorFSM:
         self.state = BehaviorState.APPROACH
         return BehaviorDecision(
             BehaviorState.APPROACH,
-            math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance, 0.0)),
+            # Zero out STOP_MARGIN_M early -- see its docstring -- so the
+            # tracker's own lag overshoots toward the line rather than past it.
+            math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance - STOP_MARGIN_M, 0.0)),
             "stop",
             target,
         )

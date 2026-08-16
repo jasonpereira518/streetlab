@@ -11,6 +11,7 @@ import math
 import pytest
 
 from map.scene_build import SyntheticGrid
+from plan.behavior import STOP_ZONE_M
 from plan.control import CenterlineFollower, PlanLimits, Planner
 from schema import Plan
 from sim.vehicle import BicycleModel, VehicleState
@@ -245,3 +246,147 @@ def test_steering_reverses_sign_for_an_offset_to_the_other_side(built, limits, c
     left = steer_from_offset(1.5)
     right = steer_from_offset(-1.5)
     assert left < 0 < right, "must steer back toward the centreline from both sides"
+
+
+def light_context(route, s, phase, t=0.0):
+    from plan.control import PlanContext
+    from schema import SignalState
+    from sim.route import ControlPoint
+
+    x, y = route.point_at(s)
+    return PlanContext(
+        t=t,
+        dt=1 / 60,
+        signals={"tl": SignalState(id="tl", phase=phase, time_to_change_s=5.0)},
+        control_points=[ControlPoint(id="tl", kind="signal", s=s, position=(x, y))],
+    )
+
+
+def test_a_red_light_ahead_lowers_the_target_speed(built, limits):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=8.0, s=s)
+    free = CenterlineFollower().plan(ego, route, [], limits, light_context(route, s, "green"))
+    red = CenterlineFollower().plan(ego, route, [], limits, light_context(route, s + 20.0, "red"))
+    assert red.plan.target_speed_mps < free.plan.target_speed_mps
+
+
+def test_a_red_light_ahead_emits_the_stop_maneuver(built, limits):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=8.0, s=s)
+    result = CenterlineFollower().plan(
+        ego, route, [], limits, light_context(route, s + 20.0, "red")
+    )
+    assert result.plan.maneuver == "stop"
+
+
+def test_a_green_light_leaves_the_geometric_maneuver_alone(built, limits):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=8.0, s=s)
+    result = CenterlineFollower().plan(
+        ego, route, [], limits, light_context(route, s + 20.0, "green")
+    )
+    assert result.plan.maneuver == "keep_lane"
+
+
+def test_creeping_across_a_junction_emits_the_yield_maneuver(built, limits):
+    """The other manoeuvre the HUD has labelled since Cycle 1 and never seen."""
+    route = built.ego_route
+    s = straight_s(route)
+    planner = CenterlineFollower()
+    stopped = start_state(route, speed=0.1, s=s)
+    planner.plan(stopped, route, [], limits, light_context(route, s + 1.0, "red"))
+    result = planner.plan(stopped, route, [], limits, light_context(route, s + 1.0, "green"))
+    assert result.plan.maneuver == "yield"
+
+
+def test_the_ego_comes_to_rest_at_a_red_light(built, limits):
+    """Integration: tracker plus bicycle model, braking for a line 60 m out."""
+    route = built.ego_route
+    s0 = straight_s(route)
+    line_s = s0 + 60.0
+    planner = CenterlineFollower()
+    model = BicycleModel()
+    state = start_state(route, speed=limits.speed_limit_mps, s=s0)
+
+    for _ in range(60 * 40):
+        ctx = light_context(route, line_s, "red")
+        result = planner.plan(state, route, [], limits, ctx)
+        state = model.step(
+            state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60
+        )
+        if state.speed_mps < 0.2:
+            break
+
+    overshoot = route.signed_gap(route.project((state.x, state.y)), line_s)
+    assert state.speed_mps < 0.2, "ego never stopped"
+    assert overshoot > -1.0, f"ego overshot the stop line by {-overshoot:.2f} m"
+
+
+@pytest.mark.parametrize("approach_mps", [4.0, 6.0, 8.0, 11.176, 15.0, 18.0])
+def test_the_ego_rests_before_the_line_across_approach_speeds(built, approach_mps):
+    """Pin the property `STOP_MARGIN_M` exists for, not the constant itself.
+
+    The tracker's proportional law always overshoots the ceiling's zero
+    point by several metres (see `STOP_MARGIN_M` in `plan/behavior.py`), so
+    the rest position must land in a narrow band: short of the line (or
+    Task 8's crossing detector fires), but not so short it falls outside
+    `STOP_ZONE_M` (or the FSM never sees itself as stopped and stalls
+    forever, even on green). This must hold across the speeds a car
+    actually arrives at a light with, not just the one the other test
+    happens to sample.
+    """
+    route = built.ego_route
+    limits = PlanLimits(speed_limit_mps=approach_mps, speed_cap_mps=100.0)
+    s0 = straight_s(route)
+    line_s = s0 + 60.0
+    planner = CenterlineFollower()
+    model = BicycleModel()
+    state = start_state(route, speed=approach_mps, s=s0)
+
+    for _ in range(60 * 40):
+        ctx = light_context(route, line_s, "red")
+        result = planner.plan(state, route, [], limits, ctx)
+        state = model.step(
+            state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60
+        )
+        if state.speed_mps < 0.05:
+            break
+
+    rest_gap = route.signed_gap(route.project((state.x, state.y)), line_s)
+    assert state.speed_mps < 0.05, "ego never stopped"
+    assert rest_gap > 0.0, f"ego crossed the stop line by {-rest_gap:.2f} m"
+    assert rest_gap <= STOP_ZONE_M, (
+        f"ego stopped {rest_gap:.2f} m short of the line, outside STOP_ZONE_M "
+        f"({STOP_ZONE_M} m) -- it would never see itself as stopped"
+    )
+
+
+def test_the_ego_does_not_slow_for_a_green_light(built, limits):
+    route = built.ego_route
+    s0 = straight_s(route)
+    planner = CenterlineFollower()
+    model = BicycleModel()
+    state = start_state(route, speed=limits.speed_limit_mps, s=s0)
+    for _ in range(120):
+        ctx = light_context(route, s0 + 60.0, "green")
+        result = planner.plan(state, route, [], limits, ctx)
+        state = model.step(
+            state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60
+        )
+    assert state.speed_mps > limits.speed_limit_mps * 0.8
+
+
+def test_reset_clears_the_behaviour_state(built, limits):
+    route = built.ego_route
+    s = straight_s(route)
+    planner = CenterlineFollower()
+    planner.plan(
+        start_state(route, speed=12.0, s=s), route, [], limits,
+        light_context(route, s + 2.0, "yellow"),
+    )
+    assert planner.fsm.honoured
+    planner.reset()
+    assert not planner.fsm.honoured

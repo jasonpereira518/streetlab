@@ -17,6 +17,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
+from plan.behavior import BehaviorFSM
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Route
 from sim.vehicle import VehicleState
@@ -132,6 +133,10 @@ class Planner(Protocol):
 @dataclass(slots=True)
 class CenterlineFollower:
     wheelbase_m: float = 2.9
+    fsm: BehaviorFSM = field(default_factory=BehaviorFSM)
+
+    def reset(self) -> None:
+        self.fsm.reset()
 
     def plan(
         self,
@@ -148,9 +153,16 @@ class CenterlineFollower:
             _LOOKAHEAD_MAX_M,
         )
 
+        decision = self.fsm.step(
+            ego, route, s, context.control_points, context.signals, context.dt
+        )
+
         steer = self._pure_pursuit(ego, route, s, lookahead)
         curvature = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
         target = self._target_speed(limits, curvature, detections, ego, route, s)
+        # The behaviour ceiling folds in exactly like the curvature and
+        # lead-vehicle caps: another upper bound, not a separate control path.
+        target = min(target, decision.speed_ceiling_mps)
         accel = _clamp(
             _SPEED_GAIN * (target - ego.speed_mps), -_MAX_DECEL_MPS2, _MAX_ACCEL_MPS2
         )
@@ -161,7 +173,7 @@ class CenterlineFollower:
                     s, length_m=_PLAN_LENGTH_M, step_m=_PLAN_STEP_M
                 ),
                 target_speed_mps=max(0.0, target),
-                maneuver=_maneuver(route, s),
+                maneuver=decision.maneuver or _maneuver(route, s),
                 confidence=1.0 if limits.assist_enabled else 0.35,
             ),
             steer_rad=steer,
@@ -195,9 +207,6 @@ class CenterlineFollower:
         if lead is not None:
             target = min(target, _following_speed(lead, gap, ego, limits))
         return target
-
-    def reset(self) -> None:
-        """Nothing to forget yet. Task 6 gives this a behaviour FSM to clear."""
 
 
 def _closest_lead(

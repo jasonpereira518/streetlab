@@ -14,6 +14,7 @@ from plan.behavior import (
     COMFORT_DECEL_MPS2,
     CREEP_MPS,
     STOP_DWELL_S,
+    STOP_MARGIN_M,
     BehaviorFSM,
     BehaviorState,
 )
@@ -68,11 +69,18 @@ def test_a_green_light_inside_the_window_does_not_slow_the_car(road):
 
 
 def test_a_red_light_produces_a_decelerating_ceiling(road):
+    """The ceiling zeroes out STOP_MARGIN_M short of the line (Task 7) --
+    see that constant's docstring for why: the tracker chasing it overshoots
+    by roughly that much, so the raw distance-to-line is not what the
+    formula uses.
+    """
     fsm = BehaviorFSM()
     d = fsm.step(ego_at(0.0, 10.0), road, 0.0, light_at(20.0), signal("tl", "red"), DT)
     assert d.state is BehaviorState.APPROACH
     assert d.maneuver == "stop"
-    assert d.speed_ceiling_mps == pytest.approx(math.sqrt(2 * COMFORT_DECEL_MPS2 * 20.0))
+    assert d.speed_ceiling_mps == pytest.approx(
+        math.sqrt(2 * COMFORT_DECEL_MPS2 * (20.0 - STOP_MARGIN_M))
+    )
 
 
 def test_the_ceiling_tightens_as_the_line_approaches(road):
