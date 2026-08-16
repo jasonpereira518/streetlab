@@ -398,6 +398,37 @@ def test_stop_zone_covers_the_whole_margin_interval():
     )
 
 
+def test_creep_headroom_covers_the_tracker_at_full_creep_speed():
+    """Pin the *relationship* across four constants in three modules, not
+    any of their values (review finding).
+
+    When the FSM releases a cleared control point A and switches target to a
+    following point B, `_next_point` (`plan/behavior.py`) only releases A
+    once `gap < -CLEARED_M`, so the minimum distance available to stop for B
+    -- entered at up to `CREEP_MPS` -- is `CONTROL_POINT_MERGE_M - CLEARED_M`
+    (`CONTROL_POINT_MERGE_M` lives in `map/lanes.py`). The tracker's
+    proportional law (`accel = _SPEED_GAIN * (target - speed)`,
+    `plan/control.py`) needs `CREEP_MPS / _SPEED_GAIN` of room to bring that
+    entry speed back down to the next ceiling. If the available distance ever
+    stops exceeding the required one, the ego can roll a stop sign it was
+    supposed to honour, with no other test failure -- see `CREEP_MPS`'s
+    docstring in `plan/behavior.py` for the measured headroom (1.22 m) and
+    the two real Nob Hill crossings that actually exercise both extremes.
+    """
+    from map.lanes import CONTROL_POINT_MERGE_M
+    from plan.behavior import CLEARED_M, CREEP_MPS
+    from plan.control import _SPEED_GAIN
+
+    available = CONTROL_POINT_MERGE_M - CLEARED_M
+    required = CREEP_MPS / _SPEED_GAIN
+    assert available > required, (
+        f"available headroom between adjacent control points ({available:.2f} m) "
+        f"must exceed what the tracker needs to shed full creep speed "
+        f"({required:.2f} m), or the ego can roll a stop sign it was "
+        "supposed to honour"
+    )
+
+
 @pytest.mark.parametrize(
     "approach_mps,start_gap_m",
     [

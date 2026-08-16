@@ -1,7 +1,9 @@
 """Phase 1 acceptance: the ego obeys the road.
 
 Two scenes. `SyntheticGrid` is the cheap deterministic fixture -- its grid-loop
-passes 8 signal heads and 3 stop signs within 12 m. Nob Hill is what the
+passes 8 signal heads and 3 stop signs within 12 m before the facing filter
+and merge (see `map/scene_build.py::_control_points`); the built scene keeps
+only the subset that actually faces the ego's route. Nob Hill is what the
 packaged app actually boots into: 1182.3 m, 4 lights and 12 stop signs within
 12 m of the driven route, and 4.1 signal cycles per free-running 132.6 s lap,
 so meeting a red is near-certain.
@@ -12,13 +14,12 @@ import math
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from map.cache import DiskCache
 from map.geocode import Place
 from map.osm_source import OsmSceneSource
 from map.overpass import OverpassClient
 from map.scene_build import SyntheticGrid
+from plan.behavior import STOP_ZONE_M
 from sim.loop import Simulation
 
 DT = 1 / 60
@@ -71,7 +72,15 @@ def drive(sim, max_frames):
         phases = {s.id: s.phase for s in sim.world.signals}
         for cp in points:
             gap = route.signed_gap(ego_s, cp.s)
-            if 0.0 < gap < 20.0:
+            # Narrowed from 20.0 to STOP_ZONE_M: a strictly tighter credit
+            # window, free to take -- with a 7 m window zero stop signs fail
+            # the < 1.0 m/s bar below. This does NOT separate clustered
+            # control points from each other (measured: closely-spaced Nob
+            # Hill stop signs report the same slowest speed through both a
+            # 20 m and a 7 m window, because the ego genuinely stops at each
+            # one and every stop settles to the same deterministic residual).
+            # What actually closes that gap is the id-set assertion below.
+            if 0.0 < gap < STOP_ZONE_M:
                 slowest[cp.id] = min(slowest[cp.id], sim.ego.speed_mps)
             was = prev_gap.get(cp.id)
             if was is not None and was > 0.0 >= gap and abs(was - gap) < 5.0:
@@ -104,6 +113,11 @@ def test_the_synthetic_ego_stops_at_every_control_point_it_crosses():
     assert crossings, "ego crossed no control point in a whole lap"
     stops = [c for c in crossings if c["kind"] == "stop_sign"]
     assert stops, "ego crossed no stop sign in a whole lap"
+    # Every stop sign in the scene, not just at least one -- a regression that
+    # drops stop-sign projection from N to 1 would still pass `assert stops`.
+    assert {c["id"] for c in stops} == {
+        cp.id for cp in sim.scene.control_points if cp.kind == "stop_sign"
+    }
     for c in stops:
         assert c["slowest"] < 1.0, (
             f"{c['kind']} {c['id']} crossed at {c['slowest']:.2f} m/s without stopping"
@@ -137,6 +151,12 @@ def test_the_ego_stops_at_every_control_point_on_the_real_route():
     assert crossings
     stops = [c for c in crossings if c["kind"] == "stop_sign"]
     assert stops, "ego crossed no stop sign on a whole lap"
+    # Every stop sign in the scene, not just at least one -- measured 12/12
+    # distinct ids crossed on Nob Hill. A regression that drops stop-sign
+    # projection from 12 to 1 would still pass `assert stops` alone.
+    assert {c["id"] for c in stops} == {
+        cp.id for cp in sim.scene.control_points if cp.kind == "stop_sign"
+    }
     for c in stops:
         assert c["slowest"] < 1.0, (
             f"{c['kind']} {c['id']} crossed at {c['slowest']:.2f} m/s"

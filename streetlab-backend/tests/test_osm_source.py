@@ -1026,6 +1026,10 @@ def test_the_osm_scene_carries_control_points_for_the_driven_route(nob_hill_scen
     scene = nob_hill_scene
     assert scene.control_points
     assert len(scene.control_points) < 40, "matched far more props than the route passes"
+    # Lower bound too (12 stop signs + 4 signals measured): a cheap second
+    # backstop against a regression that silently drops most projections
+    # while still leaving `assert scene.control_points` truthy.
+    assert len(scene.control_points) >= 16, "matched far fewer props than the route passes"
     kinds = {cp.kind for cp in scene.control_points}
     assert kinds <= {"signal", "stop_sign"}
 

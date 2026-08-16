@@ -249,7 +249,7 @@ class Simulation:
         self._traffic.step(dt)
 
         self._guard_world()
-        result = self._plan()
+        result = self._plan(dt)
         self.world.ego = self._model.step(
             self.world.ego,
             accel_mps2=result.accel_mps2,
@@ -280,7 +280,7 @@ class Simulation:
         else:
             self.world.last_good_ego = repaired
 
-    def _plan(self) -> PlanResult:
+    def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
 
         The single place a plan is produced. `state_update()` reads the cache
@@ -289,14 +289,21 @@ class Simulation:
         reason `posted_limit_mps` is passed rather than recomputed in
         `state_update()`: the phase the car obeyed and the phase the HUD shows
         must not be two separate computations that can drift.
+
+        `dt` defaults to `self.dt` -- `state_update()` calls this with no
+        argument when it needs to plan before any `step()` has run. `step()`
+        itself always passes its own (possibly overridden) `dt` through, so
+        `STOP_DWELL_S` accumulates against the same clock the world is
+        actually advancing on rather than silently reverting to `self.dt`.
         """
+        dt = self.dt if dt is None else dt
         detections = self._perception.observe(
             self.world.ego, self._traffic.agents, self.scene.ego_route
         )
         signals = self._signals.state(self.world.t)
         context = PlanContext(
             t=self.world.t,
-            dt=self.dt,
+            dt=dt,
             signals={s.id: s for s in signals},
             control_points=self.scene.control_points,
         )

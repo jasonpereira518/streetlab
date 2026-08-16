@@ -124,6 +124,30 @@ assert STOP_ZONE_M >= STOP_MARGIN_M, (
 STOP_DWELL_S = 1.0
 
 #: Speed while edging across a junction.
+#:
+#: WARNING for whoever next retunes this, `CLEARED_M` below,
+#: `CONTROL_POINT_MERGE_M` (`map/lanes.py`) or `_SPEED_GAIN`
+#: (`plan/control.py`): an unwritten invariant across all four holds the
+#: stop at a following control point B safe when the FSM releases A and
+#: switches target to B. `_next_point` only releases A once `gap < -CLEARED_M`,
+#: so the minimum distance available to stop for B, entered at up to
+#: `CREEP_MPS`, is `CONTROL_POINT_MERGE_M - CLEARED_M`. The tracker's
+#: proportional law (`accel = _SPEED_GAIN * (target - speed)`) needs
+#: `CREEP_MPS / _SPEED_GAIN` of room to bring that entry speed back down.
+#: The invariant is:
+#:
+#:     CONTROL_POINT_MERGE_M - CLEARED_M > CREEP_MPS / _SPEED_GAIN
+#:
+#: At the current values (6.0 - 2.0 = 4.0 m available vs. 2.5 / 0.9 = 2.78 m
+#: needed) the measured headroom is 1.22 m. Both extremes were observed
+#: actually occurring on the shipped Nob Hill lap: a target switch at a gap
+#: of exactly 4.00 m (`osm_ss_10961952605`), and separately at 2.42 m/s
+#: (`osm_ss_10961937477`). Raising `CREEP_MPS` to 3.6, lowering `_SPEED_GAIN`
+#: to 0.6, or raising `CLEARED_M` to 3.3 makes the ego roll a stop sign --
+#: with no test failure until someone happens to drive a lap that exercises a
+#: closely-spaced pair of control points (see
+#: `test_creep_headroom_covers_the_tracker_at_full_creep_speed` in
+#: `tests/test_control.py`, which pins the relationship, not these values).
 CREEP_MPS = 2.5
 
 #: Once the line is this far behind, it is done with.
@@ -292,6 +316,28 @@ class BehaviorFSM:
         at latch time, grows monotonically as the car moves on, and has no
         fold: it only needs to clear COMMITMENT_MEMORY_M once, well before a
         genuine second lap brings the same line back into approach range.
+
+        A `travelled <= loop / 2` upper bound was considered here (guard
+        against an epsilon-backwards step wrapping to a value near a full
+        loop, which would misread as "travelled nearly the whole loop" and
+        expire the entry immediately after commit) and deliberately NOT
+        added: it is not actually free. A genuine second-lap return to this
+        same line -- exactly what `test_a_second_lap_stops_at_the_same_line_
+        again` in `tests/test_behavior.py` exercises, jumping `ego_s` most of
+        a lap forward in one call the way a dropped frame or a coarse-
+        sampling caller would -- ALSO computes `travelled` close to the full
+        loop length, for the same reason: both are "close to `loop`" under
+        this one scalar, with nothing else here to tell them apart. Capping
+        at `loop / 2` silently breaks that legitimate case (confirmed: it
+        turns the pinned `BehaviorState.APPROACH` result into `CRUISE`,
+        because the entry never expires and `_next_point` keeps skipping the
+        line it should be re-approaching) while only guarding against a
+        hazard that has never been observed (`self._expire`'s own docstring
+        already flags this: measured minimum per-tick `ego_s` delta on the
+        real Nob Hill lap is exactly 0.0 and never negative). Distinguishing
+        the two would need extra state (e.g. the previous `ego_s`, to detect
+        a genuine reversal directly) -- out of scope for a guard sold as
+        free.
         """
         loop = route.length_m if route.closed else None
         stale = []

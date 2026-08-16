@@ -198,11 +198,15 @@ def test_only_the_head_facing_the_ego_becomes_a_control_point():
         assert len(heads) == 1, f"{junction} contributed {heads}"
 
     # The direction of travel each suffix governs -- the same convention
-    # `_signal_heads` encodes via `heading = travel + pi` (the lamp faces
-    # back at the traffic it governs).
+    # `_signal_heads` AND `_stop_sign_heads` encode via `heading = travel + pi`
+    # (the lamp/sign faces back at the traffic it governs). Stop signs use the
+    # identical `_faces_the_route` filter and the identical `_n`/`_s`/`_e`/`_w`
+    # convention (`ss_*` ids), so a misbound stop sign is exactly the same
+    # class of bug as a misbound signal head: a stop line at the wrong place
+    # on the route.
     travel_for_suffix = {"n": math.pi / 2, "s": -math.pi / 2, "e": 0.0, "w": math.pi}
     for cp in scene.control_points:
-        if cp.kind != "signal":
+        if cp.kind not in ("signal", "stop_sign"):
             continue
         suffix = cp.id.rsplit("_", 1)[1]
         travel = travel_for_suffix[suffix]
