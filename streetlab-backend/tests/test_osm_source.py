@@ -1,5 +1,6 @@
 import json
 import math
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -32,6 +33,21 @@ def source(tmp_path):
     payload = json.loads(FIXTURE.read_text())
     client = OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
     return OsmSceneSource(StubGeocoder(NOB_HILL), client)
+
+
+@pytest.fixture(scope="module")
+def nob_hill_scene():
+    """The real Nob Hill extract, built once and shared read-only across the
+    control-point tests below -- three full pipeline rebuilds of the same
+    fixture would otherwise noticeably slow this file. Wraps the SAME
+    replay/geocode helpers the rest of this module uses (`FIXTURE`, `NOB_HILL`,
+    `ReplayFetcher`, `OsmSceneSource`) rather than a parallel stub, so there is
+    one definition of "how to build the Nob Hill fixture", not two that can
+    drift apart.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    client = OverpassClient(ReplayFetcher(payload), DiskCache(Path(tempfile.mkdtemp())))
+    return OsmSceneSource(StubGeocoder(NOB_HILL), client).build("osm-nob-hill")
 
 
 def _road(limit_mph: float, length_m: float, i: int) -> Road:
@@ -1001,3 +1017,29 @@ def test_the_building_clearance_check_would_catch_a_building_in_the_road():
     )
     built.description.buildings.append(intruder)
     assert _closest_building_approach(built) < 1.96 / 2
+
+
+def test_the_osm_scene_carries_control_points_for_the_driven_route(nob_hill_scene):
+    """Measured: 58 lights and 145 stop signs in the extract, of which 4 and 12
+    are within 12 m of the driven route. The list is the ones the ego meets.
+    """
+    scene = nob_hill_scene
+    assert scene.control_points
+    assert len(scene.control_points) < 40, "matched far more props than the route passes"
+    kinds = {cp.kind for cp in scene.control_points}
+    assert kinds <= {"signal", "stop_sign"}
+
+
+def test_osm_control_points_are_ordered_along_the_route(nob_hill_scene):
+    arc = [cp.s for cp in nob_hill_scene.control_points]
+    assert arc == sorted(arc)
+
+
+def test_every_osm_signal_control_point_has_a_phase_group(nob_hill_scene):
+    """A signal whose id is missing from `signal_groups` would reach the planner
+    with no phase and be silently treated as off.
+    """
+    scene = nob_hill_scene
+    for cp in scene.control_points:
+        if cp.kind == "signal":
+            assert cp.id in scene.signal_groups

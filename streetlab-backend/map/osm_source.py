@@ -32,13 +32,14 @@ from map.lanes import (
     LANE_W,
     build_roads,
     build_route_graph,
+    project_control_points,
     remove_self_intersections,
     select_ego_route,
     speed_limits_along,
 )
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
-from map.scene_build import BuiltScene
+from map.scene_build import STOP_LINE_SETBACK_M, BuiltScene
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -280,6 +281,17 @@ class OsmSceneSource:
         # list (see `speed_limits_along`).
         ego_route.segment_limits = speed_limits_along(ego_route, roads)
 
+        # Every OSM light and stop sign is `heading=0.0` (`map/features.py`),
+        # so there is no approach direction to filter on -- but an OSM signals
+        # node sits ON the way at the junction it governs, so proximity to the
+        # driven route is itself the filter, and several nodes at one crossroads
+        # collapse into one stop line by the projector's merge window.
+        control_points = project_control_points(
+            ego_route,
+            [(tl.id, "signal", tl.position, STOP_LINE_SETBACK_M) for tl in lights]
+            + [(ss.id, "stop_sign", ss.position, STOP_LINE_SETBACK_M) for ss in stop_signs],
+        )
+
         return BuiltScene(
             description=description,
             ego_route=ego_route,
@@ -287,6 +299,7 @@ class OsmSceneSource:
             signal_groups=signal_groups(lights),
             speed_limit_mps=self._speed_limit(roads),
             traffic_count=spec.traffic,
+            control_points=control_points,
         )
 
     def _bounds(

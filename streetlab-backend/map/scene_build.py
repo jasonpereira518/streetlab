@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from random import Random
 from typing import Protocol, runtime_checkable
 
+from map.lanes import project_control_points
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -34,7 +35,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import Route
+from sim.route import ControlPoint, Route
 
 # --------------------------------------------------------------------------- #
 # The seam                                                                     #
@@ -52,6 +53,11 @@ class BuiltScene:
     signal_groups: dict[str, str]
     speed_limit_mps: float
     traffic_count: int
+    # Stop lines on `ego_route`, ordered by arc length. Empty is legal: a
+    # scenario whose loop passes no signal or stop sign has nothing to obey.
+    # Defaulted so `dataclasses.replace` in `OsmSceneSource.build` keeps
+    # working without naming it.
+    control_points: list[ControlPoint] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -85,6 +91,15 @@ SIDEWALK_W = 2.4
 # so anything above roughly 6 m puts the racing line over the kerb and through
 # the buildings behind it. `test_world_sanity.py` pins this.
 TURN_RADIUS_M = 6.0
+
+# How far before a junction centre the car halts. Clears the widest crossing
+# carriageway here (an arterial's 7.2 m half-width) with room to spare.
+STOP_LINE_SETBACK_M = 9.0
+
+# How closely a head's approach direction must agree with the route heading for
+# that head to be the one governing the ego. Generous, because the route is
+# filleted through the junction and its heading there is not the street's.
+HEAD_TOL_RAD = math.radians(60.0)
 
 MPH = 0.44704
 
@@ -234,6 +249,7 @@ class SyntheticGrid:
             signal_groups=self._signal_groups(),
             speed_limit_mps=self._route_speed_limit(scenario.block),
             traffic_count=scenario.traffic,
+            control_points=self._control_points(ego_route),
         )
 
     # -- catalog ----------------------------------------------------------- #
@@ -343,8 +359,14 @@ class SyntheticGrid:
     def _is_signalised(self, ns: _Street, ew: _Street) -> bool:
         return ns.at == _ARTERIAL_AT or ew.at == _ARTERIAL_AT
 
-    def _traffic_lights(self) -> list[TrafficLight]:
-        lights = []
+    def _signal_heads(self) -> list[tuple[str, tuple[float, float], float, tuple[float, float]]]:
+        """`(id, position, heading, junction_centre)` for every signal head.
+
+        The junction centre is what a stop line is measured from -- a head sits
+        a full crossing carriageway beyond the junction it governs, so the head
+        position is the wrong origin for a setback.
+        """
+        heads = []
         for ns, ew in self._intersections():
             if not self._is_signalised(ns, ew):
                 continue
@@ -359,26 +381,11 @@ class SyntheticGrid:
                 ("e", (cx + ew_off, cy), math.pi),  # governs eastbound
                 ("w", (cx - ew_off, cy), 0.0),  # governs westbound
             ):
-                lights.append(
-                    TrafficLight(
-                        id=f"tl_{tag}_{name}",
-                        position=pos,
-                        heading=heading,
-                        mast_arm_m=5.5 if max(ns.lanes, ew.lanes) > 1 else 0.0,
-                        height_m=6.0,
-                    )
-                )
-        return lights
+                heads.append((f"tl_{tag}_{name}", pos, heading, (cx, cy)))
+        return heads
 
-    def _signal_groups(self) -> dict[str, str]:
-        """North/south heads share a phase; east/west heads share the other."""
-        groups = {}
-        for light in self._traffic_lights():
-            groups[light.id] = "ns" if light.id.endswith(("_n", "_s")) else "ew"
-        return groups
-
-    def _stop_signs(self) -> list[StopSign]:
-        signs = []
+    def _stop_sign_heads(self) -> list[tuple[str, tuple[float, float], float, tuple[float, float]]]:
+        heads = []
         for ns, ew in self._intersections():
             if self._is_signalised(ns, ew):
                 continue
@@ -392,8 +399,64 @@ class SyntheticGrid:
                 ("e", (cx + ew_off, cy + ew.half_width + 1.5), math.pi),
                 ("w", (cx - ew_off, cy - ew.half_width - 1.5), 0.0),
             ):
-                signs.append(StopSign(id=f"ss_{tag}_{name}", position=pos, heading=heading))
-        return signs
+                heads.append((f"ss_{tag}_{name}", pos, heading, (cx, cy)))
+        return heads
+
+    def _traffic_lights(self) -> list[TrafficLight]:
+        lights = []
+        for light_id, pos, heading, (cx, cy) in self._signal_heads():
+            ns = next(s for s in NS_STREETS if s.at == cx)
+            ew = next(s for s in EW_STREETS if s.at == cy)
+            lights.append(
+                TrafficLight(
+                    id=light_id,
+                    position=pos,
+                    heading=heading,
+                    mast_arm_m=5.5 if max(ns.lanes, ew.lanes) > 1 else 0.0,
+                    height_m=6.0,
+                )
+            )
+        return lights
+
+    def _signal_groups(self) -> dict[str, str]:
+        """North/south heads share a phase; east/west heads share the other."""
+        groups = {}
+        for light in self._traffic_lights():
+            groups[light.id] = "ns" if light.id.endswith(("_n", "_s")) else "ew"
+        return groups
+
+    def _stop_signs(self) -> list[StopSign]:
+        return [
+            StopSign(id=sign_id, position=pos, heading=heading)
+            for sign_id, pos, heading, _ in self._stop_sign_heads()
+        ]
+
+    def _control_points(self, ego_route: Route) -> list[ControlPoint]:
+        """The heads that face the ego where its route passes their junction.
+
+        Four heads govern each signalised crossroads, in two opposing phase
+        groups. Taking all four would put the ego at one stop line facing a
+        group that is red whenever the other is green -- it would never move.
+        The head that governs a driver is the one whose lamp faces back at
+        them, so `lamp_heading + pi` is the direction that driver travels; the
+        route heading at the junction picks it out.
+        """
+        candidates = []
+        for cp_id, _pos, heading, centre in self._signal_heads():
+            if self._faces_the_route(ego_route, heading, centre):
+                candidates.append((cp_id, "signal", centre, STOP_LINE_SETBACK_M))
+        for cp_id, _pos, heading, centre in self._stop_sign_heads():
+            if self._faces_the_route(ego_route, heading, centre):
+                candidates.append((cp_id, "stop_sign", centre, STOP_LINE_SETBACK_M))
+        return project_control_points(ego_route, candidates)
+
+    @staticmethod
+    def _faces_the_route(
+        ego_route: Route, lamp_heading: float, centre: tuple[float, float]
+    ) -> bool:
+        s = ego_route.project(centre)
+        travel = lamp_heading + math.pi
+        return abs(math.remainder(ego_route.heading_at(s) - travel, math.tau)) < HEAD_TOL_RAD
 
     def _crosswalks(self) -> list[Crosswalk]:
         walks = []

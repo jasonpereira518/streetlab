@@ -149,3 +149,44 @@ def test_scene_id_is_stable_for_a_scenario(source):
 
 def test_description_is_a_scene_description_instance(built):
     assert isinstance(built.description, SceneDescription)
+
+
+def test_the_synthetic_grid_puts_control_points_on_the_driven_route():
+    from map.lanes import CONTROL_POINT_MATCH_M
+
+    scene = SyntheticGrid().build("grid-loop")
+    assert scene.control_points, "no control points on a loop with 20 lights"
+    route = scene.ego_route
+    for cp in scene.control_points:
+        assert cp.kind in ("signal", "stop_sign")
+        assert 0.0 <= cp.s <= route.length_m
+
+
+def test_synthetic_control_points_are_ordered_and_distinct():
+    scene = SyntheticGrid().build("grid-loop")
+    arc = [cp.s for cp in scene.control_points]
+    assert arc == sorted(arc)
+    assert len({cp.id for cp in scene.control_points}) == len(scene.control_points)
+
+
+def test_only_the_head_facing_the_ego_becomes_a_control_point():
+    """Four heads govern one junction. Taking all of them would put the ego in
+    front of two conflicting phase groups at the same stop line and strand it.
+    """
+    scene = SyntheticGrid().build("grid-loop")
+    ids = {cp.id for cp in scene.control_points}
+    by_junction = {}
+    for cp_id in ids:
+        if not cp_id.startswith("tl_"):
+            continue
+        junction = cp_id.rsplit("_", 1)[0]
+        by_junction.setdefault(junction, []).append(cp_id)
+    assert by_junction, "the loop passes no signalised junction"
+    for junction, heads in by_junction.items():
+        assert len(heads) == 1, f"{junction} contributed {heads}"
+
+
+def test_every_synthetic_scenario_builds_control_points():
+    for summary in SyntheticGrid().scenarios():
+        scene = SyntheticGrid().build(summary.id)
+        assert scene.control_points, f"{summary.id} has none"
