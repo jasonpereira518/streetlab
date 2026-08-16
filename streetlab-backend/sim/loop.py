@@ -116,6 +116,12 @@ class WorldState:
     history: list[tuple[float, float]] = field(default_factory=list)
     # The last fully finite ego state, used to repair a poisoned one.
     last_good_ego: VehicleState | None = None
+    # The plan and detections computed for this tick by `_plan()`, reused by
+    # `state_update()`. `plan_result` is None only before the first `_plan()`
+    # of a scene -- `state_update()` is legitimately called before any `step()`,
+    # and `step()` returns early while paused without refreshing either.
+    plan_result: PlanResult | None = None
+    detections: list[Detection] = field(default_factory=list)
 
 
 class SignalController:
@@ -202,6 +208,8 @@ class Simulation:
         )
         self.world.history = []
         self.world.pending_steps = 0
+        self.world.plan_result = None
+        self.world.detections = []
 
     # -- convenience accessors --------------------------------------------- #
 
@@ -264,12 +272,21 @@ class Simulation:
             self.world.last_good_ego = repaired
 
     def _plan(self) -> PlanResult:
+        """Compute this tick's detections and plan, and cache both.
+
+        The single place a plan is produced. `state_update()` reads the cache
+        rather than recomputing, so the ribbon the frontend draws is the plan
+        the integrator actually consumed.
+        """
         detections = self._perception.observe(
             self.world.ego, self._traffic.agents, self.scene.ego_route
         )
-        return self._planner.plan(
+        result = self._planner.plan(
             self.world.ego, self.scene.ego_route, detections, self._limits()
         )
+        self.world.detections = detections
+        self.world.plan_result = result
+        return result
 
     def posted_limit(self) -> float:
         """The limit governing the street the ego is on right now.
@@ -313,12 +330,17 @@ class Simulation:
 
     def state_update(self) -> StateUpdate:
         self._guard_world()
-        detections = self._perception.observe(
-            self.world.ego, self._traffic.agents, self.scene.ego_route
-        )
-        plan = self._planner.plan(
-            self.world.ego, self.scene.ego_route, detections, self._limits()
-        )
+        # Reuse this tick's plan rather than computing a second one. The frame
+        # therefore carries a plan derived from the ego pose at the START of
+        # the tick alongside the pose at the END -- a 1/60 s, 0.149 m skew at
+        # the measured Nob Hill lap speed. Planning after integration instead
+        # would remove the skew at the cost of a full frame of control delay in
+        # the tracker, which is the worse trade.
+        if self.world.plan_result is None:
+            self._plan()
+        plan = self.world.plan_result
+        assert plan is not None  # `_plan()` above guarantees it
+        detections = self.world.detections
         frame = assemble_state_update(
             world=self.world,
             scene=self.scene,

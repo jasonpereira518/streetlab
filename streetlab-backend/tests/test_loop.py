@@ -258,6 +258,10 @@ def test_speed_cap_lowers_the_planned_target_speed(sim):
     advance(sim, 2.0)
     before = sim.state_update().plan.target_speed_mps
     sim.apply_dict({"id": "a", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 5})
+    # A param change is picked up by the next `_plan()`, which now runs only
+    # inside `step()` -- `state_update()` alone reuses the tick's cached plan
+    # rather than recomputing against a world that hasn't ticked.
+    sim.step()
     assert sim.state_update().plan.target_speed_mps < before
 
 
@@ -400,6 +404,88 @@ def test_two_runs_with_the_same_seed_are_identical():
         a.step()
         b.step()
     assert a.state_update().model_dump(mode="json") == b.state_update().model_dump(mode="json")
+
+
+class _CountingPlanner:
+    """Wraps the real planner and records the ego pose of every call."""
+
+    def __init__(self):
+        from plan.control import CenterlineFollower
+
+        self.inner = CenterlineFollower()
+        self.calls = []
+
+    def plan(self, ego, route, detections, limits):
+        self.calls.append((ego.x, ego.y, ego.speed_mps))
+        return self.inner.plan(ego, route, detections, limits)
+
+
+class _CountingPerception:
+    def __init__(self):
+        from perception.service import GroundTruthPerception
+
+        self.inner = GroundTruthPerception()
+        self.calls = 0
+
+    def observe(self, ego, agents, route):
+        self.calls += 1
+        return self.inner.observe(ego, agents, route)
+
+
+def test_the_plan_is_computed_once_per_tick():
+    """`step()` planned and then `state_update()` planned again, on an ego the
+    integrator had already moved -- two plans per frame against two different
+    poses. Invisible while `CenterlineFollower` is stateless; fatal to any FSM
+    with a latch or a commitment timer.
+    """
+    planner = _CountingPlanner()
+    sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
+    for _ in range(10):
+        sim.step()
+        sim.state_update()
+    assert len(planner.calls) == 10, f"{len(planner.calls)} plans for 10 ticks"
+
+
+def test_perception_observes_once_per_tick():
+    perception = _CountingPerception()
+    sim = Simulation(SyntheticGrid(), seed=7, perception=perception)
+    for _ in range(10):
+        sim.step()
+        sim.state_update()
+    assert perception.calls == 10
+
+
+def test_the_frame_carries_the_plan_the_car_was_actually_steered_by():
+    """Not merely "once" but "the same one": the ribbon the HUD draws has to be
+    the plan the integrator consumed, or the two drift apart silently.
+    """
+    planner = _CountingPlanner()
+    sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
+    sim.step()
+    frame = sim.state_update()
+    assert frame.plan.polyline == list(sim.world.plan_result.plan.polyline)
+    assert len(planner.calls) == 1
+
+
+def test_state_update_before_any_step_still_produces_a_plan(sim):
+    """A guard, not a RED test -- it passes against the pre-fix code too. It
+    pins the lazy path: `state_update()` is legitimately called before the
+    first `step()` (the server publishes an initial frame) and while paused,
+    where `step()` returns early and refreshes nothing.
+    """
+    frame = sim.state_update()
+    assert len(frame.plan.polyline) >= 2
+
+
+def test_a_paused_sim_keeps_reporting_the_last_plan(sim):
+    """Also a guard: `step()` returns early when paused, so the cache must hold
+    rather than be recomputed against a frozen world.
+    """
+    sim.step()
+    before = sim.state_update().plan.polyline
+    sim.apply_dict({"id": "p", "cmd": "set_paused", "paused": True})
+    sim.step()
+    assert sim.state_update().plan.polyline == before
 
 
 # -- the NaN guard ---------------------------------------------------------- #
