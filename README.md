@@ -7,11 +7,11 @@ numbers here are safety claims.
 Two packages, developed and tested independently, now wired together:
 
 - **`streetlab/`** — Tauri 2 + React/TypeScript UI and a Three.js WebGPU
-  viewport, driven entirely by a message stream. 78 vitest unit tests + 9
+  viewport, driven entirely by a message stream. 146 vitest unit tests + 12
   Playwright E2E tests.
 - **`streetlab-backend/`** — the Python simulator: a deterministic kinematic
   world, scripted traffic, ground-truth perception, and a centerline-following
-  planner, served over WebSocket. 223 pytest tests.
+  planner, served over WebSocket. 482 pytest tests.
 - **`contract/`** — the wire contract shared by both: fixtures generated from
   the real simulation, validated by the real `schema.ts` (zod) and the real
   `schema.py` (pydantic) on every change.
@@ -36,7 +36,16 @@ schema-validated WebSocket — see [`DEMO.md`](DEMO.md) for both paths.
 `streetlab serve --source osm` renders real OpenStreetMap geometry — actual
 street layouts and building footprints, not the synthetic grid — into the
 same unmodified frontend, with `© OpenStreetMap contributors` attribution
-carried through to the scene.
+carried through to the scene. With that flag, the running app's own sidebar
+also has a **Load a location** box: type any address or place name and press
+Enter to geocode it, fetch its real street/building data, and drive it —
+no restart required. The build happens off the sim thread, so the car keeps
+driving the previous scene the whole time; the box shows a "Building…"
+state until the new scene lands (or a `location_failed` event appears in
+the Events tab, for an address that fails to resolve or has no drivable
+roads). The first load of a brand-new address needs network; the one
+bundled location (Nob Hill) and anything already loaded once are cached and
+work fully offline.
 
 ## Architecture
 
@@ -92,9 +101,9 @@ See [`DEMO.md`](DEMO.md).
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q         # 223 tests
-cd streetlab && npx vitest run                    # 113 tests, includes ../contract
-cd streetlab && npm run test:e2e                  # 10 Playwright specs
+cd streetlab-backend && uv run pytest -q         # 482 tests
+cd streetlab && npx vitest run                    # 146 tests, includes ../contract
+cd streetlab && npm run test:e2e                  # 12 Playwright specs
 ```
 
 ## Roadmap
@@ -106,7 +115,7 @@ cycle drops in behind an existing seam (`SceneSource`, `PerceptionSource`,
 | Cycle | Adds | Status |
 |---|---|---|
 | 1 | Synthetic grid, scripted traffic, ground-truth perception, centerline planner, real-time WS server, native sidecar integration | **Built** |
-| 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | **Phase 1 built** — OSM ingest behind the SceneSource seam; in-app address entry lands in Phase 2 |
+| 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | **Built** — OSM ingest behind the SceneSource seam (Phase 1), plus in-app address entry, an off-thread build executor, and offline bundled extracts (Phase 2) |
 | 3 | Reactive traffic (IDM/MOBIL), full hazard scenario set (cut-in, jaywalker, emergency vehicle, obstacle) | Not started |
 | 4 | ML perception (RT-DETRv2 on MPS) replacing ground truth | Not started |
 | 5 | Sim-generated training dataset, fine-tuning, evaluation | Not started |

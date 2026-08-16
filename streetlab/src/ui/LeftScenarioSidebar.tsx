@@ -26,7 +26,9 @@ export function LeftScenarioSidebar() {
     <aside className="sidebar" aria-label="Scenarios">
       <header className="sidebar-head">
         <span className="sidebar-eyebrow">Location</span>
-        <h2 className="sidebar-title">{location}</h2>
+        <h2 className="sidebar-title" data-testid="scene-name">
+          {location}
+        </h2>
         <p className="sidebar-sub">
           {catalog.length} saved scenario{catalog.length === 1 ? '' : 's'}
         </p>

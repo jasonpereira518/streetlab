@@ -836,3 +836,89 @@ def test_snapshot_returns_the_epoch_and_a_frame_from_the_same_read():
         assert frame is not None and frame.scenario_id == "grid-arterial"
     finally:
         loop.stop()
+
+
+# -- Task 10: the load-bearing claim, pinned end to end ----------------------- #
+
+
+class _SlowLocationSource:
+    """A `SceneSource` whose `build_location` mimics a real geocode+Overpass
+    round trip -- slow, but only a problem if something drags it onto the sim
+    thread. Delegates `scenarios()`/`build()` to a real `SyntheticGrid`, same
+    as `_StubbedLocationSource`/`_FailingLoadSource` above.
+    """
+
+    def __init__(self) -> None:
+        self._grid = SyntheticGrid()
+
+    def scenarios(self):
+        return self._grid.scenarios()
+
+    def build(self, scenario_id):
+        return self._grid.build(scenario_id)
+
+    def build_location(self, query, radius_m=None):
+        time.sleep(1.5)
+        return self._grid.build("grid-arterial")
+
+
+def test_frames_keep_flowing_while_a_slow_scene_builds():
+    """The load-bearing claim of the whole phase: a multi-second
+    `load_location` build never blocks the 60 Hz sim loop. Task 3 built the
+    executor for exactly this reason; Task 4's review found a real path
+    (`reset` dragging the sim thread into a still-building location's
+    Overpass fetch) where the guarantee broke anyway, reproduced directly by
+    `test_reset_never_performs_a_network_fetch_for_a_still_building_location`
+    above. This test is the coarser, end-to-end pin: frames must keep
+    streaming for the ENTIRE span of a slow build, not merely survive one
+    specific command racing it.
+
+    Deliberately does NOT call `loop.submit_scene(slow)` directly from the
+    test thread the way the task brief's own pseudocode does. `submit_scene`
+    unconditionally hands its callable to `self._executor`
+    (`sim/loop.py`), so calling it from here would only block the TEST's own
+    thread for 1.5 s -- `_run()` keeps ticking on `streetlab-sim` regardless,
+    and the assertion below would pass even if `_cmd_load_location` were
+    rewritten to call the build inline. That would prove nothing.
+
+    Routing the slow build through `loop.submit({"cmd": "load_location",
+    ...})` instead exercises the real path: `_drain_commands()`, which runs
+    INSIDE `_run()`, on the sim thread itself, once per tick. If
+    `_cmd_load_location` ever called `builder(query, radius)` synchronously
+    -- instead of handing it to `self._build_sink` -- that call would
+    execute right there, on `streetlab-sim`, and stall every subsequent
+    `sim.step()` for the full 1.5 s. That is the exact regression class Task
+    4's review found in `reset`; this test would have caught it if it had
+    also existed on `load_location`.
+
+    Verified this discriminates by hand: temporarily changing
+    `Simulation._cmd_load_location` (`sim/loop.py`) to call
+    `builder(command.query, command.radius_m)` directly instead of
+    `self._build_sink(...)` makes this test fail with `max(seqs) - min(seqs)
+    == 3` (the sim thread sits inside the 1.5 s sleep for almost the entire
+    polling window, ticking only a handful of times right at its edges).
+    Reverting to the real, executor-backed handler makes it pass again with
+    `max(seqs) - min(seqs)` around 90 (a real, unblocked 60 Hz loop for the
+    full 1.5 s) -- see the Task 10 report for the full transcript of both
+    runs.
+    """
+    loop = SimLoop(Simulation(_SlowLocationSource(), seed=1), hz=60.0)
+    _ACTIVE_LOOPS.append(loop)
+    loop.start()
+    try:
+        loop.submit({"id": "c1", "cmd": "load_location", "query": "slow place"})
+
+        seqs = []
+        for _ in range(30):
+            frame = loop.latest
+            if frame:
+                seqs.append(frame.seq)
+            time.sleep(0.05)
+        # 30 polls @ 50 ms is 1.5 s -- exactly the build's duration. At 60 Hz
+        # an unblocked loop produces ~90 ticks in that span; a fully stalled
+        # one produces at most one or two (whatever landed just before the
+        # block started). > 30 sits comfortably between the two, so this
+        # cannot pass by accident on a half-stalled loop.
+        assert max(seqs) - min(seqs) > 30
+    finally:
+        loop.stop()
