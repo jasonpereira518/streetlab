@@ -969,102 +969,102 @@
     {
       "id": "tl_-80_0_n",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_-80_0_s",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_-80_0_e",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_-80_0_w",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_0_-80_n",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_0_-80_s",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_0_-80_e",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_0_-80_w",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_0_0_n",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_0_0_s",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_0_0_e",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_0_0_w",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_0_80_n",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_0_80_s",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_0_80_e",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_0_80_w",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_80_0_n",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_80_0_s",
       "phase": "green",
-      "time_to_change_s": 9.0
+      "time_to_change_s": 9.02
     },
     {
       "id": "tl_80_0_e",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     },
     {
       "id": "tl_80_0_w",
       "phase": "red",
-      "time_to_change_s": 13.0
+      "time_to_change_s": 13.02
     }
   ],
   "events": []

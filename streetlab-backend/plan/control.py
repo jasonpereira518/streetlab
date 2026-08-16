@@ -14,11 +14,11 @@ than merely imperfect.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Protocol, Sequence, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-from schema import Detection, Plan
-from sim.route import Route
+from schema import Detection, Plan, SignalState
+from sim.route import ControlPoint, Route
 from sim.vehicle import VehicleState
 
 # Pure-pursuit lookahead: a floor for low speed, growing with velocity.
@@ -78,6 +78,27 @@ class PlanLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanContext:
+    """Per-tick world state the tracker does not need but behaviour does.
+
+    Separate from `PlanLimits` deliberately: that type means "the four knobs
+    `set_param` exposes", and widening it to carry a signal map would destroy
+    the one thing it says. It also could not carry per-tick data at all --
+    `_limits()` is rebuilt from `world.params` every frame and has no `t`.
+
+    `signals` is keyed by `TrafficLight.id`, matching `ControlPoint.id` for
+    `kind == "signal"`. A control point whose id is absent has no phase and is
+    treated as off rather than as red -- a missing signal must not stop the car
+    forever.
+    """
+
+    t: float
+    dt: float
+    signals: Mapping[str, SignalState] = field(default_factory=dict)
+    control_points: Sequence[ControlPoint] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class PlanResult:
     """What the planner asks the vehicle to do, plus the wire-facing plan."""
 
@@ -94,11 +115,21 @@ class Planner(Protocol):
         route: Route,
         detections: Sequence[Detection],
         limits: PlanLimits,
+        context: PlanContext,
     ) -> PlanResult:
         ...
 
+    def reset(self) -> None:
+        """Forget any per-scene state. Called when a scene is adopted or reset.
 
-@dataclass(frozen=True, slots=True)
+        `runtime_checkable` only checks method presence, so `isinstance`
+        cannot enforce this -- `Simulation` calls it defensively through
+        `getattr` for exactly that reason.
+        """
+        ...
+
+
+@dataclass(slots=True)
 class CenterlineFollower:
     wheelbase_m: float = 2.9
 
@@ -108,6 +139,7 @@ class CenterlineFollower:
         route: Route,
         detections: Sequence[Detection],
         limits: PlanLimits,
+        context: PlanContext,
     ) -> PlanResult:
         s = route.project((ego.x, ego.y))
         lookahead = _clamp(
@@ -163,6 +195,9 @@ class CenterlineFollower:
         if lead is not None:
             target = min(target, _following_speed(lead, gap, ego, limits))
         return target
+
+    def reset(self) -> None:
+        """Nothing to forget yet. Task 6 gives this a behaviour FSM to clear."""
 
 
 def _closest_lead(

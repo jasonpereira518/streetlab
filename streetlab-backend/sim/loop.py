@@ -30,7 +30,7 @@ from typing import Any, Callable, Sequence
 
 from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.service import GroundTruthPerception, PerceptionSource
-from plan.control import CenterlineFollower, PlanLimits, Planner, PlanResult
+from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
     Ack,
     Cruise,
@@ -122,6 +122,9 @@ class WorldState:
     # and `step()` returns early while paused without refreshing either.
     plan_result: PlanResult | None = None
     detections: list[Detection] = field(default_factory=list)
+    # This tick's signal phases, computed once in `_plan()` and reused by the
+    # wire so the phase the car obeyed and the phase the HUD shows cannot drift.
+    signals: list[SignalState] = field(default_factory=list)
 
 
 class SignalController:
@@ -210,6 +213,12 @@ class Simulation:
         self.world.pending_steps = 0
         self.world.plan_result = None
         self.world.detections = []
+        self.world.signals = []
+        # `runtime_checkable` cannot enforce `reset`, and a user-supplied
+        # planner predating it must not crash a scene swap.
+        reset = getattr(self._planner, "reset", None)
+        if reset is not None:
+            reset()
 
     # -- convenience accessors --------------------------------------------- #
 
@@ -272,19 +281,34 @@ class Simulation:
             self.world.last_good_ego = repaired
 
     def _plan(self) -> PlanResult:
-        """Compute this tick's detections and plan, and cache both.
+        """Compute this tick's detections, signal phases and plan, and cache all three.
 
         The single place a plan is produced. `state_update()` reads the cache
         rather than recomputing, so the ribbon the frontend draws is the plan
-        the integrator actually consumed.
+        the integrator actually consumed. Signals are cached for the same
+        reason `posted_limit_mps` is passed rather than recomputed in
+        `state_update()`: the phase the car obeyed and the phase the HUD shows
+        must not be two separate computations that can drift.
         """
         detections = self._perception.observe(
             self.world.ego, self._traffic.agents, self.scene.ego_route
         )
+        signals = self._signals.state(self.world.t)
+        context = PlanContext(
+            t=self.world.t,
+            dt=self.dt,
+            signals={s.id: s for s in signals},
+            control_points=self.scene.control_points,
+        )
         result = self._planner.plan(
-            self.world.ego, self.scene.ego_route, detections, self._limits()
+            self.world.ego,
+            self.scene.ego_route,
+            detections,
+            self._limits(),
+            context,
         )
         self.world.detections = detections
+        self.world.signals = signals
         self.world.plan_result = result
         return result
 
@@ -346,7 +370,11 @@ class Simulation:
             scene=self.scene,
             detections=detections,
             plan=plan.plan,
-            signals=self._signals.state(self.world.t),
+            # Reused from `_plan()` rather than recomputed, for the same
+            # reason as `posted_limit_mps` below: the phase the car obeyed and
+            # the phase the HUD shows must not be two separate computations
+            # that can drift.
+            signals=self.world.signals,
             sim_rate_hz=1 / self.dt,
             # Passed in rather than recomputed inside the assembler: this is
             # the same figure the planner was just given, so the speed the HUD

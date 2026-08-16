@@ -339,11 +339,18 @@ def test_crossing_directions_are_never_green_together(sim):
 
 
 def test_time_to_change_counts_down(sim):
+    """Each reading has to follow its own `step()`: `state_update()` now reuses
+    the phase `_plan()` computed for that tick (see `sim/loop.py::_plan`)
+    rather than re-querying `SignalController` against the just-advanced
+    `world.t`, so two reads straddling only one `step()` from a cold start
+    would otherwise see the same cached tick.
+    """
     probe = sim.scene.description.traffic_lights[0].id
 
     def remaining():
         return next(s.time_to_change_s for s in sim.state_update().signals if s.id == probe)
 
+    sim.step()
     first = remaining()
     sim.step()
     assert remaining() < first
@@ -415,9 +422,9 @@ class _CountingPlanner:
         self.inner = CenterlineFollower()
         self.calls = []
 
-    def plan(self, ego, route, detections, limits):
+    def plan(self, ego, route, detections, limits, context):
         self.calls.append((ego.x, ego.y, ego.speed_mps))
-        return self.inner.plan(ego, route, detections, limits)
+        return self.inner.plan(ego, route, detections, limits, context)
 
 
 class _CountingPerception:
@@ -430,6 +437,63 @@ class _CountingPerception:
     def observe(self, ego, agents, route):
         self.calls += 1
         return self.inner.observe(ego, agents, route)
+
+
+class _RecordingPlanner:
+    """Records the `PlanContext` of every call."""
+
+    def __init__(self):
+        from plan.control import CenterlineFollower
+
+        self.inner = CenterlineFollower()
+        self.contexts = []
+
+    def plan(self, ego, route, detections, limits, context):
+        self.contexts.append(context)
+        return self.inner.plan(ego, route, detections, limits, context)
+
+    def reset(self):
+        self.inner.reset()
+
+
+def test_the_planner_receives_a_context_carrying_this_ticks_time():
+    planner = _RecordingPlanner()
+    sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
+    sim.step()
+    sim.step()
+    assert [round(c.t, 6) for c in planner.contexts] == [0.0, round(DT, 6)]
+    assert all(c.dt == pytest.approx(DT) for c in planner.contexts)
+
+
+def test_the_context_carries_a_phase_for_every_signal_in_the_scene():
+    planner = _RecordingPlanner()
+    sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
+    sim.step()
+    context = planner.contexts[-1]
+    assert set(context.signals) == set(sim.scene.signal_groups)
+    assert all(s.phase for s in context.signals.values())
+
+
+def test_the_context_carries_the_scenes_control_points():
+    planner = _RecordingPlanner()
+    sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
+    sim.step()
+    assert list(planner.contexts[-1].control_points) == list(sim.scene.control_points)
+
+
+def test_the_wire_reports_the_same_signal_phases_the_planner_was_given():
+    """The argument `sim/loop.py:329-333` already makes for `posted_limit_mps`:
+    a phase the HUD shows and a phase the car obeyed must not be two separate
+    computations that can drift.
+    """
+    planner = _RecordingPlanner()
+    sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
+    sim.step()
+    frame = sim.state_update()
+    given = planner.contexts[-1].signals
+    assert {s.id: s.phase for s in frame.signals} == {
+        k: v.phase for k, v in given.items()
+    }
 
 
 def test_the_plan_is_computed_once_per_tick():

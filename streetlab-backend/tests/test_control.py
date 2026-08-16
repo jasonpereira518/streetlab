@@ -26,6 +26,14 @@ def limits(built):
     return PlanLimits(speed_limit_mps=built.speed_limit_mps, speed_cap_mps=100.0)
 
 
+@pytest.fixture
+def ctx():
+    """An empty context. Phase 1's tracker ignores it; Phase 1 Task 6 does not."""
+    from plan.control import PlanContext
+
+    return PlanContext(t=0.0, dt=1 / 60)
+
+
 def straight_s(route, preview_m=25.0):
     """Arc length of a point on a genuine straight.
 
@@ -56,70 +64,71 @@ def test_centerline_follower_satisfies_the_planner_protocol():
     assert isinstance(CenterlineFollower(), Planner)
 
 
-def test_plan_is_wire_valid(built, limits):
-    result = CenterlineFollower().plan(start_state(built.ego_route), built.ego_route, [], limits)
+def test_plan_is_wire_valid(built, limits, ctx):
+    result = CenterlineFollower().plan(start_state(built.ego_route), built.ego_route, [], limits, ctx)
     Plan.model_validate(result.plan.model_dump(mode="json"))
 
 
-def test_plan_polyline_starts_at_the_car_and_runs_ahead(built, limits):
+def test_plan_polyline_starts_at_the_car_and_runs_ahead(built, limits, ctx):
     ego = start_state(built.ego_route, speed=8.0)
-    result = CenterlineFollower().plan(ego, built.ego_route, [], limits)
+    result = CenterlineFollower().plan(ego, built.ego_route, [], limits, ctx)
     first = result.plan.polyline[0]
     assert math.hypot(first[0] - ego.x, first[1] - ego.y) < 3.0
     assert len(result.plan.polyline) >= 5
 
 
-def test_target_speed_is_the_speed_limit_when_the_cap_is_high(built, limits):
+def test_target_speed_is_the_speed_limit_when_the_cap_is_high(built, limits, ctx):
     ego = start_state(built.ego_route, s=straight_s(built.ego_route))
-    result = CenterlineFollower().plan(ego, built.ego_route, [], limits)
+    result = CenterlineFollower().plan(ego, built.ego_route, [], limits, ctx)
     assert result.plan.target_speed_mps == pytest.approx(limits.speed_limit_mps)
 
 
-def test_speed_cap_binds_when_it_is_lower_than_the_limit(built):
+def test_speed_cap_binds_when_it_is_lower_than_the_limit(built, ctx):
     limits = PlanLimits(speed_limit_mps=20.0, speed_cap_mps=6.0)
     ego = start_state(built.ego_route, s=straight_s(built.ego_route))
-    result = CenterlineFollower().plan(ego, built.ego_route, [], limits)
+    result = CenterlineFollower().plan(ego, built.ego_route, [], limits, ctx)
     assert result.plan.target_speed_mps == pytest.approx(6.0)
 
 
-def test_maneuver_is_keep_lane_on_a_straight(built, limits):
+def test_maneuver_is_keep_lane_on_a_straight(built, limits, ctx):
     ego = start_state(built.ego_route, 8.0, s=straight_s(built.ego_route))
-    result = CenterlineFollower().plan(ego, built.ego_route, [], limits)
+    result = CenterlineFollower().plan(ego, built.ego_route, [], limits, ctx)
     assert result.plan.maneuver == "keep_lane"
 
 
-def test_maneuver_reports_a_turn_inside_a_corner(built, limits):
+def test_maneuver_reports_a_turn_inside_a_corner(built, limits, ctx):
     """The loop is driven clockwise, so every fillet is a right turn."""
     ego = start_state(built.ego_route, 6.0, s=0.0)
-    result = CenterlineFollower().plan(ego, built.ego_route, [], limits)
+    result = CenterlineFollower().plan(ego, built.ego_route, [], limits, ctx)
     assert result.plan.maneuver == "turn_right"
 
 
-def test_target_speed_is_capped_by_curvature_in_a_corner(built, limits):
+def test_target_speed_is_capped_by_curvature_in_a_corner(built, limits, ctx):
     corner = CenterlineFollower().plan(
-        start_state(built.ego_route, 8.0, s=0.0), built.ego_route, [], limits
+        start_state(built.ego_route, 8.0, s=0.0), built.ego_route, [], limits, ctx
     )
     straight = CenterlineFollower().plan(
         start_state(built.ego_route, 8.0, s=straight_s(built.ego_route)),
         built.ego_route,
         [],
         limits,
+        ctx,
     )
     assert corner.plan.target_speed_mps < straight.plan.target_speed_mps
 
 
-def test_car_accelerates_from_rest_toward_the_target(built, limits):
-    result = CenterlineFollower().plan(start_state(built.ego_route, 0.0), built.ego_route, [], limits)
+def test_car_accelerates_from_rest_toward_the_target(built, limits, ctx):
+    result = CenterlineFollower().plan(start_state(built.ego_route, 0.0), built.ego_route, [], limits, ctx)
     assert result.accel_mps2 > 0
 
 
-def test_car_brakes_when_over_the_target(built):
+def test_car_brakes_when_over_the_target(built, ctx):
     limits = PlanLimits(speed_limit_mps=5.0, speed_cap_mps=5.0)
-    result = CenterlineFollower().plan(start_state(built.ego_route, 18.0), built.ego_route, [], limits)
+    result = CenterlineFollower().plan(start_state(built.ego_route, 18.0), built.ego_route, [], limits, ctx)
     assert result.accel_mps2 < 0
 
 
-def test_ego_completes_a_lap_without_leaving_its_lane(built, limits):
+def test_ego_completes_a_lap_without_leaving_its_lane(built, limits, ctx):
     """Integration: planner + bicycle model + route, over a full circuit."""
     route = built.ego_route
     model = BicycleModel()
@@ -130,7 +139,7 @@ def test_ego_completes_a_lap_without_leaving_its_lane(built, limits):
     worst = 0.0
     travelled = 0.0
     for _ in range(60 * 120):
-        result = planner.plan(state, route, [], limits)
+        result = planner.plan(state, route, [], limits, ctx)
         state = model.step(
             state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=dt
         )
@@ -164,24 +173,24 @@ def stopped_lead_at(route, ego_s, gap_m, cls="car"):
     )
 
 
-def test_a_stopped_lead_is_respected_even_though_ttc_is_undefined(built, limits):
+def test_a_stopped_lead_is_respected_even_though_ttc_is_undefined(built, limits, ctx):
     """Closing speed is zero once ego stops, so a TTC-only law would drive on."""
     route = built.ego_route
     s = straight_s(route)
     ego = start_state(route, speed=0.0, s=s)
-    result = CenterlineFollower().plan(ego, route, [stopped_lead_at(route, s, 4.0)], limits)
+    result = CenterlineFollower().plan(ego, route, [stopped_lead_at(route, s, 4.0)], limits, ctx)
     assert result.plan.target_speed_mps == pytest.approx(0.0, abs=0.2)
 
 
-def test_a_distant_lead_does_not_constrain_the_target(built, limits):
+def test_a_distant_lead_does_not_constrain_the_target(built, limits, ctx):
     route = built.ego_route
     s = straight_s(route)
     ego = start_state(route, speed=8.0, s=s)
-    result = CenterlineFollower().plan(ego, route, [stopped_lead_at(route, s, 80.0)], limits)
+    result = CenterlineFollower().plan(ego, route, [stopped_lead_at(route, s, 80.0)], limits, ctx)
     assert result.plan.target_speed_mps == pytest.approx(limits.speed_limit_mps)
 
 
-def test_a_larger_follow_distance_yields_a_lower_target(built):
+def test_a_larger_follow_distance_yields_a_lower_target(built, ctx):
     route = built.ego_route
     s = straight_s(route)
     ego = start_state(route, speed=9.0, s=s)
@@ -191,12 +200,12 @@ def test_a_larger_follow_distance_yields_a_lower_target(built):
         limits = PlanLimits(
             speed_limit_mps=11.176, speed_cap_mps=100.0, follow_distance_s=follow_s
         )
-        return CenterlineFollower().plan(ego, route, lead, limits).plan.target_speed_mps
+        return CenterlineFollower().plan(ego, route, lead, limits, ctx).plan.target_speed_mps
 
     assert target(3.0) < target(0.8)
 
 
-def test_ego_does_not_drive_through_a_stopped_car(built, limits):
+def test_ego_does_not_drive_through_a_stopped_car(built, limits, ctx):
     """Integration: approach a stationary obstacle and come to rest behind it."""
     route = built.ego_route
     s0 = straight_s(route)
@@ -209,7 +218,7 @@ def test_ego_does_not_drive_through_a_stopped_car(built, limits):
 
     closest = math.inf
     for _ in range(60 * 40):
-        result = planner.plan(state, route, lead, limits)
+        result = planner.plan(state, route, lead, limits, ctx)
         state = model.step(state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60)
         gap = route.signed_gap(route.project((state.x, state.y)), lead_s)
         closest = min(closest, gap)
@@ -220,7 +229,7 @@ def test_ego_does_not_drive_through_a_stopped_car(built, limits):
     assert state.speed_mps < 0.5, "ego never came to rest behind the obstacle"
 
 
-def test_steering_reverses_sign_for_an_offset_to_the_other_side(built, limits):
+def test_steering_reverses_sign_for_an_offset_to_the_other_side(built, limits, ctx):
     route = built.ego_route
     planner = CenterlineFollower()
     s = 20.0
@@ -231,7 +240,7 @@ def test_steering_reverses_sign_for_an_offset_to_the_other_side(built, limits):
         state = VehicleState(
             x=x - math.sin(h) * d, y=y + math.cos(h) * d, heading=h, speed_mps=8.0
         )
-        return planner.plan(state, route, [], limits).steer_rad
+        return planner.plan(state, route, [], limits, ctx).steer_rad
 
     left = steer_from_offset(1.5)
     right = steer_from_offset(-1.5)
