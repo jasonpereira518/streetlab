@@ -16,8 +16,8 @@ Four states, one active control point at a time:
 The `honoured` set is the commitment latch. Without it a car that is too close
 to stop comfortably -- and therefore correctly drives on -- re-evaluates the
 same line on the next tick, sees red, and commands a stop from inside the
-junction. Entries expire once the line is far enough behind that a genuine
-second lap must stop again.
+junction. Entries expire once the car has travelled far enough since the
+moment it committed, so a genuine second lap must stop again.
 """
 
 from __future__ import annotations
@@ -54,11 +54,13 @@ CREEP_MPS = 2.5
 #: Once the line is this far behind, it is done with.
 CLEARED_M = 2.0
 
-#: A committed line stays committed until it is this far behind. Must be well
-#: under the shortest loop the sim drives (SyntheticGrid's shortest is
-#: 295.2 m), so a real second approach is never swallowed by leftover
-#: commitment. See `_expire` for why this is measured as a forward distance
-#: rather than through `Route.signed_gap`.
+#: How long a commitment is remembered, measured as distance TRAVELLED since
+#: the moment of latching (see `_expire`) -- not as a position relative to the
+#: line. Must satisfy COMMITMENT_MEMORY_M < L - APPROACH_M for the shortest
+#: loop the sim drives, so the latch has cleared before the car comes back
+#: around and is within `_next_point`'s approach window of the same line
+#: again. SyntheticGrid's grid-loop is 295.2 m, giving a bound of 250.2 m;
+#: 100 m clears it with room to spare.
 COMMITMENT_MEMORY_M = 100.0
 
 
@@ -91,7 +93,8 @@ class BehaviorFSM:
     state: BehaviorState = BehaviorState.CRUISE
     target_id: str | None = None
     dwell_s: float = 0.0
-    #: Control point id -> the arc length of the line the car committed to.
+    #: Control point id -> the ego's arc length AT THE MOMENT OF COMMITMENT
+    #: (not the line's arc length -- see `_expire`).
     honoured: dict[str, float] = field(default_factory=dict)
 
     def reset(self) -> None:
@@ -138,7 +141,7 @@ class BehaviorFSM:
             # stopping comfortably -- otherwise a light that goes red at 40 m
             # would be waved through on the strength of having been green.
             if self._committed(distance, ego):
-                self.honoured[target.id] = target.s
+                self.honoured[target.id] = ego_s
             self.state = BehaviorState.CRUISE
             self.target_id = None
             return _CRUISE
@@ -178,28 +181,46 @@ class BehaviorFSM:
         return best
 
     def _expire(self, route: Route, ego_s: float) -> None:
-        """Drop honoured lines once the car is far enough past them.
+        """Drop honoured lines once the car has travelled far enough since committing.
 
-        Deliberately NOT `route.signed_gap(ego_s, s)`: that returns the
-        SHORTEST-path signed distance, which folds at half a loop. A car that
-        ticks forward continuously never notices -- the gap counts down past
-        -COMMITMENT_MEMORY_M long before it would reach the fold. But a caller
-        that jumps ego_s by most of a lap in one call (as the second-lap test
-        does, and as a dropped frame could in practice) lands past the fold in
-        a single step, where signed_gap reports the honoured line as freshly
-        AHEAD again rather than far behind -- and it would stay latched
-        forever.
+        `honoured` stores the ego's OWN arc length at the moment of latching,
+        not the line's -- and this method measures distance travelled since
+        that moment, `(ego_s - latched_s) % loop`. Two more obvious
+        formulations were tried and both are wrong:
 
-        The distance that matters here is "how far forward has the car moved
-        since it was at the line", which is monotonic and un-ambiguous: on a
-        closed route it is the forward-only wraparound difference, not the
-        shorter-of-two-directions one `signed_gap` gives.
+        1. `route.signed_gap(ego_s, s)`, comparing current position against
+           the line: this is the SHORTEST-path signed distance, which folds
+           at half a loop. A car that ticks forward continuously never
+           notices -- the gap counts down past -COMMITMENT_MEMORY_M long
+           before it would reach the fold. But a caller that jumps ego_s by
+           most of a lap in one call (a dropped frame, or a test that samples
+           coarsely) lands past the fold in a single step, where signed_gap
+           reports the honoured line as freshly AHEAD again rather than far
+           behind, and the entry would stay latched forever.
+
+        2. `(ego_s - line_s) % loop`, i.e. storing the LINE's arc length and
+           measuring the car's position relative to it: commitment only ever
+           happens with the car just short of the line (that is what
+           `_committed` means), so at the instant of latching this already
+           evaluates to close to a full loop length -- not to zero. On the
+           very next tick it is already past COMMITMENT_MEMORY_M and the
+           entry is discarded immediately, defeating the latch on every
+           commitment, on every lap. (`test_a_light_committed_to_is_not_...`
+           didn't catch this because it runs on an open route, where the
+           modulo degenerates to a plain subtraction and the bug can't occur;
+           `test_a_commitment_survives_red_on_a_closed_loop` below exercises
+           the closed-route case where it does.)
+
+        Measuring travel since the moment of commitment instead is 0 exactly
+        at latch time, grows monotonically as the car moves on, and has no
+        fold: it only needs to clear COMMITMENT_MEMORY_M once, well before a
+        genuine second lap brings the same line back into approach range.
         """
         loop = route.length_m if route.closed else None
         stale = []
-        for cp_id, s in self.honoured.items():
-            behind = (ego_s - s) % loop if loop else ego_s - s
-            if behind > COMMITMENT_MEMORY_M:
+        for cp_id, latched_s in self.honoured.items():
+            travelled = (ego_s - latched_s) % loop if loop else ego_s - latched_s
+            if travelled > COMMITMENT_MEMORY_M:
                 stale.append(cp_id)
         for cp_id in stale:
             del self.honoured[cp_id]

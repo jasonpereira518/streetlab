@@ -195,3 +195,31 @@ def test_a_second_lap_stops_at_the_same_line_again():
     # Most of a lap later it is ahead again, and must bite.
     d = fsm.step(ego_at(0.0, 10.0), loop, loop.length_m - 5.0, cps, reds, DT)
     assert d.state is BehaviorState.APPROACH
+
+
+def test_a_commitment_survives_red_on_a_closed_loop():
+    """The closed-loop sibling of `test_a_light_committed_to_is_not_...`.
+
+    That test runs on an open route, where `_expire`'s modulo degenerates to
+    a plain subtraction and cannot show this bug. On a closed route, storing
+    the LINE's arc length and measuring the car's position against it
+    collapses the latch on the very next tick, because commitment always
+    happens with the car just short of the line -- i.e. already close to a
+    full loop's distance "behind" it in modular arithmetic. Storing the ego's
+    OWN arc length at the moment of commitment avoids that: travelled-since-
+    commit is 0 at latch time and grows monotonically instead.
+    """
+    loop = Route(
+        [(0.0, 0.0), (300.0, 0.0), (300.0, 300.0), (0.0, 300.0)], closed=True
+    )
+    cps = [ControlPoint(id="tl", kind="signal", s=4.0, position=(4.0, 0.0))]
+    fsm = BehaviorFSM()
+    # Too close to stop comfortably at 12 m/s with 4 m to the line: commits.
+    d = fsm.step(ego_at(0.0, 12.0), loop, 0.0, cps, signal("tl", "yellow"), DT)
+    assert d.state is BehaviorState.CRUISE
+    assert "tl" in fsm.honoured
+    # A red arriving a tick later, still short of the line, must not re-open
+    # the decision and command a stop from inside the junction.
+    d = fsm.step(ego_at(1.0, 12.0), loop, 1.0, cps, signal("tl", "red"), DT)
+    assert d.state is BehaviorState.CRUISE
+    assert "tl" in fsm.honoured
