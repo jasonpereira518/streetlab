@@ -65,6 +65,20 @@ COMFORT_DECEL_MPS2 = 2.0
 #: lands close to the line instead of past it -- 6.5 m clears the measured
 #: range with margin. See `STOP_ZONE_M` for the other half of this: the rest
 #: position must also land inside it, or the car never reaches STOP.
+#:
+#: WARNING for whoever next retunes `COMFORT_DECEL_MPS2`, `SPEED_GAIN`
+#: (`plan/control.py`) or `_MAX_DECEL_MPS2` (`plan/control.py`): this
+#: constant is a fixed number standing in for an overshoot that is NOT
+#: constant -- it shrinks as approach speed rises (measured on the real Nob
+#: Hill route: rest gap 2.40 m at 6 m/s down to 0.46 m at 18 m/s, still
+#: positive but closing fast). It was tuned against the current values of
+#: all three of those constants. Retune any of them and this margin's
+#: headroom can shrink further or go negative -- silently reintroducing red-
+#: light crossings, exactly the defect this constant exists to fix, with no
+#: test failure until someone happens to sample a high-speed approach (see
+#: `test_the_ego_rests_before_the_line_across_approach_speeds` in
+#: `tests/test_control.py`, which does exactly that and is the test to
+#: re-run first). Re-measure this constant whenever any of the three change.
 STOP_MARGIN_M = 6.5
 
 #: Close enough to the line, and slow enough, to count as stopped.

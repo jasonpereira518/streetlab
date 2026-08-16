@@ -232,17 +232,31 @@ def test_full_lap_route_projection_stays_continuous(tmp_path):
     smoke test, so nothing was guarding against a regression here. This test
     drives a full lap instead.
 
-    Tick count and dt: 10,000 ticks at the simulation's default 60 Hz dt
-    (~166.7 simulated seconds). A lap at this fixture's ~25 mph limit takes
-    roughly 106 s; the rest is headroom for acceleration from a standing
-    start and for a slower-than-cruise stretch late in the lap (confirmed
-    below by measuring actual cumulative progress, not assumed from the tick
-    count). dt is left at the simulation's normal 60 Hz rather than widened,
-    because both checks below depend on per-tick behaviour matching what the
-    rest of the suite (and a real `streetlab serve`) actually runs at; wall
-    clock is reported in the task report and was ~8s on the machine this was
-    developed on, judged acceptable for a single, offline, deterministic
-    test rather than something to trade physical fidelity for.
+    Tick count and dt: 20,000 ticks at the simulation's default 60 Hz dt
+    (~333 simulated seconds). This is not free-running headroom any more --
+    since Cycle 3 Phase 1 (Task 7) wired the junction behaviour FSM into
+    `CenterlineFollower`, the ego actually stops at every red light and stop
+    sign on its route, of which this fixture's repaired lap has roughly 16.
+    A free-running lap at this fixture's ~25 mph limit still takes ~133 s;
+    a compliant one, measured directly, takes ~227 s (13,644 ticks). 20,000
+    ticks is ~47% headroom over that measured figure, because which control
+    points the ego actually stops for on a given run shifts with signal
+    phasing (a light can be green when the ego arrives, or not), so the
+    exact tick count a lap needs is not fixed even for a deterministic seed
+    (see `test_two_runs_with_the_same_seed_are_identical` in `test_loop.py`
+    for why the seed is nonetheless still enough to make each run itself
+    reproducible). This number is not the total-progress assertion's pass
+    threshold -- that is `route.length_m`, unconditionally -- it is only the
+    budget of ticks given to reach it; a genuine stall still fails the
+    assertion below regardless of how large this is. dt is left at the
+    simulation's normal 60 Hz rather than widened, because both checks below
+    depend on per-tick behaviour matching what the rest of the suite (and a
+    real `streetlab serve`) actually runs at; wall clock is reported in the
+    task report -- ~8s for 10,000 ticks on the machine the test was
+    originally developed on, so ~16s expected at 20,000; the actual figure
+    when the budget was raised is in the Task 7 fix report -- judged
+    acceptable for a single, offline, deterministic test rather than
+    something to trade physical fidelity for.
 
     Two checks, because between them they cover what a regression here would
     actually break, and — proven empirically, not assumed — neither alone
@@ -289,7 +303,7 @@ def test_full_lap_route_projection_stays_continuous(tmp_path):
         "ego route self-intersects — remove_self_intersections regressed"
     )
 
-    TICKS = 10_000  # ~166.7 simulated seconds at the sim's default 60 Hz dt
+    TICKS = 20_000  # ~333 simulated seconds -- see the tick-count paragraph above
 
     prev_s = route.project((sim.ego.x, sim.ego.y))
     total_progress = 0.0
@@ -304,7 +318,7 @@ def test_full_lap_route_projection_stays_continuous(tmp_path):
 
     assert total_progress >= route.length_m, (
         f"only covered {total_progress:.1f} m of the {route.length_m:.1f} m "
-        "route in 10,000 ticks — not a full lap, so the repaired crossing "
+        f"route in {TICKS:,} ticks — not a full lap, so the repaired crossing "
         "was never actually reached"
     )
     assert max_jump < 5.0, f"s jumped {max_jump:.2f} m between consecutive ticks"
