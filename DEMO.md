@@ -102,7 +102,12 @@ uv run streetlab serve --source osm
 layouts and building footprints — see the root [`README.md`](README.md).
 Option B's plain `uv run streetlab serve` above, with no `--source`, still
 serves the synthetic grid; typing an address against it acks immediately
-with "does not support load_location" instead of building anything.)
+with "does not support load_location" instead of building anything, and the
+box re-enables itself so you can carry on. That recovery is deliberate: the
+rejection arrives in the ack alone, with no `location_failed` event and no
+new scene, and those were the only two things that used to clear the pending
+state — so the search box *and* every scenario play button stayed disabled
+until you reloaded.)
 
 The box shows `Building <query>…` the instant you press Enter — before
 anything has actually been fetched — and disables itself, along with the

@@ -33,13 +33,16 @@ and renders a live scene with zero configuration. Quitting the app (or
 force-quitting it) leaves no orphaned process behind. For development, the
 frontend and backend also run as two plain processes talking over a real,
 schema-validated WebSocket — see [`DEMO.md`](DEMO.md) for both paths.
-`streetlab serve --source osm` renders real OpenStreetMap geometry — actual
-street layouts and building footprints, not the synthetic grid — into the
-same unmodified frontend, with `© OpenStreetMap contributors` attribution
-carried through to the scene. With that flag, the running app's own sidebar
-also has a **Load a location** box: type any address or place name and press
-Enter to geocode it, fetch its real street/building data, and drive it —
-no restart required. The build happens off the sim thread, so the car keeps
+The app renders real OpenStreetMap geometry — actual street layouts and
+building footprints, not the synthetic grid — into the same unmodified
+frontend, with `© OpenStreetMap contributors` attribution carried through to
+the scene. The packaged `.app` does this out of the box (it passes
+`--source osm` to its own sidecar, and its opening scene is served from an
+extract bundled inside the app, so it needs no network); running the backend
+by hand, `streetlab serve --source osm` is the same thing. The sidebar's
+**Load a location** box then takes any address or place name: press Enter to
+geocode it, fetch its real street/building data, and drive it — no restart
+required. The build happens off the sim thread, so the car keeps
 driving the previous scene the whole time; the box shows a "Building…"
 state until the new scene lands (or a `location_failed` event appears in
 the Events tab, for an address that fails to resolve or has no drivable

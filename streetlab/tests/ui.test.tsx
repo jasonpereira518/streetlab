@@ -232,6 +232,61 @@ describe('Location search box', () => {
     );
   });
 
+  it('clears the pending state when the backend rejects load_location at ack time', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Anywhere' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(useSimStore.getState().locationPending).toBe('Anywhere');
+    expect(box.disabled).toBe(true);
+
+    // A backend whose source has no `build_location` at all rejects in the
+    // ack itself (sim/loop.py `_cmd_load_location`) — the command never
+    // reaches the executor, so NO `location_failed` event and NO scene ever
+    // arrive. Those are the only two things that used to clear the pending
+    // flag, so the sidebar stayed disabled until a reload. This is every
+    // backend started as plain `streetlab serve`: `--source` defaults to
+    // `synthetic`, and DEMO.md tells readers to expect exactly this ack.
+    harness.emit({
+      type: 'ack',
+      protocol: 1,
+      id: 'whatever',
+      cmd: 'load_location',
+      ok: false,
+      message: 'SyntheticGrid does not support load_location',
+      t: 1,
+    });
+
+    expect(useSimStore.getState().locationPending).toBeNull();
+    expect(box.disabled).toBe(false);
+    // The scenario list has to come back too — it is gated on the same flag,
+    // so a stuck pending state disables every play button, not just the box.
+    const plays = screen.getAllByRole('button', { name: /^Load / }) as HTMLButtonElement[];
+    expect(plays.length).toBeGreaterThan(0);
+    expect(plays.every((b) => !b.disabled)).toBe(true);
+  });
+
+  it('a successful load_location ack leaves the pending state alone', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Somewhere Real' } });
+    fireEvent.submit(box.closest('form')!);
+
+    // The mock acks ok:true synchronously on send. That ack means "accepted,
+    // building" — the scene is still seconds away. Clearing on ANY ack would
+    // re-enable the box mid-build and lose the whole point of the gate, so
+    // this pins that only a FAILING ack clears it.
+    expect(useSimStore.getState().lastAck?.ok).toBe(true);
+    expect(useSimStore.getState().locationPending).toBe('Somewhere Real');
+    expect(box.disabled).toBe(true);
+  });
+
   it('a second submit while already pending does not send a duplicate command', () => {
     harness = createHarness();
     render(<LeftScenarioSidebar />);

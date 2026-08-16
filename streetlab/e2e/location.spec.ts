@@ -127,6 +127,19 @@ test('searching an address loads and drives it', async ({ page }) => {
 
     // The box re-enables once the build lands, same as the failure path.
     await expect(page.getByLabel('Load a location')).toBeEnabled();
+
+    // ...and the ego actually DRIVES the new location. Everything above is
+    // satisfied by a scene that merely arrived: a location that builds into
+    // a route with no drivable road, or one where the planner never gets a
+    // target, changes the heading and clears the pending flag exactly like a
+    // good one. Without this the spec's own name would be half untrue.
+    const speed = page.locator('.readout').first().locator('.readout-value');
+    await expect(speed).not.toHaveText('—', { timeout: 15_000 });
+    await expect
+      .poll(async () => Number((await speed.textContent())?.trim() ?? '0'), {
+        timeout: 15_000,
+      })
+      .toBeGreaterThan(0);
   } finally {
     killBackend(proc);
   }

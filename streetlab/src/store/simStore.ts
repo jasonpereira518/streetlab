@@ -471,6 +471,20 @@ function applyServerMessage(
     }
 
     case 'ack':
+      // A `load_location` that fails AT ACK TIME never reaches the executor,
+      // so it never emits `location_failed` and never produces a scene — the
+      // two things above that clear `locationPending`. Without this the
+      // sidebar locks: the search box AND every scenario play button stay
+      // disabled until a reload or a dropped connection. It is not an exotic
+      // path — `_cmd_load_location` (sim/loop.py) acks `ok=false` whenever the
+      // source has no `build_location` at all, which is every backend started
+      // as plain `streetlab serve` (the CLI's `--source` default is
+      // `synthetic`). Typing an address there is the documented behaviour in
+      // DEMO.md, and it used to brick the sidebar.
+      if (msg.cmd === 'load_location' && !msg.ok) {
+        set({ lastAck: msg, locationPending: null });
+        return;
+      }
       set({ lastAck: msg });
       return;
   }

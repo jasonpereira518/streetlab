@@ -901,6 +901,15 @@ def test_frames_keep_flowing_while_a_slow_scene_builds():
     `max(seqs) - min(seqs)` around 90 (a real, unblocked 60 Hz loop for the
     full 1.5 s) -- see the Task 10 report for the full transcript of both
     runs.
+
+    What this test does NOT prove, stated plainly because the threshold below
+    was once documented as proving it: a passing run does not mean the sim
+    thread was never blocked at all. It means it was not blocked for more than
+    roughly a third of the window. Counting sequence numbers across a coarse
+    50 ms poll cannot resolve a stall of a few frames; the `sim_step_p50_ms` /
+    `sim_step_p95_ms` figures the server reports (see `test_ws_server.py`) are
+    the right instrument for that, and nothing currently asserts a budget on
+    them.
     """
     loop = SimLoop(Simulation(_SlowLocationSource(), seed=1), hz=60.0)
     _ACTIVE_LOOPS.append(loop)
@@ -916,9 +925,36 @@ def test_frames_keep_flowing_while_a_slow_scene_builds():
             time.sleep(0.05)
         # 30 polls @ 50 ms is 1.5 s -- exactly the build's duration. At 60 Hz
         # an unblocked loop produces ~90 ticks in that span; a fully stalled
-        # one produces at most one or two (whatever landed just before the
-        # block started). > 30 sits comfortably between the two, so this
-        # cannot pass by accident on a half-stalled loop.
-        assert max(seqs) - min(seqs) > 30
+        # one produces at most one or two.
+        #
+        # The threshold is > 70, NOT the > 30 this test originally shipped
+        # with. > 30 was measured (in review) to tolerate a sim thread that
+        # spends a full second of the window blocked: 50% inline gave a delta
+        # of 49 and 67% inline gave 34, both comfortably passing. A one-second
+        # freeze of a 60 Hz driving sim is exactly the regression this test
+        # exists to catch, and the partial stall is the REALISTIC shape of it
+        # -- `NominatimGeocoder._throttle()` sleeps up to 1.0 s holding a
+        # lock, so a refactor that moved only the geocode onto the sim thread
+        # and left Overpass on the executor would have landed inside the old
+        # tolerance. The unblocked baseline is a stable 92-94, so > 70 still
+        # leaves ~25% headroom for a loaded CI box while catching anything
+        # that blocks more than ~350 ms.
+        assert seqs, "the loop published no frames at all"
+        assert max(seqs) - min(seqs) > 70
+
+        # The loop ticking freely is only half the claim. The cheapest way to
+        # make a slow build not block the sim thread is to never run the build
+        # -- a handler that acks and returns satisfies every assertion above
+        # (measured in review: delta 94, scene_epoch 0, passing). So pin that
+        # the build actually landed. Waited for rather than asserted outright:
+        # the poll window above is the same 1.5 s as the build, so the swap
+        # legitimately races the end of it.
+        deadline = time.monotonic() + 3.0
+        while loop.scene_epoch == 0 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert loop.scene_epoch == 1, (
+            "the slow build never produced a scene -- the loop stayed responsive "
+            "because nothing was ever built, which is not what this test claims"
+        )
     finally:
         loop.stop()
