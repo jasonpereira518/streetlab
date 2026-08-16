@@ -8,10 +8,11 @@ the reference every noisier mode is compared against.
 Cycle 4 adds `NoisyGroundTruth` (jitter, dropout, false positives) and then a
 real RT-DETRv2 detector behind this same protocol.
 
-A note on scope: `ttc_s` and `hazard` are inference rather than sensing, and in
-Cycle 3 they move to `plan/ttc.py` where the behaviour FSM can reason about
-them. They are computed here for now because the wire's `Detection` carries
-them and the frontend's TTC readout needs a value from frame one.
+A note on scope: `ttc_s` and `hazard` are inference rather than sensing, and
+they live in `plan/ttc.py`. They are computed here because the wire's
+`Detection` carries them and the frontend's TTC readout needs a value from
+frame one -- but the implementation is shared with the behaviour layer rather
+than duplicated for it.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import math
 from dataclasses import dataclass
 from typing import Protocol, Sequence, runtime_checkable
 
+from plan.ttc import hazard_label, is_hazard, time_to_collision
 from schema import Detection, Pose, Size
 from sim.agents import Agent
 from sim.route import Route
@@ -27,11 +29,6 @@ from sim.vehicle import VehicleState
 
 # Width of one lane, used to bucket agents into lanes relative to ego.
 _LANE_W = 3.6
-# Below this closing speed a gap is not meaningfully shrinking, so TTC is
-# reported as null rather than as an enormous number.
-_MIN_CLOSING_MPS = 0.25
-# A detection at or under this TTC is flagged for the frontend's hazard overlay.
-_HAZARD_TTC_S = 4.0
 
 
 @runtime_checkable
@@ -74,8 +71,10 @@ class GroundTruthPerception:
             lat = route.lateral_offset((ax, ay))
             lane_offset = round((lat - ego_lat) / _LANE_W)
 
-            ttc = _time_to_collision(gap, lane_offset, ego.speed_mps, agent.state.speed_mps)
-            hazard = ttc is not None and ttc <= _HAZARD_TTC_S
+            ttc = time_to_collision(
+                gap, lane_offset, ego.speed_mps, agent.state.speed_mps
+            )
+            hazard = is_hazard(ttc)
 
             out.append(
                 Detection(
@@ -94,27 +93,9 @@ class GroundTruthPerception:
                     speed_mps=agent.state.speed_mps,
                     confidence=1.0,
                     hazard=hazard,
-                    hazard_label=_hazard_label(agent.cls) if hazard else None,
+                    hazard_label=hazard_label(agent.cls) if hazard else None,
                     ttc_s=ttc,
                     lane_offset=lane_offset,
                 )
             )
         return out
-
-
-def _time_to_collision(
-    gap: float | None, lane_offset: int, ego_speed: float, other_speed: float
-) -> float | None:
-    if gap is None or lane_offset != 0 or gap <= 0:
-        return None
-    closing = ego_speed - other_speed
-    if closing < _MIN_CLOSING_MPS:
-        return None
-    return gap / closing
-
-
-def _hazard_label(cls: str) -> str:
-    return {
-        "pedestrian": "Pedestrian in path",
-        "cyclist": "Cyclist in path",
-    }.get(cls, "Closing on lead vehicle")
