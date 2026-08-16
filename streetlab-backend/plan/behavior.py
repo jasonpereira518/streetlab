@@ -321,10 +321,54 @@ class BehaviorFSM:
         if phase == "red":
             return True
         if phase == "yellow":
-            # The dilemma zone: stop only while stopping is still comfortable.
-            return not self._committed(distance, ego)
+            # The dilemma zone: proceed only once stopping under comfort
+            # deceleration is no longer possible AND enough of the yellow
+            # remains to actually reach the line before it changes.
+            #
+            # Checking stopping distance alone (the pre-Task-8 rule) can
+            # "commit" a car that is nowhere near clearing the junction: on
+            # the real Nob Hill route the ego enters APPROACH_M already deep
+            # into a 3 s yellow (its ~13 m/s approach eats nearly all of
+            # APPROACH_M's margin, tuned against a slower 11.18 m/s
+            # reference), becomes stopping-distance-committed with ~0.1 s of
+            # yellow left, and is waved through a light it needs ~3 s to
+            # reach -- crossing ~2.7 s into red. See
+            # `test_a_yellow_that_cannot_be_cleared_in_time_must_stop_even_though_committed`
+            # in `tests/test_behavior.py`, which reproduces this with the
+            # measured numbers.
+            if not self._committed(distance, ego):
+                return True
+            return not self._can_clear(target, signals, distance, ego)
         # green, flashing_yellow, off, or a signal with no phase at all.
         return False
+
+    def _can_clear(
+        self,
+        target: ControlPoint,
+        signals: Mapping[str, SignalState],
+        distance: float,
+        ego: VehicleState,
+    ) -> bool:
+        """True if the car can reach the line before the signal's phase changes.
+
+        Only meaningful once `_committed` has already ruled out stopping
+        comfortably -- this is the second half of the dilemma-zone question,
+        "can I clear", not a replacement for the first.
+
+        `time_to_change_s` is `None` only when the caller supplies no timing
+        information at all -- the schema allows it, though `SignalController`
+        (the only producer in this codebase) always fills it in. Treated as
+        "cannot clear": a car already too close to stop comfortably, facing a
+        signal whose remaining time is unknown, should not additionally be
+        assumed to have enough of it -- the unsafe direction here is
+        assuming clearance that is not confirmed, so unknown defaults to
+        requiring a stop rather than to proceeding.
+        """
+        state = signals.get(target.id)
+        left = state.time_to_change_s if state is not None else None
+        if left is None or ego.speed_mps <= 0.0:
+            return False
+        return distance / ego.speed_mps <= left
 
     def _may_proceed(
         self, target: ControlPoint, signals: Mapping[str, SignalState]

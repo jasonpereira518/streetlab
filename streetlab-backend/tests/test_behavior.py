@@ -169,6 +169,29 @@ def test_a_line_left_behind_returns_the_car_to_cruise(road):
     assert d.speed_ceiling_mps == math.inf
 
 
+def test_a_yellow_that_cannot_be_cleared_in_time_must_stop_even_though_committed(road):
+    """The real Nob Hill defect (Phase 1 Task 8 acceptance finding): 41 m at
+    12.9 m/s cannot be stopped for under COMFORT_DECEL_MPS2 (needs ~41.6 m),
+    so the pre-fix dilemma-zone rule -- "committed" -> proceed -- waves the
+    car through. But covering 41 m at 12.9 m/s takes ~3.2 s, and only 0.5 s
+    of yellow remains: the car cannot possibly reach the line before it
+    turns red. Committing here crosses ~2.7 s into red, which is exactly
+    what the acceptance test caught. The dilemma zone must ask both "can I
+    stop comfortably" and "can I clear before it changes" -- committing
+    requires failing the first and passing the second.
+    """
+    d = BehaviorFSM().step(
+        ego_at(0.0, 12.9),
+        road,
+        0.0,
+        light_at(41.0),
+        {"tl": SignalState(id="tl", phase="yellow", time_to_change_s=0.5)},
+        DT,
+    )
+    assert d.state is BehaviorState.APPROACH
+    assert d.maneuver == "stop"
+
+
 def test_a_light_committed_to_is_not_stopped_for_when_it_turns_red(road):
     """Too close to stop comfortably, so the car commits. A red arriving after
     that must not command a stop from inside the junction.
