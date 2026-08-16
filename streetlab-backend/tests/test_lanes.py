@@ -4,9 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from map.lanes import build_roads, drivable_ways
+from map.lanes import build_roads, drivable_ways, speed_limits_along
 from map.osm_model import parse_overpass
 from map.projection import LatLon, to_latlon
+from schema import Road
+from sim.route import Route
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
 ORIGIN = LatLon(lat=37.7945, lon=-122.4156)
@@ -134,3 +136,65 @@ def test_build_roads_completes_quickly_on_the_real_fixture(graph):
     # be well under a second total. Generous bound to avoid flakiness while
     # still catching an accidental O(n^2) regression.
     assert elapsed < 5.0
+
+
+def _straight_road(road_id: str, y: float, limit_mps: float) -> Road:
+    """A 100 m east-west road at a given `y`, with a given posted limit."""
+    return Road(
+        id=road_id,
+        name=road_id,
+        road_class="residential",
+        centerline=[(0.0, y), (100.0, y)],
+        lanes_forward=1,
+        lanes_backward=1,
+        lane_width_m=3.6,
+        speed_limit_mps=limit_mps,
+        oneway=False,
+        center_marking="dashed_white",
+        has_sidewalk=True,
+    )
+
+
+def test_speed_limits_along_picks_the_road_each_segment_actually_runs_beside():
+    """Two parallel streets with different limits. A route that runs along the
+    first then jumps to the second must report each one over its own stretch --
+    this is the whole point of the feature, and a nearest-road match that
+    grabbed the wrong parallel street would be invisible in a scene-wide
+    average."""
+    roads = [_straight_road("slow", 0.0, 10.0), _straight_road("fast", 60.0, 20.0)]
+    route = Route([(10.0, 1.0), (40.0, 1.0), (40.0, 59.0), (10.0, 59.0)], closed=False)
+    limits = speed_limits_along(route, roads)
+    assert limits is not None
+    assert limits[0] == 10.0  # beside "slow"
+    assert limits[-1] == 20.0  # beside "fast"
+
+
+def test_speed_limits_along_returns_none_when_there_are_no_roads():
+    """None means "I have nothing to say", so the caller keeps its scene-wide
+    figure instead of receiving a route full of invented zeroes."""
+    route = Route([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)], closed=True)
+    assert speed_limits_along(route, []) is None
+
+
+def test_speed_limits_along_ignores_a_road_that_is_implausibly_far_away():
+    """A route segment 300 m from the only road has no governing street. It
+    must not inherit that road's limit just because it is nearest -- on a real
+    extract "nearest" at that range is a different neighbourhood."""
+    roads = [_straight_road("far", 0.0, 10.0)]
+    near = Route([(10.0, 1.0), (40.0, 1.0)], closed=False)
+    assert speed_limits_along(near, roads) == [10.0]
+    far = Route([(10.0, 300.0), (40.0, 300.0)], closed=False)
+    assert speed_limits_along(far, roads) is None
+
+
+def test_speed_limits_along_returns_one_entry_per_segment_including_the_closing_one():
+    """A closed route has as many segments as points -- the last one runs from
+    the final vertex back to the first. Returning one entry short would shift
+    every limit onto the wrong stretch of road and `Route` would reject it."""
+    roads = [_straight_road("only", 0.0, 10.0)]
+    route = Route([(10.0, 1.0), (40.0, 1.0), (40.0, 4.0), (10.0, 4.0)], closed=True)
+    limits = speed_limits_along(route, roads)
+    assert limits is not None
+    assert len(limits) == len(route.points)
+    # Round-trips into a Route, which validates the count independently.
+    Route(route.points, closed=True, segment_limits=limits)

@@ -576,3 +576,119 @@ def remove_self_intersections(
         max_iterations,
     )
     return Route(points, closed=True)
+
+
+# --------------------------------------------------------------------------- #
+# Posted limits along a finished route                                         #
+# --------------------------------------------------------------------------- #
+
+#: Grid cell for the nearest-road index, in metres. Roughly a city block's
+#: width: big enough that a lane-width query almost always resolves in the
+#: first ring, small enough that a cell holds a handful of segments, not
+#: hundreds.
+_LIMIT_CELL_M = 25.0
+
+#: Beyond this, a route segment is treated as having no governing road at all
+#: rather than inheriting one implausibly far away. The ego route is offset
+#: half a lane from a centreline and filleted through corners, so a genuine
+#: match is metres away; tens of metres means the nearest road is a different
+#: street entirely.
+_LIMIT_MAX_MATCH_M = 35.0
+
+
+def _segment_distance(
+    p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    ax, ay = a
+    vx, vy = b[0] - ax, b[1] - ay
+    wx, wy = p[0] - ax, p[1] - ay
+    leg2 = vx * vx + vy * vy
+    if leg2 <= 0.0:
+        return math.hypot(wx, wy)
+    t = min(max((wx * vx + wy * vy) / leg2, 0.0), 1.0)
+    return math.hypot(wx - vx * t, wy - vy * t)
+
+
+def speed_limits_along(route: Route, roads: list[Road]) -> list[float] | None:
+    """The posted limit governing each segment of `route`.
+
+    Why by geometry rather than by bookkeeping: `select_ego_route` builds the
+    ego path by finding a loop in the junction graph and then *offsetting* it
+    half a lane, *filleting* the corners and *splicing out* self-intersections.
+    Every one of those rebuilds the vertex list, so no route point survives
+    that can be traced back to the `Road` it came from. Matching the finished
+    geometry back onto the nearest centreline is what actually holds, and it
+    stays correct if those transforms change.
+
+    Returns None when nothing could be matched, so the caller falls back to the
+    scene-wide figure rather than to a route of invented numbers.
+    """
+    segments: list[tuple[tuple[float, float], tuple[float, float], float]] = []
+    for road in roads:
+        for a, b in zip(road.centerline, road.centerline[1:]):
+            segments.append((a, b, road.speed_limit_mps))
+    if not segments:
+        return None
+
+    # Spatial index: a road segment is registered in every cell it passes
+    # through, sampled finely enough that no cell it crosses is missed.
+    grid: dict[tuple[int, int], list[int]] = {}
+    step = _LIMIT_CELL_M * 0.5
+    for idx, (a, b, _) in enumerate(segments):
+        span = math.dist(a, b)
+        n = max(1, int(span / step) + 1)
+        for k in range(n + 1):
+            t = k / n
+            x = a[0] + (b[0] - a[0]) * t
+            y = a[1] + (b[1] - a[1]) * t
+            cell = (int(math.floor(x / _LIMIT_CELL_M)), int(math.floor(y / _LIMIT_CELL_M)))
+            bucket = grid.setdefault(cell, [])
+            if not bucket or bucket[-1] != idx:
+                bucket.append(idx)
+
+    ring = route.points + [route.points[0]] if route.closed else route.points
+    limits: list[float] = []
+    matched = False
+    for a, b in zip(ring, ring[1:]):
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        cx = int(math.floor(mid[0] / _LIMIT_CELL_M))
+        cy = int(math.floor(mid[1] / _LIMIT_CELL_M))
+        best_d, best_limit = math.inf, None
+        r = 0
+        while True:
+            # Stop once no unexamined ring could beat what we already have: the
+            # nearest point of ring r is at least (r - 1) cells away.
+            if best_limit is not None and (r - 1) * _LIMIT_CELL_M > best_d:
+                break
+            if (r - 1) * _LIMIT_CELL_M > _LIMIT_MAX_MATCH_M:
+                break
+            seen: set[int] = set()
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    if r > 0 and max(abs(dx), abs(dy)) != r:
+                        continue  # interior cells were covered by smaller rings
+                    for idx in grid.get((cx + dx, cy + dy), ()):
+                        if idx in seen:
+                            continue
+                        seen.add(idx)
+                        sa, sb, limit = segments[idx]
+                        d = _segment_distance(mid, sa, sb)
+                        if d < best_d:
+                            best_d, best_limit = d, limit
+            r += 1
+        if best_limit is not None and best_d <= _LIMIT_MAX_MATCH_M:
+            limits.append(best_limit)
+            matched = True
+        else:
+            # Unmatched segments inherit their predecessor rather than a
+            # guess; the first one is patched up once a real match is known.
+            limits.append(limits[-1] if limits else 0.0)
+    if not matched:
+        return None
+    if limits[0] == 0.0:
+        first_real = next(v for v in limits if v > 0.0)
+        for i, v in enumerate(limits):
+            if v > 0.0:
+                break
+            limits[i] = first_real
+    return limits

@@ -1,4 +1,5 @@
 import json
+import math
 import threading
 import time
 from pathlib import Path
@@ -849,3 +850,34 @@ def test_locations_property_reflects_dynamically_added_locations(source):
     before = len(source.locations)
     source.build_location("Golden Gate Park, San Francisco", 500.0)
     assert len(source.locations) == before + 1
+
+
+def test_the_ego_route_carries_the_posted_limit_of_each_street_it_runs_on(source):
+    """The scene-wide figure is one number for a route that crosses several
+    streets. On the real Nob Hill extract it is 25 mph, but over half the lap
+    is a 30 mph street -- so before this, the ego drove 5 mph under the posted
+    limit for the majority of every lap, and a scene where the majority street
+    were slower would have it driving over.
+
+    Asserted as "a majority of the lap disagrees with the scalar" rather than
+    against exact metres, so resimplifying geometry or renumbering roads does
+    not break it, but losing per-street limits entirely does.
+    """
+    built = source.build("osm-nob-hill")
+    route = built.ego_route
+    assert route.segment_limits is not None
+
+    ring = route.points + [route.points[0]] if route.closed else route.points
+    metres: dict[float, float] = {}
+    for (a, b), limit in zip(zip(ring, ring[1:]), route.segment_limits):
+        metres[limit] = metres.get(limit, 0.0) + math.dist(a, b)
+
+    assert len(metres) > 1, "the lap crosses streets with different posted limits"
+    total = sum(metres.values())
+    disagreeing = sum(
+        m for limit, m in metres.items() if abs(limit - built.speed_limit_mps) > 1e-6
+    )
+    assert disagreeing / total > 0.25, (
+        f"only {disagreeing / total:.1%} of the lap differs from the scene-wide "
+        "figure; expected the per-street limits to matter for a large fraction"
+    )

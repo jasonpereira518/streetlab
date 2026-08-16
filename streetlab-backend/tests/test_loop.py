@@ -11,6 +11,7 @@ import logging
 import math
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from map.overpass import BBox, OverpassClient
 from map.scene_build import SyntheticGrid
 from schema import StateUpdate, parse_server_message
 from sim.loop import SimLoop, Simulation
+from sim.route import Route
 
 DT = 1 / 60
 OVERPASS_FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
@@ -958,3 +960,81 @@ def test_frames_keep_flowing_while_a_slow_scene_builds():
         )
     finally:
         loop.stop()
+
+
+# -- posted speed limits along the route ------------------------------------- #
+
+
+def _scene_with_two_limits():
+    """A synthetic scene whose ego route runs along two streets with different
+    posted limits: 10 m/s for the first half, 30 m/s for the second.
+
+    Built by hand rather than from the OSM fixture so the expected answer is
+    arithmetic rather than whatever the extract happens to contain, and so the
+    test stays meaningful if the Nob Hill extract is ever re-captured.
+    """
+    from dataclasses import replace as _replace
+
+    scene = SyntheticGrid().build("grid-loop")
+    route = Route(
+        [(0.0, 0.0), (50.0, 0.0), (100.0, 0.0), (100.0, 10.0), (0.0, 10.0)],
+        closed=True,
+    )
+    # Segments: 0-50 and 50-100 along the bottom, then the return legs.
+    route.segment_limits = [10.0, 30.0, 30.0, 30.0, 10.0]
+    return _replace(scene, ego_route=route, speed_limit_mps=20.0)
+
+
+class _StubSource:
+    """Serves one prebuilt scene, so a test can dictate the route geometry."""
+
+    def __init__(self, scene):
+        self._scene = scene
+
+    def scenarios(self):
+        return SyntheticGrid().scenarios()
+
+    def build(self, scenario_id):
+        return self._scene
+
+
+def test_the_posted_limit_follows_the_street_the_ego_is_on():
+    """The planner used to be handed one scene-wide number for a route that
+    crosses several streets. `posted_limit()` must report the limit of the
+    segment the ego is actually standing on.
+
+    Built as a synthetic two-street route rather than the OSM fixture so the
+    expected answer is arithmetic, not whatever the extract happens to say.
+    """
+    scene = _scene_with_two_limits()
+    sim = Simulation(_StubSource(scene), seed=1)
+    sim.world.ego = replace(sim.world.ego, x=5.0, y=0.0)
+    assert sim.posted_limit() == pytest.approx(10.0)
+    sim.world.ego = replace(sim.world.ego, x=95.0, y=0.0)
+    assert sim.posted_limit() == pytest.approx(30.0)
+
+
+def test_the_posted_limit_reaches_the_planner_and_the_wire_together():
+    """Two failure modes this rules out at once: a planner still capped at the
+    scene-wide figure (the car drives the wrong speed), and a HUD still posting
+    it (the car drives correctly while the dash contradicts it). They have to
+    agree, on the same street, in the same frame.
+    """
+    scene = _scene_with_two_limits()
+    sim = Simulation(_StubSource(scene), seed=1)
+    sim.world.ego = replace(sim.world.ego, x=95.0, y=0.0)
+    assert sim._limits().speed_limit_mps == pytest.approx(30.0)
+    frame = sim.state_update()
+    assert frame.ego.speed_limit_mps == pytest.approx(30.0)
+    assert frame.ego.speed_limit_mps != pytest.approx(scene.speed_limit_mps)
+
+
+def test_a_route_without_per_segment_limits_still_uses_the_scene_figure():
+    """`SyntheticGrid` never sets per-segment limits, so every synthetic
+    scenario must behave exactly as it did before this feature existed."""
+    scene = _scene_with_two_limits()
+    scene.ego_route.segment_limits = None
+    sim = Simulation(_StubSource(scene), seed=1)
+    sim.world.ego = replace(sim.world.ego, x=95.0, y=0.0)
+    assert sim.posted_limit() == pytest.approx(scene.speed_limit_mps)
+    assert sim.state_update().ego.speed_limit_mps == pytest.approx(scene.speed_limit_mps)

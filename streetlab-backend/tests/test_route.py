@@ -172,3 +172,64 @@ def test_peak_curvature_looks_ahead_not_behind(rect):
 def test_fillet_is_a_no_op_on_a_straight_route():
     straight = Route([(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)], closed=False)
     assert straight.fillet(radius_m=5.0).length_m == pytest.approx(20.0)
+
+
+def test_limit_at_returns_none_when_the_route_carries_no_limits():
+    """None, not a default: the caller holds the scene-wide figure and that is
+    a better fallback than anything Route could invent. `SyntheticGrid` never
+    sets limits, so this is the path every synthetic scenario takes."""
+    route = Route([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)], closed=True)
+    assert route.limit_at(0.0) is None
+    assert route.limit_at(15.0) is None
+
+
+def test_limit_at_reports_the_limit_of_the_segment_it_lands_in():
+    # Closed triangle: three segments of 10, 10 and ~14.14 m.
+    route = Route(
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+        closed=True,
+        segment_limits=[11.0, 22.0, 33.0],
+    )
+    assert route.limit_at(0.0) == 11.0
+    assert route.limit_at(9.9) == 11.0
+    assert route.limit_at(10.1) == 22.0
+    assert route.limit_at(19.9) == 22.0
+    assert route.limit_at(20.1) == 33.0
+
+
+def test_limit_at_wraps_on_a_closed_route():
+    """The ego laps forever, so `s` grows without bound; a limit lookup that
+    did not wrap would pin the whole second lap to the last segment."""
+    route = Route(
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+        closed=True,
+        segment_limits=[11.0, 22.0, 33.0],
+    )
+    assert route.limit_at(route.length_m + 5.0) == 11.0
+    assert route.limit_at(2 * route.length_m + 15.0) == 22.0
+
+
+def test_a_wrong_length_limit_list_is_rejected_at_construction():
+    """A limit list that does not index the segments it is paired with is worse
+    than none at all -- every lookup would silently return the wrong street's
+    limit. A closed 3-point route has 3 segments, not 2."""
+    with pytest.raises(ValueError, match="segment_limits"):
+        Route(
+            [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+            closed=True,
+            segment_limits=[11.0, 22.0],
+        )
+
+
+def test_geometry_transforms_drop_limits_rather_than_carrying_them_along():
+    """`offset` and `fillet` rebuild the vertex list, so a limit list carried
+    through them would index points it no longer describes. Dropping is the
+    safe direction: the caller falls back to the scene figure instead of
+    reading a confidently wrong number."""
+    route = Route(
+        [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)],
+        closed=True,
+        segment_limits=[11.0, 22.0, 33.0, 44.0],
+    )
+    assert route.offset(1.0).segment_limits is None
+    assert route.fillet(radius_m=4.0).segment_limits is None

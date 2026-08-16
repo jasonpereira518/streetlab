@@ -271,10 +271,33 @@ class Simulation:
             self.world.ego, self.scene.ego_route, detections, self._limits()
         )
 
+    def posted_limit(self) -> float:
+        """The limit governing the street the ego is on right now.
+
+        Falls back to the scene-wide figure whenever the route carries no
+        per-segment limits -- `SyntheticGrid` never sets them, so the synthetic
+        scenarios behave exactly as they did before this existed.
+
+        Known artifact, measured rather than assumed: where the route grazes a
+        service road at a junction, one route segment can match that road and
+        the reported limit dips for a single frame. Over a 150 s Nob Hill lap
+        that is 2 frames in 9000 (0.02%), each exactly one frame long, which at
+        60 Hz moves the car by well under a tenth of a metre per second before
+        it reverts. Deliberately not smoothed: hysteresis here would be state
+        and tuning spent on an artifact three orders of magnitude smaller than
+        the thing this method exists to fix (53.8% of that same lap posts a
+        limit the old scene-wide scalar got wrong).
+        """
+        route = self.scene.ego_route
+        if not route.segment_limits:
+            return self.scene.speed_limit_mps
+        s = route.project((self.world.ego.x, self.world.ego.y))
+        return route.limit_at(s) or self.scene.speed_limit_mps
+
     def _limits(self) -> PlanLimits:
         p = self.world.params
         return PlanLimits(
-            speed_limit_mps=self.scene.speed_limit_mps,
+            speed_limit_mps=self.posted_limit(),
             speed_cap_mps=float(p["ego_speed_cap_mph"]) * MPH,
             follow_distance_s=float(p["follow_distance_s"]),
             assist_enabled=bool(p["assist_enabled"]),
@@ -303,6 +326,11 @@ class Simulation:
             plan=plan.plan,
             signals=self._signals.state(self.world.t),
             sim_rate_hz=1 / self.dt,
+            # Passed in rather than recomputed inside the assembler: this is
+            # the same figure the planner was just given, so the speed the HUD
+            # posts and the speed the car is actually holding to cannot drift
+            # apart on a street where they differ.
+            posted_limit_mps=self.posted_limit(),
         )
         self.world.events = []
         return frame
@@ -436,6 +464,7 @@ def assemble_state_update(
     plan: Plan,
     signals: Sequence[SignalState],
     sim_rate_hz: float,
+    posted_limit_mps: float | None = None,
 ) -> StateUpdate:
     """Build the one message the frontend consumes at frame rate.
 
@@ -494,7 +523,9 @@ def assemble_state_update(
             throttle=_clamp01(max(0.0, accel) / 2.2),
             brake=_clamp01(max(0.0, -accel) / 4.5),
             gear="D",
-            speed_limit_mps=scene.speed_limit_mps,
+            speed_limit_mps=(
+                scene.speed_limit_mps if posted_limit_mps is None else posted_limit_mps
+            ),
             cruise=Cruise(
                 mode="fsd" if world.params.get("assist_enabled", True) else "off",
                 set_speed_mps=target,

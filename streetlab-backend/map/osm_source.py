@@ -28,7 +28,14 @@ from map.features import (
     signal_groups,
 )
 from map.geocode import Geocoder, NominatimGeocoder, Place
-from map.lanes import LANE_W, build_roads, build_route_graph, remove_self_intersections, select_ego_route
+from map.lanes import (
+    LANE_W,
+    build_roads,
+    build_route_graph,
+    remove_self_intersections,
+    select_ego_route,
+    speed_limits_along,
+)
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
 from map.scene_build import BuiltScene
@@ -263,6 +270,15 @@ class OsmSceneSource:
             # inline without the builder re-entering itself.
             catalog=[],
         )
+
+        # Posted limits per route segment, so the ego obeys the street it is on
+        # rather than one scene-wide average. Measured on Nob Hill: the scene
+        # figure is 25 mph, but 46.6% of the driven distance is a 30 mph street
+        # and 1.7% is a 15 mph one -- the single scalar is wrong for nearly half
+        # of every lap. Attached here, after `select_ego_route` has finished
+        # offsetting and filleting, because those transforms rebuild the vertex
+        # list (see `speed_limits_along`).
+        ego_route.segment_limits = speed_limits_along(ego_route, roads)
 
         return BuiltScene(
             description=description,

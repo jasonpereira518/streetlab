@@ -12,6 +12,7 @@ This is the seam Cycle 3's Frenet planner will build on: `project` and
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from dataclasses import dataclass, field
 
 Point = tuple[float, float]
@@ -23,6 +24,14 @@ class Route:
 
     points: list[Point]
     closed: bool = True
+    #: Posted limit governing each segment of `_ring`, in m/s, or None when the
+    #: scene has nothing better to say than its single scene-wide figure.
+    #: Deliberately NOT carried through `offset`/`fillet`/`resample`: those
+    #: rebuild the geometry, and a limit list silently kept alongside points it
+    #: no longer indexes is worse than not having one. Limits are attached to
+    #: the FINAL geometry, after every such transform (see `map/lanes.py`'s
+    #: `speed_limits_along`).
+    segment_limits: list[float] | None = None
     _cum: list[float] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -34,6 +43,14 @@ class Route:
             self._cum.append(self._cum[-1] + math.dist(a, b))
         if self.length_m <= 0:
             raise ValueError("a route needs non-zero length")
+        if self.segment_limits is not None:
+            expected = len(self._ring) - 1
+            if len(self.segment_limits) != expected:
+                raise ValueError(
+                    f"segment_limits has {len(self.segment_limits)} entries for "
+                    f"{expected} segments"
+                )
+            self.segment_limits = [float(v) for v in self.segment_limits]
 
     @property
     def _ring(self) -> list[Point]:
@@ -48,6 +65,23 @@ class Route:
         if self.closed:
             return s % self.length_m
         return min(max(s, 0.0), self.length_m)
+
+    def limit_at(self, s: float) -> float | None:
+        """Posted limit governing arc length `s`, or None if unknown.
+
+        Returns None rather than a default so callers keep control of the
+        fallback: the scene-wide figure they already hold is a better guess
+        than anything this class could invent.
+        """
+        if not self.segment_limits:
+            return None
+        s = self.normalise(s)
+        # `_cum` is sorted, so the segment containing `s` is the last boundary
+        # at or below it. bisect keeps this O(log n) on a route the sim asks
+        # about every tick.
+        i = bisect_right(self._cum, s) - 1
+        i = min(max(i, 0), len(self.segment_limits) - 1)
+        return self.segment_limits[i]
 
     def _locate(self, s: float) -> tuple[int, float]:
         """Return the leg index and the fraction along it for arc length `s`."""
