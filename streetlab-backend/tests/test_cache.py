@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from map.cache import DiskCache, default_cache_dir
+from map.cache import BundledExtracts, DiskCache, default_cache_dir
 
 
 def test_put_then_get_round_trips(tmp_path):
@@ -357,3 +357,149 @@ def test_entry_with_invalid_utf8_bytes_is_treated_as_a_miss(tmp_path):
     path.write_bytes(b"\xff\xfe\x00garbage")
 
     assert cache.get("k") is None
+
+
+# --- BundledExtracts: the read-only offline fallback ------------------------
+#
+# `BundledExtracts` is the shipped-in-the-app counterpart to `DiskCache`: same
+# key -> JSON-file mapping, but read-only and never seeded into the writable
+# cache. That second property is the entire point (see `map/cache.py`'s
+# docstring on the class) -- `DiskCache._evict()` only ever globs its own
+# `root`, so a bundled extract living in a *different* directory can never be
+# picked as an eviction victim purely by construction. That structural fact
+# makes a naive "put a file in `bundled/`, hammer the cache, assert it still
+# exists" test pass even against an implementation that never wires the
+# fallback in at all -- it would pass before `BundledExtracts` even existed.
+# The tests below are written to actually discriminate: they drive `get()`
+# through the real fallback path and confirm a fallback hit is never copied
+# into the writable directory (the one behaviour that WOULD reintroduce the
+# eviction risk the design doc warns about), then apply real eviction
+# pressure and confirm the fallback keeps serving correctly afterward.
+
+
+def test_bundled_extracts_serves_a_known_key(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "abc.json").write_text(json.dumps({"elements": [1, 2, 3]}))
+    assert BundledExtracts(bundle).get("abc") == {"elements": [1, 2, 3]}
+
+
+def test_bundled_extracts_returns_none_for_an_unknown_key(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    assert BundledExtracts(bundle).get("nope") is None
+
+
+def test_bundled_extracts_treats_corrupt_json_as_a_miss(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "broken.json").write_text("{not json")
+    assert BundledExtracts(bundle).get("broken") is None
+
+
+def test_bundled_extracts_treats_a_non_dict_payload_as_a_miss(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "list.json").write_text(json.dumps([1, 2, 3]))
+    assert BundledExtracts(bundle).get("list") is None
+
+
+def test_bundled_extracts_treats_invalid_utf8_bytes_as_a_miss(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "bin.json").write_bytes(b"\xff\xfe\x00garbage")
+    assert BundledExtracts(bundle).get("bin") is None
+
+
+def test_bundled_extracts_survives_a_missing_root_directory(tmp_path):
+    """The bundle directory itself is never created by this class -- it
+    ships inside the app or lives in the repo. A wrong/missing root must
+    degrade to "nothing bundled", not raise, since a broken frozen-path
+    lookup should never crash the app outright."""
+    assert BundledExtracts(tmp_path / "does-not-exist").get("anything") is None
+
+
+# --- DiskCache(fallback=...): consulted on a miss, never written to --------
+
+
+def test_disk_cache_falls_back_to_bundled_extracts_on_a_miss(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "k.json").write_text(json.dumps({"from": "bundle"}))
+    cache = DiskCache(tmp_path / "cache", fallback=BundledExtracts(bundle))
+    assert cache.get("k") == {"from": "bundle"}
+
+
+def test_disk_cache_prefers_its_own_writable_entry_over_the_fallback(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "k.json").write_text(json.dumps({"from": "bundle"}))
+    cache = DiskCache(tmp_path / "cache", fallback=BundledExtracts(bundle))
+    cache.put("k", {"from": "writable"})
+    assert cache.get("k") == {"from": "writable"}
+
+
+def test_disk_cache_get_is_a_true_miss_when_fallback_also_misses(tmp_path):
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    cache = DiskCache(tmp_path / "cache", fallback=BundledExtracts(bundle))
+    assert cache.get("nope") is None
+
+
+def test_disk_cache_without_a_fallback_behaves_exactly_as_before(tmp_path):
+    """Default `fallback=None` -- existing callers (and every test above
+    this section) must see identical behaviour to before this feature."""
+    cache = DiskCache(tmp_path)
+    assert cache.get("missing") is None
+
+
+def test_bundled_extract_is_never_copied_into_the_writable_cache(tmp_path):
+    """The design's whole safety property, stated directly: a fallback hit
+    must never be written into the writable directory. If it were (e.g. a
+    "helpfully" cache-warming implementation that promotes a fallback hit
+    into `self.root` for faster next time), that copy becomes an ordinary
+    LRU entry -- evictable exactly like the rejected pre-seeding design
+    `map/cache.py`'s `BundledExtracts` docstring warns against. This is the
+    check that actually distinguishes "reads through a separate read-only
+    store" from "silently reintroduces the eviction risk".
+    """
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "k.json").write_text(json.dumps({"from": "bundle"}))
+    cache = DiskCache(tmp_path / "cache", fallback=BundledExtracts(bundle))
+
+    result = cache.get("k")
+
+    assert result == {"from": "bundle"}
+    assert not cache._path("k").exists()
+    assert list((tmp_path / "cache").glob("*.json")) == []
+
+
+def test_eviction_never_deletes_a_bundled_extract_under_real_pressure(tmp_path):
+    """Regression pin for the exact failure `BundledExtracts` exists to
+    prevent: LRU eviction deleting the offline extract that makes the app
+    work with no network. Directory separation alone makes a shallow version
+    of this trivially true (see the module docstring above) -- what this
+    test actually exercises is that repeatedly reading the bundled key
+    through `DiskCache.get()` (the fallback path) and then blowing the
+    writable budget many times over, with a budget far too small to hold
+    even one entry, never disturbs the bundle file or breaks the fallback
+    lookup.
+    """
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    (bundle / "aaa.json").write_text(json.dumps({"elements": []}))
+    cache = DiskCache(tmp_path / "cache", budget_bytes=64, fallback=BundledExtracts(bundle))
+
+    for i in range(20):
+        cache.put(f"key-{i}", {"blob": "x" * 200})
+        # Every put() runs a full eviction pass; interleave a fallback read
+        # of the bundled key so real eviction pressure and a real fallback
+        # hit are both live throughout, not just at the very end.
+        assert cache.get("aaa") == {"elements": []}
+
+    assert (bundle / "aaa.json").exists()
+    assert cache.get("aaa") == {"elements": []}
+    # None of the 20 unrelated writes survive a 64-byte budget -- eviction
+    # genuinely ran, repeatedly, not just once at the end.
+    assert cache.total_bytes() < 200

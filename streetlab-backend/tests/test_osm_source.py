@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from map.cache import DiskCache
+from map.cache import BundledExtracts, DiskCache
 from map.geocode import Place, StubGeocoder
 from map.lanes import NoDrivableRoad
-from map.osm_source import ATTRIBUTION, BUNDLED, LocationSpec, OsmSceneSource
-from map.overpass import OverpassClient
+from map.osm_source import ATTRIBUTION, BUNDLED, LocationSpec, OsmSceneSource, default_source
+from map.overpass import BBox, OverpassClient
 from map.scene_build import SceneSource
 from schema import Road, SceneDescription
 
@@ -611,6 +611,110 @@ def test_scenarios_and_find_stay_consistent_while_the_catalog_grows_concurrently
 
     assert not reader_errors
     assert len(src.scenarios()) == len(BUNDLED) + len(queries)
+
+
+# -- bundled offline extracts: no network, and a reproducible cache key ----- #
+#
+# `BundledExtracts` (`map/cache.py`) only ever gets consulted once
+# `OverpassClient.graph(bbox)` computes `bbox.cache_key()` -- and `bbox`
+# itself comes from geocoding `spec.query`. If BUNDLED[0] geocoded like every
+# other location, the packaged app's *first* network dependency (Nominatim)
+# would still be live, and -- independently -- there would be no guarantee a
+# fresh geocode reproduces the exact bbox the shipped extract was recorded
+# against (Nominatim's top result for a given query is not pinned to one
+# candidate forever; see the task report for a live example of it returning
+# a different node on a different day). BUNDLED[0] carries a pre-resolved
+# `place` for exactly this reason: it removes both problems for the one
+# location the offline demo actually depends on, without changing behaviour
+# for any query that doesn't carry one.
+
+
+def test_bundled_nob_hill_carries_a_pre_resolved_place():
+    assert BUNDLED[0].place is not None
+    assert BUNDLED[0].place.lat == pytest.approx(37.7945)
+    assert BUNDLED[0].place.lon == pytest.approx(-122.4156)
+
+
+def test_a_spec_with_a_baked_place_never_calls_the_geocoder(tmp_path):
+    """`ExplodingFetcher`-style guarantee for the geocoder: BUNDLED[0] must
+    build without ever invoking `.lookup()`, not just "happen not to" in
+    whatever order the pipeline runs in.
+    """
+
+    class ExplodingGeocoder:
+        def lookup(self, query: str):
+            raise AssertionError("geocoder was called despite a baked place")
+
+    payload = json.loads(FIXTURE.read_text())
+    src = OsmSceneSource(
+        ExplodingGeocoder(), OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
+    )
+    scene = src.build(BUNDLED[0].id)  # must not raise
+    assert scene.description.origin.lat == pytest.approx(37.7945)
+    assert scene.description.origin.lon == pytest.approx(-122.4156)
+
+
+def test_a_spec_without_a_baked_place_still_geocodes_normally(source):
+    """The bypass is opt-in per spec, not global -- an ordinary dynamically
+    added location (no `place`) must still resolve through the geocoder
+    exactly as before this feature existed.
+    """
+    scene = source.build_location("Alamo Square, San Francisco", 500.0)
+    assert scene.description.location == NOB_HILL.display_name  # source's StubGeocoder answer
+
+
+def test_bundled_nob_hill_cache_key_matches_the_shipped_bundle_file():
+    """The regression this whole feature exists to prevent: if BUNDLED[0]'s
+    baked place and the actual filename under `streetlab-backend/bundled/`
+    ever drift apart (someone edits one without the other), the shipped
+    extract silently stops being reachable -- `BundledExtracts.get()` would
+    look for a key that no file on disk matches, degrade to a miss, and fall
+    through to a live Overpass fetch with no error raised anywhere. This
+    reads the real bundled directory the packaged app ships, not a copy.
+    """
+    bundle_dir = Path(__file__).parent.parent / "bundled"
+    spec = BUNDLED[0]
+    assert spec.place is not None
+    key = BBox.around(spec.place.lat, spec.place.lon, spec.radius_m).cache_key()
+    assert (bundle_dir / f"{key}.json").exists(), (
+        f"no bundled extract named {key}.json for BUNDLED[0]'s baked place -- "
+        "the file and the place have drifted out of sync"
+    )
+
+
+def test_default_source_bundled_dir_falls_back_to_the_repo_directory(monkeypatch, tmp_path):
+    """Unfrozen (a normal `uv run` or pytest process): the bundled dir must
+    resolve to the repo's own `streetlab-backend/bundled/`, not wherever a
+    stray `sys._MEIPASS` from an unrelated frozen process might point.
+
+    `default_cache_dir` is monkeypatched to `tmp_path` so this does not
+    create or touch the real OS cache directory on whatever machine runs
+    the suite -- `DiskCache.__init__` `mkdir`s its root unconditionally.
+    """
+    monkeypatch.delattr("sys._MEIPASS", raising=False)
+    monkeypatch.setattr("map.osm_source.default_cache_dir", lambda: tmp_path)
+    source = default_source()
+    fallback = source.overpass.cache._fallback
+    assert isinstance(fallback, BundledExtracts)
+    assert fallback.root == Path(__file__).parent.parent / "bundled"
+    assert fallback.root.is_dir()
+
+
+def test_default_source_bundled_dir_uses_meipass_when_frozen(monkeypatch, tmp_path):
+    """Frozen (PyInstaller onefile): `sys._MEIPASS` is where the bootloader
+    extracted `--add-data "bundled:bundled"` to, so the bundled dir must be
+    `_MEIPASS/bundled`, not `_MEIPASS` itself -- pointing at `_MEIPASS`
+    directly would make every lookup silently miss in the one place this
+    feature exists to work, because the real files sit one directory level
+    deeper.
+    """
+    meipass = tmp_path / "meipass"
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr("sys._MEIPASS", str(meipass), raising=False)
+    monkeypatch.setattr("map.osm_source.default_cache_dir", lambda: cache_dir)
+    source = default_source()
+    fallback = source.overpass.cache._fallback
+    assert fallback.root == meipass / "bundled"
 
 
 def test_locations_property_reflects_dynamically_added_locations(source):

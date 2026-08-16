@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 import threading
 from dataclasses import replace
+from pathlib import Path
 
-from map.cache import DiskCache, default_cache_dir
+from map.cache import BundledExtracts, DiskCache, default_cache_dir
 from map.features import (
     build_buildings,
     build_crosswalks,
@@ -25,7 +27,7 @@ from map.features import (
     build_trees,
     signal_groups,
 )
-from map.geocode import Geocoder, NominatimGeocoder
+from map.geocode import Geocoder, NominatimGeocoder, Place
 from map.lanes import LANE_W, build_roads, build_route_graph, remove_self_intersections, select_ego_route
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
@@ -54,9 +56,26 @@ MPH = 0.44704
 
 
 class LocationSpec:
-    """A named place the catalog offers."""
+    """A named place the catalog offers.
 
-    __slots__ = ("id", "query", "name", "radius_m", "traffic")
+    `place`, when set, is a pre-resolved geocode result that `_build_uncached`
+    uses instead of calling `Geocoder.lookup(query)`. It exists for exactly
+    one reason: the shipped offline bundle (`BundledExtracts`, `map/cache.py`)
+    is looked up by `BBox.cache_key()`, and that bbox is derived from a
+    geocoded lat/lon. A dynamically added location has no choice but to
+    geocode live -- there is no bundle for an address nobody has typed yet --
+    but a location whose extract *is* bundled must resolve to the exact same
+    lat/lon every time, or the recorded extract's cache key never matches and
+    the bundle silently goes unused. Nominatim does not guarantee that: the
+    same query text can rank a different candidate first on a different day
+    (confirmed live against the public instance while building this feature
+    -- see the Task 9 report). Baking the place sidesteps both problems for
+    bundled entries: no live geocode call at all, and a cache key that is
+    reproducible by construction rather than by hoping Nominatim agrees with
+    its past self.
+    """
+
+    __slots__ = ("id", "query", "name", "radius_m", "traffic", "place")
 
     def __init__(
         self,
@@ -65,17 +84,46 @@ class LocationSpec:
         name: str,
         radius_m: float = 500.0,
         traffic: int = 4,
+        place: Place | None = None,
     ) -> None:
         self.id = id
         self.query = query
         self.name = name
         self.radius_m = radius_m
         self.traffic = traffic
+        self.place = place
 
 
 BUNDLED: tuple[LocationSpec, ...] = (
-    LocationSpec("osm-nob-hill", "Nob Hill, San Francisco", "Nob Hill", 500.0, 4),
+    LocationSpec(
+        "osm-nob-hill",
+        "Nob Hill, San Francisco",
+        "Nob Hill",
+        500.0,
+        4,
+        place=Place(lat=37.7945, lon=-122.4156, display_name="Nob Hill, San Francisco"),
+    ),
 )
+
+
+def _bundled_dir() -> Path:
+    """Where the recorded offline extracts live on disk.
+
+    `getattr` rather than direct attribute access: `sys._MEIPASS` only
+    exists inside a PyInstaller onefile bootloader, so a normal `uv run` or
+    pytest process must be unaffected by this lookup. `scripts/build_app.sh`
+    passes `--add-data "bundled:bundled"`, which copies the repo's own
+    `bundled/` directory to `_MEIPASS/bundled` inside the frozen archive --
+    the trailing `/ "bundled"` below is what makes the frozen and unfrozen
+    branches resolve to the same relative layout. Pointing at `_MEIPASS`
+    itself (with no `bundled` suffix) would look one directory level too
+    high and silently miss every lookup in the one place this feature exists
+    to work.
+    """
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root is not None:
+        return Path(frozen_root) / "bundled"
+    return Path(__file__).resolve().parent.parent / "bundled"
 
 
 def _slug(query: str) -> str:
@@ -87,10 +135,14 @@ def _slug(query: str) -> str:
 
 
 def default_source() -> OsmSceneSource:
-    """The wiring the CLI uses: real geocoder, real Overpass, on-disk cache."""
+    """The wiring the CLI uses: real geocoder, real Overpass, on-disk cache
+    backed by the bundled offline extracts as a read-only fallback."""
     return OsmSceneSource(
         NominatimGeocoder(),
-        OverpassClient(HttpxFetcher(), DiskCache(default_cache_dir())),
+        OverpassClient(
+            HttpxFetcher(),
+            DiskCache(default_cache_dir(), fallback=BundledExtracts(_bundled_dir())),
+        ),
     )
 
 
@@ -175,7 +227,11 @@ class OsmSceneSource:
         raise KeyError(f"unknown location: {scenario_id}")
 
     def _build_uncached(self, spec: LocationSpec) -> BuiltScene:
-        place = self.geocoder.lookup(spec.query)
+        # A baked `place` (bundled entries only -- see `LocationSpec`'s
+        # docstring) skips the geocoder entirely: no network call, and a
+        # bbox that reproduces the exact cache key the shipped extract was
+        # recorded under, every time.
+        place = spec.place if spec.place is not None else self.geocoder.lookup(spec.query)
         origin = LatLon(lat=place.lat, lon=place.lon)
         graph = self.overpass.graph(BBox.around(place.lat, place.lon, spec.radius_m))
 

@@ -22,7 +22,9 @@ echo "== 1/3: building the PyInstaller sidecar ($TRIPLE) =="
 cd "$BACKEND_DIR"
 rm -rf build dist
 rm -f streetlab-server.spec
-uv run pyinstaller --onefile --name streetlab-server server/cli.py
+uv run pyinstaller --onefile --name streetlab-server \
+  --add-data "bundled:bundled" \
+  server/cli.py
 
 mkdir -p "$BIN_DIR"
 cp "dist/streetlab-server" "$BIN_DIR/$SIDECAR_NAME"

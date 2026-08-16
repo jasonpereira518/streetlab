@@ -72,13 +72,13 @@ process — not fixed targets. Sim step time and RSS come from the backend's
 | Observed tick Hz | `StateUpdate` inter-arrival | Live in the overlay (~60 Hz) |
 | WS frame bytes (p95) | Wire size at receipt | Live in the overlay |
 | Sim step p50/p95 | Backend `/health` | Live in the overlay (~1 ms / ~2 ms on an M-series Mac) |
-| Sidecar binary size | `scripts/build_app.sh` | **16 MB** (measured, `aarch64-apple-darwin`) |
-| `.app` bundle size | `scripts/build_app.sh` | **20 MB** (measured, includes the sidecar) |
-| Backend RSS | Backend `/health` | **~59 MB** measured at startup; live in the overlay |
+| Sidecar binary size | `scripts/build_app.sh` | **23 MB** (measured, `aarch64-apple-darwin`; includes shapely and the bundled extract) |
+| `.app` bundle size | `scripts/build_app.sh` | **28 MB** (measured, includes the sidecar) |
+| Backend RSS | Backend `/health` | **~59 MB** synthetic / **~94 MB** on a real OSM scene, measured at startup; live in the overlay |
 | Frontend RSS | `ps` on the running `.app` | **~58–72 MB** measured at startup |
 | Detector inference ms | — | Not measurable this cycle — no model runs |
 | Model disk budget | — | **Target for Cycle 4**: ~172 MB detector |
-| Map cache budget | — | **Target for Cycle 2**: ~99 MB |
+| Map cache budget | `map/cache.py` | 99 MB LRU ceiling; one Nob Hill extract is **3.2 MB** |
 
 GPU/ANE utilisation isn't reported: with no model running there's nothing to
 report, and a zero would be misleading. Measured figures are one run on an

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from map.cache import DiskCache
+from map.cache import BundledExtracts, DiskCache
 from map.overpass import BBox, OverpassClient, OverpassError
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
@@ -98,3 +98,51 @@ def test_exhausted_retries_raise_overpass_error(tmp_path):
     client = OverpassClient(fetcher, DiskCache(tmp_path), retries=2, backoff_s=0.0)
     with pytest.raises(OverpassError):
         client.graph(BBox.around(37.79, -122.41, 400.0))
+
+
+# --- Offline fallback: a bundled extract, never the network -----------------
+
+
+def test_a_bundled_extract_serves_without_any_network(tmp_path):
+    """The packaged app must build its demo location with the network
+    unplugged. `ExplodingFetcher` makes that a hard guarantee: ANY attempt
+    to reach the network fails the test, not just "happened not to fetch"."""
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    payload = json.loads(FIXTURE.read_text())
+    bbox = BBox.around(37.7945, -122.4156, 500.0)
+    (bundle / f"{bbox.cache_key()}.json").write_text(json.dumps(payload))
+
+    class ExplodingFetcher:
+        def fetch(self, query: str) -> dict:
+            raise AssertionError("network was used despite a bundled extract")
+
+    client = OverpassClient(
+        ExplodingFetcher(),
+        DiskCache(tmp_path / "cache", fallback=BundledExtracts(bundle)),
+    )
+    graph = client.graph(bbox)
+    assert len(graph.ways) > 20
+
+
+def test_a_bundled_extract_is_not_refetched_on_a_second_call(tmp_path):
+    """A bundle hit must not itself be re-served from a live fetch on a
+    repeat call either -- the fallback keeps answering every time, not just
+    the first, and the fetcher is never touched across either call."""
+    bundle = tmp_path / "bundled"
+    bundle.mkdir()
+    payload = json.loads(FIXTURE.read_text())
+    bbox = BBox.around(37.7945, -122.4156, 500.0)
+    (bundle / f"{bbox.cache_key()}.json").write_text(json.dumps(payload))
+
+    class ExplodingFetcher:
+        def fetch(self, query: str) -> dict:
+            raise AssertionError("network was used despite a bundled extract")
+
+    client = OverpassClient(
+        ExplodingFetcher(),
+        DiskCache(tmp_path / "cache", fallback=BundledExtracts(bundle)),
+    )
+    first = client.graph(bbox)
+    second = client.graph(bbox)
+    assert len(first.ways) == len(second.ways) > 20

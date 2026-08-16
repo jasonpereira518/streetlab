@@ -17,6 +17,16 @@ glob that both `total_bytes()` and eviction use — which also means a process
 killed between the write and the rename leaves an orphan that would otherwise
 sit on disk forever, uncounted and unevictable. `__init__` sweeps any such
 orphans left by a previous crash before the cache is used.
+
+`BundledExtracts` is a second, read-only source `DiskCache.get()` can be
+given as a `fallback`: extracts shipped inside the packaged app so it can
+demo with no network at all. It is consulted only on a miss, never written
+into `self.root`, and never appears in `_evict()`'s glob -- so it can never
+be chosen as an eviction victim. That separateness is deliberate, not
+incidental: pre-seeding the writable cache with the same files would let a
+budget-pressured `_evict()` delete the very extracts that make the app work
+offline, silently trading "works on the developer's machine" for "works
+until enough other locations get cached."
 """
 
 from __future__ import annotations
@@ -44,10 +54,38 @@ def default_cache_dir() -> Path:
     return root / "StreetLab" / "osm"
 
 
+class BundledExtracts:
+    """Read-only map extracts shipped inside the app.
+
+    Deliberately *not* seeded into the writable cache: `DiskCache._evict()`
+    would happily delete them under budget pressure, and the app would
+    silently lose its ability to start offline. A miss on the writable
+    cache falls through to here; nothing ever writes to, or evicts from,
+    this directory -- `get()` is the only method it has.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+
+    def get(self, key: str) -> dict | None:
+        path = self.root / f"{key}.json"
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+
 class DiskCache:
-    def __init__(self, root: Path, budget_bytes: int = DEFAULT_BUDGET_BYTES) -> None:
+    def __init__(
+        self,
+        root: Path,
+        budget_bytes: int = DEFAULT_BUDGET_BYTES,
+        fallback: BundledExtracts | None = None,
+    ) -> None:
         self.root = Path(root)
         self.budget_bytes = budget_bytes
+        self._fallback = fallback
         self.root.mkdir(parents=True, exist_ok=True)
         self._sweep_orphaned_tmp()
 
@@ -66,6 +104,19 @@ class DiskCache:
                 pass
 
     def get(self, key: str) -> dict | None:
+        local = self._get_local(key)
+        if local is not None:
+            return local
+        # Nothing writable for this key -- consult the read-only bundle
+        # before giving up. A hit here is returned as-is and never written
+        # back into `self.root`: doing so would place a copy inside the
+        # directory `_evict()` globs, quietly reintroducing the exact
+        # eviction risk this fallback exists to avoid.
+        if self._fallback is not None:
+            return self._fallback.get(key)
+        return None
+
+    def _get_local(self, key: str) -> dict | None:
         path = self._path(key)
         try:
             payload = json.loads(path.read_text())
