@@ -881,3 +881,123 @@ def test_the_ego_route_carries_the_posted_limit_of_each_street_it_runs_on(source
         f"only {disagreeing / total:.1%} of the lap differs from the scene-wide "
         "figure; expected the per-street limits to matter for a large fraction"
     )
+
+
+def _closest_building_approach(built) -> float:
+    """Least clearance between the ego route and any building footprint.
+
+    Containment counts as zero, and that is the whole point: measuring only
+    vertex-to-centreline distance says a building that swallows the route
+    whole is metres "clear", because its corners are set back from the middle
+    of the road it is sitting on. Found by the discrimination test below,
+    which a distance-only version passed while a 6 m building sat on the
+    start line.
+    """
+    ring = built.ego_route.points + [built.ego_route.points[0]]
+
+    def inside(px: float, py: float, poly) -> bool:
+        hit = False
+        for i in range(len(poly)):
+            xi, yi = poly[i]
+            xj, yj = poly[i - 1]
+            if (yi > py) != (yj > py) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+                hit = not hit
+        return hit
+
+    def seg_dist(p, a, b) -> float:
+        vx, vy = b[0] - a[0], b[1] - a[1]
+        wx, wy = p[0] - a[0], p[1] - a[1]
+        leg2 = vx * vx + vy * vy or 1e-9
+        t = min(max((wx * vx + wy * vy) / leg2, 0.0), 1.0)
+        return math.hypot(wx - vx * t, wy - vy * t)
+
+    # Only buildings near the route can matter -- we care about sub-metre
+    # clearances, so anything more than a cell away is skipped outright. This
+    # is what keeps the check over 2224 footprints from dominating the suite.
+    CELL = 20.0
+    occupied = set()
+    for a, b in zip(ring, ring[1:]):
+        span = math.dist(a, b)
+        n = max(1, int(span / (CELL / 2)) + 1)
+        for k in range(n + 1):
+            t = k / n
+            x = a[0] + (b[0] - a[0]) * t
+            y = a[1] + (b[1] - a[1]) * t
+            occupied.add((int(x // CELL), int(y // CELL)))
+
+    best = math.inf
+    for building in built.description.buildings:
+        poly = building.footprint
+        cells = set()
+        for px, py in poly:
+            cx, cy = int(px // CELL), int(py // CELL)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    cells.add((cx + dx, cy + dy))
+        if not (cells & occupied):
+            continue
+        for rp in ring:
+            if inside(rp[0], rp[1], poly):
+                return 0.0
+        # Both directions: a building vertex near the route, and a route
+        # vertex near a building edge.
+        for p in poly:
+            for a, b in zip(ring, ring[1:]):
+                best = min(best, seg_dist(p, a, b))
+        for rp in ring:
+            for a, b in zip(poly, list(poly[1:]) + [poly[0]]):
+                best = min(best, seg_dist(rp, a, b))
+    return best
+
+
+def test_no_building_intrudes_on_the_lane_the_ego_drives(source):
+    """Trees are geometry WE place, and a placement bug once put them 1.6 m
+    inside California Street -- hence `_inside_any_carriageway`. Buildings are
+    OSM footprints taken verbatim, so the equivalent "guard" would mean editing
+    real-world data to fit our lane-count-derived carriageway model, and on
+    this extract 301 of 2224 buildings overlap that model: far likelier that
+    the model is generous than that 301 San Francisco buildings stand in the
+    road.
+
+    What genuinely matters is narrower and is what this pins: nothing OSM calls
+    a building may stand in the lane the car actually drives. Measured
+    clearance on this fixture is 4.17 m -- the same figure the chase-camera
+    investigation arrived at independently. Asserted against the car's half
+    width rather than that 4.17 m so ordinary geometry churn does not trip it,
+    while a building landing in the driving lane does.
+    """
+    built = source.build("osm-nob-hill")
+    half_car_width_m = 1.96 / 2
+    assert _closest_building_approach(built) > half_car_width_m
+
+
+def test_the_building_clearance_check_would_catch_a_building_in_the_road():
+    """The assertion above passes on real data, so on its own it cannot show it
+    is capable of failing. Drop a footprint straight onto the route and confirm
+    the same measurement reports an intrusion.
+    """
+    from schema import Building
+
+    class _Built:
+        pass
+
+    payload = json.loads(FIXTURE.read_text())
+    src = OsmSceneSource(
+        StubGeocoder(NOB_HILL), OverpassClient(ReplayFetcher(payload), DiskCache(Path("/tmp")))
+    )
+    built = src.build("osm-nob-hill")
+    on_route = built.ego_route.points[0]
+    intruder = Building(
+        id="intruder",
+        footprint=[
+            (on_route[0] - 3.0, on_route[1] - 3.0),
+            (on_route[0] + 3.0, on_route[1] - 3.0),
+            (on_route[0] + 3.0, on_route[1] + 3.0),
+            (on_route[0] - 3.0, on_route[1] + 3.0),
+        ],
+        height_m=12.0,
+        color="#b09070",
+        roof_color="#8a7057",
+    )
+    built.description.buildings.append(intruder)
+    assert _closest_building_approach(built) < 1.96 / 2

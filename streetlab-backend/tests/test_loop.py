@@ -1038,3 +1038,54 @@ def test_a_route_without_per_segment_limits_still_uses_the_scene_figure():
     sim.world.ego = replace(sim.world.ego, x=95.0, y=0.0)
     assert sim.posted_limit() == pytest.approx(scene.speed_limit_mps)
     assert sim.state_update().ego.speed_limit_mps == pytest.approx(scene.speed_limit_mps)
+
+
+class _StubGeocode:
+    """Fixed answer, so the perf test never touches the network."""
+
+    def lookup(self, query):
+        return Place(lat=37.7945, lon=-122.4156, display_name="Nob Hill, San Francisco")
+
+
+def test_sim_step_stays_well_inside_the_60_hz_budget_on_a_real_osm_scene():
+    """Nothing asserted a budget on `sim_step` before this, which left the
+    phase's performance claim resting on figures that were only ever reported,
+    never checked: `/health` publishes `sim_step_p50_ms` and `sim_step_p95_ms`,
+    and `test_ws_server.py` asserts only that they are non-negative and
+    correctly ordered.
+
+    Deliberately run against the OSM scene rather than the synthetic grid: the
+    grid has 6 roads and 64 buildings, so it would pass this budget however
+    badly the real path regressed. Nob Hill is 264 roads and 2224 buildings,
+    and it is what the packaged app now actually boots into.
+
+    The threshold is p95, not p50 -- a p50 budget is satisfied by a loop that
+    stutters every other frame. 8 ms is half the 16.67 ms a 60 Hz step has, so
+    it catches a doubling of the current cost while leaving room for a loaded
+    CI box; measured p95 here is ~0.9 ms, so the headroom is roughly 9x.
+    """
+    payload = json.loads(OVERPASS_FIXTURE.read_text())
+
+    class _Replay:
+        def fetch(self, query):
+            return payload
+
+    import tempfile
+
+    src = OsmSceneSource(
+        _StubGeocode(),
+        OverpassClient(_Replay(), DiskCache(Path(tempfile.mkdtemp()))),
+    )
+    sim = Simulation(src, "osm-nob-hill", seed=1)
+
+    for _ in range(120):  # let caches and the traffic model settle
+        sim.step()
+    samples = []
+    for _ in range(600):
+        t0 = time.perf_counter()
+        sim.step()
+        samples.append((time.perf_counter() - t0) * 1000)
+    samples.sort()
+    p50 = samples[len(samples) // 2]
+    p95 = samples[int(len(samples) * 0.95)]
+    assert p95 < 8.0, f"sim_step p95 {p95:.2f} ms (p50 {p50:.2f} ms) exceeds half the 60 Hz budget"
