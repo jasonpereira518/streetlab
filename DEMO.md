@@ -29,6 +29,13 @@ sidecar process behind — verified by launching, quitting normally, and
 separately `kill -9`-ing the app itself, confirming the sidecar exits either
 way.
 
+The packaged app starts on **real OpenStreetMap geometry**, not the synthetic
+grid: it passes `--source osm` to its own sidecar, and the opening Nob Hill
+scene is served from the extract bundled inside the `.app`, so it renders with
+**no network at all**. The address box is live here too — that one does need
+network, since an address nobody has typed before has to be geocoded and
+fetched.
+
 Requires a Rust toolchain (`rustup`) and Python 3.11 + [`uv`](https://docs.astral.sh/uv/)
 to build; nothing extra to run the built `.app` afterward.
 
@@ -82,8 +89,9 @@ trajectory, steering) update live from the real simulation, not the mock.
 
 The left sidebar's **Load a location** box sends a real `load_location`
 command to the backend — type an address or place name and press Enter to
-build and drive it. It only does anything useful when the backend was
-started with real map data:
+build and drive it. Option A's packaged app already runs on real map data, so
+the box works there with no extra flags. Under Option B it only does anything
+useful when you started the backend with real map data yourself:
 
 ```bash
 cd streetlab-backend

@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 
 from map.cache import BundledExtracts, DiskCache
-from map.geocode import Place, StubGeocoder
+from map.geocode import GeocodeError, Place, StubGeocoder
 from map.lanes import NoDrivableRoad
 from map.osm_source import ATTRIBUTION, BUNDLED, LocationSpec, OsmSceneSource, default_source
-from map.overpass import BBox, OverpassClient
+from map.overpass import BBox, OverpassClient, OverpassError
 from map.scene_build import SceneSource
 from schema import Road, SceneDescription
 
@@ -367,6 +367,103 @@ def test_build_location_adds_the_location_to_the_catalog(source):
     assert scene.description.attribution == ATTRIBUTION
 
 
+class FailingGeocoder:
+    """Raises the way `NominatimGeocoder` does when an address has no match."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def lookup(self, query: str) -> Place:
+        self.calls += 1
+        raise GeocodeError("no results")
+
+
+def test_a_failed_location_leaves_no_trace_in_the_catalog(tmp_path):
+    """Found by driving the real app: typing a nonsense address surfaced the
+    expected `location_failed` event, and ALSO left a permanent catalog entry
+    advertising "Real street geometry around zzzqqxnotaplace12345" as a
+    MODERATE 4-minute drive. It was in the backend catalog, not just the
+    sidebar, so every client saw it for the life of the process.
+
+    The append has to happen before the build (it reserves the id under the
+    same lock acquisition that chose it), so the fix is a rollback rather than
+    a reorder -- this pins that the reservation is actually released.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    client = OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
+    src = OsmSceneSource(FailingGeocoder(), client)
+    before = {s.id for s in src.scenarios()}
+
+    with pytest.raises(GeocodeError):
+        src.build_location("zzzqqxnotaplace12345", 500.0)
+
+    assert {s.id for s in src.scenarios()} == before
+
+
+def test_a_failed_repeat_does_not_evict_the_location_it_repeated(tmp_path):
+    """The rollback must remove only what THIS call appended. A build that
+    fails on an exact repeat of an already-catalogued query took the reuse
+    branch and appended nothing, so evicting there would delete a working
+    location out from under clients because of an unrelated transient failure
+    -- turning a recoverable error into data loss.
+    """
+    payload = json.loads(FIXTURE.read_text())
+
+    class FlakyFetcher:
+        """Serves the fixture once, then fails every later fetch."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fetch(self, query: str) -> dict:
+            self.calls += 1
+            if self.calls > 1:
+                raise OverpassError("upstream 504")
+            return payload
+
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), OverpassClient(FlakyFetcher(), DiskCache(tmp_path)))
+    src.build_location("Alamo Square, San Francisco", 500.0)
+    catalogued = {s.id for s in src.scenarios()}
+    assert "osm-alamo-square-san-francisco" in catalogued
+
+    # Same query again. The scene is memoised, so force a real rebuild first.
+    src._scenes.clear()
+    src.overpass.cache = DiskCache(tmp_path / "empty")
+    with pytest.raises(OverpassError):
+        src.build_location("Alamo Square, San Francisco", 500.0)
+
+    assert {s.id for s in src.scenarios()} == catalogued
+
+
+def test_a_location_can_be_built_after_an_earlier_attempt_failed(tmp_path):
+    """The rollback must not leave the id reserved-but-broken. A user who
+    mistypes, then retypes the same address correctly-resolving later, must
+    get a real build -- not a stale half-registered entry or a disambiguated
+    `-2` id caused by the failed attempt still squatting the slug.
+    """
+    payload = json.loads(FIXTURE.read_text())
+
+    class EventuallyWorkingGeocoder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def lookup(self, query: str) -> Place:
+            self.calls += 1
+            if self.calls == 1:
+                raise GeocodeError("no results")
+            return NOB_HILL
+
+    client = OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
+    src = OsmSceneSource(EventuallyWorkingGeocoder(), client)
+
+    with pytest.raises(GeocodeError):
+        src.build_location("Alamo Square, San Francisco", 500.0)
+    scene = src.build_location("Alamo Square, San Francisco", 500.0)
+
+    assert scene.description.scenario_id == "osm-alamo-square-san-francisco"
+    assert "osm-alamo-square-san-francisco" in {s.id for s in src.scenarios()}
+
+
 def test_build_location_is_idempotent_for_the_same_query(source):
     """"Nob Hill, San Francisco" is BUNDLED[0]'s own query text. Matching is
     by query text across the WHOLE catalog (review fix: matching by derived
@@ -679,6 +776,30 @@ def test_bundled_nob_hill_cache_key_matches_the_shipped_bundle_file():
     assert (bundle_dir / f"{key}.json").exists(), (
         f"no bundled extract named {key}.json for BUNDLED[0]'s baked place -- "
         "the file and the place have drifted out of sync"
+    )
+
+
+def test_the_bundled_extract_and_the_fixture_are_the_same_bytes():
+    """The suite replays `tests/fixtures/overpass_nob_hill.json`; the packaged
+    app serves `bundled/<cache_key>.json`. They are two copies of one Overpass
+    capture, and nothing else forces them to agree -- the existing cache-key
+    test only checks a file with the right NAME exists, not that its CONTENT
+    matches what the tests exercise.
+
+    Without this, re-capturing either one alone diverges them in silence: no
+    test fails, and the offline path ships data the suite has never parsed.
+    `scripts/capture_osm_fixtures.py` writes both from the same bytes, so the
+    supported way to update them keeps this true; this catches the hand-edit.
+    """
+    bundle_dir = Path(__file__).parent.parent / "bundled"
+    spec = BUNDLED[0]
+    assert spec.place is not None
+    key = BBox.around(spec.place.lat, spec.place.lon, spec.radius_m).cache_key()
+    bundled = bundle_dir / f"{key}.json"
+    assert bundled.exists(), f"no bundled extract named {key}.json"
+    assert bundled.read_bytes() == FIXTURE.read_bytes(), (
+        "the shipped offline extract and the test fixture have drifted apart -- "
+        "re-run scripts/capture_osm_fixtures.py, which writes both from one capture"
     )
 
 

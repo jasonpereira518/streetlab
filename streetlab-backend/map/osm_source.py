@@ -353,6 +353,9 @@ class OsmSceneSource:
     def build_location(self, query: str, radius_m: float | None = None) -> BuiltScene:
         """Geocode an arbitrary address, build it, and add it to the catalog.
 
+        Catalogued only if the build SUCCEEDS -- a failed geocode or fetch
+        leaves the catalog exactly as it found it (see the rollback below).
+
         Runs on the executor, never the sim thread. `self._locations` is
         mutated here and read by `scenarios()`/`_find()` on the sim thread,
         so both go through `_lock` — a torn read would hand the sidebar a
@@ -385,6 +388,7 @@ class OsmSceneSource:
             exact = next((s for s in self._locations if s.query == query), None)
             if exact is not None:
                 spec = exact
+                appended = False
             else:
                 base_id = f"osm-{_slug(query)}"
                 by_id = {s.id: s for s in self._locations}
@@ -399,7 +403,29 @@ class OsmSceneSource:
                     self._locations = self._locations + (spec,)
                 else:
                     spec = self._disambiguate(base_id, query, radius_m, by_id)
-        return self.build(spec.id)
+                appended = True
+        try:
+            return self.build(spec.id)
+        except Exception:
+            # A build that never succeeded must leave NO trace in the catalog.
+            # The append above has to happen before the build -- it is what
+            # reserves the id under the same lock acquisition that chose it, so
+            # two racing callers cannot both decide "not yet known" -- which
+            # means a failed geocode or Overpass fetch would otherwise strand a
+            # permanent entry advertising "Real street geometry around
+            # <nonexistent place>" in every client's sidebar for the life of the
+            # process. So the reservation is rolled back here instead.
+            #
+            # Only a spec THIS call appended is removed: an exact-query repeat
+            # of an already-known location reuses that entry, and a transient
+            # network failure on the repeat must not evict the original.
+            # Identity, not equality -- `_disambiguate` mints ids precisely so a
+            # slug collision between two different queries gets its own slot,
+            # and removing by value could drop the wrong one.
+            if appended:
+                with self._lock:
+                    self._locations = tuple(s for s in self._locations if s is not spec)
+            raise
 
     def _disambiguate(
         self,

@@ -94,7 +94,18 @@ fn spawn_sidecar(app: &AppHandle) {
             }
         };
 
-        let (mut events, child) = match command.args(["serve", "--port", "0"]).spawn() {
+        // `--source osm` is load-bearing, not a preference: the CLI defaults to
+        // `synthetic`, so omitting it shipped an app that could only ever drive
+        // the 6-road placeholder grid — the address search box, real OSM
+        // streets and the bundled offline extract were all unreachable in the
+        // packaged build even though every one of them was implemented and
+        // tested. The bundled extract is what keeps this safe with no network:
+        // the default Nob Hill scene resolves from `_MEIPASS/bundled` without
+        // touching Nominatim or Overpass.
+        let (mut events, child) = match command
+            .args(["serve", "--port", "0", "--source", "osm"])
+            .spawn()
+        {
             Ok(pair) => pair,
             Err(err) => {
                 let _ = tx.send(Some(Err(format!("failed to spawn the sidecar: {err}"))));
