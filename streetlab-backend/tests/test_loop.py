@@ -1089,3 +1089,61 @@ def test_sim_step_stays_well_inside_the_60_hz_budget_on_a_real_osm_scene():
     p50 = samples[len(samples) // 2]
     p95 = samples[int(len(samples) * 0.95)]
     assert p95 < 8.0, f"sim_step p95 {p95:.2f} ms (p50 {p50:.2f} ms) exceeds half the 60 Hz budget"
+
+
+def _drive_and_measure(sim, frames: int) -> list[float]:
+    """Absolute lateral offsets from the centreline over `frames` steps."""
+    route = sim.scene.ego_route
+    out = []
+    for _ in range(frames):
+        sim.step()
+        out.append(abs(route.lateral_offset((sim.world.ego.x, sim.world.ego.y))))
+    return out
+
+
+def _osm_sim():
+    import tempfile
+
+    payload = json.loads(OVERPASS_FIXTURE.read_text())
+
+    class _Replay:
+        def fetch(self, query):
+            return payload
+
+    src = OsmSceneSource(
+        _StubGeocode(), OverpassClient(_Replay(), DiskCache(Path(tempfile.mkdtemp())))
+    )
+    return Simulation(src, "osm-nob-hill", seed=1)
+
+
+def test_the_ego_spawns_pointing_along_its_route_not_against_it():
+    """The car used to spawn 160 degrees off its own route on the real Nob Hill
+    extract, because the finished geometry began with coincident vertices and
+    `heading_at(0.0)` returned the noise direction of a sub-micron segment. It
+    then U-turned onto the correct heading, swinging 8.07 m off the centreline
+    -- which for a long time read as "the planner is bad at corners".
+
+    Asserted against the direction the route actually leaves in, so it stays
+    honest if the route or its start point ever changes.
+    """
+    sim = _osm_sim()
+    route = sim.scene.ego_route
+    p0 = route.point_at(0.0)
+    p1 = route.point_at(1.0)
+    forward = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+    error = abs(math.remainder(sim.world.ego.heading - forward, math.tau))
+    assert error < math.radians(5), (
+        f"ego spawns {math.degrees(error):.1f} deg off its route direction"
+    )
+
+
+def test_the_ego_holds_its_lane_around_the_real_route():
+    """Driving quality as a number, on real geometry rather than the synthetic
+    grid. Before the spawn-heading fix this peaked at 8.07 m -- four and a half
+    lane widths, entirely off the road -- so a threshold of 3 m catches that
+    regression class with room for the ~1.9 m of genuine corner-cutting the
+    pure-pursuit lookahead still produces on the tightest bends.
+    """
+    offsets = _drive_and_measure(_osm_sim(), 3600)
+    worst = max(offsets)
+    assert worst < 3.0, f"peak lateral offset {worst:.2f} m"

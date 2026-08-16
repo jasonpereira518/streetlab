@@ -400,7 +400,49 @@ def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
 
     lane = Route(deduped, closed=True).offset(-EGO_LANE_INSET)
     route = lane.fillet(radius_m=TURN_RADIUS_M)
-    return remove_self_intersections(route)
+    return _drop_micro_segments(remove_self_intersections(route))
+
+
+#: Shortest segment the finished ego route may contain. Well under a
+#: centimetre of real map detail, and four orders of magnitude above the
+#: ~50 micron stitches the offset/fillet/splice pipeline leaves behind.
+_MIN_ROUTE_SEGMENT_M = 1e-3
+
+
+def _drop_micro_segments(route: Route) -> Route:
+    """Remove segments too short to carry a usable direction.
+
+    `offset` -> `fillet` -> `remove_self_intersections` leaves a cluster of
+    ~50 micron segments where the loop closes on itself, and those stitches
+    point BACKWARDS along the route. Nothing notices until something asks for
+    a direction there: `heading_at(0.0)` returned 169.33 degrees on the real
+    Nob Hill route where the route actually leaves at 9.27, so the ego spawned
+    pointing essentially backwards and U-turned onto its own path on every
+    reset -- swinging 8.07 m off the centreline, which read for a long time as
+    "the planner is bad at corners". One millimetre further along
+    (`heading_at(0.001)`) the answer was already correct.
+
+    Applied to the FINISHED route only, deliberately not inside
+    `Route.__post_init__`: that constructor also runs for every intermediate
+    Route inside `offset`/`fillet`/`remove_self_intersections`, so cleaning
+    there perturbs the geometry those stages produce and changes the resulting
+    path wholesale. Cleaning once, at the end, changes only what it must.
+    """
+    points = [route.points[0]]
+    for p in route.points[1:]:
+        if math.dist(p, points[-1]) > _MIN_ROUTE_SEGMENT_M:
+            points.append(p)
+    # A closed route already closes onto its first point; a trailing vertex
+    # sitting on top of it is the same degenerate stitch, wrapped.
+    while (
+        route.closed
+        and len(points) > 3
+        and math.dist(points[-1], points[0]) <= _MIN_ROUTE_SEGMENT_M
+    ):
+        points.pop()
+    if len(points) < 3:
+        raise NoDrivableRoad("route degenerated to fewer than three points")
+    return Route(points, closed=route.closed)
 
 
 # --------------------------------------------------------------------------- #

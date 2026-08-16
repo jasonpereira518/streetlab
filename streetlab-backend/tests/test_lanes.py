@@ -1,10 +1,17 @@
 import json
+import math
 import time
 from pathlib import Path
 
 import pytest
 
-from map.lanes import build_roads, drivable_ways, speed_limits_along
+from map.lanes import (
+    build_roads,
+    build_route_graph,
+    drivable_ways,
+    select_ego_route,
+    speed_limits_along,
+)
 from map.osm_model import parse_overpass
 from map.projection import LatLon, to_latlon
 from schema import Road
@@ -198,3 +205,41 @@ def test_speed_limits_along_returns_one_entry_per_segment_including_the_closing_
     assert len(limits) == len(route.points)
     # Round-trips into a Route, which validates the count independently.
     Route(route.points, closed=True, segment_limits=limits)
+
+
+def test_the_finished_ego_route_has_no_micro_segments():
+    """The bug this guards, found by driving the real Nob Hill route.
+
+    `offset` -> `fillet` -> `remove_self_intersections` leaves a cluster of
+    ~50 micron segments where the loop closes on itself, and those closing
+    stitches point BACKWARDS along the route. Nothing notices until something
+    asks for a direction there -- and `Simulation._reset_dynamics` does, every
+    single reset, via `heading_at(0.0)`.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    graph = parse_overpass(payload)
+    origin = LatLon(37.7945, -122.4156)
+    route = select_ego_route(build_route_graph(graph, origin), (0.0, 0.0))
+
+    ring = route.points + [route.points[0]]
+    shortest = min(math.dist(a, b) for a, b in zip(ring, ring[1:]))
+    assert shortest > 1e-3, f"shortest segment is {shortest * 1e6:.1f} microns"
+
+
+def test_the_ego_route_leaves_in_the_direction_it_reports():
+    """`heading_at(0.0)` answered 169.33 degrees where the route actually
+    leaves at 9.25 -- a 160 degree error -- because it read the direction of
+    one of those backwards micro-stitches. One millimetre further along the
+    answer was already right, which is what made this invisible to every test
+    that sampled the route anywhere but its exact start.
+    """
+    payload = json.loads(FIXTURE.read_text())
+    graph = parse_overpass(payload)
+    origin = LatLon(37.7945, -122.4156)
+    route = select_ego_route(build_route_graph(graph, origin), (0.0, 0.0))
+
+    p0 = route.point_at(0.0)
+    p1 = route.point_at(1.0)
+    forward = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+    error = abs(math.remainder(route.heading_at(0.0) - forward, math.tau))
+    assert error < math.radians(5), f"start heading is {math.degrees(error):.1f} deg out"
