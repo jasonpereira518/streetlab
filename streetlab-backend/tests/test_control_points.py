@@ -104,3 +104,22 @@ def test_the_merge_window_closes_across_the_wrap_of_a_closed_route():
         ],
     )
     assert len(points) == 1
+
+
+def test_the_wrap_merge_still_closes_when_a_middle_point_keeps_them_apart():
+    """With a third point between them by arc length, `first` and `second`
+    are no longer sequential neighbours in sorted order -- the in-loop scan
+    never compares them directly. Only the post-loop wrap check, which
+    compares `kept[-1]` against `kept[0]` regardless of what sits between
+    them, can still catch that they are close across the s=0 seam.
+    """
+    loop = Route([(0.0, 0.0), (50.0, 0.0), (50.0, 50.0), (0.0, 50.0)], closed=True)
+    points = project_control_points(
+        loop,
+        [
+            ("first", "signal", (1.0, 0.0), 0.0),
+            ("middle", "signal", (50.0, 50.0), 0.0),
+            ("second", "signal", (0.0, 2.0), 0.0),
+        ],
+    )
+    assert [p.id for p in points] == ["first", "middle"]
