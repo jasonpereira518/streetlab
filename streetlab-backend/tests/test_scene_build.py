@@ -172,8 +172,20 @@ def test_synthetic_control_points_are_ordered_and_distinct():
 def test_only_the_head_facing_the_ego_becomes_a_control_point():
     """Four heads govern one junction. Taking all of them would put the ego in
     front of two conflicting phase groups at the same stop line and strand it.
+
+    A one-per-junction COUNT is not enough to prove this: every head at one
+    junction is projected from the same candidate position (the junction
+    centre), so they always tie on arc length and `project_control_points`'s
+    merge window collapses them to one regardless of which heads passed the
+    facing filter, or whether it ran at all. What actually matters is
+    IDENTITY -- the survivor's direction suffix (`_n`/`_s`/`_e`/`_w`) must be
+    the one governing the direction the ego is really travelling at its stop
+    line, because `_n`/`_s` and `_e`/`_w` are opposite phase groups
+    (`_signal_groups`): the wrong survivor means the ego obeys red on its own
+    green.
     """
     scene = SyntheticGrid().build("grid-loop")
+    route = scene.ego_route
     ids = {cp.id for cp in scene.control_points}
     by_junction = {}
     for cp_id in ids:
@@ -184,6 +196,22 @@ def test_only_the_head_facing_the_ego_becomes_a_control_point():
     assert by_junction, "the loop passes no signalised junction"
     for junction, heads in by_junction.items():
         assert len(heads) == 1, f"{junction} contributed {heads}"
+
+    # The direction of travel each suffix governs -- the same convention
+    # `_signal_heads` encodes via `heading = travel + pi` (the lamp faces
+    # back at the traffic it governs).
+    travel_for_suffix = {"n": math.pi / 2, "s": -math.pi / 2, "e": 0.0, "w": math.pi}
+    for cp in scene.control_points:
+        if cp.kind != "signal":
+            continue
+        suffix = cp.id.rsplit("_", 1)[1]
+        travel = travel_for_suffix[suffix]
+        diff = abs(math.remainder(route.heading_at(cp.s) - travel, math.tau))
+        assert diff < math.radians(45.0), (
+            f"{cp.id} governs the wrong direction: the route heads "
+            f"{math.degrees(route.heading_at(cp.s)):.1f} deg at its stop line, "
+            f"which does not match {suffix}'s {math.degrees(travel):.1f} deg"
+        )
 
 
 def test_every_synthetic_scenario_builds_control_points():

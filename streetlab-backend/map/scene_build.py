@@ -454,9 +454,21 @@ class SyntheticGrid:
     def _faces_the_route(
         ego_route: Route, lamp_heading: float, centre: tuple[float, float]
     ) -> bool:
-        s = ego_route.project(centre)
+        """True if the lamp at `centre` faces traffic travelling the way the
+        ego does, evaluated where the ego actually has to obey it.
+
+        The junction centre itself sits mid-turn on a filleted corner -- its
+        route heading is neither the entry nor the exit street's, so no head
+        matches it well and more than one can pass a generous tolerance. The
+        STOP LINE, `STOP_LINE_SETBACK_M` back from the centre, is where the
+        car is still on its approach leg and the route heading is the real
+        street heading -- the same point `project_control_points` measures
+        `s` from. Mirroring that here is what makes this an exact match
+        rather than a coin flip between two heads that share a phase group.
+        """
+        stop_s = ego_route.normalise(ego_route.project(centre) - STOP_LINE_SETBACK_M)
         travel = lamp_heading + math.pi
-        return abs(math.remainder(ego_route.heading_at(s) - travel, math.tau)) < HEAD_TOL_RAD
+        return abs(math.remainder(ego_route.heading_at(stop_s) - travel, math.tau)) < HEAD_TOL_RAD
 
     def _crosswalks(self) -> list[Crosswalk]:
         walks = []
