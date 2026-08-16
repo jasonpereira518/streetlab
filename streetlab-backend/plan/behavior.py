@@ -89,15 +89,36 @@ STOP_MARGIN_M = 6.5
 #: `distance <= STOP_ZONE_M`, never enters STOP, and never releases on green
 #: -- the car sits at the margin point forever, which is worse than the
 #: overshoot this was meant to fix. On `grid-loop`'s straights the rest gap
-#: measured up to 3.9 m short; on the real, curved, filleted Nob Hill route
-#: (`tests/fixtures/overpass_nob_hill.json`, two close-set stop signs at
-#: s=79.99 and s=88.40) it measured 4.69 m short and stalled forever at
-#: 4.5 m -- geometry the synthetic straight does not exercise. 6.0 m clears
-#: that with a further ~1.3 m of headroom; both this and `STOP_MARGIN_M`
-#: only gate a car that is already essentially stopped (`STOPPED_MPS`), so
-#: widening this cannot cause a moving car to be mistaken for a stopped one.
-STOP_ZONE_M = 6.0
+#: measured up to 3.9 m short (approaching from far away, at speed); on the
+#: real, curved, filleted Nob Hill route (`tests/fixtures/overpass_nob_hill.json`,
+#: two close-set stop signs at s=79.99 and s=88.40) it measured 4.69 m short.
+#:
+#: MUST be `>= STOP_MARGIN_M` -- checked below, not just documented here.
+#: The ceiling is zero across the *entire* interval `distance <= STOP_MARGIN_M`
+#: (see that constant), not only at its far edge, so a car can legitimately
+#: come to rest ANYWHERE in `[0, STOP_MARGIN_M]` -- not only near the worst
+#: case measured at speed. A slow, already-crawling approach (e.g. released
+#: from a closely-spaced preceding control point, or slowed by a curvature or
+#: lead-vehicle cap as a new target enters `APPROACH_M`) travels only
+#: `~v / SPEED_GAIN` while stopping and can settle just past `STOP_MARGIN_M`'s
+#: far edge without ever getting as far as the high-speed worst case. A
+#: `STOP_ZONE_M` narrower than `STOP_MARGIN_M` leaves a band between them
+#: where the car is stopped but the FSM does not recognise it as stopped:
+#: `_must_stop` returns `True` unconditionally for red, so it parks in
+#: APPROACH forever and never releases to CREEP, even on green. This was
+#: caught by review, not by the property test below, which only exercises
+#: >= 4 m/s approaches -- see `test_a_slow_approach_still_reaches_stop_and_releases`
+#: in `tests/test_control.py` for the low-speed case that found it.
+STOP_ZONE_M = 7.0
 STOPPED_MPS = 0.3
+
+assert STOP_ZONE_M >= STOP_MARGIN_M, (
+    "STOP_ZONE_M must cover the whole interval the ceiling is zero across "
+    "(see STOP_MARGIN_M's docstring) -- otherwise a car can come to rest "
+    "just past STOP_MARGIN_M's edge without STOP_ZONE_M reaching it, the "
+    "FSM never sees itself as stopped, and it stalls in APPROACH forever, "
+    "even on green."
+)
 
 #: How long a stop sign is honoured at rest.
 STOP_DWELL_S = 1.0

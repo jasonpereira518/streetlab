@@ -11,7 +11,7 @@ import math
 import pytest
 
 from map.scene_build import SyntheticGrid
-from plan.behavior import STOP_ZONE_M
+from plan.behavior import STOP_MARGIN_M, STOP_ZONE_M, BehaviorState
 from plan.control import CenterlineFollower, PlanLimits, Planner
 from schema import Plan
 from sim.vehicle import BicycleModel, VehicleState
@@ -303,7 +303,18 @@ def test_creeping_across_a_junction_emits_the_yield_maneuver(built, limits):
 
 
 def test_the_ego_comes_to_rest_at_a_red_light(built, limits):
-    """Integration: tracker plus bicycle model, braking for a line 60 m out."""
+    """Integration: tracker plus bicycle model, braking for a line 60 m out.
+
+    No crossing is tolerated (review finding, fix round 2): this originally
+    allowed up to 1 m of crossing (`overshoot > -1.0`), while
+    `test_the_ego_rests_before_the_line_across_approach_speeds` below
+    requires none (`rest_gap > 0.0`) -- two different bars for the same
+    behaviour in one file, and Task 8 counts any crossing of a red stop
+    line as a violation, so the looser one was simply wrong. Tightened to
+    match; `STOP_MARGIN_M` gives this room to spare at this scenario's
+    11.176 m/s (see that constant's docstring for the margin measured
+    across the full approach-speed range).
+    """
     route = built.ego_route
     s0 = straight_s(route)
     line_s = s0 + 60.0
@@ -322,7 +333,7 @@ def test_the_ego_comes_to_rest_at_a_red_light(built, limits):
 
     overshoot = route.signed_gap(route.project((state.x, state.y)), line_s)
     assert state.speed_mps < 0.2, "ego never stopped"
-    assert overshoot > -1.0, f"ego overshot the stop line by {-overshoot:.2f} m"
+    assert overshoot > 0.0, f"ego crossed the stop line by {-overshoot:.2f} m"
 
 
 @pytest.mark.parametrize("approach_mps", [4.0, 6.0, 8.0, 11.176, 15.0, 18.0])
@@ -362,6 +373,86 @@ def test_the_ego_rests_before_the_line_across_approach_speeds(built, approach_mp
         f"ego stopped {rest_gap:.2f} m short of the line, outside STOP_ZONE_M "
         f"({STOP_ZONE_M} m) -- it would never see itself as stopped"
     )
+
+
+def test_stop_zone_covers_the_whole_margin_interval():
+    """Pin the *relationship*, not either constant's value (review finding).
+
+    The ceiling is zero across the entire interval `distance <= STOP_MARGIN_M`
+    (see that constant's docstring in `plan/behavior.py`), not only at its
+    far edge -- so a car can legitimately come to rest anywhere in
+    `[0, STOP_MARGIN_M]`, including much closer than the high-speed worst
+    case `test_the_ego_rests_before_the_line_across_approach_speeds` above
+    measures. If `STOP_ZONE_M` were ever narrower than `STOP_MARGIN_M`,
+    there would be a band where the car is stopped but the FSM does not
+    recognise it as stopped, and it parks in APPROACH forever, even on
+    green -- see `test_a_slow_approach_still_reaches_stop_and_releases`
+    below for the behavioural symptom. `plan/behavior.py` also asserts this
+    at import time; this test exists so CI fails on the actual assertion
+    text if that ever regresses, not just on an import-time crash.
+    """
+    assert STOP_ZONE_M >= STOP_MARGIN_M, (
+        f"STOP_ZONE_M ({STOP_ZONE_M}) must be >= STOP_MARGIN_M "
+        f"({STOP_MARGIN_M}) or a car can rest in the gap between them "
+        "without the FSM ever recognising it as stopped"
+    )
+
+
+@pytest.mark.parametrize(
+    "approach_mps,start_gap_m",
+    [
+        (0.10, 6.15),
+        (0.10, 6.45),
+        (0.20, 6.25),
+        (0.30, 6.35),
+        (0.40, 6.45),
+    ],
+)
+def test_a_slow_approach_still_reaches_stop_and_releases(built, approach_mps, start_gap_m):
+    """A car already crawling when a control point enters STOP_MARGIN_M's
+    zero-ceiling interval must still register as stopped and release on
+    green -- not park in APPROACH forever (review finding).
+
+    `test_the_ego_rests_before_the_line_across_approach_speeds` above only
+    exercises approaches at >= 4 m/s braking in from far away, which always
+    travel far enough while stopping to land inside `STOP_ZONE_M` regardless
+    of its width -- `accel = SPEED_GAIN * (0 - v)` means a car travels only
+    roughly `v / SPEED_GAIN` while coming to rest, so a slow arrival (e.g.
+    released from a closely-spaced preceding control point, as on the real
+    Nob Hill route's two stop signs at s=79.99 and s=88.40 -- see the Task 7
+    report) can settle just past `STOP_MARGIN_M`'s far edge without ever
+    reaching the high-speed worst case. These exact (speed, start gap) pairs
+    were confirmed to fail with `STOP_ZONE_M = 6.0` before the fix -- the
+    ego stopped but never left `BehaviorState.APPROACH`, and no green light
+    ever released it.
+    """
+    route = built.ego_route
+    limits = PlanLimits(speed_limit_mps=max(approach_mps, 1.0), speed_cap_mps=100.0)
+    s0 = straight_s(route)
+    line_s = s0 + start_gap_m
+    planner = CenterlineFollower()
+    model = BicycleModel()
+    state = start_state(route, speed=approach_mps, s=s0)
+
+    for _ in range(60 * 10):
+        ctx = light_context(route, line_s, "red")
+        result = planner.plan(state, route, [], limits, ctx)
+        state = model.step(
+            state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60
+        )
+
+    assert planner.fsm.state is BehaviorState.STOP, (
+        f"ego never registered as stopped; fsm state is {planner.fsm.state}"
+    )
+
+    for _ in range(60 * 5):
+        ctx = light_context(route, line_s, "green")
+        result = planner.plan(state, route, [], limits, ctx)
+        state = model.step(
+            state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60
+        )
+
+    assert state.speed_mps > 0.5, "ego never released on green -- stalled in APPROACH forever"
 
 
 def test_the_ego_does_not_slow_for_a_green_light(built, limits):
