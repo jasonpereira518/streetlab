@@ -19,7 +19,14 @@ from shapely.geometry import LinearRing, LineString
 
 from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import is_oneway, lane_counts, road_class, speed_limit_mps, street_name
+from map.tags import (
+    is_oneway,
+    lane_counts,
+    oneway_direction,
+    road_class,
+    speed_limit_mps,
+    street_name,
+)
 from schema import Road
 from sim.route import Route
 
@@ -45,9 +52,71 @@ SIMPLIFY_TOLERANCE_M = 1.0
 # doesn't respect that quantisation floor.
 _MIN_ROAD_EXTENT_M = 1e-6
 
+# Higher is better. Two callers share this: the route search prefers bigger
+# roads because they drive better, and `node_axes` prefers them because a
+# signal at an arterial/side-street junction belongs to the arterial.
+_CLASS_RANK = {"arterial": 3, "collector": 2, "residential": 1, "service": 0}
+
 
 def drivable_ways(graph: OsmGraph) -> list[OsmWay]:
     return [w for w in graph.ways if road_class(w.tags) is not None]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeAxis:
+    """Which drivable way a node sits on, and which way traffic runs there."""
+
+    way: OsmWay
+    # Heading of travel at the node, radians, +x east / +y north.
+    travel_heading: float
+
+
+def node_axes(graph: OsmGraph, origin: LatLon) -> dict[int, NodeAxis]:
+    """Every drivable way's node, mapped to the direction traffic travels there.
+
+    This is what orients scene furniture. OSM tags a traffic signal, a stop
+    sign or a crossing as a bare node with no direction of its own, so the only
+    honest source for which way the thing faces is the geometry of the road it
+    sits on.
+
+    Two things the data cannot tell us, resolved here deterministically rather
+    than left to chance:
+
+    - A node can sit on several drivable ways -- measured on the Nob Hill
+      fixture, 34 of its 58 `highway=traffic_signals` nodes are on two to five
+      of them, because a signal node *is* the intersection node. The way with
+      the highest `_CLASS_RANK` wins, tie-broken on the lowest way id, so a
+      signal at an arterial/side-street junction aligns with the arterial and
+      the same extract builds identically every run. Way declaration order
+      never decides it.
+    - On a two-way street a single node governs both directions at once. Where
+      `oneway` says which way traffic runs, that is used; otherwise travel is
+      taken to run along the way's drawn direction. That choice is arbitrary --
+      OSM genuinely does not distinguish the two approaches from one node --
+      but it is stable, and it is the difference between a sign that reads as
+      street-aligned and one that does not.
+    """
+    axes: dict[int, NodeAxis] = {}
+    # Rank first so the best way for a node is simply the last one to write it.
+    ranked = sorted(
+        drivable_ways(graph),
+        key=lambda w: (_CLASS_RANK.get(road_class(w.tags) or "service", 0), -w.id),
+    )
+    for way in ranked:
+        reverse = oneway_direction(way.tags) < 0
+        resolvable = [nid for nid in way.node_ids if nid in graph.nodes]
+        points = [to_local(graph.nodes[n].lat, graph.nodes[n].lon, origin) for n in resolvable]
+        for i, nid in enumerate(resolvable):
+            # Central difference across the node; a single segment at an end.
+            before = points[i - 1] if i > 0 else points[i]
+            after = points[i + 1] if i + 1 < len(points) else points[i]
+            dx, dy = after[0] - before[0], after[1] - before[1]
+            if dx == 0.0 and dy == 0.0:
+                continue
+            if reverse:
+                dx, dy = -dx, -dy
+            axes[nid] = NodeAxis(way=way, travel_heading=math.atan2(dy, dx))
+    return axes
 
 
 def _local_points(graph: OsmGraph, way: OsmWay, origin: LatLon) -> list[tuple[float, float]]:
@@ -121,10 +190,6 @@ EGO_LANE_INSET = LANE_W * 0.5
 # A dense downtown extract can have thousands of junctions; the cycle search is
 # exponential in the worst case, so it is bounded rather than trusted.
 _MAX_EXPANSIONS = 20000
-
-# Higher is better: the search prefers bigger roads, which drive better.
-_CLASS_RANK = {"arterial": 3, "collector": 2, "residential": 1, "service": 0}
-
 
 class NoDrivableRoad(RuntimeError):
     """The extract contains nothing a car could drive."""

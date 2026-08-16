@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import assert_heading
+
 from map.features import (
     _TREE_MIN_SPACING_M,
     _tagged_nodes,
@@ -396,3 +398,109 @@ def test_trees_are_deterministic_across_runs(graph):
     first = [t.model_dump() for t in build_trees(graph, ORIGIN)]
     second = [t.model_dump() for t in build_trees(graph, ORIGIN)]
     assert first == second
+
+
+# ------------------------------------------------- prop headings from the map
+
+# Nob Hill's grid is rotated ~9 degrees off true north, so its "north-south"
+# streets run at about -81 degrees and its "east-west" ones at about -171.
+# These are real fixture nodes, checked against the extract:
+JONES_ST_SIGNAL = 65295328  # Jones Street, one-way, travel -81.3 deg
+CALIFORNIA_ST_SIGNAL = 65295314  # California Street, two-way, travel -171.0 deg
+
+
+def _prop_graph(way_tags, node_tags, way_nodes=(1, 2, 3)):
+    """One straight west-to-east way with a tagged node at its middle."""
+    step = 1e-4
+    elements = [
+        {"type": "node", "id": 1, "lat": ORIGIN.lat, "lon": ORIGIN.lon - step},
+        {"type": "node", "id": 2, "lat": ORIGIN.lat, "lon": ORIGIN.lon, "tags": node_tags},
+        {"type": "node", "id": 3, "lat": ORIGIN.lat, "lon": ORIGIN.lon + step},
+        {"type": "way", "id": 10, "nodes": list(way_nodes), "tags": way_tags},
+    ]
+    return parse_overpass({"elements": elements})
+
+
+def test_traffic_light_faces_back_at_the_traffic_it_governs():
+    graph = _prop_graph({"highway": "residential"}, {"highway": "traffic_signals"})
+    # Traffic runs due east along the way, so the lamp looks due west at it --
+    # the same convention SyntheticGrid._traffic_lights uses.
+    assert_heading(build_traffic_lights(graph, ORIGIN)[0].heading, math.pi)
+
+
+def test_traffic_light_on_a_north_south_street_does_not_face_east(graph):
+    """The defect this replaces: every OSM light shipped with heading 0."""
+    light = next(
+        light for light in build_traffic_lights(graph, ORIGIN)
+        if light.id == f"osm_tl_{JONES_ST_SIGNAL}"
+    )
+    # Jones Street runs roughly north-south; the lamp must lie along it.
+    assert_heading(light.heading, math.radians(98.7), tol=math.radians(1.0))
+
+
+def test_traffic_lights_no_longer_all_share_one_heading(graph):
+    lights = build_traffic_lights(graph, ORIGIN)
+    assert len(lights) == 58
+    assert len({round(light.heading, 3) for light in lights}) > 1
+
+
+def test_traffic_light_gets_a_mast_arm_only_on_a_multi_lane_road():
+    single = _prop_graph({"highway": "residential"}, {"highway": "traffic_signals"})
+    assert build_traffic_lights(single, ORIGIN)[0].mast_arm_m == 0.0
+
+    multi = _prop_graph(
+        {"highway": "primary", "lanes": "4"}, {"highway": "traffic_signals"}
+    )
+    assert build_traffic_lights(multi, ORIGIN)[0].mast_arm_m == 5.5
+
+
+def test_traffic_light_off_the_drivable_network_keeps_a_neutral_heading():
+    graph = _prop_graph({"highway": "footway"}, {"highway": "traffic_signals"})
+    light = build_traffic_lights(graph, ORIGIN)[0]
+    assert light.heading == 0.0
+    assert light.mast_arm_m == 0.0
+
+
+def test_stop_sign_faces_back_at_the_traffic_it_governs():
+    graph = _prop_graph({"highway": "residential"}, {"highway": "stop"})
+    assert_heading(build_stop_signs(graph, ORIGIN)[0].heading, math.pi)
+
+
+def test_stop_signs_no_longer_all_share_one_heading(graph):
+    signs = build_stop_signs(graph, ORIGIN)
+    assert len(signs) == 145
+    assert len({round(s.heading, 3) for s in signs}) > 1
+
+
+def test_stop_sign_off_the_drivable_network_keeps_a_neutral_heading():
+    graph = _prop_graph({"highway": "footway"}, {"highway": "stop"})
+    assert build_stop_signs(graph, ORIGIN)[0].heading == 0.0
+
+
+def test_crosswalk_runs_across_the_street_not_along_it():
+    graph = _prop_graph({"highway": "residential"}, {"highway": "crossing"})
+    # Traffic runs due east; pedestrians walk across it, so due north.
+    # `schema.Crosswalk.heading` is the direction pedestrians walk.
+    assert_heading(build_crosswalks(graph, ORIGIN)[0].heading, math.pi / 2)
+
+
+def test_crosswalk_spans_the_carriageway_it_crosses():
+    """`length_m` is documented as the carriageway width being crossed."""
+    one_each_way = _prop_graph({"highway": "residential"}, {"highway": "crossing"})
+    assert build_crosswalks(one_each_way, ORIGIN)[0].length_m == pytest.approx(2 * LANE_W)
+
+    four_lanes = _prop_graph({"highway": "primary", "lanes": "4"}, {"highway": "crossing"})
+    assert build_crosswalks(four_lanes, ORIGIN)[0].length_m == pytest.approx(4 * LANE_W)
+
+
+def test_crosswalks_no_longer_all_share_one_heading(graph):
+    walks = build_crosswalks(graph, ORIGIN)
+    assert len(walks) == 370
+    assert len({round(w.heading, 3) for w in walks}) > 1
+
+
+def test_crosswalk_off_the_drivable_network_keeps_its_defaults(graph):
+    """Three fixture crossings sit on footway-only ways with no road under them."""
+    off_network = [w for w in build_crosswalks(graph, ORIGIN) if w.heading == 0.0]
+    assert len(off_network) == 3
+    assert all(w.length_m == pytest.approx(2 * LANE_W) for w in off_network)

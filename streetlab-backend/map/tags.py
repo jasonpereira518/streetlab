@@ -52,6 +52,20 @@ def is_oneway(tags: dict[str, str]) -> bool:
     return tags.get("oneway", "no") in ("yes", "true", "1", "-1")
 
 
+def oneway_direction(tags: dict[str, str]) -> int:
+    """Which way traffic runs relative to the way's drawn direction.
+
+    +1 along it, -1 against it, 0 if the way is not one-way. `is_oneway`
+    deliberately collapses "-1" into a plain boolean, which is all its callers
+    (lane counts, carriageway width) need; anything that must orient a lamp or
+    a sign face needs the sign as well, so it asks here instead.
+    """
+    value = tags.get("oneway", "no")
+    if value in ("yes", "true", "1"):
+        return 1
+    return -1 if value == "-1" else 0
+
+
 def _positive_int(raw: str | None) -> int | None:
     if raw is None:
         return None

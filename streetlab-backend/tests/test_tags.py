@@ -3,6 +3,7 @@ import pytest
 from map.tags import (
     is_oneway,
     lane_counts,
+    oneway_direction,
     road_class,
     speed_limit_mps,
     street_name,
@@ -52,6 +53,22 @@ def test_oneway_variants(value, expected):
 
 def test_oneway_absent_is_false():
     assert is_oneway({}) is False
+
+
+@pytest.mark.parametrize("value", ["yes", "true", "1"])
+def test_oneway_direction_follows_the_drawn_direction(value):
+    assert oneway_direction({"oneway": value}) == 1
+
+
+def test_oneway_direction_reverses_for_minus_one():
+    # `is_oneway` collapses "-1" into plain "one-way"; the sign is the whole
+    # point here, since it decides which way a sign or lamp faces.
+    assert oneway_direction({"oneway": "-1"}) == -1
+
+
+@pytest.mark.parametrize("tags", [{}, {"oneway": "no"}, {"oneway": "wormhole"}])
+def test_oneway_direction_is_zero_when_the_way_is_not_one_way(tags):
+    assert oneway_direction(tags) == 0
 
 
 def test_explicit_lane_split_wins():

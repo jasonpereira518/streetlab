@@ -7,6 +7,7 @@ import pytest
 
 from map.lanes import (
     build_roads,
+    node_axes,
     build_route_graph,
     drivable_ways,
     select_ego_route,
@@ -243,3 +244,111 @@ def test_the_ego_route_leaves_in_the_direction_it_reports():
     forward = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
     error = abs(math.remainder(route.heading_at(0.0) - forward, math.tau))
     assert error < math.radians(5), f"start heading is {math.degrees(error):.1f} deg out"
+
+
+# ---------------------------------------------------------------- node axes
+
+
+def _assert_heading(actual, expected):
+    """Compare headings as angles, not as numbers.
+
+    `math.atan2` returns -pi for a due-west chord whose dy is negative zero and
+    +pi when it is positive zero -- the same direction, two representatives.
+    Every consumer of a heading feeds it to cos/sin, so the shortest angular
+    difference is the property that actually matters.
+    """
+    diff = (actual - expected + math.pi) % (2 * math.pi) - math.pi
+    assert diff == pytest.approx(0.0, abs=1e-6), f"{actual} is not {expected} (mod 2pi)"
+
+
+def _axis_graph(*ways):
+    """A tiny graph on a grid of nodes spaced ~11 m apart at ORIGIN.
+
+    Node ids are 1..9 laid out west-to-east on one row (ids 1-3), and
+    south-to-north on one column (ids 4-6), so a way through them has an
+    unambiguous compass direction to assert against.
+    """
+    step = 1e-4  # ~11 m of latitude, ~8.8 m of longitude at this origin
+    nodes = [
+        {"type": "node", "id": 1, "lat": ORIGIN.lat, "lon": ORIGIN.lon - step},
+        {"type": "node", "id": 2, "lat": ORIGIN.lat, "lon": ORIGIN.lon},
+        {"type": "node", "id": 3, "lat": ORIGIN.lat, "lon": ORIGIN.lon + step},
+        {"type": "node", "id": 4, "lat": ORIGIN.lat - step, "lon": ORIGIN.lon},
+        {"type": "node", "id": 5, "lat": ORIGIN.lat + step, "lon": ORIGIN.lon},
+    ]
+    return parse_overpass({"elements": nodes + list(ways)})
+
+
+def test_node_axis_runs_along_the_way_at_an_interior_node():
+    graph = _axis_graph(
+        {"type": "way", "id": 10, "nodes": [1, 2, 3], "tags": {"highway": "residential"}}
+    )
+    # Node 2 is interior to a west-to-east way, so travel heads due east.
+    _assert_heading(node_axes(graph, ORIGIN)[2].travel_heading, 0.0)
+
+
+def test_node_axis_at_an_endpoint_uses_its_one_adjacent_segment():
+    graph = _axis_graph(
+        {"type": "way", "id": 10, "nodes": [4, 2, 5], "tags": {"highway": "residential"}}
+    )
+    # A south-to-north way: both endpoints and the interior node head north.
+    axes = node_axes(graph, ORIGIN)
+    _assert_heading(axes[4].travel_heading, math.pi / 2)
+    _assert_heading(axes[5].travel_heading, math.pi / 2)
+
+
+def test_node_axis_reports_the_way_the_node_sits_on():
+    graph = _axis_graph(
+        {"type": "way", "id": 10, "nodes": [1, 2, 3], "tags": {"highway": "residential"}}
+    )
+    assert node_axes(graph, ORIGIN)[2].way.id == 10
+
+
+def test_nodes_on_no_drivable_way_have_no_axis():
+    graph = _axis_graph(
+        {"type": "way", "id": 10, "nodes": [1, 2, 3], "tags": {"highway": "footway"}}
+    )
+    assert node_axes(graph, ORIGIN) == {}
+
+
+def test_node_axis_follows_traffic_not_geometry_on_a_reversed_oneway():
+    graph = _axis_graph(
+        {"type": "way", "id": 10, "nodes": [1, 2, 3],
+         "tags": {"highway": "residential", "oneway": "-1"}}
+    )
+    # The way is drawn west-to-east but `oneway=-1` means traffic runs the
+    # other way, so travel heads due west.
+    _assert_heading(node_axes(graph, ORIGIN)[2].travel_heading, math.pi)
+
+
+def test_node_axis_on_a_forward_oneway_matches_the_drawn_direction():
+    graph = _axis_graph(
+        {"type": "way", "id": 10, "nodes": [1, 2, 3],
+         "tags": {"highway": "residential", "oneway": "yes"}}
+    )
+    _assert_heading(node_axes(graph, ORIGIN)[2].travel_heading, 0.0)
+
+
+def test_node_on_several_ways_takes_the_highest_road_class():
+    # Node 2 is shared by an east-west residential way and a north-south
+    # arterial. A signal there should align with the arterial.
+    ways = (
+        {"type": "way", "id": 10, "nodes": [1, 2, 3], "tags": {"highway": "residential"}},
+        {"type": "way", "id": 20, "nodes": [4, 2, 5], "tags": {"highway": "primary"}},
+    )
+    # Declaration order must not decide it -- the arterial wins either way.
+    for ordered in (ways, tuple(reversed(ways))):
+        axis = node_axes(_axis_graph(*ordered), ORIGIN)[2]
+        assert axis.way.id == 20
+        _assert_heading(axis.travel_heading, math.pi / 2)
+
+
+def test_node_on_several_ways_of_one_class_breaks_the_tie_on_way_id():
+    """Lowest way id wins, so the same extract builds identically every run."""
+    ways = (
+        {"type": "way", "id": 20, "nodes": [4, 2, 5], "tags": {"highway": "residential"}},
+        {"type": "way", "id": 10, "nodes": [1, 2, 3], "tags": {"highway": "residential"}},
+    )
+    # Declaration order must not matter; only the id does.
+    assert node_axes(_axis_graph(*ways), ORIGIN)[2].way.id == 10
+    assert node_axes(_axis_graph(*reversed(ways)), ORIGIN)[2].way.id == 10
