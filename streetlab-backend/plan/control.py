@@ -21,12 +21,27 @@ from schema import Detection, Plan
 from sim.route import Route
 from sim.vehicle import VehicleState
 
-# Pure-pursuit lookahead: a floor for low speed, growing with velocity. Kept
-# short relative to the corner radius, since steady-state cross-track error on a
-# curve grows with the square of the lookahead.
+# Pure-pursuit lookahead: a floor for low speed, growing with velocity.
+#
+# The floor is 4.5 m, and it was 3.5 m on the reasoning that steady-state
+# cross-track error on a constant-radius curve grows with the square of the
+# lookahead, so shorter must track tighter. Measured against the real Nob Hill
+# route, that reasoning inverts: sweeping the floor from 2.0 m to 5.5 m,
+# SHORTER was strictly worse (peak offset 3.02 m at a 2.0 m floor, 1.85 m at
+# 3.5 m, 1.32 m at 4.5 m) and it weaved slightly more, not less.
+#
+# The formula assumes a curve of one radius held for a while. A real route is
+# not that: `select_ego_route` fillets corners at TURN_RADIUS_M = 6 m, so a
+# bend is a short high-curvature transition between straights, and the
+# curvature speed cap has already slowed the car to ~3.5 m/s by the time it
+# arrives. A lookahead that reaches past the fillet averages over it; one that
+# sits inside it chases geometry the car cannot follow. Past 4.5 m the trade
+# reverses again as the aim point starts cutting corners -- a 5.5 m floor
+# tracks the real route marginally better still (1.22 m) but costs half again
+# as much error on the synthetic grid (0.53 m vs 0.38 m) and a worse p95.
 _LOOKAHEAD_BASE_M = 2.5
 _LOOKAHEAD_PER_MPS = 0.5
-_LOOKAHEAD_MIN_M = 3.5
+_LOOKAHEAD_MIN_M = 4.5
 _LOOKAHEAD_MAX_M = 10.0
 
 # Comfortable lateral acceleration through a bend, in m/s^2.

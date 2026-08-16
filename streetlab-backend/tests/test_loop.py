@@ -1139,11 +1139,29 @@ def test_the_ego_spawns_pointing_along_its_route_not_against_it():
 
 def test_the_ego_holds_its_lane_around_the_real_route():
     """Driving quality as a number, on real geometry rather than the synthetic
-    grid. Before the spawn-heading fix this peaked at 8.07 m -- four and a half
-    lane widths, entirely off the road -- so a threshold of 3 m catches that
-    regression class with room for the ~1.9 m of genuine corner-cutting the
-    pure-pursuit lookahead still produces on the tightest bends.
+    grid.
+
+    Two fixes moved this: the spawn-heading fix took the peak from 8.07 m
+    (four and a half lane widths, entirely off the road) to 1.94 m, and raising
+    the pure-pursuit lookahead floor to 4.5 m took it to 1.41 m over a full
+    lap, with nothing outside a 1.8 m lane half-width at all. 2.0 m holds that
+    ground while leaving room for the tightest fillets.
     """
     offsets = _drive_and_measure(_osm_sim(), 3600)
     worst = max(offsets)
-    assert worst < 3.0, f"peak lateral offset {worst:.2f} m"
+    assert worst < 2.0, f"peak lateral offset {worst:.2f} m"
+
+
+def test_the_ego_never_leaves_its_lane_on_the_real_route():
+    """The stronger claim the lookahead tuning bought, and the one a viewer
+    actually notices: not merely "bounded error" but never crossing out of the
+    lane at all. Measured 0 frames outside 1.8 m across a full 9000-frame lap;
+    asserted over 3600 frames to keep the suite quick.
+
+    Deliberately separate from the peak-offset test above: peak is a
+    worst-single-frame number that a brief overshoot can trip, while this is
+    about whether the car is ever visibly out of its lane.
+    """
+    offsets = _drive_and_measure(_osm_sim(), 3600)
+    out_of_lane = [o for o in offsets if o > 1.8]
+    assert not out_of_lane, f"{len(out_of_lane)} frames outside the lane, worst {max(offsets):.2f} m"
