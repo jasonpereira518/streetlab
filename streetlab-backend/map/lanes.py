@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import Sequence
 
 from shapely.geometry import LinearRing, LineString
 
@@ -21,7 +22,7 @@ from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import is_oneway, lane_counts, road_class, speed_limit_mps, street_name
 from schema import Road
-from sim.route import Route
+from sim.route import ControlPoint, Route
 
 log = logging.getLogger("streetlab.map")
 
@@ -734,3 +735,80 @@ def speed_limits_along(route: Route, roads: list[Road]) -> list[float] | None:
                 break
             limits[i] = first_real
     return limits
+
+
+# --------------------------------------------------------------------------- #
+# Control points along a finished route                                        #
+# --------------------------------------------------------------------------- #
+
+#: Beyond this, a prop is governing a different street. The ego route is offset
+#: half a lane from a centreline, so a signal head on the ego's own approach is
+#: metres away; 12 m clears the widest carriageway here without reaching the
+#: next block. Measured on Nob Hill: 4 lights and 12 stop signs fall inside
+#: this radius, and widening it to 30 m adds nothing.
+CONTROL_POINT_MATCH_M = 12.0
+
+#: Stop lines closer together than this are the same junction. Several OSM
+#: `highway=traffic_signals` nodes at one crossroads must become one stop line,
+#: not four consecutive halts.
+CONTROL_POINT_MERGE_M = 6.0
+
+
+def project_control_points(
+    route: Route,
+    candidates: Sequence[tuple[str, str, tuple[float, float], float]],
+    *,
+    match_m: float = CONTROL_POINT_MATCH_M,
+    merge_m: float = CONTROL_POINT_MERGE_M,
+) -> list[ControlPoint]:
+    """Turn scene props into the ordered stop lines the planner bisects.
+
+    Each candidate is `(id, kind, position, setback_m)`. `position` is the
+    place the stop line is measured FROM -- the junction centre, not the prop,
+    because a `SyntheticGrid` signal head sits a full carriageway beyond the
+    junction it governs while an OSM node sits on it. `setback_m` is how far
+    before that centre the car must halt.
+
+    Called once per scene build, never per tick: `Route.project` is an
+    unindexed O(n) scan costing 88.8 us on the 339-point Nob Hill route, so
+    projecting that scene's 203 props takes 16.7 ms -- twice the whole 8 ms
+    sim_step p95 budget.
+
+    Candidates are supplied by the scene source rather than filtered here.
+    `SyntheticGrid` models four directional heads per junction and knows which
+    one faces the ego; `OsmSceneSource` has one undirected node per junction
+    and `map/features.py` gives it `heading=0.0`, so it has nothing to filter
+    on. A single rule would either strand the synthetic car at four conflicting
+    heads or invent an approach direction the OSM data does not carry.
+    """
+    projected: list[ControlPoint] = []
+    for cp_id, kind, position, setback_m in candidates:
+        s_raw = route.project(position)
+        cx, cy = route.point_at(s_raw)
+        if math.dist(position, (cx, cy)) > match_m:
+            continue
+        projected.append(
+            ControlPoint(
+                id=cp_id,
+                kind=kind,
+                s=route.normalise(s_raw - setback_m),
+                position=position,
+            )
+        )
+
+    projected.sort(key=lambda cp: cp.s)
+
+    kept: list[ControlPoint] = []
+    for cp in projected:
+        if kept and abs(route.signed_gap(kept[-1].s, cp.s)) < merge_m:
+            continue
+        kept.append(cp)
+    # On a closed route the first and last entries are neighbours across the
+    # wrap, so the merge window has to close there too.
+    if (
+        route.closed
+        and len(kept) > 1
+        and abs(route.signed_gap(kept[-1].s, kept[0].s)) < merge_m
+    ):
+        kept.pop()
+    return kept

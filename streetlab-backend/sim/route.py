@@ -18,6 +18,29 @@ from dataclasses import dataclass, field
 Point = tuple[float, float]
 
 
+@dataclass(frozen=True, slots=True)
+class ControlPoint:
+    """A place on a route where the car may have to give way.
+
+    Lives here rather than in `map/` because it is exactly an arc-length
+    annotation on a `Route` -- the same (s) coordinate `project` returns -- and
+    both the map builders and the planner already import this module, so it
+    adds no dependency edge in either direction.
+
+    `s` is the STOP LINE, not the prop: a signal head or a stop sign sits at or
+    beyond the junction it governs, and the car has to halt clear of the
+    crossing carriageway. `map.lanes.project_control_points` applies the
+    setback.
+    """
+
+    id: str
+    #: "signal" or "stop_sign". A signal resolves its phase through
+    #: `PlanContext.signals[id]`; a stop sign always requires a stop.
+    kind: str
+    s: float
+    position: Point
+
+
 @dataclass(slots=True)
 class Route:
     """A polyline with cumulative arc length. Closed routes wrap; open ones clamp."""
