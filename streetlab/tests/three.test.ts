@@ -4,6 +4,8 @@
  * and visibility are all CPU-side, so they run headless and deterministically.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import * as THREE from 'three/webgpu';
 import { MockSim } from '../src/net/mockServer';
 import { buildWorld } from '../src/three/world';
@@ -559,5 +561,132 @@ describe('EgoVehicle', () => {
     expect(ego.mesh.rotation.z).toBeLessThan(0);
     expect(Math.abs(ego.mesh.rotation.z)).toBeLessThan(0.05);
     ego.dispose();
+  });
+});
+
+describe('ChaseCamera on the real Nob Hill route', () => {
+  /**
+   * The test the original occlusion fix never had.
+   *
+   * `ChaseCamera`'s other tests exercise `clampTrailDistance` in isolation —
+   * they hand it a single pose and check the clamp shortened the trail. But
+   * the clamp only decides a *desired* point on a straight ray cast back from
+   * the damped virtual ego; `camera.position` is then separately damped toward
+   * that point, so the path the camera actually travels is never the segment
+   * that was ray-tested. Nothing pinned the thing users care about: across a
+   * real drive, does the camera ever end up inside a building, or lose sight
+   * of the car?
+   *
+   * Fixture is a real recorded Nob Hill drive — poses straight off the
+   * backend at 60 Hz, and every OSM building within 60 m of the route (the
+   * camera never trails more than ~15 m, so nothing reachable is trimmed).
+   * `buildWorld` builds the mesh, so this runs against the same
+   * `ExtrudeGeometry` the renderer draws, not a reimplementation of it.
+   *
+   * `stride` matters and is not cosmetic: the render loop consumes
+   * `frameBus.latest` once per DISPLAY frame, so at 30 fps it skips every
+   * other 60 Hz sim frame. Replaying all 60 Hz poses at a 30 fps `dt` would
+   * hand the damping twice the settling time per metre travelled and quietly
+   * flatter the result.
+   *
+   * WHAT THESE TESTS DO NOT PROVE, measured rather than assumed: they still
+   * pass with `clampTrailDistance` stubbed out to `return desiredDist`, so
+   * they are NOT evidence that the occlusion clamp works. The reason is that
+   * on this route the clamp never engages at all — instrumenting `pullback`
+   * across a full lap gives 0 engaged frames out of 750, max pullback 0.00 m.
+   * The ego simply never gets close enough to a kerb-flush facade for the
+   * trail ray to hit one. These are forward-looking guards: they fail if a
+   * future change to the trail geometry (`distNear`/`distFar`, the heights,
+   * `lookAhead`) starts driving the camera into buildings on real streets.
+   * Anyone wanting a test that pins the CLAMP itself needs a location whose
+   * geometry actually triggers it; Nob Hill is not one, and the freeform
+   * address box means users can load places that are.
+   */
+  const fixture = JSON.parse(
+    readFileSync(resolve(process.cwd(), 'tests/fixtures/nobHillChaseRoute.json'), 'utf8'),
+  ) as {
+    buildings: { footprint: [number, number][]; height_m: number }[];
+    poses: { pose: { x: number; y: number; heading: number }; speed: number }[];
+  };
+
+  /** World (x, y, z) maps to footprint (x, -z) at height y — see world.ts's `rotateX`. */
+  function insideFootprint(px: number, pz: number, poly: [number, number][]): boolean {
+    let hit = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i];
+      const [xj, yj] = poly[j];
+      if (yi > pz !== yj > pz && px < ((xj - xi) * (pz - yi)) / (yj - yi) + xi) hit = !hit;
+    }
+    return hit;
+  }
+
+  function drive(dt: number, stride: number) {
+    const scene = {
+      buildings: fixture.buildings.map((b, i) => ({
+        id: `b${i}`,
+        footprint: b.footprint,
+        height_m: b.height_m,
+        color: '#b09070',
+        roof_color: '#8a7057',
+      })),
+      roads: [],
+      crosswalks: [],
+      trees: [],
+      traffic_lights: [],
+      stop_signs: [],
+      street_signs: [],
+    } as never;
+    const world = buildWorld(scene);
+    const blockers = world.root.getObjectByName('buildings') ?? null;
+    expect(blockers).not.toBeNull();
+
+    const cam = new ChaseCamera(16 / 9);
+    cam.reset(fixture.poses[0].pose, blockers);
+    const ray = new THREE.Raycaster();
+    const dir = new THREE.Vector3();
+    const ego = new THREE.Vector3();
+    let inside = 0;
+    let blocked = 0;
+    for (let i = 0; i < fixture.poses.length; i += stride) {
+      const p = fixture.poses[i];
+      cam.update(p.pose, p.speed, 'chase', dt, blockers);
+      const c = cam.camera.position;
+      for (const b of fixture.buildings) {
+        if (c.y > b.height_m) continue;
+        if (insideFootprint(c.x, -c.z, b.footprint)) {
+          inside++;
+          break;
+        }
+      }
+      ego.set(p.pose.x, 1.0, -p.pose.y);
+      dir.copy(ego).sub(c);
+      const dist = dir.length();
+      dir.normalize();
+      ray.set(c, dir);
+      ray.near = 0;
+      ray.far = dist;
+      if (ray.intersectObject(blockers!, true).length) blocked++;
+    }
+    world.dispose();
+    return { inside, blocked, frames: Math.ceil(fixture.poses.length / stride) };
+  }
+
+  it('never puts the camera inside a building, at any frame rate', () => {
+    for (const [dt, stride] of [
+      [1 / 60, 1],
+      [1 / 30, 2],
+      [1 / 20, 3],
+    ] as [number, number][]) {
+      const { inside, frames } = drive(dt, stride);
+      expect({ dt, inside, frames }).toEqual({ dt, inside: 0, frames });
+    }
+  });
+
+  it('never loses sight of the car behind a building', () => {
+    // Line of sight from the camera to the ego, against the same merged mesh
+    // the clamp uses. A camera that is technically outside every footprint but
+    // parked on the wrong side of a wall is just as broken to look at.
+    const { blocked, frames } = drive(1 / 30, 2);
+    expect({ blocked, frames }).toEqual({ blocked: 0, frames });
   });
 });
