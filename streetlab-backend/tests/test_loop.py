@@ -21,9 +21,9 @@ from map.geocode import Place
 from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource
 from map.overpass import BBox, OverpassClient
-from map.scene_build import SyntheticGrid
+from map.scene_build import LANE_W, SyntheticGrid
 from schema import StateUpdate, parse_server_message
-from sim.loop import SimLoop, Simulation
+from sim.loop import SimLoop, Simulation, _lane_state
 from sim.route import Route
 
 DT = 1 / 60
@@ -398,8 +398,14 @@ def test_the_lane_index_is_always_inside_the_lane_count():
         assert 0 <= lane.lane_index < lane.lane_count
 
 
-def test_a_single_lane_road_reports_no_neighbour_on_either_side():
-    """The visible consequence of real data: most of Nob Hill draws one lane."""
+def test_a_single_lane_road_reports_index_zero_and_a_kerb_marking():
+    """The visible consequence of real data: most of Nob Hill draws one lane.
+
+    Renamed from `..._reports_no_neighbour_on_either_side`: the backend has no
+    `leftExists`/`rightExists` concept (that is `LanePosition.tsx`'s, derived
+    from `lane_index`/`lane_count` on the frontend) -- this test only asserts
+    what `_lane_state` itself produces, index 0 and a kerb-style left edge.
+    """
     sim = Simulation(SyntheticGrid(), seed=7)
     seen_single = False
     for _ in range(2400):
@@ -408,7 +414,12 @@ def test_a_single_lane_road_reports_no_neighbour_on_either_side():
         if lane.lane_count == 1:
             seen_single = True
             assert lane.lane_index == 0
-            assert lane.left_marking in ("double_yellow", "solid_white")
+            # `road_centre_marking` can only be "solid_white" when count == 1
+            # (`"double_yellow" if count > 1 else "solid_white"`), so the
+            # permissive `in (...)` this used to be would pass no matter what
+            # `_lane_state` actually did here -- pinned to the one reachable
+            # value.
+            assert lane.left_marking == "solid_white"
     assert seen_single, "grid-loop never reported a single-lane stretch"
 
 
@@ -419,6 +430,73 @@ def test_the_kerbside_marking_is_never_a_centre_divider():
         lane = sim.state_update().telemetry.lane
         if lane.lane_index == lane.lane_count - 1:
             assert lane.right_marking == "solid_white"
+
+
+# -- `_lane_state`'s left/right conversion, direct -------------------------- #
+#
+# Nothing in the sim puts the ego outside lane 0 today -- lane changes are
+# Task 4+ territory -- so every frame observed above only ever exercises
+# `from_right == 0`. The tests below call `_lane_state` directly with a
+# fabricated lane count and a hand-picked `offset` so the `from_right > 0`
+# branches (an adjacent-lane marking on one side, an interior lane with a
+# neighbour on both sides, and the clamp that keeps an overshooting offset
+# inside the lanes that actually exist) are exercised by something other than
+# code inspection and a frozen fixture snapshot.
+
+
+class _FixedLaneSet:
+    """A `LaneSet` stand-in that reports a fixed lane count everywhere.
+
+    `_lane_state` only ever calls `.count_at(s)` on `scene.lanes`; nothing
+    else about a real `LaneSet` (lane geometry, `count_along`) matters here.
+    """
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def count_at(self, s: float) -> int:
+        return self._count
+
+
+class _FixedLaneScene:
+    def __init__(self, count: int) -> None:
+        self.lanes = _FixedLaneSet(count)
+
+
+def test_lane_state_reports_the_lane_the_ego_has_actually_moved_into():
+    """Two-lane road, ego one full lane width left of lane 0's centreline --
+    i.e. actually driving lane 1 of 2, wire index 0 (leftmost of two).
+    """
+    lane = _lane_state(_FixedLaneScene(2), None, 0.0, LANE_W, 0.0, [])
+    assert lane.lane_index == 0
+    assert lane.left_marking == "double_yellow"
+    assert lane.right_marking == "dashed_white"
+    # offset_m is relative to the ego's OWN lane centre, not lane 0's -- the
+    # ego sits exactly on lane 1's centreline here, so it is zero, not LANE_W.
+    assert lane.offset_m == pytest.approx(0.0)
+
+
+def test_lane_state_marks_an_interior_lane_with_neighbours_on_both_sides():
+    """Four-lane road, ego two lane widths left of lane 0 -- an interior lane
+    bordered by another lane on both sides, not a kerb or a centre divider.
+    No fixture or driven-sim test produces this marking combination, because
+    the ego never leaves lane 0 in any of them.
+    """
+    lane = _lane_state(_FixedLaneScene(4), None, 0.0, LANE_W * 2, 0.0, [])
+    assert lane.lane_index == 1
+    assert lane.left_marking == "dashed_white"
+    assert lane.right_marking == "dashed_white"
+
+
+def test_lane_state_clamps_an_overshooting_offset_to_the_widest_lane():
+    """A measured offset can transiently exceed `(count - 1) * LANE_W`
+    (steering noise, a corner overshoot); `from_right` clamps to the widest
+    lane that actually exists rather than reporting an index outside
+    `[0, lane_count)`.
+    """
+    lane = _lane_state(_FixedLaneScene(2), None, 0.0, LANE_W * 5, 0.0, [])
+    assert 0 <= lane.lane_index < lane.lane_count
+    assert lane.lane_index == 0  # clamped to the widest (leftmost) lane
 
 
 def test_radar_returns_accompany_detections(sim):
