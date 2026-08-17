@@ -319,6 +319,13 @@ def test_lanes_forward_along_returns_none_when_nothing_matches():
 def test_the_real_nob_hill_route_is_mostly_single_lane(nob_hill_scene):
     """The measurement Phase 2's whole acceptance design rests on: 87.7 % of the
     driven loop has one forward lane, so overtaking is illegal for most of it.
+
+    That 87.7 % is length-weighted (metres of route with lanes_forward == 1),
+    the figure the spec cites. This assertion is a cheaper proxy: fraction of
+    *segments*, which measures 85.5 % on the real fixture -- a different
+    number from the same route, not a discrepancy. Both clear 0.7 comfortably.
+    Do not "fix" this to assert 0.877; that would be asserting the wrong
+    metric and would fail for no real reason.
     """
     from map.lanes import lanes_forward_along
 
@@ -327,3 +334,53 @@ def test_the_real_nob_hill_route_is_mostly_single_lane(nob_hill_scene):
     assert counts is not None
     single = sum(1 for c in counts if c < 2)
     assert single / len(counts) > 0.7, f"only {single}/{len(counts)} segments single-lane"
+
+
+def test_speed_limits_and_lanes_forward_along_fill_a_mid_route_gap_from_the_predecessor():
+    """A route that runs beside the only road, swings 400 m away, then comes
+    back parallel to it (never rejoining). The middle two segments sit far
+    beyond `_LIMIT_MAX_MATCH_M` and are unmatched -- they must inherit the
+    last real match rather than being dropped or defaulted to 0/1.
+
+    No other test in the suite reaches this branch: the existing "implausibly
+    far away" test calls `speed_limits_along` on two routes that are each
+    either wholly matched or wholly unmatched, and the real Nob Hill fixture
+    matches all 339 of its segments outright. Without this test, `_fill_forward`
+    could be replaced with `return values` -- dropping the forward-fill
+    entirely -- and nothing would notice.
+    """
+    from map.lanes import lanes_forward_along, nearest_road_along
+
+    road = Road(
+        id="only", name="Only St", road_class="residential",
+        centerline=[(0.0, 0.0), (40.0, 0.0)], lanes_forward=2, lanes_backward=1,
+        lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+        center_marking="dashed_white", has_sidewalk=True,
+    )
+    route = Route([(5.0, 0.0), (35.0, 0.0), (35.0, 400.0), (5.0, 400.0)], closed=False)
+
+    assert nearest_road_along(route, [road]) == [0, None, None]
+    assert speed_limits_along(route, [road]) == [11.2, 11.2, 11.2]
+    assert lanes_forward_along(route, [road]) == [2, 2, 2]
+
+
+def test_speed_limits_and_lanes_forward_along_patch_a_leading_unmatched_run():
+    """The mirror case: the route starts 400 m from the only road and only
+    reaches it on its last segment. The leading unmatched entries have no
+    predecessor to inherit -- they must be patched from the first real match
+    once one is known, which is a separate line in `_fill_forward` from the
+    mid-route gap above (that one only ever inherits `out[-1]`, which is None
+    until the first real value arrives)."""
+    from map.lanes import lanes_forward_along, nearest_road_along
+
+    road = Road(
+        id="only", name="Only St", road_class="residential",
+        centerline=[(0.0, 0.0), (40.0, 0.0)], lanes_forward=2, lanes_backward=1,
+        lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+        center_marking="dashed_white", has_sidewalk=True,
+    )
+    route = Route([(5.0, 400.0), (35.0, 400.0), (35.0, 0.0), (5.0, 0.0)], closed=False)
+
+    assert nearest_road_along(route, [road]) == [None, None, 0]
+    assert speed_limits_along(route, [road]) == [11.2, 11.2, 11.2]
+    assert lanes_forward_along(route, [road]) == [2, 2, 2]
