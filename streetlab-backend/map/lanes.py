@@ -22,7 +22,7 @@ from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import is_oneway, lane_counts, road_class, speed_limit_mps, street_name
 from schema import Road
-from sim.route import ControlPoint, Lane, LaneSet, Route
+from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
 
 log = logging.getLogger("streetlab.map")
 
@@ -756,75 +756,226 @@ def speed_limits_along(route: Route, roads: list[Road]) -> list[float] | None:
     )
 
 
+def _lanes_forward_from(idx: list[int | None], roads: list[Road]) -> list[int] | None:
+    return _fill_forward([None if i is None else roads[i].lanes_forward for i in idx], 1)
+
+
 def lanes_forward_along(route: Route, roads: list[Road]) -> list[int] | None:
     """How many lanes run the ego's way on each segment of `route`.
 
-    The number that decides whether a lane change is legal at all. Measured on
-    the shipped Nob Hill extract: 87.7 % of the driven length answers 1.
+    What the wire reports as `lane_count`, and nothing more. It is NOT what
+    decides whether a lane change is legal -- see `lane_change_is_legal`, and
+    the revision plan for how believing otherwise put a derived lane across a
+    double yellow line. Measured on the shipped Nob Hill extract: 87.7 % of the
+    driven length answers 1.
     """
     idx = nearest_road_along(route, roads)
     if all(i is None for i in idx):
         return None
-    return _fill_forward([None if i is None else roads[i].lanes_forward for i in idx], 1)
+    return _lanes_forward_from(idx, roads)
 
 
 # --------------------------------------------------------------------------- #
 # Lane sets                                                                     #
 # --------------------------------------------------------------------------- #
 
-#: The widest carriageway lane set worth constructing. Nob Hill's roads top out
-#: at `lanes_forward=4` on a single way, but a lane that exists for one segment
-#: of a 1182 m loop is not somewhere the ego can usefully be.
-MAX_DERIVED_LANES = 3
+#: Slack allowed when fitting a target lane inside the forward carriageway.
+#:
+#: Measured over every segment of both shipped scenes whose road runs two or
+#: more lanes the ego's way. A RIGHT change needs 0.00-0.66 m of slack on
+#: grid-loop and 0.00-0.04 m on Nob Hill -- the 0.66 m is `Route.offset`'s
+#: mitre scaling at a corner, not noise. A LEFT change needs 2.94-3.60 m on
+#: grid-loop and 3.56-5.24 m on Nob Hill, because the ego is already in the
+#: leftmost forward lane there. 0.75 m therefore admits every right change with
+#: 2.19 m to spare before the nearest rejected left one, so the rule is not
+#: knife-edge. The nearest rejected case of any kind is Nob Hill's Sacramento
+#: Street at 1.80 m, where the ego route crosses the centreline of the oneway
+#: it is matched against and neither direction can be placed confidently --
+#: refused rather than guessed, in both directions.
+LANE_FIT_TOL_M = 0.75
+
+
+def lane_change_is_legal(
+    ego_off: float, lanes_forward: int, lanes_backward: int, direction: int
+) -> bool:
+    """Does the lane one step `direction` of the ego fit inside its carriageway?
+
+    `ego_off` is the ego's signed offset from the governing road's centreline,
+    POSITIVE TO THE LEFT of travel; `direction` is +1 for left, -1 for right.
+    The whole carriageway is `(lanes_forward + lanes_backward) * LANE_W` wide
+    and centred on that centreline, so the half running the ego's way is
+    `[-W/2, -W/2 + lanes_forward * LANE_W]` in the same sign convention, and
+    the target lane taken at its full width has to sit inside it.
+
+    Containment rather than "is there a lane to my left". The count answers a
+    different question: it says another lane exists somewhere on the
+    carriageway, not that the ego is not already in it -- and on both shipped
+    scenes it is. Asking directly whether the place the car would steer to is
+    road is a NECESSARY condition, so a scene whose ego route sits somewhere
+    unexpected shows up as changes being refused, never as a change into
+    oncoming traffic.
+
+    `lanes_forward >= 2` is a precondition and not a restatement of the fit: an
+    ego placed outside its own carriageway can have a target that lands back
+    inside it, and a one-lane road is never somewhere to change lanes whatever
+    the geometry says. Measured, it changes no answer on either shipped scene
+    -- every single-forward-lane segment is already refused by containment, the
+    closest being Clay Street's 1.79 m -- so it guards a future
+    `EGO_LANE_INSET` (ruling Q19) or scene source rather than today's.
+    """
+    if lanes_forward < 2:
+        return False
+    width = (lanes_forward + lanes_backward) * LANE_W
+    lo = -width / 2.0
+    hi = lo + lanes_forward * LANE_W
+    target = ego_off + direction * LANE_W
+    return (
+        target - LANE_W / 2.0 >= lo - LANE_FIT_TOL_M
+        and target + LANE_W / 2.0 <= hi + LANE_FIT_TOL_M
+    )
+
+
+def _nearest_point_on(
+    polyline: list[tuple[float, float]], p: tuple[float, float]
+) -> tuple[float, float]:
+    """The closest point to `p` anywhere on `polyline`."""
+    nearest, best = polyline[0], math.inf
+    for a, b in zip(polyline, polyline[1:]):
+        ax, ay = a
+        vx, vy = b[0] - ax, b[1] - ay
+        wx, wy = p[0] - ax, p[1] - ay
+        leg2 = vx * vx + vy * vy
+        t = 0.0 if leg2 <= 0.0 else min(max((wx * vx + wy * vy) / leg2, 0.0), 1.0)
+        candidate = (ax + vx * t, ay + vy * t)
+        d = math.dist(p, candidate)
+        if d < best:
+            nearest, best = candidate, d
+    return nearest
+
+
+def _legal_directions_along(
+    route: Route, roads: list[Road], idx: list[int | None]
+) -> list[tuple[int, ...]]:
+    """Which directions a change is legal in, on each segment of `route`.
+
+    The ego's offset is signed against the EGO's heading, not the centreline's
+    own storage direction: a `Road` is stored in whichever direction OSM
+    happened to draw the way, and the ego route runs against that on 18/36
+    grid-loop and 90/339 Nob Hill segments, so signing against the road would
+    reverse the answer on half the sample.
+
+    An unmatched segment inherits its predecessor's answer, the same
+    fill-forward `speed_limits_along` uses -- but a LEADING unmatched run gets
+    `()` rather than the first real value. Inheriting a limit backwards from a
+    later road is a guess about speed; inheriting permission backwards is a
+    guess about whether a manoeuvre is safe, and the answer to that is no.
+    (Neither shipped scene reaches this: every segment of both matches a road.)
+
+    `lanes_forward`/`lanes_backward` are still read as the ROAD stores them,
+    not swapped when the ego runs against that storage direction, and that is
+    deliberate rather than overlooked. It matters only where the two differ,
+    and no matched road on either scene is asymmetric. Swapping them would
+    also mean reporting zero forward lanes at 16 Nob Hill junction corners,
+    where the ego is turning ACROSS a oneway rather than driving the wrong way
+    up it and the match is the cross street -- a worse answer than the one
+    containment already gives there, which is to refuse both directions.
+    """
+    ring = route.points + [route.points[0]] if route.closed else route.points
+    out: list[tuple[int, ...]] = []
+    for k, (a, b) in enumerate(zip(ring, ring[1:])):
+        i = idx[k]
+        if i is None:
+            out.append(out[-1] if out else ())
+            continue
+        road = roads[i]
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        heading = math.atan2(b[1] - a[1], b[0] - a[0])
+        cx, cy = _nearest_point_on(road.centerline, mid)
+        ego_off = -(mid[0] - cx) * math.sin(heading) + (mid[1] - cy) * math.cos(heading)
+        out.append(
+            tuple(
+                d
+                for d in (1, -1)
+                if lane_change_is_legal(
+                    ego_off, road.lanes_forward, road.lanes_backward, d
+                )
+            )
+        )
+    return out
+
+
+def _neighbour_lane(ego_route: Route, roads: list[Road], direction: int) -> Route:
+    """`ego_route` shifted one lane width `direction`, as a drivable route.
+
+    Repaired by `remove_self_intersections` for the reason
+    `OsmSceneSource._agent_routes` gives: a wider offset can push a sharp
+    turn's mitre join into a self-crossing the narrower ego offset did not
+    produce, and `Route.project` does a global nearest-segment search with no
+    continuity guard. Limits are re-attached afterwards because `offset`
+    deliberately drops them.
+    """
+    lane = remove_self_intersections(
+        Route(ego_route.points, closed=ego_route.closed).offset(direction * LANE_W)
+    )
+    lane.segment_limits = speed_limits_along(lane, roads)
+    return lane
 
 
 def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
-    """Lanes running the ego's way, derived from the route it already drives.
+    """The ego's lane and the one either side of it, plus where each is legal.
 
-    Lane 0 IS `ego_route` -- both scene sources offset the centreline by
-    `EGO_LANE_INSET` into the rightmost forward lane before this is called, so
-    constructing it again would only introduce a second, slightly different
-    copy of the path the car is tracking. It is taken as-is, limits included
-    or not: `OsmSceneSource` attaches `segment_limits` to `ego_route` before
-    calling this, so lane 0 there carries them; `SyntheticGrid` deliberately
-    never does (`sim/loop.py`'s `posted_limit()`: "SyntheticGrid never sets
-    them, so the synthetic scenarios behave exactly as they did before this
-    existed"), so lane 0 there has none. Giving lane 0 its own recomputed
-    limits regardless of what `ego_route` actually has would create a second
-    object with a different answer to `limit_at()` than `ego_route` itself --
-    exactly the trap `posted_limit()` was written to avoid, just moved one
-    layer over into whatever reads `LaneSet` instead.
+    The ego's lane IS `ego_route`, by identity: both scene sources hand this
+    the path the car is already tracking, so constructing it again would only
+    introduce a second, slightly different copy. It is taken as-is, limits
+    included or not -- `OsmSceneSource` attaches `segment_limits` to
+    `ego_route` before calling this so the ego lane there carries them, while
+    `SyntheticGrid` deliberately never does (`sim/loop.py`'s `posted_limit()`:
+    "SyntheticGrid never sets them, so the synthetic scenarios behave exactly
+    as they did before this existed"). Recomputing them here regardless would
+    create a second object with a different answer to `limit_at()` than
+    `ego_route` itself -- exactly the trap `posted_limit()` was written to
+    avoid, just moved one layer over into whatever reads `LaneSet`.
 
-    Each further lane is `+LANE_W` to the left, repaired by
-    `remove_self_intersections` for the reason `OsmSceneSource._agent_routes`
-    gives: a wider offset can push a sharp turn's mitre join into a
-    self-crossing the narrower ego offset did not produce, and `Route.project`
-    does a global nearest-segment search with no continuity guard. Limits are
-    re-attached afterwards because `offset` deliberately drops them.
+    BOTH neighbours are built, unconditionally, and neither carries a claim
+    about the carriageway. Lane geometry needs no per-vertex sign: a lane
+    beside the ego is `ego_route.offset(+-LANE_W)`, a constant. Only legality
+    is per-station, and it is `legal_along`'s job -- which is why the count of
+    lanes constructed says nothing here about how many exist, and why building
+    a neighbour on a one-lane street is not a claim that one is there.
     """
-    counts = lanes_forward_along(ego_route, roads)
-    widest = max(counts) if counts else 1
-    n = max(1, min(widest, MAX_DERIVED_LANES))
+    # One nearest-road pass, two questions asked of it: the count the wire
+    # reports and the legality the planner acts on.
+    idx = nearest_road_along(ego_route, roads)
+    counts = _lanes_forward_from(idx, roads)
 
-    routes = [ego_route]
-    for k in range(1, n):
-        lane = remove_self_intersections(
-            Route(ego_route.points, closed=ego_route.closed).offset(LANE_W * k)
-        )
-        lane.segment_limits = speed_limits_along(lane, roads)
-        routes.append(lane)
-
-    lanes = tuple(
+    lanes = (
         Lane(
-            id=f"lane_{i}",
-            index_from_right=i,
-            route=route,
-            left_id=f"lane_{i + 1}" if i + 1 < n else None,
-            right_id=f"lane_{i - 1}" if i > 0 else None,
-        )
-        for i, route in enumerate(routes)
+            id="lane_right",
+            offset_m=-LANE_W,
+            route=_neighbour_lane(ego_route, roads, -1),
+            left_id=EGO_LANE_ID,
+            right_id=None,
+        ),
+        Lane(
+            id=EGO_LANE_ID,
+            offset_m=0.0,
+            route=ego_route,
+            left_id="lane_left",
+            right_id="lane_right",
+        ),
+        Lane(
+            id="lane_left",
+            offset_m=LANE_W,
+            route=_neighbour_lane(ego_route, roads, +1),
+            left_id=None,
+            right_id=EGO_LANE_ID,
+        ),
     )
-    return LaneSet(lanes=lanes, count_along=tuple(counts or (1,)))
+    return LaneSet(
+        lanes=lanes,
+        count_along=tuple(counts or (1,)),
+        legal_along=tuple(_legal_directions_along(ego_route, roads, idx)),
+    )
 
 
 # --------------------------------------------------------------------------- #

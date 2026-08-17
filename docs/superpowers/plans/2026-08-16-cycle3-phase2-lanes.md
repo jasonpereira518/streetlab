@@ -305,6 +305,8 @@ existing tests are the proof."
 - Consumes: `lanes_forward_along`, `speed_limits_along`, `remove_self_intersections`, `Route.offset` (Task 1 and existing).
 - Produces: `sim.route.Lane(id, index_from_right, route, left_id, right_id)`; `sim.route.LaneSet(lanes, count_along)` with `.count_at(s) -> int` and `.by_id(lane_id) -> Lane`; `map.lanes.derive_lanes(ego_route, roads) -> LaneSet`; `BuiltScene.lanes: LaneSet | None`. Task 3 reports it on the wire, Task 4 uses it to decide legality.
 
+> **Superseded by `2026-08-16-cycle3-phase2-revision.md` (defect C1).** The sentence below — "into the rightmost forward lane" — is FALSE and was never measured. `EGO_LANE_INSET` is a fixed half-lane inset from `Road.centerline`, which is the *divider* on a two-way road, so the ego lands in the **leftmost** forward lane wherever `lanes_forward >= 2`: measured −1.79 m on grid-loop's California St and −1.81 m on Nob Hill's California Street, with the derived `lane_1` at **+1.77 m / +1.79 m**, across the double yellow. R1 replaces this with a carriageway-containment model; see the revision plan.
+
 Lane 0 **is** the ego route — `select_ego_route` and `_block_route` both already offset the centreline by `-EGO_LANE_INSET` into the rightmost forward lane. Higher indices are successively left, at `+LANE_W` each. Derived lanes go through `remove_self_intersections` for the reason `osm_source.py:330-341` gives: a wider offset can push a sharp turn's mitre into a self-crossing the narrower ego offset did not produce, and `Route.project` has no continuity guard.
 
 - [ ] **Step 1: Write the failing tests**

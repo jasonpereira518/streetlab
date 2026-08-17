@@ -25,7 +25,7 @@ from plan.behavior import (
     BehaviorState,
 )
 from schema import SignalState
-from sim.route import ControlPoint, Route
+from sim.route import EGO_LANE_ID, ControlPoint, Route
 from sim.vehicle import VehicleState
 
 DT = 1 / 60
@@ -270,47 +270,53 @@ def test_a_commitment_survives_red_on_a_closed_loop():
 
 
 def two_lane_set(road):
-    """A `LaneSet` whose whole length has two forward lanes."""
-    from sim.route import Lane, LaneSet
+    """A `LaneSet` with a left neighbour a change to which is legal throughout."""
+    from sim.route import EGO_LANE_ID, Lane, LaneSet
 
     left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
     return LaneSet(
         lanes=(
-            Lane("lane_0", 0, road, "lane_1", None),
-            Lane("lane_1", 1, left, None, "lane_0"),
+            Lane(EGO_LANE_ID, 0.0, road, "lane_left", None),
+            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
         ),
         count_along=tuple(2 for _ in range(len(road.points) - 1)),
+        legal_along=tuple((1,) for _ in range(len(road.points) - 1)),
     )
 
 
 def one_lane_set(road):
-    from sim.route import Lane, LaneSet
+    from sim.route import EGO_LANE_ID, Lane, LaneSet
 
     return LaneSet(
-        lanes=(Lane("lane_0", 0, road, None, None),),
+        lanes=(Lane(EGO_LANE_ID, 0.0, road, None, None),),
         count_along=tuple(1 for _ in range(len(road.points) - 1)),
+        legal_along=tuple((1,) for _ in range(len(road.points) - 1)),
     )
 
 
 def two_lane_geometry_one_lane_here(road):
-    """A `LaneSet` whose `lane_1` genuinely exists -- the route is wide
-    enough somewhere, so `lane_0.left_id` is not None -- but whose
-    `count_along` reports only one lane legal at every arc length on this
-    fixture's road. This is the actual Nob Hill shape: `count_at()` is what
-    says a lane doesn't exist HERE, distinct from `one_lane_set` above, where
-    `lane_1` is absent from the derived set entirely and `current.left_id is
-    None` already blocks the change one line earlier -- never reaching
-    `count_at()` at all.
+    """A `LaneSet` whose `lane_left` genuinely exists -- the route is wide
+    enough somewhere, so the ego lane's `left_id` is not None -- but where no
+    direction is legal at any arc length on this fixture's road. This is the
+    actual Nob Hill shape: `may_change_at()` is what says a change is not
+    allowed HERE, distinct from `one_lane_set` above, where `lane_left` is
+    absent from the derived set entirely so `neighbour()` blocks the change a
+    line later without the legality answer mattering.
+
+    Note `count_along` still says 2 here: the count is what the wire reports,
+    and a road can genuinely have two forward lanes while the ego is already
+    in the left one -- which is precisely the case containment exists to catch.
     """
-    from sim.route import Lane, LaneSet
+    from sim.route import EGO_LANE_ID, Lane, LaneSet
 
     left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
     return LaneSet(
         lanes=(
-            Lane("lane_0", 0, road, "lane_1", None),
-            Lane("lane_1", 1, left, None, "lane_0"),
+            Lane(EGO_LANE_ID, 0.0, road, "lane_left", None),
+            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
         ),
-        count_along=tuple(1 for _ in range(len(road.points) - 1)),
+        count_along=tuple(2 for _ in range(len(road.points) - 1)),
+        legal_along=tuple(() for _ in range(len(road.points) - 1)),
     )
 
 
@@ -342,7 +348,7 @@ def test_a_slow_lead_with_a_clear_left_lane_wants_a_lane_change(road):
         ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
         lanes=two_lane_set(road), detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
     )
-    assert d.target_lane_id == "lane_1"
+    assert d.target_lane_id == "lane_left"
     assert d.maneuver == "lane_change_left"
 
 
@@ -358,11 +364,12 @@ def test_no_lane_change_is_wanted_when_the_lead_is_not_slow(road):
 
 
 def test_no_lane_change_where_the_road_has_only_one_forward_lane(road):
-    """No `lane_1` exists in the derived set at all -- `current.left_id is
-    None` blocks the change. See `test_no_lane_change_where_the_second_
-    lane_exists_but_is_not_legal_here` below for the Nob Hill shape, where
-    `lane_1` exists but `count_at()` forbids it -- this test alone cannot
-    exercise that guard, since it never reaches it.
+    """No neighbour exists in the derived set at all -- `LaneSet.neighbour()`
+    returns None and blocks the change. See `test_no_lane_change_where_the_
+    second_lane_exists_but_is_not_legal_here` below for the Nob Hill shape,
+    where the neighbour exists but `may_change_at()` forbids it -- this test
+    alone cannot exercise that guard, since the legality answer here says the
+    change is allowed and only the missing geometry stops it.
     """
     fsm = BehaviorFSM()
     d = fsm.step(
@@ -374,13 +381,13 @@ def test_no_lane_change_where_the_road_has_only_one_forward_lane(road):
 
 
 def test_no_lane_change_where_the_second_lane_exists_but_is_not_legal_here(road):
-    """The Nob Hill case: 87.7 % of the loop. `lane_1` genuinely exists in
-    the derived set -- the route is wide enough somewhere -- but `count_at()`
-    says it doesn't exist at this arc length. Geometry is not permission.
+    """The Nob Hill case: 87.7 % of the loop. `lane_left` genuinely exists in
+    the derived set -- the route is wide enough somewhere -- but no direction
+    is legal at this arc length. Geometry is not permission.
 
-    Deleting the `count_at` guard in `_lane_change_step` must flip this
+    Deleting the `may_change_at` guard in `_lane_change_step` must flip this
     test's assertion, unlike `test_no_lane_change_where_the_road_has_only_
-    one_forward_lane` above, whose `LaneSet` has no `lane_1` to reach it
+    one_forward_lane` above, whose `LaneSet` has no neighbour to reach it
     through in the first place.
     """
     fsm = BehaviorFSM()
@@ -423,7 +430,7 @@ def test_a_distant_vehicle_in_the_target_lane_does_not_block(road):
         detections=[slow_lead(25.0, 3.0), blocker(MIN_FRONT_GAP_M + 40.0, 12.0, 1)],
         limit_mps=12.0,
     )
-    assert d.target_lane_id == "lane_1"
+    assert d.target_lane_id == "lane_left"
 
 
 def test_a_committed_change_is_not_abandoned_when_the_reason_disappears(road):
@@ -439,7 +446,7 @@ def test_a_committed_change_is_not_abandoned_when_the_reason_disappears(road):
         ego_at(1.0, 12.0), road, 1.0, [], {}, DT,
         lanes=two_lane_set(road), detections=[], limit_mps=12.0,
     )
-    assert d.target_lane_id == "lane_1"
+    assert d.target_lane_id == "lane_left"
     assert d.maneuver == "lane_change_left"
 
 
@@ -503,7 +510,7 @@ def test_the_commitment_expiring_begins_a_labelled_return(road):
     lanes = two_lane_set(road)
     d = _advance_to_the_moment_the_return_begins(fsm, road, lanes)
     assert d.maneuver == "lane_change_right", "outbound completed without a labelled return"
-    assert d.target_lane_id == "lane_0"
+    assert d.target_lane_id == EGO_LANE_ID
     assert fsm.lane_change is not None
     assert fsm.lane_change.returning is True
 
@@ -521,7 +528,7 @@ def test_the_return_phase_stays_labelled_until_the_car_is_back_in_lane(road):
     d = fsm.step(ego_off_lane_at(100.0, 3.6, 12.0), road, 100.0, [], {}, DT,
                  lanes=lanes, detections=[], limit_mps=12.0)
     assert d.maneuver == "lane_change_right"
-    assert d.target_lane_id == "lane_0"
+    assert d.target_lane_id == EGO_LANE_ID
     assert fsm.lane_change is not None
     # Now comfortably inside the settle tolerance -- must clear.
     d = fsm.step(

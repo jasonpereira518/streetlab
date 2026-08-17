@@ -27,7 +27,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
-from map.lanes import LANE_W
 from schema import Detection, SignalState
 from sim.route import ControlPoint, LaneSet, Route
 from sim.vehicle import VehicleState
@@ -550,16 +549,23 @@ class BehaviorFSM:
         if not self._held_up(route, ego_s, detections, limit_mps):
             return None
 
-        current = lanes.by_id(f"lane_{self._ego_lane_index(ego, route, ego_s, lanes)}")
-        if current is None or current.left_id is None:
+        # R1's minimum adaptation to the carriageway model. The lane count is
+        # not permission -- `LaneSet.may_change_at` is -- and the direction is
+        # no longer always left: on both shipped scenes the ego already drives
+        # the leftmost forward lane, so the only legal change is right. Left is
+        # still tried first, since overtaking on the left is what a driver does
+        # wherever the road allows it. R3 owns the rest of this method.
+        current = lanes.ego
+        direction = next((d for d in (+1, -1) if lanes.may_change_at(ego_s, d)), None)
+        if direction is None:
             return None
-        if lanes.count_at(ego_s) <= current.index_from_right + 1:
-            # The lane exists geometrically but not on this stretch of road.
+        target = lanes.neighbour(direction)
+        if target is None:
             return None
-        if not self._gap_is_acceptable(route, ego_s, detections, +1):
+        if not self._gap_is_acceptable(route, ego_s, detections, direction):
             return None
 
-        self.lane_change = LaneChange(current.id, current.left_id, +1)
+        self.lane_change = LaneChange(current.id, target.id, direction)
         return self._changing()
 
     def _begin_return(self) -> None:
@@ -610,11 +616,6 @@ class BehaviorFSM:
             target=None,
             target_lane_id=self.lane_change.to_lane_id,
         )
-
-    @staticmethod
-    def _ego_lane_index(ego, route, ego_s, lanes) -> int:
-        offset = route.lateral_offset((ego.x, ego.y), ego_s)
-        return min(max(int(round(offset / LANE_W)), 0), len(lanes.lanes) - 1)
 
     @staticmethod
     def _held_up(route, ego_s, detections, limit_mps) -> bool:

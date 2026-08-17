@@ -308,15 +308,27 @@ class Route:
         return Route(out, closed=self.closed)
 
 
+#: The id of the ego's own lane in every `LaneSet` this codebase builds. The
+#: set is anchored on it -- neighbours are named by which side of it they are
+#: on, not by a position in the carriageway, because the ego has no honest
+#: position in the carriageway to count from (see `Lane.offset_m`).
+EGO_LANE_ID = "lane_ego"
+
+
 @dataclass(frozen=True, slots=True)
 class Lane:
     """One lane of travel, as a `Route` the tracker can follow directly."""
 
     id: str
-    #: 0 is the kerbside (rightmost forward) lane, increasing leftward. This is
-    #: NOT the wire's `lane_index`, which counts from the left to match
-    #: `LanePosition.tsx`; `sim/loop.py` converts.
-    index_from_right: int
+    #: This lane's signed lateral offset from the EGO's route, positive to the
+    #: left of travel. Replaces an `index_from_right` that claimed lane 0 was
+    #: the kerbside lane: measured false on both shipped scenes, where the ego
+    #: sits in the leftmost forward lane wherever two run its way. A true index
+    #: is not recoverable either -- `EGO_LANE_INSET` is a fixed half-lane inset
+    #: from a centreline that means the divider on a two-way road and the
+    #: carriageway centre on a oneway, so it does not land on a lane centre at
+    #: all there (measured: off by up to 2.15 m on 40/339 Nob Hill segments).
+    offset_m: float
     route: Route
     left_id: str | None
     right_id: str | None
@@ -324,28 +336,60 @@ class Lane:
 
 @dataclass(frozen=True, slots=True)
 class LaneSet:
-    """Every lane running the ego's way, plus how many are legal where.
+    """The ego's lane and its neighbours, plus where a change to each is legal.
 
-    `lanes` is what was geometrically constructed -- the widest the route ever
-    gets. `count_along` is how many actually exist on each segment of lane 0,
-    parallel to `Route.segment_limits`. The two differ because a route runs
-    down a two-lane arterial and then a one-lane residential street, and a lane
-    that exists for a third of the loop must not be enterable on the rest of it.
+    `lanes` is what was geometrically constructed; a neighbour exists in it
+    whether or not the car may ever enter it. Two per-segment tables answer the
+    two questions that were previously conflated into one lane count, indexed
+    the same way `Route.segment_limits` is:
+
+    `count_along` -- how many lanes run the ego's way -- is what the wire
+    reports, and nothing else. `legal_along` -- which directions a change is
+    legal in -- is the only one the planner may act on. A count of 2 says
+    another lane exists somewhere on the carriageway; it does not say the ego
+    is not already in it, and on both shipped scenes it is
+    (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`). Reading the
+    count as permission is what built lane 1 across a double yellow line.
     """
 
     lanes: tuple[Lane, ...]
     count_along: tuple[int, ...]
+    #: Which directions (+1 left, -1 right) a change is legal in, per segment.
+    #: Defaults to empty -- refuse everything -- so a `LaneSet` assembled
+    #: without one cannot silently authorise a manoeuvre.
+    legal_along: tuple[tuple[int, ...], ...] = ()
+
+    @property
+    def ego(self) -> Lane:
+        """The ego's own lane. Every `LaneSet` has one; `derive_lanes` builds it."""
+        return self.by_id(EGO_LANE_ID) or self.lanes[0]
 
     def by_id(self, lane_id: str) -> Lane | None:
         return next((l for l in self.lanes if l.id == lane_id), None)
 
+    def neighbour(self, direction: int) -> Lane | None:
+        """The lane one step `direction` (+1 left, -1 right) of the ego's."""
+        ego = self.ego
+        return self.by_id((ego.left_id if direction > 0 else ego.right_id) or "")
+
+    def _segment_at(self, s: float) -> int:
+        route = self.ego.route
+        return bisect_right(route._cum, route.normalise(s)) - 1
+
     def count_at(self, s: float) -> int:
         if not self.count_along:
             return 1
-        route = self.lanes[0].route
-        s = route.normalise(s)
-        i = bisect_right(route._cum, s) - 1
+        i = self._segment_at(s)
         return self.count_along[min(max(i, 0), len(self.count_along) - 1)]
+
+    def legal_at(self, s: float) -> tuple[int, ...]:
+        if not self.legal_along:
+            return ()
+        i = self._segment_at(s)
+        return self.legal_along[min(max(i, 0), len(self.legal_along) - 1)]
+
+    def may_change_at(self, s: float, direction: int) -> bool:
+        return direction in self.legal_at(s)
 
 
 def _menger_curvature(a: Point, b: Point, c: Point) -> float:
