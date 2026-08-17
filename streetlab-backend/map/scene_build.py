@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Protocol, runtime_checkable
 
-from map.lanes import project_control_points
+from map.lanes import derive_lanes, project_control_points
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -35,7 +35,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import ControlPoint, Route
+from sim.route import ControlPoint, LaneSet, Route
 
 # --------------------------------------------------------------------------- #
 # The seam                                                                     #
@@ -58,6 +58,9 @@ class BuiltScene:
     # Defaulted so `dataclasses.replace` in `OsmSceneSource.build` keeps
     # working without naming it.
     control_points: list[ControlPoint] = field(default_factory=list)
+    # Lanes running the ego's way. None only for a scene built before this
+    # existed; both shipped sources always supply one.
+    lanes: LaneSet | None = None
 
 
 @runtime_checkable
@@ -250,6 +253,7 @@ class SyntheticGrid:
             speed_limit_mps=self._route_speed_limit(scenario.block),
             traffic_count=scenario.traffic,
             control_points=self._control_points(ego_route),
+            lanes=derive_lanes(ego_route, description.roads),
         )
 
     # -- catalog ----------------------------------------------------------- #

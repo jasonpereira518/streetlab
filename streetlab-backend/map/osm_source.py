@@ -32,6 +32,7 @@ from map.lanes import (
     LANE_W,
     build_roads,
     build_route_graph,
+    derive_lanes,
     project_control_points,
     remove_self_intersections,
     select_ego_route,
@@ -300,6 +301,7 @@ class OsmSceneSource:
             speed_limit_mps=self._speed_limit(roads),
             traffic_count=spec.traffic,
             control_points=control_points,
+            lanes=derive_lanes(ego_route, roads),
         )
 
     def _bounds(

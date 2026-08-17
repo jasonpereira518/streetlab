@@ -308,6 +308,46 @@ class Route:
         return Route(out, closed=self.closed)
 
 
+@dataclass(frozen=True, slots=True)
+class Lane:
+    """One lane of travel, as a `Route` the tracker can follow directly."""
+
+    id: str
+    #: 0 is the kerbside (rightmost forward) lane, increasing leftward. This is
+    #: NOT the wire's `lane_index`, which counts from the left to match
+    #: `LanePosition.tsx`; `sim/loop.py` converts.
+    index_from_right: int
+    route: Route
+    left_id: str | None
+    right_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LaneSet:
+    """Every lane running the ego's way, plus how many are legal where.
+
+    `lanes` is what was geometrically constructed -- the widest the route ever
+    gets. `count_along` is how many actually exist on each segment of lane 0,
+    parallel to `Route.segment_limits`. The two differ because a route runs
+    down a two-lane arterial and then a one-lane residential street, and a lane
+    that exists for a third of the loop must not be enterable on the rest of it.
+    """
+
+    lanes: tuple[Lane, ...]
+    count_along: tuple[int, ...]
+
+    def by_id(self, lane_id: str) -> Lane | None:
+        return next((l for l in self.lanes if l.id == lane_id), None)
+
+    def count_at(self, s: float) -> int:
+        if not self.count_along:
+            return 1
+        route = self.lanes[0].route
+        s = route.normalise(s)
+        i = bisect_right(route._cum, s) - 1
+        return self.count_along[min(max(i, 0), len(self.count_along) - 1)]
+
+
 def _menger_curvature(a: Point, b: Point, c: Point) -> float:
     """Reciprocal radius of the circle through three points; 0 if collinear."""
     ab = math.dist(a, b)

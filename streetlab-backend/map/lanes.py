@@ -22,7 +22,7 @@ from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import is_oneway, lane_counts, road_class, speed_limit_mps, street_name
 from schema import Road
-from sim.route import ControlPoint, Route
+from sim.route import ControlPoint, Lane, LaneSet, Route
 
 log = logging.getLogger("streetlab.map")
 
@@ -766,6 +766,77 @@ def lanes_forward_along(route: Route, roads: list[Road]) -> list[int] | None:
     if all(i is None for i in idx):
         return None
     return _fill_forward([None if i is None else roads[i].lanes_forward for i in idx], 1)
+
+
+# --------------------------------------------------------------------------- #
+# Lane sets                                                                     #
+# --------------------------------------------------------------------------- #
+
+#: The widest carriageway lane set worth constructing. Nob Hill's roads top out
+#: at `lanes_forward=4` on a single way, but a lane that exists for one segment
+#: of a 1182 m loop is not somewhere the ego can usefully be.
+MAX_DERIVED_LANES = 3
+
+
+def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
+    """Lanes running the ego's way, derived from the route it already drives.
+
+    Lane 0 IS `ego_route`'s geometry -- both scene sources offset the
+    centreline by `EGO_LANE_INSET` into the rightmost forward lane before this
+    is called, so constructing it again would only introduce a second,
+    slightly different copy of the path the car is tracking.
+
+    Each further lane is `+LANE_W` to the left, repaired by
+    `remove_self_intersections` for the reason `OsmSceneSource._agent_routes`
+    gives: a wider offset can push a sharp turn's mitre join into a
+    self-crossing the narrower ego offset did not produce, and `Route.project`
+    does a global nearest-segment search with no continuity guard. Limits are
+    re-attached afterwards because `offset` deliberately drops them.
+
+    Lane 0 is a partial exception on limits, not geometry: `OsmSceneSource`
+    already attaches `segment_limits` to `ego_route` itself before calling
+    this, so lane 0 there is `ego_route` verbatim, object and all.
+    `SyntheticGrid` deliberately never does (`sim/loop.py:posted_limit`'s
+    docstring: "SyntheticGrid never sets them, so the synthetic scenarios
+    behave exactly as they did before this existed") -- mutating the shared
+    `ego_route` here would silently switch every synthetic scenario's planner
+    onto per-segment limits, a simulation behaviour change this task has no
+    business making. So when `ego_route` arrives without limits, lane 0 gets
+    its own Route with the SAME points -- not offset, not rebuilt -- carrying
+    limits computed just for the lane set; `ego_route` itself, and whatever
+    the sim tracks, is untouched.
+    """
+    counts = lanes_forward_along(ego_route, roads)
+    widest = max(counts) if counts else 1
+    n = max(1, min(widest, MAX_DERIVED_LANES))
+
+    lane0 = ego_route
+    if lane0.segment_limits is None:
+        lane0 = Route(
+            ego_route.points,
+            closed=ego_route.closed,
+            segment_limits=speed_limits_along(ego_route, roads),
+        )
+
+    routes = [lane0]
+    for k in range(1, n):
+        lane = remove_self_intersections(
+            Route(ego_route.points, closed=ego_route.closed).offset(LANE_W * k)
+        )
+        lane.segment_limits = speed_limits_along(lane, roads)
+        routes.append(lane)
+
+    lanes = tuple(
+        Lane(
+            id=f"lane_{i}",
+            index_from_right=i,
+            route=route,
+            left_id=f"lane_{i + 1}" if i + 1 < n else None,
+            right_id=f"lane_{i - 1}" if i > 0 else None,
+        )
+        for i, route in enumerate(routes)
+    )
+    return LaneSet(lanes=lanes, count_along=tuple(counts or (1,)))
 
 
 # --------------------------------------------------------------------------- #
