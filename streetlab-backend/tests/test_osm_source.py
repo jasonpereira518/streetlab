@@ -221,14 +221,22 @@ def test_every_route_in_the_built_scene_is_simple(source):
     traffic agent's arc-length position jump discontinuously as it passes the
     crossing -- covered in detail in `tests/test_route_selection.py`'s
     `test_ego_route_from_the_real_fixture_is_simple`. This is the seam-level
-    check: `_agent_routes` builds the left lane by offsetting the (already
+    check: `derive_lanes` builds each neighbour by offsetting the (already
     repaired) ego route by a *different* distance (`LANE_W`, not
     `EGO_LANE_INSET`), which is a distinct geometric operation that does not
     inherit the ego route's simplicity for free -- confirmed on this exact
-    fixture, the unrepaired left lane self-intersects even though the ego
+    fixture, the unrepaired neighbour self-intersects even though the ego
     route it's built from does not. Every route actually handed to the
     planner and agents is checked here, not just the one `map.lanes` builds
     directly.
+
+    `scene.lanes` is scanned as well as `scene.agent_routes`, and that is not
+    belt-and-braces. Traffic used to ride an offset route of its own, so
+    scanning `agent_routes` reached the offset geometry; now every agent is on
+    the ego route (`OsmSceneSource._agent_routes` -- the left lane it used to
+    build is oncoming), so `agent_routes` alone would check the ego route
+    three more times and nothing else. The offset routes still ship, as the
+    lanes the planner steers into.
     """
     from shapely.geometry import LinearRing
 
@@ -236,6 +244,8 @@ def test_every_route_in_the_built_scene_is_simple(source):
     assert LinearRing(scene.ego_route.points).is_simple
     for i, route in enumerate(scene.agent_routes):
         assert LinearRing(route.points).is_simple, f"agent_routes[{i}] self-intersects"
+    for lane in scene.lanes.lanes:
+        assert LinearRing(lane.route.points).is_simple, f"lane {lane.id} self-intersects"
 
 
 def test_bounds_contain_every_road_point(source):

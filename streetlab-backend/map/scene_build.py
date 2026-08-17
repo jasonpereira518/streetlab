@@ -343,17 +343,27 @@ class SyntheticGrid:
         return min((s.speed_mph for s in used), default=25) * MPH
 
     def _agent_routes(self, scenario: _Scenario, ego_route: Route) -> list[Route]:
-        """Traffic shares the ego's loop: same lane ahead, or the lane to its left.
+        """Traffic shares the ego's lane, all of it.
+
+        Every third agent used to drive `block_route.offset(LANE_W)`, the lane
+        to the ego's LEFT. `_block_route` traverses the corners clockwise so a
+        NEGATIVE offset is the kerbside lane; a positive one crosses the
+        centreline, which on California St and Hyde St -- two lanes each way,
+        `double_yellow` -- is the oncoming carriageway. Measured: 14 of 54 agent
+        samples on those two streets sat at +0.57 to +1.71 m, on the wrong side
+        of the line, at default settings.
+
+        See `map/osm_source.py::_agent_routes` for why the kerbside lane
+        `derive_lanes` builds is not the replacement, and why partial-loop
+        occupancy is left to the `TrafficModel` that replaces `ScriptedTraffic`
+        rather than baked into a route here. The short version is that this
+        scenario's kerbside lane exists on 147.6 m of a 295.2 m loop, so a
+        second-lane agent is on the pavement for the other half.
 
         Cycle 3 replaces the scripted followers with IDM/MOBIL agents, but the
         route seam stays as it is.
         """
-        block_route = self._block_route(scenario.block)
-        left_lane = Route(block_route.points, closed=True).offset(LANE_W)
-        routes = []
-        for i in range(scenario.traffic):
-            routes.append(ego_route if i % 3 != 2 else left_lane)
-        return routes
+        return [ego_route] * scenario.traffic
 
     # -- intersections ----------------------------------------------------- #
 

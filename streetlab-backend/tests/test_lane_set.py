@@ -323,6 +323,92 @@ def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, re
     assert dict(seen) == expected
 
 
+# --------------------------------------------------------------------------- #
+# Traffic belongs in a lane that exists                                        #
+# --------------------------------------------------------------------------- #
+
+
+def _agent_samples_where_a_second_forward_lane_runs(scene):
+    """Each agent route, sampled at every ego station on a TWO-WAY road running
+    two or more lanes the ego's way, as `(route index, s, road, offset)`.
+
+    The offset is signed against the EGO's heading, positive to the LEFT --
+    which on a two-way road is across the divider, into oncoming traffic.
+
+    Sampled at the EGO's stations rather than at each agent route's own
+    vertices, and that is the whole point of the measurement rather than an
+    implementation convenience: the question is where the traffic is when the
+    ego is on a stretch of road that has a second forward lane, and only the
+    ego route has stations to ask that of. An agent route offset from it has
+    its own, differently-spliced vertex list (304 for the pre-fix Nob Hill left
+    lane against the ego's 339), so scanning those instead answers a slightly
+    different question and returns a different count.
+
+    Oneway roads are excluded: their centreline is the middle of the
+    carriageway, not a divider, so a lane left of it is road. Roads with one
+    forward lane are excluded because no second lane is claimed there by
+    anything -- the defect this measures is traffic placed in a lane that does
+    not exist ON THE EGO'S SIDE, and `test_no_legal_change_targets_a_lane_left_
+    of_a_two_way_centreline` above is the same property asked of the lane model.
+    """
+    route = scene.ego_route
+    for s, road in _segments(scene):
+        if road.oneway or road.lanes_forward < 2:
+            continue
+        here, heading = route.point_at(s), route.heading_at(s)
+        for i, agent in enumerate(scene.agent_routes):
+            centre = agent.point_at(agent.project(here))
+            yield i, s, road, _offset_from(road, centre, heading)
+
+
+@pytest.mark.parametrize(
+    "scene_name, expected_samples", [("grid_loop", 54), ("nob_hill_scene", 132)]
+)
+def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
+    scene_name, expected_samples, request
+):
+    """Modelled traffic drove on the wrong side of the road at default settings.
+
+    Both scene sources put roughly one agent in three on
+    `Route(ego_route.points, closed=True).offset(LANE_W)` -- the lane to the
+    ego's LEFT. C1 established that the ego already occupies the leftmost
+    forward lane wherever two run its way, so that offset is across the
+    divider. Measured before the fix, this scan counted 14 oncoming samples of
+    54 on grid-loop (California St +1.71 m, Hyde St +1.71 m) and 25 of 132 on
+    Nob Hill (California Street +1.78 m), every one of them across a
+    `double_yellow`.
+
+    Nothing here reads `legal_along`, `lanes`, or any part of the carriageway
+    model: the placement is walked back onto the road's own centreline with
+    this module's independent `_offset_from`, so a scene source that puts
+    traffic in the wrong lane fails here whatever the lane model believes.
+
+    `expected_samples` is a measured fixture property (3 agents x 18 grid-loop
+    stations, 4 x 33 on Nob Hill), pinned exactly rather than as `> 0`. A
+    source that shipped no traffic, or a route that stopped matching California
+    Street, would otherwise satisfy the safety claim by having nothing to
+    judge. Note what it does NOT prove: with every agent now on the ego route
+    itself (see `SyntheticGrid._agent_routes`), the oncoming count is zero
+    because there is one shared piece of geometry and it is the ego's, so this
+    is a regression guard against re-introducing a second, wrongly-placed
+    route -- not independent evidence that some other placement would be safe.
+    """
+    scene = request.getfixturevalue(scene_name)
+    judged, crossings = 0, []
+    for i, s, road, offset in _agent_samples_where_a_second_forward_lane_runs(scene):
+        judged += 1
+        if offset > 0.0:
+            crossings.append((i, round(s, 1), road.name, round(offset, 2)))
+    assert judged == expected_samples, (
+        f"judged {judged} agent samples, not the measured {expected_samples}; "
+        "the scene's traffic or its matched roads have moved"
+    )
+    assert not crossings, (
+        f"{len(crossings)} of {judged} agent-route samples sit on the oncoming "
+        f"side of a two-way centreline: {crossings[:10]}"
+    )
+
+
 def test_sacramento_street_refuses_both_directions(nob_hill_scene):
     """Where the ego's own placement is ambiguous, the rule refuses rather than guesses.
 

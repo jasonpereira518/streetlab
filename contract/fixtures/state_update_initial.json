@@ -84,8 +84,8 @@
       "id": "veh_02",
       "cls": "truck",
       "pose": {
-        "x": 39.26435071618905,
-        "y": 81.8,
+        "x": 40.7078921615565,
+        "y": 78.2,
         "heading": 0.0
       },
       "size": {
@@ -102,7 +102,7 @@
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": 1
+      "lane_offset": 0
     },
     {
       "id": "veh_03",
@@ -156,8 +156,8 @@
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
-        "x": 52.16055962321684,
-        "y": -1.8000000000000012,
+        "x": 49.09662007331178,
+        "y": 1.799999999999999,
         "heading": 3.141592653589793
       },
       "size": {
@@ -174,7 +174,7 @@
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": 1
+      "lane_offset": 0
     }
   ],
   "plan": {
@@ -268,10 +268,10 @@
       },
       {
         "id": "veh_02",
-        "azimuth": -1.8473,
-        "range_m": 85.97,
+        "azimuth": -1.8793,
+        "range_m": 83.19,
         "range_rate_mps": 8.53,
-        "rcs_db": 5.12,
+        "rcs_db": 5.35,
         "tracked": true
       },
       {
@@ -292,10 +292,10 @@
       },
       {
         "id": "veh_05",
-        "azimuth": -3.1244,
-        "range_m": 44.51,
+        "azimuth": -3.0434,
+        "range_m": 41.3,
         "range_rate_mps": 11.13,
-        "rcs_db": 8.44,
+        "rcs_db": 8.7,
         "tracked": true
       },
       {
@@ -377,9 +377,9 @@
         {
           "id": "veh_02",
           "cls": "truck",
-          "lane_offset": 1,
-          "longitudinal_m": 114.68,
-          "lateral_m": 3.6,
+          "lane_offset": 0,
+          "longitudinal_m": 116.13,
+          "lateral_m": 0.0,
           "speed_mps": 8.525733713173173,
           "hazard": false
         },
@@ -404,9 +404,9 @@
         {
           "id": "veh_05",
           "cls": "motorcycle",
-          "lane_offset": 1,
-          "longitudinal_m": -44.36,
-          "lateral_m": 3.6,
+          "lane_offset": 0,
+          "longitudinal_m": -41.3,
+          "lateral_m": 0.0,
           "speed_mps": 11.129845149082364,
           "hazard": false
         }
