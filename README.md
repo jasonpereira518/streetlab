@@ -4,25 +4,81 @@ A simulation and portfolio project — an FSD-style driving-simulator desktop
 app. **Not a real-world safety or self-driving system**, and none of the
 numbers here are safety claims.
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
+[![Status: Cycle 1–3 (Phase 1) built](https://img.shields.io/badge/status-Cycle%201–3%20(Phase%201)%20built-brightgreen.svg)](#roadmap)
+[![Backend tests](https://img.shields.io/badge/backend%20tests-586%20passing-success.svg)](#testing)
+[![Frontend tests](https://img.shields.io/badge/frontend%20tests-150%20vitest%20%2B%2012%20e2e-success.svg)](#testing)
+
+![StreetLab driving live OpenStreetMap-derived streets, with all six telemetry widgets active](docs/screenshots/hero.png)
+
 Two packages, developed and tested independently, now wired together:
 
 - **`streetlab/`** — Tauri 2 + React/TypeScript UI and a Three.js WebGPU
-  viewport, driven entirely by a message stream. 146 vitest unit tests + 12
+  viewport, driven entirely by a message stream. 150 vitest unit tests + 12
   Playwright E2E tests.
 - **`streetlab-backend/`** — the Python simulator: a deterministic kinematic
   world, scripted traffic, ground-truth perception, and a centerline-following
-  planner, served over WebSocket. 482 pytest tests.
+  planner, served over WebSocket. 586 pytest tests.
 - **`contract/`** — the wire contract shared by both: fixtures generated from
   the real simulation, validated by the real `schema.ts` (zod) and the real
   `schema.py` (pydantic) on every change.
 
-See [`DEMO.md`](DEMO.md) for a walkthrough of running it today.
+See [`DEMO.md`](DEMO.md) for a full walkthrough, or [Quick look](#quick-look)
+below for the short version.
+
+## Quick look
+
+<table>
+<tr>
+<td width="50%">
+
+**Injected hazard, tracked and predicted**
+![Orange cut-in overlay with a warning label and the trajectory graph's predicted merge curve](docs/screenshots/hazard-injection.png)
+The planner flags the merging vehicle, draws its predicted path, and the
+trajectory graph plots the curve in real time.
+
+</td>
+<td width="50%">
+
+**Any address, live**
+![Sidebar showing a real address loaded via OpenStreetMap geocoding, with attribution](docs/screenshots/address-search.png)
+Type a place name, press Enter — a real Nominatim geocode and Overpass fetch
+build and drive it, cached offline after the first load.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Live performance overlay**
+![Toolbar overlay showing FPS, tick rate, wire frame size, sim step time, and backend RSS, all live](docs/screenshots/performance-overlay.png)
+Every number is read from the running processes — the render loop and the
+backend's own `/health` endpoint — not fixture data.
+
+</td>
+<td width="50%">
+
+**What's under the hood**
+
+- Tauri 2 desktop shell, zero-config native `.app`
+- Three.js + WebGPU (WebGL2 fallback) viewport
+- Deterministic Python sim, WebSocket-streamed
+- Real OSM street/building geometry via Overpass
+- Six live telemetry widgets, schema-validated wire contract
+
+</td>
+</tr>
+</table>
 
 ## Status
 
-This is **Cycle 1**: a synthetic 3×3 grid instead of real map data, scripted
-(non-reactive) traffic, ground-truth perception instead of a detector model,
-and a single generic hazard instead of the full scenario set. The
+Cycles 1–2 are built (synthetic and real OSM scenes, scripted traffic,
+ground-truth perception, a centerline planner), and Cycle 3 Phase 1 landed
+on top of them: the ego now obeys red lights and stop signs. Still open:
+reactive (non-scripted) traffic, the full hazard scenario set beyond a
+single generic cut-in, and ground-truth perception standing in for a
+trained detector. The
 [design doc](docs/superpowers/specs/2026-08-12-streetlab-backend-design.md)
 covers the full cycle breakdown; the short version is in
 [Roadmap](#roadmap) below.
@@ -104,22 +160,23 @@ See [`DEMO.md`](DEMO.md).
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q         # 482 tests
-cd streetlab && npx vitest run                    # 146 tests, includes ../contract
+cd streetlab-backend && uv run pytest -q         # 586 tests
+cd streetlab && npx vitest run                    # 150 tests, includes ../contract
 cd streetlab && npm run test:e2e                  # 12 Playwright specs
 ```
 
 ## Roadmap
 
-Deliberately split into cycles, only the first of which is built. Each later
-cycle drops in behind an existing seam (`SceneSource`, `PerceptionSource`,
-`Planner`, `TrafficModel`) without touching the cycles before it.
+Deliberately split into cycles; Cycles 1–2 and Cycle 3's first phase are
+built. Each later cycle drops in behind an existing seam (`SceneSource`,
+`PerceptionSource`, `Planner`, `TrafficModel`) without touching the cycles
+before it.
 
 | Cycle | Adds | Status |
 |---|---|---|
 | 1 | Synthetic grid, scripted traffic, ground-truth perception, centerline planner, real-time WS server, native sidecar integration | **Built** |
 | 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | **Built** — OSM ingest behind the SceneSource seam (Phase 1), plus in-app address entry, an off-thread build executor, and offline bundled extracts (Phase 2) |
-| 3 | Reactive traffic (IDM/MOBIL), full hazard scenario set (cut-in, jaywalker, emergency vehicle, obstacle) | Not started |
+| 3 | Junction compliance (red lights, stop signs), then reactive traffic (IDM/MOBIL) and the full hazard scenario set (cut-in, jaywalker, emergency vehicle, obstacle) | **Phase 1 built** — the ego stops for red lights and stop signs; lane-level overtaking and reactive traffic (Phases 2–3) not started |
 | 4 | ML perception (RT-DETRv2 on MPS) replacing ground truth | Not started |
 | 5 | Sim-generated training dataset, fine-tuning, evaluation | Not started |
 
