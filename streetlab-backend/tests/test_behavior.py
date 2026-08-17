@@ -615,9 +615,9 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     failing assertion. `detections=[]` here means `_lead_holding_us_up` can
     never re-trigger a fresh outbound change either, so there is no other way
     out. Measured transition (this fixture): the return phase begins at
-    `held=6.017 s`, one tick after `LANE_CHANGE_OUTBOUND_MAX_S`.
-    `LANE_CHANGE_OUTBOUND_MAX_S + 1.0` (7.0 s) is comfortably above that --
-    about 0.98 s / 16% of headroom, enough to absorb the backstop constant
+    `held=4.517 s`, one tick after `LANE_CHANGE_OUTBOUND_MAX_S`.
+    `LANE_CHANGE_OUTBOUND_MAX_S + 1.0` (5.5 s) is comfortably above that --
+    about 0.98 s / 22% of headroom, enough to absorb the backstop constant
     changing without the bound itself needing to track it, while still
     failing fast (fractions of a second, not a hung CI job with no
     pytest-timeout configured) under the regression it guards against.
@@ -871,13 +871,13 @@ def test_the_pass_ends_when_the_lead_disappears(road):
 #: How long this module's passing-phase tests allow a pass that never gains to
 #: run, and how long they insist it lasts at minimum.
 #:
-#: Literals, deliberately not `LANE_CHANGE_PASS_MAX_S` (8.0 s in
+#: Literals, deliberately not `LANE_CHANGE_PASS_MAX_S` (6.0 s in
 #: `plan/behavior.py`) -- the same reasoning as `_ABORT_CAP_S` below. A bound
 #: imported from the constant it audits moves with it, so raising the backstop
-#: to 80 s would leave a test written that way still green while the car sat in
-#: the oncoming half of a two-lane road for over a minute.
-_PASS_FLOOR_S = 7.0
-_PASS_CAP_S = 9.0
+#: to 60 s would leave a test written that way still green while the car sat
+#: out in the next lane for a minute.
+_PASS_FLOOR_S = 5.0
+_PASS_CAP_S = 7.0
 
 
 def test_a_pass_that_never_gains_gives_up_and_comes_home(road):

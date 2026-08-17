@@ -220,7 +220,7 @@ LANE_CHANGE_SETTLE_M = 0.3
 #: traverse, matching `LANE_CHANGE_RETURN_MAX_S`'s headroom over its own
 #: measured worst. Hitting it is a FAILED traverse -- the car goes home and
 #: `_decline` puts that lead on cooldown -- not a completed one.
-LANE_CHANGE_OUTBOUND_MAX_S = 6.0
+LANE_CHANGE_OUTBOUND_MAX_S = 4.5
 
 #: Hard backstop on the passing phase: how long the car may sit in the target
 #: lane working on getting past the lead before it gives up and comes home.
@@ -233,7 +233,7 @@ LANE_CHANGE_OUTBOUND_MAX_S = 6.0
 #: 4.43 m/s lead and can never gain. 8.0 s clears the measured 6 s worst by
 #: a third and keeps the whole manoeuvre bounded (see `MAX_LABELLED_RUN_S` in
 #: `tests/test_lane_changes.py`, which pins the total).
-LANE_CHANGE_PASS_MAX_S = 8.0
+LANE_CHANGE_PASS_MAX_S = 6.0
 
 #: Daylight required BEYOND bumper-to-bumper before the lead counts as passed.
 #:
@@ -671,7 +671,7 @@ class BehaviorFSM:
                 # times in one 600 s Nob Hill run.
                 return self._advance_return(ego, lanes)
             if self.lane_change.phase == PASSING:
-                return self._advance_pass(ego, route, ego_s, lanes, detections, limit_mps, dt)
+                return self._advance_pass(route, ego_s, detections, limit_mps, dt)
             return self._advance_outbound(ego, lanes)
 
         lead = self._lead_holding_us_up(route, ego_s, detections, limit_mps)
@@ -683,7 +683,7 @@ class BehaviorFSM:
         # no longer always left: on both shipped scenes the ego already drives
         # the leftmost forward lane, so the only legal change is right. Left is
         # still tried first, since overtaking on the left is what a driver does
-        # wherever the road allows it. R3 owns the rest of this method.
+        # wherever the road allows it.
         current = lanes.ego
         direction = next((d for d in (+1, -1) if lanes.may_change_at(ego_s, d)), None)
         if direction is None:
@@ -726,9 +726,7 @@ class BehaviorFSM:
             self._begin_return()
         return self._changing()
 
-    def _advance_pass(
-        self, ego, route, ego_s, lanes: "LaneSet", detections, limit_mps, dt
-    ) -> BehaviorDecision:
+    def _advance_pass(self, route, ego_s, detections, limit_mps, dt) -> BehaviorDecision:
         """Hold the target lane until the lead is behind -- or until it is
         clear that it will not be.
 
@@ -743,8 +741,14 @@ class BehaviorFSM:
         * the lead is behind, with clearance (`_passed`) -- the manoeuvre
           worked;
         * the lead is gone from `detections` -- there is nothing left to pass;
-        * the lead is no longer slow, by the same `SLOW_LEAD_FRACTION` test
-          that started this -- there is no longer a reason to pass it;
+        * the lead is ahead but no longer holding the car up, by the same
+          `_holds_us_up` test that started this: it has got going again, or it
+          has simply driven away beyond `LANE_CHANGE_LOOKAHEAD_M`. Measured on
+          Nob Hill at t=388.5 s, where the lead accelerated from 1.70 to
+          3.91 m/s and pulled from 15 m to 33 m while the ego was crawling
+          round a fillet at 1.6 m/s. Asked only while the lead is still AHEAD:
+          between "alongside" and "clear" the gap is small and negative, which
+          is not a reason to abandon a pass half made;
         * `LANE_CHANGE_PASS_MAX_S` elapsed -- the car is not gaining and is
           not going to, so it goes home and `_decline` keeps it from trying
           this lead again immediately.
@@ -766,8 +770,15 @@ class BehaviorFSM:
         assert lc is not None
         lc.pass_s += dt
         lead = next((d for d in detections if d.id == lc.lead_id), None)
-        if lead is None or not self._is_slow(lead, limit_mps) or self._passed(
-            route, ego_s, lead
+        gap = (
+            None
+            if lead is None
+            else route.signed_gap(ego_s, route.project((lead.pose.x, lead.pose.y)))
+        )
+        if (
+            lead is None
+            or self._passed(gap, lead)
+            or (gap > 0 and not self._holds_us_up(gap, lead, limit_mps))
         ):
             self._begin_return()
         elif lc.pass_s >= LANE_CHANGE_PASS_MAX_S:
@@ -889,18 +900,17 @@ class BehaviorFSM:
         )
 
     @staticmethod
-    def _passed(route, ego_s, lead: Detection) -> bool:
+    def _passed(gap: float, lead: Detection) -> bool:
         """Is `lead` behind the ego, with real clearance?
 
-        `signed_gap` is centre to centre along the route, so two vehicles are
-        still overlapping until it reaches half of each of their lengths --
-        which for the 11.5 m bus in `sim/agents.py::_PROFILES` is 8.1 m, not
-        the 0 m a naive "gap < 0" test would accept. Declaring a pass while
-        the cars are alongside would steer the ego back into the space the
-        lead is occupying, so the lead's OWN length is read from the
-        detection and `LANE_CHANGE_PASS_BUFFER_M` is added on top.
+        `gap` is centre to centre along the route, so two vehicles are still
+        overlapping until it reaches half of each of their lengths -- which
+        for the 11.5 m bus in `sim/agents.py::_PROFILES` is 8.1 m, not the 0 m
+        a naive "gap < 0" test would accept. Declaring a pass while the cars
+        are alongside would steer the ego back into the space the lead is
+        occupying, so the lead's OWN length is read from the detection and
+        `LANE_CHANGE_PASS_BUFFER_M` is added on top.
         """
-        gap = route.signed_gap(ego_s, route.project((lead.pose.x, lead.pose.y)))
         clearance = (EGO_LENGTH_M + lead.size.length) / 2.0 + LANE_CHANGE_PASS_BUFFER_M
         return gap < -clearance
 
@@ -931,14 +941,17 @@ class BehaviorFSM:
         )
 
     @staticmethod
-    def _is_slow(lead: Detection, limit_mps: float) -> bool:
-        """Slow enough to be worth overtaking rather than merely following.
+    def _holds_us_up(gap: float, lead: Detection, limit_mps: float) -> bool:
+        """Is this lead, at this gap, close enough and slow enough to be
+        costing real time?
 
-        Asked twice: once to decide the change, and again every tick of the
-        passing phase, because a lead that gets going again is a reason to
-        come home rather than to keep sitting in the other lane.
+        One predicate, asked at both ends: it is what starts a manoeuvre
+        (`_lead_holding_us_up`) and, asked again every tick of the passing
+        phase, what ends one that no longer has a reason. A lead that gets
+        going again, or that simply drives away, stops holding the car up and
+        there is nothing left to pass.
         """
-        return lead.speed_mps < limit_mps * SLOW_LEAD_FRACTION
+        return gap < LANE_CHANGE_LOOKAHEAD_M and lead.speed_mps < limit_mps * SLOW_LEAD_FRACTION
 
     def _lead_holding_us_up(self, route, ego_s, detections, limit_mps) -> Detection | None:
         """The nearest lead close enough and slow enough to be costing real time.
@@ -963,7 +976,7 @@ class BehaviorFSM:
             if d.lane_offset != 0 or d.id in self.cooldown:
                 continue
             gap = route.signed_gap(ego_s, route.project((d.pose.x, d.pose.y)))
-            if 0 < gap < min(best_gap, LANE_CHANGE_LOOKAHEAD_M) and self._is_slow(d, limit_mps):
+            if 0 < gap < best_gap and self._holds_us_up(gap, d, limit_mps):
                 best, best_gap = d, gap
         return best
 
