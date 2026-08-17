@@ -320,6 +320,53 @@ def two_lane_geometry_one_lane_here(road):
     )
 
 
+def kerbside_lane_set(road):
+    """A `LaneSet` whose only neighbour is on the RIGHT, legal throughout.
+
+    The shape both shipped scenes actually produce. `EGO_LANE_INSET` puts the
+    ego in the inner forward lane wherever two run its way, so containment
+    admits `-1` and refuses `+1` -- every `legal_along` in this suite was
+    `(1,)` or `()` before this fixture, and every synthetic blocker sat at
+    `lane_offset=1`, which left the `direction = -1` half of
+    `_lane_change_step` unexercised in the direction the car really drives.
+    """
+    from sim.route import EGO_LANE_ID, Lane, LaneSet
+
+    right = Route([(x, y - 3.6) for x, y in road.points], closed=road.closed)
+    return LaneSet(
+        lanes=(
+            Lane("lane_right", -3.6, right, EGO_LANE_ID, None),
+            Lane(EGO_LANE_ID, 0.0, road, None, "lane_right"),
+        ),
+        count_along=tuple(2 for _ in range(len(road.points) - 1)),
+        legal_along=tuple((-1,) for _ in range(len(road.points) - 1)),
+    )
+
+
+def both_neighbours_legal_set(road):
+    """Three lanes, and a change is legal in BOTH directions everywhere.
+
+    Neither shipped scene produces this -- `test_lane_set.py::test_each_scene_
+    admits_exactly_the_measured_changes` measures `{-1: 18}` and `{-1: 33}` --
+    so it is the only fixture that can put a question to the `(+1, -1)`
+    preference order in `_lane_change_step`. Wherever exactly one direction is
+    legal the order changes no answer.
+    """
+    from sim.route import EGO_LANE_ID, Lane, LaneSet
+
+    left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
+    right = Route([(x, y - 3.6) for x, y in road.points], closed=road.closed)
+    return LaneSet(
+        lanes=(
+            Lane("lane_right", -3.6, right, EGO_LANE_ID, None),
+            Lane(EGO_LANE_ID, 0.0, road, "lane_left", "lane_right"),
+            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
+        ),
+        count_along=tuple(3 for _ in range(len(road.points) - 1)),
+        legal_along=tuple((1, -1) for _ in range(len(road.points) - 1)),
+    )
+
+
 def slow_lead(gap_m, speed):
     from schema import Detection, Pose, Size
 
@@ -431,6 +478,83 @@ def test_a_distant_vehicle_in_the_target_lane_does_not_block(road):
         limit_mps=12.0,
     )
     assert d.target_lane_id == "lane_left"
+
+
+# --------------------------------------------------------------------------- #
+# The direction the car actually changes into                                  #
+# --------------------------------------------------------------------------- #
+#
+# Everything above puts the only legal change on the LEFT and every blocker at
+# `lane_offset=1`. Both shipped scenes do the opposite: the ego already drives
+# the inner forward lane, so the only change containment admits is RIGHT
+# (`test_lane_set.py::test_each_scene_admits_exactly_the_measured_changes`).
+# That left `_gap_is_acceptable`'s `direction` argument -- the one check between
+# the ego and a car in the lane it is entering -- carrying no test weight at
+# all: a hard-coded `+1` in its place survived the whole suite.
+
+
+def test_a_slow_lead_with_a_clear_kerbside_lane_changes_right(road):
+    """The manoeuvre both scenes really drive: pass on the right."""
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=kerbside_lane_set(road), detections=[slow_lead(25.0, 3.0)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_right"
+    assert d.maneuver == "lane_change_right"
+
+
+def test_a_vehicle_in_the_kerbside_lane_blocks_a_right_change(road):
+    """The gap has to be checked in the lane the car is ENTERING.
+
+    Restricting `_lane_change_step`'s gap check to a hard-coded `+1` -- i.e.
+    looking left before moving right -- leaves this blocker invisible and the
+    change goes ahead into it.
+    """
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=kerbside_lane_set(road),
+        detections=[slow_lead(25.0, 3.0), blocker(MIN_FRONT_GAP_M - 2.0, 12.0, -1)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id is None
+
+
+def test_a_vehicle_in_the_oncoming_lane_does_not_block_a_right_change(road):
+    """The mirror of the test above, and the half that a hard-coded `+1`
+    fails in the other direction: a car a lane to the LEFT is nothing to do
+    with a change to the right, and must not veto it.
+    """
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=kerbside_lane_set(road),
+        detections=[slow_lead(25.0, 3.0), blocker(MIN_FRONT_GAP_M - 2.0, 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_right"
+    assert d.maneuver == "lane_change_right"
+
+
+def test_a_left_change_is_preferred_where_both_directions_are_legal(road):
+    """`_lane_change_step` tries `(+1, -1)` in that order, and the order is a
+    decision rather than an accident: overtaking on the left is what a driver
+    does wherever the road allows it.
+
+    Nothing else in the suite can see that order. Both shipped scenes admit
+    exactly one direction, so reversing the tuple changed no answer anywhere
+    until this fixture made both legal at once.
+    """
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=both_neighbours_legal_set(road), detections=[slow_lead(25.0, 3.0)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_left"
+    assert d.maneuver == "lane_change_left"
 
 
 def test_a_committed_change_is_not_abandoned_when_the_reason_disappears(road):
