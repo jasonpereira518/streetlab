@@ -557,12 +557,12 @@ def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_re
     """The same claim on `SyntheticGrid`, where it fails harder (finding I3).
 
     grid-loop is the scene with two-lane arterials on two of its four sides, so
-    it changes lanes far more often than Nob Hill does -- 2916 labelled frames
-    in 300 s against Nob Hill's 1353 in 600 s (measured) -- and its junction
-    interrupts were correspondingly worse: 3.50 m at t=47.67 s, on maneuver
-    `stop`, against Nob Hill's 2.32 m. No test covered it here, so the more
-    severe half of defect I1 was invisible to the suite while the milder half
-    sat under an `xfail`.
+    it changes lanes far more often than Nob Hill does -- 3254 labelled frames
+    in 300 s against Nob Hill's 1603 in 600 s (measured post-fix) -- and it
+    takes four junction interrupts to Nob Hill's one. Its breach was
+    correspondingly worse: 3.50 m at t=47.67 s on maneuver `stop`, against Nob
+    Hill's 2.32 m. No test covered it here, so the more severe half of defect
+    I1 was invisible to the suite while the milder half sat under an `xfail`.
     """
     scene, frames = grid_loop_replay
     labelled, worst = _worst_offset_outside_a_change(scene.ego_route, frames)
@@ -577,10 +577,15 @@ def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
     """The ceiling on the exclusion window the two guards above are judged
     against. See `_labelled_runs` for why it has to exist.
 
-    Stated on both scenes because the two reach the bound from opposite ends:
-    Nob Hill's changes are rare and long (4 runs in 600 s), grid-loop's are
-    frequent (10 runs in 300 s) and its interrupts are the ones that stretch a
-    run by flipping an outbound change into an abort mid-way.
+    Stated on both scenes because they exercise opposite halves of it.
+    grid-loop supplies the volume -- 10 runs in 300 s against Nob Hill's 4 in
+    600 s, and four of the five junction interrupts across both scenes -- but
+    every one of its runs settles, worst 6.57 s and 0.297 m. Nob Hill supplies
+    the extreme: one run of 9.53 s ending at 0.735 m, the only case on either
+    scene where the abort begins with the car already braking, so it is at rest
+    at the line and cannot steer the last stretch home before the return
+    phase's backstop expires. Drop either scene and one of the two bounds
+    stops being tested near anything.
     """
     scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
     runs = _labelled_runs(scene.ego_route, frames)
