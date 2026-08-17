@@ -513,6 +513,43 @@ class Simulation:
 # --------------------------------------------------------------------------- #
 
 
+def _lane_state(
+    scene: BuiltScene,
+    route,
+    ego_s: float,
+    offset: float,
+    heading_error: float,
+    detections: Sequence[Detection],
+) -> LaneState:
+    """Report the lane the ego is in, not the lane it was assumed to be in.
+
+    `lane_index` counts from the LEFT because `LanePosition.tsx:47-48` reads it
+    that way (`leftExists = lane_index > 0`). The sim counts from the right,
+    where lane 0 is the kerbside lane the ego route already sits in, so the two
+    are converted here rather than either side changing convention.
+    """
+    lanes = scene.lanes
+    count = lanes.count_at(ego_s) if lanes is not None else 1
+    # Which lane is the ego actually in? Its offset from lane 0's centreline,
+    # in lane widths, leftward-positive.
+    from_right = min(max(int(round(offset / LANE_W)), 0), count - 1)
+    index = count - 1 - from_right
+
+    road_centre_marking = "double_yellow" if count > 1 else "solid_white"
+    return LaneState(
+        lane_index=index,
+        lane_count=count,
+        lane_width_m=LANE_W,
+        offset_m=offset - from_right * LANE_W,
+        heading_error=heading_error,
+        # Leftmost lane's left edge is the centre divider; anything further
+        # right has a lane beside it.
+        left_marking=road_centre_marking if index == 0 else "dashed_white",
+        right_marking="solid_white" if from_right == 0 else "dashed_white",
+        neighbors=[_neighbor(d, route, ego_s) for d in detections],
+    )
+
+
 def assemble_state_update(
     *,
     world: WorldState,
@@ -593,16 +630,7 @@ def assemble_state_update(
         plan=plan,
         telemetry=Telemetry(
             radar=_radar(ego, detections),
-            lane=LaneState(
-                lane_index=0,
-                lane_count=2,
-                lane_width_m=LANE_W,
-                offset_m=offset,
-                heading_error=heading_error,
-                left_marking="double_yellow",
-                right_marking="solid_white",
-                neighbors=[_neighbor(d, route, ego_s) for d in detections],
-            ),
+            lane=_lane_state(scene, route, ego_s, offset, heading_error, detections),
             ttc_s=ttc,
             vehicle=_vehicle_status(world),
             trajectory=_trajectory(world, offset, detections),

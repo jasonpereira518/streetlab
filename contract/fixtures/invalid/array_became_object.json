@@ -227,12 +227,12 @@
   "telemetry": {
     "radar": {},
     "lane": {
-      "lane_index": 0,
+      "lane_index": 1,
       "lane_count": 2,
       "lane_width_m": 3.6,
       "offset_m": -0.043508083531844606,
       "heading_error": 0.01794436308796543,
-      "left_marking": "double_yellow",
+      "left_marking": "dashed_white",
       "right_marking": "solid_white",
       "neighbors": [
         {

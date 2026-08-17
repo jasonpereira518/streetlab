@@ -348,12 +348,12 @@
       }
     ],
     "lane": {
-      "lane_index": 0,
+      "lane_index": 1,
       "lane_count": 2,
       "lane_width_m": 3.6,
       "offset_m": -0.0,
       "heading_error": 0.0,
-      "left_marking": "double_yellow",
+      "left_marking": "dashed_white",
       "right_marking": "solid_white",
       "neighbors": [
         {

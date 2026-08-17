@@ -690,6 +690,33 @@ describe('Telemetry row', () => {
     expect(canvasText(steering)).toMatch(/\d+°/);
   });
 
+  it('draws the ego in the rightmost lane on a two-lane road', () => {
+    // The backend reports lane_index counting from the left, so a two-lane
+    // road with the ego kerbside is index 1 of 2 -- a neighbour to the left,
+    // none to the right. Before Cycle 3 the backend hardcoded 0 of 2 and drew
+    // it backwards.
+    harness = createHarness();
+    const { container } = render(<TelemetryRow />);
+    harness.emitScene();
+    const base = harness.emitFrame(1);
+
+    const canvases = [...container.querySelectorAll('canvas')] as HTMLCanvasElement[];
+    const lane = canvases[1];
+    clearCanvasCalls(lane);
+
+    const frame: StateUpdate = {
+      ...base,
+      telemetry: {
+        ...base.telemetry,
+        lane: { ...base.telemetry.lane, lane_index: 1, lane_count: 2 },
+      },
+    };
+    harness.emit(frame);
+    tick(2);
+
+    expect(canvasText(lane)).toContain('lane 2/2');
+  });
+
   it('animates: consecutive frames produce different speed readouts', () => {
     harness = createHarness();
     const { container } = render(<TelemetryRow />);

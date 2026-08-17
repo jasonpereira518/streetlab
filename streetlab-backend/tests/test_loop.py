@@ -371,6 +371,56 @@ def test_lane_state_tracks_the_ego_offset(sim):
     assert frame.telemetry.lane.offset_m == pytest.approx(actual, abs=1e-6)
 
 
+def test_the_lane_count_reported_matches_the_road_the_ego_is_on():
+    sim = Simulation(SyntheticGrid(), seed=7)
+    for _ in range(600):
+        sim.step()
+        frame = sim.state_update()
+        s = sim.scene.ego_route.project((sim.ego.x, sim.ego.y))
+        assert frame.telemetry.lane.lane_count == sim.scene.lanes.count_at(s)
+
+
+def test_the_ego_starts_in_the_rightmost_lane():
+    """`LanePosition.tsx:47-48` counts lane_index from the LEFT, so the
+    kerbside lane the ego drives is `lane_count - 1`.
+    """
+    sim = Simulation(SyntheticGrid(), seed=7)
+    sim.step()
+    lane = sim.state_update().telemetry.lane
+    assert lane.lane_index == lane.lane_count - 1
+
+
+def test_the_lane_index_is_always_inside_the_lane_count():
+    sim = Simulation(SyntheticGrid(), seed=7)
+    for _ in range(1200):
+        sim.step()
+        lane = sim.state_update().telemetry.lane
+        assert 0 <= lane.lane_index < lane.lane_count
+
+
+def test_a_single_lane_road_reports_no_neighbour_on_either_side():
+    """The visible consequence of real data: most of Nob Hill draws one lane."""
+    sim = Simulation(SyntheticGrid(), seed=7)
+    seen_single = False
+    for _ in range(2400):
+        sim.step()
+        lane = sim.state_update().telemetry.lane
+        if lane.lane_count == 1:
+            seen_single = True
+            assert lane.lane_index == 0
+            assert lane.left_marking in ("double_yellow", "solid_white")
+    assert seen_single, "grid-loop never reported a single-lane stretch"
+
+
+def test_the_kerbside_marking_is_never_a_centre_divider():
+    sim = Simulation(SyntheticGrid(), seed=7)
+    for _ in range(600):
+        sim.step()
+        lane = sim.state_update().telemetry.lane
+        if lane.lane_index == lane.lane_count - 1:
+            assert lane.right_marking == "solid_white"
+
+
 def test_radar_returns_accompany_detections(sim):
     advance(sim, 2.0)
     frame = sim.state_update()
