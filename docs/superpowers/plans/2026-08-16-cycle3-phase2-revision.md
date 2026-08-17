@@ -66,7 +66,7 @@ oncoming.
 | case | left needs | right needs |
 | --- | ---: | ---: |
 | two-way 2+2 (both scenes) | 2.94 – 3.60 m | **0.00 – 0.66 m** |
-| oneway 2/0, Sacramento St (ego straddles both lanes) | 1.80 m | 1.80 m |
+| oneway 2/0, Sacramento St (ego on the centreline, `ego_off` 0.00 m) | 1.80 m | 1.80 m |
 
 The 0.66 m is `Route.offset`'s mitre scaling at a corner, not noise. 0.75 m
 clears it and still leaves 2.19 m of separation before the nearest *rejected*
@@ -77,8 +77,14 @@ ambiguous it refuses both directions rather than guessing.
 
 - **Flip the sign to `−LANE_W · k` and gate out oneway roads.** Smaller, but it
   hard-codes an answer that happens to be right on today's two fixtures. It
-  also cannot express Sacramento Street, where the ego straddles two lanes and
-  neither direction is safe.
+  also cannot express Sacramento Street, where the ego route sits on the
+  centreline of a oneway (`ego_off` 0.00 m on all 16 matched segments) and
+  neither direction can be placed confidently. *Correction (R1-FIX):* those 16
+  are the fillet vertices of a turn **across** Sacramento Street, matched to it
+  rather than to the cross street (ruling Q26) — not the ego straddling a
+  oneway's two lanes while driving along it, as this bullet first said. The
+  conclusion is unchanged: a sign flip has no answer for a segment whose ego
+  offset is zero, and containment refuses both directions there.
 - **Per-vertex signed lane geometry.** What I first ruled. Measurement killed
   it: assigning the ego a lane *slot* from `(lanes_forward, lanes_backward)`
   misplaces it by more than half a lane on 40/339 Nob Hill segments (worst

@@ -381,8 +381,21 @@ class LaneSet:
 
     @property
     def ego(self) -> Lane:
-        """The ego's own lane. Every `LaneSet` has one; `derive_lanes` builds it."""
-        return self.by_id(EGO_LANE_ID) or self.lanes[0]
+        """The ego's own lane. Every `LaneSet` has one; `derive_lanes` builds it.
+
+        Raises rather than falling back to `lanes[0]`, on the same
+        refuse-by-default principle `legal_along`'s empty default follows.
+        `lanes[0]` is `lane_right` in `derive_lanes` order -- a route one lane
+        width off the one the car is actually tracking -- and every per-station
+        answer here (`_segment_at`, and therefore `count_at`, `legal_at`,
+        `road_at`, `ego_offset_at`) plus `neighbour` keys off this, so a
+        silent fallback keys all of them to the wrong lane. No live path
+        reaches it; that is the point of failing loudly if one ever does.
+        """
+        ego = self.by_id(EGO_LANE_ID)
+        if ego is None:
+            raise ValueError(f"LaneSet has no ego lane ({EGO_LANE_ID!r})")
+        return ego
 
     def by_id(self, lane_id: str) -> Lane | None:
         return next((l for l in self.lanes if l.id == lane_id), None)

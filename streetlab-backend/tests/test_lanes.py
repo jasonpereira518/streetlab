@@ -286,8 +286,13 @@ def test_nearest_road_along_reports_none_beyond_the_match_radius():
     assert nearest_road_along(route, roads) == [None]
 
 
-def test_lanes_forward_along_reports_the_forward_lane_count_per_segment():
-    from map.lanes import lanes_forward_along
+def test_the_forward_lane_count_is_reported_per_segment():
+    """`derive_lanes`' `count_along`, on a route that crosses from a two-lane
+    street onto a one-lane one. Asked through the `LaneSet` because the
+    standalone `lanes_forward_along` wrapper is gone -- one nearest-road pass
+    now answers every question, so there is nothing left to ask separately.
+    """
+    from map.lanes import derive_lanes
     from schema import Road
     from sim.route import Route
 
@@ -306,14 +311,7 @@ def test_lanes_forward_along_reports_the_forward_lane_count_per_segment():
         ),
     ]
     route = Route([(10.0, 0.5), (40.0, 0.5), (90.0, 0.5)], closed=False)
-    assert lanes_forward_along(route, roads) == [2, 1]
-
-
-def test_lanes_forward_along_returns_none_when_nothing_matches():
-    from map.lanes import lanes_forward_along
-    from sim.route import Route
-
-    assert lanes_forward_along(Route([(0.0, 0.0), (10.0, 0.0)], closed=False), []) is None
+    assert derive_lanes(route, roads).count_along == (2, 1)
 
 
 def test_the_real_nob_hill_route_is_mostly_single_lane(nob_hill_scene):
@@ -327,16 +325,13 @@ def test_the_real_nob_hill_route_is_mostly_single_lane(nob_hill_scene):
     Do not "fix" this to assert 0.877; that would be asserting the wrong
     metric and would fail for no real reason.
     """
-    from map.lanes import lanes_forward_along
-
-    scene = nob_hill_scene
-    counts = lanes_forward_along(scene.ego_route, scene.description.roads)
-    assert counts is not None
+    counts = nob_hill_scene.lanes.count_along
+    assert counts
     single = sum(1 for c in counts if c < 2)
     assert single / len(counts) > 0.7, f"only {single}/{len(counts)} segments single-lane"
 
 
-def test_speed_limits_and_lanes_forward_along_fill_a_mid_route_gap_from_the_predecessor():
+def test_speed_limits_and_lane_counts_fill_a_mid_route_gap_from_the_predecessor():
     """A route that runs beside the only road, swings 400 m away, then comes
     back parallel to it (never rejoining). The middle two segments sit far
     beyond `_LIMIT_MAX_MATCH_M` and are unmatched -- they must inherit the
@@ -349,7 +344,7 @@ def test_speed_limits_and_lanes_forward_along_fill_a_mid_route_gap_from_the_pred
     could be replaced with `return values` -- dropping the forward-fill
     entirely -- and nothing would notice.
     """
-    from map.lanes import lanes_forward_along, nearest_road_along
+    from map.lanes import derive_lanes, nearest_road_along
 
     road = Road(
         id="only", name="Only St", road_class="residential",
@@ -361,17 +356,17 @@ def test_speed_limits_and_lanes_forward_along_fill_a_mid_route_gap_from_the_pred
 
     assert nearest_road_along(route, [road]) == [0, None, None]
     assert speed_limits_along(route, [road]) == [11.2, 11.2, 11.2]
-    assert lanes_forward_along(route, [road]) == [2, 2, 2]
+    assert derive_lanes(route, [road]).count_along == (2, 2, 2)
 
 
-def test_speed_limits_and_lanes_forward_along_patch_a_leading_unmatched_run():
+def test_speed_limits_and_lane_counts_patch_a_leading_unmatched_run():
     """The mirror case: the route starts 400 m from the only road and only
     reaches it on its last segment. The leading unmatched entries have no
     predecessor to inherit -- they must be patched from the first real match
     once one is known, which is a separate line in `_fill_forward` from the
     mid-route gap above (that one only ever inherits `out[-1]`, which is None
     until the first real value arrives)."""
-    from map.lanes import lanes_forward_along, nearest_road_along
+    from map.lanes import derive_lanes, nearest_road_along
 
     road = Road(
         id="only", name="Only St", road_class="residential",
@@ -383,4 +378,4 @@ def test_speed_limits_and_lanes_forward_along_patch_a_leading_unmatched_run():
 
     assert nearest_road_along(route, [road]) == [None, None, 0]
     assert speed_limits_along(route, [road]) == [11.2, 11.2, 11.2]
-    assert lanes_forward_along(route, [road]) == [2, 2, 2]
+    assert derive_lanes(route, [road]).count_along == (2, 2, 2)

@@ -771,19 +771,12 @@ def _governing_roads_from(idx: list[int | None], roads: list[Road]) -> list[Road
     return None if filled is None else [roads[i] for i in filled]
 
 
-def lanes_forward_along(route: Route, roads: list[Road]) -> list[int] | None:
-    """How many lanes run the ego's way on each segment of `route`.
-
-    What the wire reports as `lane_count`, and nothing more. It is NOT what
-    decides whether a lane change is legal -- see `lane_change_is_legal`, and
-    the revision plan for how believing otherwise put a derived lane across a
-    double yellow line. Measured on the shipped Nob Hill extract: 87.7 % of the
-    driven length answers 1.
-    """
-    idx = nearest_road_along(route, roads)
-    if all(i is None for i in idx):
-        return None
-    return _lanes_forward_from(idx, roads)
+# `lanes_forward_along(route, roads)` used to live here -- one nearest-road pass
+# per question. `derive_lanes` now makes that pass ONCE and keeps every answer
+# read off it (`count_along`, `legal_along`, `road_along`, `ego_offset_along`),
+# so the standalone wrapper had no production caller left and only a second
+# chance to match a different road. Ask a `LaneSet` instead: `count_at(s)`, or
+# `count_along` for the per-segment table.
 
 
 # --------------------------------------------------------------------------- #

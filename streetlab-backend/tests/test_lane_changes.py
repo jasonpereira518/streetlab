@@ -7,14 +7,30 @@ where 87.7 % of the driven length has one forward lane and a lane change would
 be into oncoming traffic.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
 
+from map.lanes import LANE_FIT_TOL_M, LANE_W
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
 
 DT = 1 / 60
+
+#: The two wire labels a lane change is driven under, outbound and return.
+LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
+
+#: How long the Nob Hill replay below runs. 240 s (the brief's original figure)
+#: is vacuous here: the ego starts well ahead of the 3 same-lane traffic agents
+#: on a 1182 m loop, so at `traffic_speed_scale=0.4` it never gets within
+#: `LANE_CHANGE_LOOKAHEAD_M` of a lead, `_held_up` never fires, and not one
+#: change is attempted -- every assertion below would pass with the legality
+#: gate deleted outright. 600 s (~2.4 compliant laps) was measured to produce
+#: the FSM's first attempt at t=373.4 s and 4 changes / 1353 labelled frames by
+#: t=600 s. `test_the_nob_hill_replay_actually_changes_lanes` makes that
+#: non-vacuousness an assertion rather than an artifact of one measurement run.
+NOB_HILL_REPLAY_S = 600.0
 
 
 def maneuvers_over(sim, seconds):
@@ -23,6 +39,80 @@ def maneuvers_over(sim, seconds):
         sim.step()
         seen.append(sim.state_update().plan.maneuver)
     return seen
+
+
+@pytest.fixture(scope="module")
+def nob_hill_replay():
+    """`NOB_HILL_REPLAY_S` of the real Nob Hill loop, driven once.
+
+    Three tests in this module judge the same deterministic replay, and driving
+    it three times costs ~2.5 minutes for three identical answers. Recorded per
+    frame as `(pre_pose, post_pose, maneuver)` because the two poses are not
+    interchangeable: `sim/loop.py`'s `state_update()` documents that
+    `frame.plan.maneuver` was computed by `_plan()` from the pose at the START
+    of the tick, while `sim.ego.x/y` after `sim.step()` is the pose at its END
+    -- a 1/60 s, 0.149 m skew at Nob Hill lap speed (deliberate, from Phase 1
+    Task 1). A legality scan has to ask about the position that actually
+    produced the label, so it reads `pre`; the lane-holding scan is about where
+    the car ended up, so it reads `post`. Do not collapse these into one.
+    """
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_junctions import _osm_sim
+
+    sim = _osm_sim()
+    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
+    frames = []
+    for _ in range(int(NOB_HILL_REPLAY_S / DT)):
+        pre = (sim.ego.x, sim.ego.y)
+        sim.step()
+        frames.append((pre, (sim.ego.x, sim.ego.y), sim.state_update().plan.maneuver))
+    return sim.scene, frames
+
+
+def _initiations(frames):
+    """Every frame that STARTS a labelled lane change, as `(index, pose, direction)`.
+
+    Only the first frame of a run, because only the first frame is a DECISION.
+    `BehaviorFSM._lane_change_step` gates the outbound change on
+    `LaneSet.may_change_at`, then `_begin_return` flips the same commitment into
+    the mirror-labelled trip home with no second legality question asked -- and
+    correctly so: the home lane is where the car came from. A scan over every
+    labelled frame instead of every run start therefore judges the return
+    against `neighbour(+1)`, which is the lane on the far side of the ego route,
+    not the one the car is actually steering back into. Measured on this replay:
+    509 of 1353 labelled frames "fail" that way, all of them artifacts of asking
+    the wrong lane about the wrong manoeuvre.
+
+    A run cannot start mid-return: `BehaviorFSM.step` clears `self.lane_change`
+    outright whenever a junction constraint outranks it, so the frame after any
+    gap in the labels is a fresh outbound decision.
+    """
+    for i, (pre, _post, maneuver) in enumerate(frames):
+        if maneuver not in LANE_CHANGE_LABELS:
+            continue
+        if i and frames[i - 1][2] in LANE_CHANGE_LABELS:
+            continue
+        yield i, pre, (+1 if maneuver == "lane_change_left" else -1)
+
+
+def _fits_the_forward_carriageway(road, centre_offset: float) -> bool:
+    """Does a full-width lane centred at `centre_offset` sit on `road`'s
+    forward half?
+
+    `centre_offset` is signed from the road's centreline, positive to the LEFT
+    of the EGO's travel. Restated here rather than imported from
+    `map.lanes.lane_change_is_legal`: this is the phase's acceptance criterion
+    (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`), and a test
+    that asks the production predicate whether the production predicate was
+    obeyed proves only that it is self-consistent.
+    """
+    width = (road.lanes_forward + road.lanes_backward) * LANE_W
+    lo = -width / 2.0
+    hi = lo + road.lanes_forward * LANE_W
+    return (
+        centre_offset - LANE_W / 2.0 >= lo - LANE_FIT_TOL_M
+        and centre_offset + LANE_W / 2.0 <= hi + LANE_FIT_TOL_M
+    )
 
 
 def test_the_ego_overtakes_a_slow_lead_where_two_lanes_exist():
@@ -77,55 +167,85 @@ def test_the_ego_returns_to_its_own_lane_after_overtaking():
     assert abs(offsets[-1]) < 1.8, f"ended {offsets[-1]:.2f} m off its lane"
 
 
-def test_no_lane_change_is_ever_initiated_where_the_road_has_one_forward_lane():
-    """The claim that matters on real data. A car that overtakes wherever it
-    likes on Nob Hill is driving into oncoming traffic for 87.7 % of the loop.
+def test_the_nob_hill_replay_actually_changes_lanes(nob_hill_replay):
+    """The non-vacuousness guard for both scans over this replay, unmarked so
+    it keeps binding while the lane-holding guard below stays xfailed.
 
-    240 s (the brief's original figure) turns out to be too short to be
-    non-vacuous here: measured against this fixture, the ego (starting well
-    ahead of the 3 same-lane traffic agents on a 1182 m loop, at
-    traffic_speed_scale=0.4) never gets within `LANE_CHANGE_LOOKAHEAD_M` of a
-    lead before 240 s elapses, so `_held_up` never fires and zero lane
-    changes are ever attempted in that window -- the assertion would pass
-    even if the `count_at` gate were deleted outright. 600 s (~2.4 compliant
-    laps) was measured to produce the FSM's first lane-change attempt at
-    t=373.4 s and 633 lane-change frames by t=600 s, all on `count_at == 2`
-    segments -- so the loop below now runs long enough to actually exercise
-    the gate, and the added `assert lc_frames` makes that non-vacuousness
-    part of the test itself rather than an artifact of one measurement run.
+    Split out of that test deliberately. While `xfail(strict=True)` covers its
+    whole body, "no lane change occurred at all" and "the peak is 10 m" are
+    indistinguishable from today's 2.32 m -- all three are an xfail and a green
+    suite, and both of the R1 reviewer's mutations surfaced there as XPASS,
+    making it a catch-all that attributes every perturbation of this replay to
+    the one defect its marker names. Whether the replay drives a lane change at
+    all is a separate fact from whether the car holds its lane outside one, and
+    only the second is waiting on R4.
 
-    Sampled at the PRE-step pose, not the post-step one: `sim/loop.py`'s
-    `state_update()` docstring documents that `frame.plan.maneuver` was
-    computed by `_plan()` from the pose at the START of the tick, while
-    `sim.ego.x/y` after `sim.step()` is the pose at its END -- a 1/60 s,
-    0.149 m skew at Nob Hill lap speed (deliberate, from Phase 1 Task 1). The
-    legality scan has to match the maneuver label to the position that
-    actually produced it, or `count_at` is being asked about a point ~0.15 m
-    further along the route than the one the FSM looked at when it decided
-    to change lanes. Do not "simplify" this back to the post-step pose --
-    that reintroduces the skew this fix removes.
+    Both labels, not just one: an overtake that never returns and a return with
+    no outbound are each half a manoeuvre, and either would leave the scans
+    below judging a case they were not written for.
     """
-    import sys
+    _scene, frames = nob_hill_replay
+    labelled = {maneuver for _pre, _post, maneuver in frames if maneuver in LANE_CHANGE_LABELS}
+    assert labelled == set(LANE_CHANGE_LABELS), (
+        f"the replay drove {sorted(labelled)}, not a complete lane change"
+    )
+    assert any(maneuver not in LANE_CHANGE_LABELS for _pre, _post, maneuver in frames), (
+        "every frame is a lane change; nothing is left for the lane-holding scan to judge"
+    )
 
+
+def test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway(
+    nob_hill_replay,
+):
+    """The claim that matters on real data, asserted against CONTAINMENT.
+
+    A car that overtakes wherever it likes on Nob Hill is driving into oncoming
+    traffic for 87.7 % of the loop. What this used to assert -- that
+    `count_at(s) >= 2` wherever a change was labelled -- is the criterion R1
+    abolished, and it is satisfied by construction: with the planner gated on
+    `LaneSet.may_change_at`, replacing that method's body with
+    `return self.count_at(s) >= 2` (i.e. putting defect C1 back into the
+    planner, changing lanes on a count) leaves this scan checking the mutated
+    predicate against itself, and it PASSES. Measured: only
+    `test_behavior.py`'s synthetic two-point fixture caught that.
+
+    So this walks each manoeuvre the car ACTUALLY DROVE back onto the geometry
+    it steered into -- the neighbour `Route` reached through
+    `left_id`/`right_id` -- and asks whether that lane, at its full width, is
+    inside the forward half of the road it is on. Nothing here reads
+    `legal_along`, `legal_at` or `may_change_at`, so a planner that ignores
+    them fails here rather than agreeing with itself. Measured on this replay:
+    4 changes, all `lane_change_right` onto California Street's 2/2
+    carriageway, needing at most 0.013 m of the 0.75 m `LANE_FIT_TOL_M`.
+    """
+    scene, frames = nob_hill_replay
+    route, lanes = scene.ego_route, scene.lanes
+    # The same independent offset measurement the lane-set suite uses. Imported
+    # rather than copied so there is exactly one re-derivation of it, and it
+    # stays re-derived: a scan that measures with `map.lanes`' own arithmetic is
+    # not evidence about `map.lanes`.
     sys.path.insert(0, str(Path(__file__).parent))
-    from test_junctions import _osm_sim
+    from test_lane_set import _offset_from
 
-    sim = _osm_sim()
-    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
-    route, lanes = sim.scene.ego_route, sim.scene.lanes
-    violations = []
-    lc_frames = 0
-    for _ in range(int(600.0 / DT)):
-        pre = (sim.ego.x, sim.ego.y)  # the pose `_plan()` consumed for this tick's maneuver
-        sim.step()
-        frame = sim.state_update()
-        if frame.plan.maneuver in ("lane_change_left", "lane_change_right"):
-            lc_frames += 1
-            s = route.project(pre)
-            if lanes.count_at(s) < 2:
-                violations.append(round(s, 1))
-    assert lc_frames, "no lane change was ever attempted -- this run proves nothing"
-    assert not violations, f"{len(violations)} lane changes on single-lane road: {violations[:10]}"
+    judged, violations = 0, []
+    for i, pre, direction in _initiations(frames):
+        s = route.project(pre)
+        road, target = lanes.road_at(s), lanes.neighbour(direction)
+        judged += 1
+        if road is None or target is None:
+            violations.append((round(i * DT, 1), round(s, 1), direction, "no road/lane"))
+            continue
+        centre = target.route.point_at(target.route.project(route.point_at(s)))
+        offset = _offset_from(road, centre, route.heading_at(s))
+        if not _fits_the_forward_carriageway(road, offset):
+            violations.append(
+                (round(i * DT, 1), round(s, 1), road.name, direction, round(offset, 2))
+            )
+    assert judged, "no lane change was ever initiated -- this run proves nothing"
+    assert not violations, (
+        f"{len(violations)} of {judged} changes steered outside the forward "
+        f"carriageway: {violations[:10]}"
+    )
 
 
 @pytest.mark.xfail(
@@ -142,46 +262,34 @@ def test_no_lane_change_is_ever_initiated_where_the_road_has_one_forward_lane():
         "by luck. Remove this marker in R4; `strict` makes that mandatory."
     ),
 )
-def test_the_ego_still_holds_its_lane_outside_a_change():
+def test_the_ego_still_holds_its_lane_outside_a_change(nob_hill_replay):
     """A lane change is the only time the car may be a lane width off the ego
     route. Everywhere else the 2.0 m peak-lateral-offset guard from Phase 1 --
     the same bound `test_loop.py`'s Nob Hill lap test checks -- still binds.
 
+    Judged at the POST-step pose: this asks where the car ended up, not what it
+    was deciding, so unlike the legality scan above it wants the end-of-tick
+    pose the maneuver label is 1/60 s ahead of.
+
     The brief's original 60 s at the default `traffic_speed_scale=1.0` never
-    triggers a lane change on Nob Hill at all -- the sibling negative-claim
-    test above measures the first one at t=373.4 s even at the more
-    permissive traffic_speed_scale=0.4. That means the `if ... continue`
-    exclusion below was DEAD CODE for the entire run: every frame counted
-    toward `worst` regardless of maneuver, so this test could not tell a
-    correct exclusion from a broken one (wrong maneuver strings, a stale
-    field, the branch deleted outright) -- it would pass identically either
-    way, and was functionally a duplicate of the pre-existing
+    triggers a lane change on Nob Hill at all -- the first one on this replay is
+    at t=373.4 s even at the more permissive traffic_speed_scale=0.4. That made
+    the maneuver exclusion below DEAD CODE for the entire run: every frame
+    counted toward `worst`, so this could not tell a correct exclusion from a
+    broken one (wrong maneuver strings, a stale field, the branch deleted
+    outright), and was functionally a duplicate of the pre-existing
     `test_loop.py::test_the_ego_holds_its_lane_around_the_real_route`.
-
-    Fixed the same way as the vacuous 240 s window above: reuse the exact
-    same scan (traffic_speed_scale=0.4, 600 s, same seed=1 fixture) so lane
-    changes are guaranteed to occur on this deterministic replay, and assert
-    `excluded_frames` is nonzero so a future window/scale drift that makes
-    this vacuous again fails loudly instead of passing for the wrong reason.
+    `NOB_HILL_REPLAY_S` fixes that, and
+    `test_the_nob_hill_replay_actually_changes_lanes` -- unmarked, so this
+    marker cannot swallow it -- is what keeps it fixed.
     """
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).parent))
-    from test_junctions import _osm_sim
-
-    sim = _osm_sim()
-    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
-    route = sim.scene.ego_route
-    worst = 0.0
-    excluded_frames = 0
-    for _ in range(int(600.0 / DT)):
-        sim.step()
-        frame = sim.state_update()
-        if frame.plan.maneuver in ("lane_change_left", "lane_change_right"):
-            excluded_frames += 1
-            continue
-        worst = max(worst, abs(route.lateral_offset((sim.ego.x, sim.ego.y))))
-    assert excluded_frames, "no lane change occurred; this test's exclusion never ran"
+    scene, frames = nob_hill_replay
+    route = scene.ego_route
+    worst = max(
+        abs(route.lateral_offset(post))
+        for _pre, post, maneuver in frames
+        if maneuver not in LANE_CHANGE_LABELS
+    )
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
 
 
