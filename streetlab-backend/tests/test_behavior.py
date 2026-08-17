@@ -459,6 +459,21 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     `ego_at`'s `x`/`y`), not a real settle. Stopping at the exact transition
     tick sidesteps that entirely; the tests below drive the settle condition
     explicitly with `ego_off_lane_at` instead.
+
+    Bounded, not a bare `while`: if a regression ever restored the old
+    unconditional clear (`self.lane_change = None` at expiry, `returning`
+    never set), `fsm.lane_change` would stay `None` forever and this loop's
+    exit condition would never be satisfied -- an infinite loop, not a
+    failing assertion. `detections=[]` here means `_held_up` can never
+    re-trigger a fresh outbound change either, so there is no other way out.
+    Measured transition (this fixture, `LANE_CHANGE_COMMIT_S=3.5`): the
+    return phase begins at `held=3.517 s`, one tick after the outbound
+    commitment expires. `LANE_CHANGE_COMMIT_S + 1.0` (4.5 s) is comfortably
+    above that -- about 0.98 s / 28% of headroom, enough to absorb the
+    commit-duration constant changing without the bound itself needing to
+    track it, while still failing fast (fractions of a second, not a hung
+    CI job with no pytest-timeout configured) under the regression it
+    guards against.
     """
     fsm.step(ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
              lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0)
@@ -466,6 +481,9 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     d = None
     while fsm.lane_change is None or not fsm.lane_change.returning:
         held += DT
+        assert held < LANE_CHANGE_COMMIT_S + 1.0, (
+            "the outbound change never reached the return phase"
+        )
         d = fsm.step(ego_at(12.0 * held, 12.0), road, 12.0 * held, [], {}, DT,
                      lanes=lanes, detections=[], limit_mps=12.0)
     return d
