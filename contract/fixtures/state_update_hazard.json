@@ -316,13 +316,13 @@
       }
     ],
     "lane": {
-      "lane_index": 1,
+      "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
       "offset_m": -0.15912304076827,
       "heading_error": -0.0628460339749477,
-      "left_marking": "dashed_white",
-      "right_marking": "solid_white",
+      "left_marking": "double_yellow",
+      "right_marking": "dashed_white",
       "neighbors": [
         {
           "id": "veh_00",

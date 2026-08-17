@@ -15,6 +15,8 @@ import math
 from bisect import bisect_right
 from dataclasses import dataclass, field
 
+from schema import Road
+
 Point = tuple[float, float]
 
 
@@ -339,9 +341,9 @@ class LaneSet:
     """The ego's lane and its neighbours, plus where a change to each is legal.
 
     `lanes` is what was geometrically constructed; a neighbour exists in it
-    whether or not the car may ever enter it. Two per-segment tables answer the
-    two questions that were previously conflated into one lane count, indexed
-    the same way `Route.segment_limits` is:
+    whether or not the car may ever enter it. Four per-segment tables, all
+    indexed the same way `Route.segment_limits` is, answer the questions that
+    were previously conflated into one lane count:
 
     `count_along` -- how many lanes run the ego's way -- is what the wire
     reports, and nothing else. `legal_along` -- which directions a change is
@@ -350,6 +352,16 @@ class LaneSet:
     is not already in it, and on both shipped scenes it is
     (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`). Reading the
     count as permission is what built lane 1 across a double yellow line.
+
+    `road_along` and `ego_offset_along` carry the two inputs the carriageway
+    model is built from, so a caller that has to place the ego WITHIN the
+    carriageway -- the wire's `lane_index` and its markings -- reads the same
+    numbers `legal_along` was decided from instead of a second, disagreeing
+    derivation of them. They are kept rather than recomputed because there is
+    no way to recover them from a finished `LaneSet`: `derive_lanes` matches
+    each segment to its nearest centreline once, and repeating that search is
+    both the expensive half of a scene build and a chance to match a different
+    road.
     """
 
     lanes: tuple[Lane, ...]
@@ -358,6 +370,14 @@ class LaneSet:
     #: Defaults to empty -- refuse everything -- so a `LaneSet` assembled
     #: without one cannot silently authorise a manoeuvre.
     legal_along: tuple[tuple[int, ...], ...] = ()
+    #: The `Road` governing each segment: the same nearest-centreline match
+    #: `count_along` is read off, kept whole so a caller can ask for
+    #: `lanes_backward` or `center_marking` without a parallel copy of either.
+    road_along: tuple[Road, ...] = ()
+    #: The EGO ROUTE's own signed offset from that road's centreline, positive
+    #: to the LEFT of travel. Not the car's offset from the route -- that is
+    #: `Route.lateral_offset`, measured per frame, and the two add.
+    ego_offset_along: tuple[float, ...] = ()
 
     @property
     def ego(self) -> Lane:
@@ -387,6 +407,25 @@ class LaneSet:
             return ()
         i = self._segment_at(s)
         return self.legal_along[min(max(i, 0), len(self.legal_along) - 1)]
+
+    def road_at(self, s: float) -> Road | None:
+        """The road governing arc length `s`, or None if none was matched."""
+        if not self.road_along:
+            return None
+        i = self._segment_at(s)
+        return self.road_along[min(max(i, 0), len(self.road_along) - 1)]
+
+    def ego_offset_at(self, s: float) -> float:
+        """The ego route's own offset from that road's centreline, + = LEFT.
+
+        Zero where nothing was matched, which reads as "on the centreline" --
+        the same answer a caller would have to invent, and the one that leaves
+        a single-lane carriageway reporting its only lane.
+        """
+        if not self.ego_offset_along:
+            return 0.0
+        i = self._segment_at(s)
+        return self.ego_offset_along[min(max(i, 0), len(self.ego_offset_along) - 1)]
 
     def may_change_at(self, s: float, direction: int) -> bool:
         return direction in self.legal_at(s)

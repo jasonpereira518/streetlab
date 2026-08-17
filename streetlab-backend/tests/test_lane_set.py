@@ -88,6 +88,39 @@ def test_count_at_never_reports_fewer_than_one(grid_loop):
         assert grid_loop.lanes.count_at(float(s)) >= 1
 
 
+def test_the_lane_set_keeps_the_road_and_the_offset_it_judged_from(grid_loop):
+    """The two inputs the carriageway model is built from, kept per segment.
+
+    Without them a caller that has to place the ego INSIDE the carriageway --
+    `sim/loop.py`'s `_lane_state`, for the index and the markings the wire
+    carries -- has no way to do it but search for the governing road a second
+    time, and a second search is a second chance to match a different one.
+
+    Pinned here rather than only through the wire because neither shipped scene
+    can tell a correct `ego_offset_along` from an all-zero one by the reported
+    lane index alone: zero reads as "on the centreline", which clamps to the
+    same leftmost forward lane the ego genuinely occupies on both.
+    """
+    lanes, route = grid_loop.lanes, grid_loop.ego_route
+    assert len(lanes.road_along) == len(lanes.count_along)
+    assert len(lanes.ego_offset_along) == len(lanes.count_along)
+
+    for s, road in _segments(grid_loop):
+        assert lanes.road_at(s) is road
+        # The count and the marking a segment reports have to come from ONE
+        # road, or the wire draws a divider belonging to a different street.
+        assert lanes.road_at(s).lanes_forward == lanes.count_at(s)
+
+    # Measured on grid-loop: `EGO_LANE_INSET` puts the ego route half a lane
+    # RIGHT of the centreline down every straight, and `Route.offset`'s mitre
+    # scaling carries it to 2.46 m through the filleted corners. Never zero and
+    # never positive -- a positive offset here would mean the ego route had
+    # crossed to the far side of its own road's centreline.
+    assert all(off < 0.0 for off in lanes.ego_offset_along)
+    assert max(lanes.ego_offset_along) == pytest.approx(-1.800, abs=1e-3)
+    assert min(lanes.ego_offset_along) == pytest.approx(-2.461, abs=1e-3)
+
+
 @pytest.mark.parametrize("direction", [+1, -1])
 def test_each_neighbour_sits_one_lane_width_to_its_own_side(grid_loop, direction):
     """Positive lateral offset is left of travel (`sim/route.py:133-141`)."""

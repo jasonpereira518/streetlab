@@ -760,6 +760,17 @@ def _lanes_forward_from(idx: list[int | None], roads: list[Road]) -> list[int] |
     return _fill_forward([None if i is None else roads[i].lanes_forward for i in idx], 1)
 
 
+def _governing_roads_from(idx: list[int | None], roads: list[Road]) -> list[Road] | None:
+    """The road behind each entry of `_lanes_forward_from`, filled the same way.
+
+    Filled forward over the same indices rather than over the roads themselves,
+    so the count a segment reports and the marking it reports can only ever
+    come from one road.
+    """
+    filled = _fill_forward(list(idx), 0)
+    return None if filled is None else [roads[i] for i in filled]
+
+
 def lanes_forward_along(route: Route, roads: list[Road]) -> list[int] | None:
     """How many lanes run the ego's way on each segment of `route`.
 
@@ -853,16 +864,39 @@ def _nearest_point_on(
     return nearest
 
 
-def _legal_directions_along(
+def _ego_offsets_along(
     route: Route, roads: list[Road], idx: list[int | None]
-) -> list[tuple[int, ...]]:
-    """Which directions a change is legal in, on each segment of `route`.
+) -> list[float | None]:
+    """The ego route's own offset from its governing road's centreline.
 
-    The ego's offset is signed against the EGO's heading, not the centreline's
-    own storage direction: a `Road` is stored in whichever direction OSM
-    happened to draw the way, and the ego route runs against that on 18/36
-    grid-loop and 90/339 Nob Hill segments, so signing against the road would
-    reverse the answer on half the sample.
+    Signed against the EGO's heading, not the centreline's own storage
+    direction: a `Road` is stored in whichever direction OSM happened to draw
+    the way, and the ego route runs against that on 18/36 grid-loop and 90/339
+    Nob Hill segments, so signing against the road would reverse the answer on
+    half the sample.
+
+    `None` where no road was matched, rather than a filled-in guess, because
+    the two callers want different things from an unknown offset -- legality
+    refuses outright, the wire's lane index inherits its predecessor.
+    """
+    ring = route.points + [route.points[0]] if route.closed else route.points
+    out: list[float | None] = []
+    for k, (a, b) in enumerate(zip(ring, ring[1:])):
+        i = idx[k]
+        if i is None:
+            out.append(None)
+            continue
+        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        heading = math.atan2(b[1] - a[1], b[0] - a[0])
+        cx, cy = _nearest_point_on(roads[i].centerline, mid)
+        out.append(-(mid[0] - cx) * math.sin(heading) + (mid[1] - cy) * math.cos(heading))
+    return out
+
+
+def _legal_directions_along(
+    roads: list[Road], idx: list[int | None], offsets: list[float | None]
+) -> list[tuple[int, ...]]:
+    """Which directions a change is legal in, on each segment of a route.
 
     An unmatched segment inherits its predecessor's answer, the same
     fill-forward `speed_limits_along` uses -- but a LEADING unmatched run gets
@@ -871,8 +905,8 @@ def _legal_directions_along(
     guess about whether a manoeuvre is safe, and the answer to that is no.
     (Neither shipped scene reaches this: every segment of both matches a road.)
 
-    `lanes_forward`/`lanes_backward` are still read as the ROAD stores them,
-    not swapped when the ego runs against that storage direction, and that is
+    `lanes_forward`/`lanes_backward` are read as the ROAD stores them, not
+    swapped when the ego runs against that storage direction, and that is
     deliberate rather than overlooked. It matters only where the two differ,
     and no matched road on either scene is asymmetric. Swapping them would
     also mean reporting zero forward lanes at 16 Nob Hill junction corners,
@@ -880,18 +914,12 @@ def _legal_directions_along(
     up it and the match is the cross street -- a worse answer than the one
     containment already gives there, which is to refuse both directions.
     """
-    ring = route.points + [route.points[0]] if route.closed else route.points
     out: list[tuple[int, ...]] = []
-    for k, (a, b) in enumerate(zip(ring, ring[1:])):
-        i = idx[k]
-        if i is None:
+    for i, ego_off in zip(idx, offsets):
+        if i is None or ego_off is None:
             out.append(out[-1] if out else ())
             continue
         road = roads[i]
-        mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
-        heading = math.atan2(b[1] - a[1], b[0] - a[0])
-        cx, cy = _nearest_point_on(road.centerline, mid)
-        ego_off = -(mid[0] - cx) * math.sin(heading) + (mid[1] - cy) * math.cos(heading)
         out.append(
             tuple(
                 d
@@ -943,10 +971,13 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
     lanes constructed says nothing here about how many exist, and why building
     a neighbour on a one-lane street is not a claim that one is there.
     """
-    # One nearest-road pass, two questions asked of it: the count the wire
-    # reports and the legality the planner acts on.
+    # One nearest-road pass, everything else asked of it: the count the wire
+    # reports, the legality the planner acts on, and the two inputs both were
+    # decided from, kept so the wire can place the ego in the carriageway
+    # without searching for its road a second time.
     idx = nearest_road_along(ego_route, roads)
     counts = _lanes_forward_from(idx, roads)
+    offsets = _ego_offsets_along(ego_route, roads, idx)
 
     lanes = (
         Lane(
@@ -974,7 +1005,9 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
     return LaneSet(
         lanes=lanes,
         count_along=tuple(counts or (1,)),
-        legal_along=tuple(_legal_directions_along(ego_route, roads, idx)),
+        legal_along=tuple(_legal_directions_along(roads, idx, offsets)),
+        road_along=tuple(_governing_roads_from(idx, roads) or ()),
+        ego_offset_along=tuple(_fill_forward(offsets, 0.0) or ()),
     )
 
 

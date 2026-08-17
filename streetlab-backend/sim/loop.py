@@ -520,6 +520,18 @@ class Simulation:
 # --------------------------------------------------------------------------- #
 
 
+def _lane_from_the_right(off: float, lo: float, count: int) -> int:
+    """Which of `count` forward lanes contains `off`, counting 0 from the kerb.
+
+    `off` and `lo` are both signed from the road's centreline, positive to the
+    LEFT, with `lo` the kerbside edge of the forward carriageway. Containment,
+    the same rule `lane_change_is_legal` fits a target lane by -- clamped,
+    because an ego that has strayed past either edge is still in the nearest
+    real lane and `lane_count` has to bound the index the wire carries.
+    """
+    return min(max(int(math.floor((off - lo) / LANE_W)), 0), count - 1)
+
+
 def _lane_state(
     scene: BuiltScene,
     route,
@@ -530,28 +542,66 @@ def _lane_state(
 ) -> LaneState:
     """Report the lane the ego is in, not the lane it was assumed to be in.
 
+    The carriageway model is `map/lanes.py`'s, read back off the `LaneSet`
+    rather than derived again: a road `(lanes_forward + lanes_backward) *
+    LANE_W` wide has its forward half at `[-W/2, -W/2 + lanes_forward *
+    LANE_W]` signed from its centreline, left-positive, and the car sits at its
+    route's own offset from that centreline plus whatever it has strayed from
+    the route. Which lane of that half contains the sum is the answer.
+
+    What this replaces was the MIRROR of it -- `count - 1 - round(offset /
+    LANE_W)` read the car's offset from its own ROUTE as an offset from the
+    kerbside lane, on the premise that the ego drives kerbside. It does not:
+    `EGO_LANE_INSET` is a half-lane inset from a centreline that means the
+    DIVIDER on a two-way street, so wherever two lanes run the ego's way it is
+    the inner one (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`).
+    On grid-loop's California St that made the wire say lane 1 of 2 for a car
+    measurably in lane 0.
+
     `lane_index` counts from the LEFT because `LanePosition.tsx:47-48` reads it
-    that way (`leftExists = lane_index > 0`). The sim counts from the right,
-    where lane 0 is the kerbside lane the ego route already sits in, so the two
-    are converted here rather than either side changing convention.
+    that way (`leftExists = lane_index > 0`); the carriageway counts from the
+    right, so the two are converted here rather than either side changing
+    convention.
     """
     lanes = scene.lanes
     count = lanes.count_at(ego_s) if lanes is not None else 1
-    # Which lane is the ego actually in? Its offset from lane 0's centreline,
-    # in lane widths, leftward-positive.
-    from_right = min(max(int(round(offset / LANE_W)), 0), count - 1)
+    road = lanes.road_at(ego_s) if lanes is not None else None
+    ego_off = lanes.ego_offset_at(ego_s) if lanes is not None else 0.0
+
+    # The kerbside edge of the forward carriageway. With no matched road there
+    # is no oncoming half to sit beside, which leaves the one forward lane
+    # `count` then reports centred on the centreline -- the same lane 0 a
+    # `LaneSet`-less scene has always reported.
+    lo = -(count + (road.lanes_backward if road is not None else 0)) * LANE_W / 2.0
+    from_right = _lane_from_the_right(ego_off + offset, lo, count)
+    # Where the ego's ROUTE sits in that carriageway. It differs from the car's
+    # own lane exactly while a change is under way, and that difference is what
+    # re-bases the offset below.
+    route_from_right = _lane_from_the_right(ego_off, lo, count)
     index = count - 1 - from_right
 
-    road_centre_marking = "double_yellow" if count > 1 else "solid_white"
     return LaneState(
         lane_index=index,
         lane_count=count,
         lane_width_m=LANE_W,
-        offset_m=offset - from_right * LANE_W,
+        # Still the car's offset from its OWN lane's centreline. The ego's lane
+        # IS `ego_route` (`derive_lanes`), so inside it this is exactly
+        # `Route.lateral_offset` and nothing else; only a change that has
+        # actually crossed into another lane re-bases it, by whole lane widths.
+        # Measuring against the geometric lane centre instead would fold
+        # `EGO_LANE_INSET`'s up-to-1.8 m misplacement (ruling Q19) into every
+        # frame of a car that is driving perfectly straight.
+        offset_m=offset - (from_right - route_from_right) * LANE_W,
         heading_error=heading_error,
-        # Leftmost lane's left edge is the centre divider; anything further
-        # right has a lane beside it.
-        left_marking=road_centre_marking if index == 0 else "dashed_white",
+        # No forward lane to the left means this lane's left edge IS the centre
+        # divider, so it reports what the road says is painted there -- "none"
+        # on a oneway, which the `"double_yellow" if count > 1` guess this
+        # replaces could not say at all.
+        left_marking=(
+            (road.center_marking if road is not None else "solid_white")
+            if index == 0
+            else "dashed_white"
+        ),
         right_marking="solid_white" if from_right == 0 else "dashed_white",
         neighbors=[_neighbor(d, route, ego_s) for d in detections],
     )
