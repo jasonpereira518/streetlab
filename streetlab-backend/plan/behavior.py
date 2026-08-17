@@ -257,8 +257,14 @@ class BehaviorFSM:
     #: (not the line's arc length -- see `_expire`).
     honoured: dict[str, float] = field(default_factory=dict)
     #: The lane change under way, if any. Set only once a change has been
-    #: decided and committed to; cleared by a junction constraint or by
-    #: `LANE_CHANGE_COMMIT_S` running out.
+    #: decided and committed to. Normally cleared only by `_advance_return`,
+    #: once the car is back in its lane or the return phase's backstop
+    #: expires: `LANE_CHANGE_COMMIT_S` running out and a junction constraint
+    #: arriving both route THROUGH that return rather than clearing this
+    #: directly (see `_junction_abort`), because a manoeuvre under way has to
+    #: be undone, not merely stopped being described. The one exception is a
+    #: caller that supplies no `lanes` at all, which leaves nothing to steer
+    #: home to.
     lane_change: LaneChange | None = None
 
     def reset(self) -> None:
@@ -286,8 +292,7 @@ class BehaviorFSM:
         # fight.
         junction = self._junction_step(ego, route, ego_s, control_points, signals, dt)
         if junction.state is not BehaviorState.CRUISE:
-            self.lane_change = None
-            return junction
+            return self._junction_abort(junction, ego, lanes, dt)
 
         change = self._lane_change_step(ego, route, ego_s, lanes, detections, limit_mps, dt)
         if change is None:
@@ -567,6 +572,72 @@ class BehaviorFSM:
 
         self.lane_change = LaneChange(current.id, target.id, direction)
         return self._changing()
+
+    def _junction_abort(
+        self,
+        junction: BehaviorDecision,
+        ego: VehicleState,
+        lanes: "LaneSet | None",
+        dt: float,
+    ) -> BehaviorDecision:
+        """Give a lane change interrupted by a junction a way to end honestly.
+
+        A junction constraint outranking a lane change is right, and this
+        keeps it: `state`, `speed_ceiling_mps` and `target` are the junction's
+        untouched, so the car brakes for the line exactly as it did before and
+        `_junction_step` -- Phase 1's body, heavily tested -- needs no change.
+
+        What this adds is the abort. Simply discarding `self.lane_change`
+        (the pre-R4 behaviour) does not undo the manoeuvre; it only stops
+        describing it. The aim-point blend in `plan/control.py` snaps back to
+        0 the same tick, and the car coasts home under ordinary pure pursuit
+        while up to a lane width off its route, with `stop` on the wire and
+        nothing anywhere saying it is between lanes. That is ruling Q14's
+        "motion with no label" on the path the return phase did not cover; it
+        put the peak lateral offset outside a labelled change at 3.50 m on
+        grid-loop and 2.32 m on Nob Hill, against a 2.0 m guard.
+
+        So an interrupted change is turned round rather than dropped:
+        `_begin_return` flips an outbound commitment into the mirror-labelled
+        trip home (a change already returning just keeps going), and the
+        lane-change label and target lane ride out alongside the junction's
+        ceiling until `_advance_return` ends it -- on settling, or on
+        `LANE_CHANGE_RETURN_MAX_S`, which is what stops a car held at a red
+        with no way to converge from wearing the label for the whole light.
+        The wire says `lane_change_*` rather than `stop` for those few tenths
+        of a second, deliberately: the label describes the LATERAL manoeuvre,
+        which is the one still happening and the one nothing else reports,
+        while the stop it is braking for is already on the wire as a speed
+        and a control point.
+
+        Refusing to START a change on a junction approach was the other
+        candidate, and measurement rejected it as the primary fix: of the
+        five interrupts recorded across both scenes, four begin with no
+        control point inside `APPROACH_M` at all -- including both 3.5 m
+        breaches on grid-loop -- so declining to start would have prevented
+        one of five and neither of the worst two. A change already under way
+        when a light turns needs this path regardless.
+        """
+        if self.lane_change is None or lanes is None:
+            # No manoeuvre to abort -- or no lane geometry to abort toward,
+            # in which case there is nothing to steer home to and holding a
+            # label over it would be the same lie in the other direction.
+            self.lane_change = None
+            return junction
+        if self.lane_change.returning:
+            self.lane_change.elapsed_s += dt
+        else:
+            self._begin_return()
+        back = self._advance_return(ego, lanes)
+        if back is None:
+            return junction
+        return BehaviorDecision(
+            state=junction.state,
+            speed_ceiling_mps=junction.speed_ceiling_mps,
+            maneuver=back.maneuver,
+            target=junction.target,
+            target_lane_id=back.target_lane_id,
+        )
 
     def _begin_return(self) -> None:
         """Flip an outbound commitment into a labelled trip back.

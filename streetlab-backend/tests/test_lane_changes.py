@@ -48,6 +48,43 @@ LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
 #: non-vacuousness an assertion rather than an artifact of one measurement run.
 NOB_HILL_REPLAY_S = 600.0
 
+#: How long the grid-loop replay below runs, and why not less.
+#:
+#: grid-loop's junction interrupts of a lane change come in two clusters
+#: (measured, seed=7, `traffic_speed_scale=0.45`): t=47.7 s and t=63.2 s, then
+#: t=264.3 s and t=279.8 s. 120 s reaches the first cluster -- including the
+#: worst pre-fix breach, 3.50 m at t=47.67 s -- but leaves the second entirely
+#: unrun, and the two are not the same case: the first cluster interrupts a
+#: RETURN phase and the second interrupts an OUTBOUND one. 300 s covers all
+#: four, and is the window the phase's defect was measured over.
+GRID_LOOP_REPLAY_S = 300.0
+
+#: The longest a single unbroken `lane_change_*` run may last, in seconds, and
+#: how close to its own lane the car must be on the last frame of one.
+#:
+#: Both are LITERALS, deliberately not `LANE_CHANGE_COMMIT_S`,
+#: `LANE_CHANGE_RETURN_MAX_S` or `LANE_CHANGE_RETURN_SETTLE_M` from
+#: `plan/behavior.py`. See `_labelled_runs` for why these bounds have to exist
+#: at all; the reason they must not be imported is that the guard they back --
+#: "outside a labelled change, peak lateral offset < 2.0 m" -- is judged
+#: against a window the FSM itself defines. Import the FSM's own constants and
+#: the window widens in lockstep with them: raising `LANE_CHANGE_RETURN_MAX_S`
+#: would buy the guard as much silence as it liked, and nothing would fail.
+#:
+#: Measured post-fix. Run duration: worst 6.57 s on grid-loop (10 runs) and
+#: 9.53 s on Nob Hill (4 runs) -- the long one is the run whose abort begins
+#: with the car ALREADY braking, so it is still stopping when the return
+#: phase's backstop expires, and it is what fixes the structural ceiling at
+#: `LANE_CHANGE_COMMIT_S + LANE_CHANGE_RETURN_MAX_S` = 9.5 s rather than
+#: anywhere near the settle time. 12.0 s clears it by 26 %.
+#: End-of-run offset: worst 0.297 m on grid-loop, 0.735 m on Nob Hill (that
+#: same backstopped run -- the car is at rest at the line, so no steering can
+#: bring it the last 0.7 m in). 1.2 m clears that by 63 % and is still inside
+#: `map.lanes.LANE_W / 2`, so it is a strictly stronger statement than the
+#: 2.0 m guard, made on exactly the frames that guard refuses to look at.
+MAX_LABELLED_RUN_S = 12.0
+SETTLED_BY_END_M = 1.2
+
 
 def maneuvers_over(sim, seconds):
     seen = []
@@ -95,6 +132,88 @@ def nob_hill_replay():
     return sim.scene, frames
 
 
+@pytest.fixture(scope="module")
+def grid_loop_replay():
+    """`GRID_LOOP_REPLAY_S` of the grid-loop overtake scenario, driven once.
+
+    The same `(pre, post, maneuver, offset_m)` shape as `nob_hill_replay`
+    above, and for the same reasons -- deliberately interchangeable, so the
+    core assertions can be written once and run against both scenes rather
+    than existing on Nob Hill only (finding I3). `seed=7` and
+    `traffic_speed_scale=0.45` are the settings the rest of this module's
+    grid-loop tests already use; at the scene defaults (seed=1,
+    `traffic_speed_scale=1.0`) grid-loop drives ZERO lane changes and every
+    lane-change assertion over it is vacuous -- ruling Q22.
+    """
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    frames = []
+    for _ in range(int(GRID_LOOP_REPLAY_S / DT)):
+        pre = (sim.ego.x, sim.ego.y)
+        sim.step()
+        frame = sim.state_update()
+        frames.append(
+            (pre, (sim.ego.x, sim.ego.y), frame.plan.maneuver, frame.telemetry.lane.offset_m)
+        )
+    return sim.scene, frames
+
+
+def _worst_offset_outside_a_change(route, frames):
+    """`(labelled frame count, worst |lateral offset| on an unlabelled frame)`.
+
+    The labelled count comes back with the answer rather than being left to
+    the caller to remember, because the two are only meaningful together: a
+    replay that drove no change at all reports a beautifully small worst
+    offset and proves nothing about the exclusion it was written to test.
+    """
+    labelled = sum(1 for _pre, _post, maneuver, _o in frames if maneuver in LANE_CHANGE_LABELS)
+    worst = max(
+        abs(route.lateral_offset(post))
+        for _pre, post, maneuver, _o in frames
+        if maneuver not in LANE_CHANGE_LABELS
+    )
+    return labelled, worst
+
+
+def _labelled_runs(route, frames):
+    """Every unbroken run of `lane_change_*` frames, as
+    `(start_index, seconds, |lateral offset| on its LAST labelled frame)`.
+
+    The guard these back -- "outside a labelled change, peak lateral offset
+    < 2.0 m" -- measures the car only on frames the FSM does NOT label, which
+    makes the FSM the author of its own exclusion window. Nothing in that
+    guard distinguishes a car that gets back into its lane from one that
+    stays a lane width off while the label is held over it; both report the
+    same clean peak. R4's fix widens that window on purpose (an interrupted
+    change is now labelled through the abort instead of going quiet), which
+    is the right fix and also exactly the move the guard cannot audit.
+
+    So the window gets a ceiling on both axes: how long one may last
+    (`MAX_LABELLED_RUN_S`) and where the car has to be when it closes
+    (`SETTLED_BY_END_M`). Together they say the label is spent on a manoeuvre
+    that ends and ends AT HOME -- which no amount of extra labelling can
+    satisfy on its own, and which the 2.0 m guard cannot state, since these
+    are precisely the frames it drops.
+
+    A run is separated from the next by at least one unlabelled frame even
+    when a fresh change starts immediately -- `BehaviorFSM._advance_return`
+    returns `None` on the tick it clears the manoeuvre -- so consecutive
+    changes read as separate runs here rather than merging into one long one.
+    """
+    runs, start = [], None
+    for i, (_pre, post, maneuver, _o) in enumerate(frames):
+        if maneuver in LANE_CHANGE_LABELS:
+            if start is None:
+                start = i
+            last = post
+        elif start is not None:
+            runs.append((start, (i - start) * DT, abs(route.lateral_offset(last))))
+            start = None
+    if start is not None:
+        runs.append((start, (len(frames) - start) * DT, abs(route.lateral_offset(last))))
+    return runs
+
+
 def _initiations(frames):
     """Every frame that STARTS a labelled lane change, as `(index, pose, direction)`.
 
@@ -109,9 +228,17 @@ def _initiations(frames):
     509 of 1353 labelled frames "fail" that way, all of them artifacts of asking
     the wrong lane about the wrong manoeuvre.
 
-    A run cannot start mid-return: `BehaviorFSM.step` clears `self.lane_change`
-    outright whenever a junction constraint outranks it, so the frame after any
-    gap in the labels is a fresh outbound decision.
+    A run cannot start mid-return. Every path that ends a manoeuvre --
+    `_advance_return` settling or hitting its backstop, in cruise or under a
+    junction abort -- leaves `self.lane_change` as `None`, and the only code
+    that sets it again is the outbound decision in `_lane_change_step`, which
+    a junction constraint still refuses to reach. So the frame after any gap
+    in the labels is a fresh outbound decision. (Before R4 this held for a
+    blunter reason: `BehaviorFSM.step` cleared `self.lane_change` outright on
+    a junction constraint. It no longer does -- an interrupted change now
+    flips to a labelled abort with NO gap in the labels, so a single run can
+    carry both direction labels in turn. That does not affect this scan,
+    which reads only the frame a run starts on.)
     """
     for i, (pre, _post, maneuver, _offset_m) in enumerate(frames):
         if maneuver not in LANE_CHANGE_LABELS:
@@ -390,20 +517,6 @@ def test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "I1, scheduled for R4: `plan/behavior.py:289` drops `self.lane_change` "
-        "outright when a junction constraint outranks it, so an interrupted "
-        "return goes unlabelled while the car is still a lane width off. "
-        "Measured on this replay: the return at t=395.9 s is pre-empted by a "
-        "`stop` at -2.32 m, 0.32 m past this bound, and decays under 1.8 m "
-        "within ~0.9 s. R1 did not introduce that path -- it is unchanged code "
-        "-- but correcting the lane-change direction re-rolls this "
-        "deterministic replay onto it, where the pre-R1 run peaked at 1.41 m "
-        "by luck. Remove this marker in R4; `strict` makes that mandatory."
-    ),
-)
 def test_the_ego_still_holds_its_lane_outside_a_change(nob_hill_replay):
     """A lane change is the only time the car may be a lane width off the ego
     route. Everywhere else the 2.0 m peak-lateral-offset guard from Phase 1 --
@@ -413,6 +526,15 @@ def test_the_ego_still_holds_its_lane_outside_a_change(nob_hill_replay):
     was deciding, so unlike the legality scan above it wants the end-of-tick
     pose the maneuver label is 1/60 s ahead of.
 
+    Carried `xfail(strict=True)` until R4 for defect I1: `BehaviorFSM.step`
+    dropped `self.lane_change` outright whenever a junction constraint
+    outranked it, so an interrupted change went unlabelled while the car was
+    still on its way back -- measured here at 2.32 m on the frame the junction
+    took over, 0.32 m past this bound. The marker is gone because the FSM now
+    turns an interrupted change into a labelled abort instead of dropping it;
+    `MAX_LABELLED_RUN_S` (see `_labelled_runs`) is what keeps that from being
+    a way of simply labelling the breach away.
+
     The brief's original 60 s at the default `traffic_speed_scale=1.0` never
     triggers a lane change on Nob Hill at all -- the first one on this replay is
     at t=373.4 s even at the more permissive traffic_speed_scale=0.4. That made
@@ -421,18 +543,61 @@ def test_the_ego_still_holds_its_lane_outside_a_change(nob_hill_replay):
     broken one (wrong maneuver strings, a stale field, the branch deleted
     outright), and was functionally a duplicate of the pre-existing
     `test_loop.py::test_the_ego_holds_its_lane_around_the_real_route`.
-    `NOB_HILL_REPLAY_S` fixes that, and
-    `test_the_nob_hill_replay_actually_changes_lanes` -- unmarked, so this
-    marker cannot swallow it -- is what keeps it fixed.
+    `NOB_HILL_REPLAY_S` fixes that, and the labelled-frame assertion below --
+    which `test_the_nob_hill_replay_actually_changes_lanes` also states
+    independently -- is what keeps it fixed.
     """
     scene, frames = nob_hill_replay
-    route = scene.ego_route
-    worst = max(
-        abs(route.lateral_offset(post))
-        for _pre, post, maneuver, _offset_m in frames
-        if maneuver not in LANE_CHANGE_LABELS
-    )
+    labelled, worst = _worst_offset_outside_a_change(scene.ego_route, frames)
+    assert labelled, "no frame was labelled a lane change; the exclusion is dead code"
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
+
+
+def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_replay):
+    """The same claim on `SyntheticGrid`, where it fails harder (finding I3).
+
+    grid-loop is the scene with two-lane arterials on two of its four sides, so
+    it changes lanes far more often than Nob Hill does -- 2916 labelled frames
+    in 300 s against Nob Hill's 1353 in 600 s (measured) -- and its junction
+    interrupts were correspondingly worse: 3.50 m at t=47.67 s, on maneuver
+    `stop`, against Nob Hill's 2.32 m. No test covered it here, so the more
+    severe half of defect I1 was invisible to the suite while the milder half
+    sat under an `xfail`.
+    """
+    scene, frames = grid_loop_replay
+    labelled, worst = _worst_offset_outside_a_change(scene.ego_route, frames)
+    assert labelled, "no frame was labelled a lane change; the exclusion is dead code"
+    assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
+
+
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
+    scene_name, nob_hill_replay, grid_loop_replay
+):
+    """The ceiling on the exclusion window the two guards above are judged
+    against. See `_labelled_runs` for why it has to exist.
+
+    Stated on both scenes because the two reach the bound from opposite ends:
+    Nob Hill's changes are rare and long (4 runs in 600 s), grid-loop's are
+    frequent (10 runs in 300 s) and its interrupts are the ones that stretch a
+    run by flipping an outbound change into an abort mid-way.
+    """
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    runs = _labelled_runs(scene.ego_route, frames)
+    assert runs, "no lane change was labelled at all -- this bounds nothing"
+    over = [(round(i * DT, 2), round(s, 2)) for i, s, _e in runs if s > MAX_LABELLED_RUN_S]
+    assert not over, (
+        f"{len(over)} of {len(runs)} labelled runs outlast {MAX_LABELLED_RUN_S} s "
+        f"(start t, duration): {over[:5]}"
+    )
+    adrift = [
+        (round(i * DT, 2), round(e, 3)) for i, _s, e in runs if e > SETTLED_BY_END_M
+    ]
+    assert not adrift, (
+        f"{len(adrift)} of {len(runs)} labelled runs end with the car still "
+        f"more than {SETTLED_BY_END_M} m off its lane, i.e. the label ran out "
+        f"before the manoeuvre did (start t, offset): {adrift[:5]}"
+    )
 
 
 def test_all_seven_wire_maneuvers_are_now_reachable():

@@ -697,3 +697,110 @@ def test_a_junction_stop_outranks_a_lane_change(road):
     )
     assert d.maneuver == "stop"
     assert d.target_lane_id is None
+
+
+#: How long this module's junction-abort tests allow the abort to stay
+#: labelled, and how long they insist it lasts at minimum.
+#:
+#: Both are LITERALS, deliberately not `LANE_CHANGE_RETURN_MAX_S` (6.0 s in
+#: `plan/behavior.py`). A bound imported from the constant it audits moves in
+#: lockstep with it: raise the backstop to 60 s and a test written that way
+#: still passes while the car wears a `lane_change_*` label for a minute --
+#: which is precisely the failure mode this whole test pair exists to rule
+#: out, since the phase's lane-holding guard EXCLUDES labelled frames. Same
+#: reasoning as `_SCAN_TOL_M` in `tests/test_lane_changes.py`.
+#:
+#: `_ABORT_FLOOR_S` fails a fix that clears the manoeuvre on the interrupt
+#: tick after all (the defect, wearing a label for one frame); `_ABORT_CAP_S`
+#: fails one that never lets go. Measured against the shipped 6.0 s backstop
+#: they bracket it with ~1 s on either side.
+_ABORT_FLOOR_S = 5.0
+_ABORT_CAP_S = 7.0
+
+
+def test_a_junction_interrupting_a_change_keeps_it_labelled_and_turns_it_home(road):
+    """The interrupt path, driven directly (defect I1).
+
+    `BehaviorFSM.step` used to drop `self.lane_change` on the floor whenever a
+    junction constraint outranked it. The junction SHOULD outrank it -- for
+    longitudinal control -- but dropping the manoeuvre state also drops the
+    wire label and the aim-point blend in `plan/control.py`, leaving the car
+    coasting back toward its lane most of a lane width off it with nothing on
+    the wire saying so. That is ruling Q14's "motion with no label" again, on
+    the path the return phase did not cover.
+
+    Four separate claims, because three of them pass under fixes that are
+    wrong in different ways: the junction still governs SPEED (a fix that let
+    the lane change win outright would fail `state`/`speed_ceiling_mps`), the
+    lateral manoeuvre is still LABELLED, and it is aimed HOME rather than
+    onward to a lane the car has no business completing a move into while
+    stopping for a red.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert d.maneuver == "lane_change_left", "the outbound change never committed"
+    assert fsm.lane_change is not None and not fsm.lane_change.returning
+
+    # A red 20 m ahead arrives mid-change, with the car a full lane width off
+    # its home centreline -- exactly the pose the wire must not go quiet at.
+    d = fsm.step(
+        ego_off_lane_at(1.0, 3.6, 12.0), road, 1.0,
+        light_at(21.0), signal("tl", "red"), DT,
+        lanes=lanes, detections=[], limit_mps=12.0,
+    )
+    assert d.state is BehaviorState.APPROACH, "the junction stopped outranking the change"
+    assert d.speed_ceiling_mps < 12.0, (
+        f"the junction's ceiling was lost: {d.speed_ceiling_mps}"
+    )
+    assert d.maneuver == "lane_change_right", (
+        f"the interrupted change went unlabelled: maneuver={d.maneuver!r}"
+    )
+    assert d.target_lane_id == EGO_LANE_ID, "the abort is not aimed at the home lane"
+    assert fsm.lane_change is not None
+    assert fsm.lane_change.returning is True
+
+
+def test_a_junction_abort_cannot_stay_labelled_indefinitely(road):
+    """The abort is bounded, and it is not bounded at one tick either.
+
+    A car held at a red while still off its lane cannot converge -- it is not
+    moving, so no steering brings it home -- and the geometric settle
+    condition can never fire. Without a backstop the manoeuvre would stay
+    labelled for as long as the light stays red, and the phase's lane-holding
+    guard, which excludes labelled frames, would be excused indefinitely by a
+    label that no longer describes anything happening.
+
+    Bounded loop, not a bare `while`: under a regression that never clears
+    `lane_change` this would otherwise hang the suite rather than fail it (it
+    has happened once in this project already -- see
+    `_advance_to_the_moment_the_return_begins`). `detections=[]` means no
+    fresh outbound change can re-trigger, so the backstop is the only exit.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None
+
+    held, d = 0.0, None
+    while fsm.lane_change is not None:
+        held += DT
+        assert held < _ABORT_CAP_S, "the junction abort never let go of the label"
+        # At rest, at the line, still a lane width off: never settles.
+        d = fsm.step(
+            ego_off_lane_at(1.0, 3.6, 0.0), road, 1.0,
+            light_at(21.0), signal("tl", "red"), DT,
+            lanes=lanes, detections=[], limit_mps=12.0,
+        )
+    assert held > _ABORT_FLOOR_S, (
+        f"the abort lasted only {held:.2f} s -- too short to drive the car home, "
+        "which is the defect rather than the fix"
+    )
+    assert d.maneuver == "stop", f"the label outlived the manoeuvre: {d.maneuver!r}"
+    assert d.target_lane_id is None
