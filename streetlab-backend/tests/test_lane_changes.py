@@ -9,14 +9,69 @@ be into oncoming traffic.
 
 import sys
 from pathlib import Path
+from typing import NamedTuple, Sequence
 
 import pytest
 
 from map.lanes import LANE_W
 from map.scene_build import SyntheticGrid
+from schema import Detection
 from sim.loop import Simulation
 
 DT = 1 / 60
+
+
+class Frame(NamedTuple):
+    """One recorded tick of a replay.
+
+    A named record rather than the 4-tuple this file used before, because
+    `dets` is the fifth field and positional unpacking of five things at seven
+    call sites reads as an invitation to get one of them wrong. The first four
+    carry exactly what they carried before; see `nob_hill_replay` for why `pre`
+    and `post` are both kept and are not interchangeable.
+    """
+
+    #: Ego pose at the START of the tick -- the one `plan.maneuver` was
+    #: computed from.
+    pre: tuple[float, float]
+    #: Ego pose at the END of the tick, which is what the rest of the
+    #: `StateUpdate` (including `offset_m`) describes.
+    post: tuple[float, float]
+    maneuver: str
+    #: The wire's own `telemetry.lane.offset_m`.
+    offset_m: float
+    #: This tick's detections, as the planner saw them. Kept whole rather than
+    #: reduced to a gap here: the gap has to be measured against the ego arc
+    #: length of the frame being judged, and which frame that is differs
+    #: between the scans below.
+    dets: tuple[Detection, ...]
+    #: `ego_route.project(pre)` and `ego_route.lateral_offset(post)`.
+    #:
+    #: The same re-derivation from the recorded pose the scans below would each
+    #: do for themselves, hoisted into the drive because `Route.project` is a
+    #: linear scan of the polyline and five scans over 36000 frames of real OSM
+    #: geometry is five times the cost of one. Deliberately NOT the wire's
+    #: `offset_m`, which is re-based onto whichever lane the frame says the car
+    #: is in (see `_offsets_outside_their_own_lane`); `lat` is always measured
+    #: from the ego route, which is what the lane-holding guard means.
+    ego_s: float
+    lat: float
+    #: `BehaviorFSM.state` for this tick: was the JUNCTION half of the FSM
+    #: governing? Recorded because there is no other way to ask. A junction
+    #: constraint outranks a lane change and R4's abort turns the manoeuvre
+    #: round on the spot, so an episode a stop line took over is supposed to
+    #: end short of the target lane -- and nothing on the wire says which
+    #: episodes those were: the maneuver field carries the lane-change label
+    #: right through the abort, deliberately.
+    #:
+    #: Reading it off the FSM is not the self-derivation this file is careful
+    #: about elsewhere. What R3 changes is the LANE-CHANGE half; the junction
+    #: half is Phase 1's, untouched, and this asks it a question about itself.
+    #: The alternative was tried first and measured: restating
+    #: `_next_point`'s window over `scene.control_points` excluded **10 of 10**
+    #: grid-loop episodes, because that scene's block is 295 m round with four
+    #: junctions and a stop line is inside `APPROACH_M` almost everywhere.
+    fsm_state: str
 
 #: The slack this file's acceptance criterion allows, deliberately NOT
 #: `map.lanes.LANE_FIT_TOL_M`. Importing that one made this scan's threshold
@@ -121,15 +176,7 @@ def nob_hill_replay():
 
     sim = _osm_sim()
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
-    frames = []
-    for _ in range(int(NOB_HILL_REPLAY_S / DT)):
-        pre = (sim.ego.x, sim.ego.y)
-        sim.step()
-        frame = sim.state_update()
-        frames.append(
-            (pre, (sim.ego.x, sim.ego.y), frame.plan.maneuver, frame.telemetry.lane.offset_m)
-        )
-    return sim.scene, frames
+    return sim.scene, _drive(sim, NOB_HILL_REPLAY_S)
 
 
 @pytest.fixture(scope="module")
@@ -147,18 +194,59 @@ def grid_loop_replay():
     """
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    return sim.scene, _drive(sim, GRID_LOOP_REPLAY_S)
+
+
+def _drive(sim, seconds: float) -> list[Frame]:
+    """Drive `sim` for `seconds` and record every tick as a `Frame`."""
+    route = sim.scene.ego_route
     frames = []
-    for _ in range(int(GRID_LOOP_REPLAY_S / DT)):
+    for _ in range(int(seconds / DT)):
         pre = (sim.ego.x, sim.ego.y)
         sim.step()
         frame = sim.state_update()
+        post = (sim.ego.x, sim.ego.y)
         frames.append(
-            (pre, (sim.ego.x, sim.ego.y), frame.plan.maneuver, frame.telemetry.lane.offset_m)
+            Frame(
+                pre=pre,
+                post=post,
+                maneuver=frame.plan.maneuver,
+                offset_m=frame.telemetry.lane.offset_m,
+                dets=tuple(sim.world.detections),
+                ego_s=route.project(pre),
+                lat=route.lateral_offset(post),
+                # The planner is injectable (`Simulation(..., planner=)`) but
+                # both scene helpers here build their own, so this is the
+                # shortest route to the FSM that just decided this tick.
+                fsm_state=sim._planner.fsm.state.value,
+            )
         )
-    return sim.scene, frames
+    return frames
 
 
-def _worst_offset_outside_a_change(route, frames):
+def _runs(frames: Sequence[Frame]) -> list[tuple[int, int]]:
+    """Every unbroken run of `lane_change_*` frames, as `[start, stop)` indices.
+
+    One run is one manoeuvre. A run is separated from the next by at least one
+    unlabelled frame even when a fresh change starts immediately --
+    `BehaviorFSM._advance_return` returns `None` on the tick it clears the
+    manoeuvre -- so consecutive changes read as separate runs rather than
+    merging into one long one.
+    """
+    runs, start = [], None
+    for i, f in enumerate(frames):
+        if f.maneuver in LANE_CHANGE_LABELS:
+            if start is None:
+                start = i
+        elif start is not None:
+            runs.append((start, i))
+            start = None
+    if start is not None:
+        runs.append((start, len(frames)))
+    return runs
+
+
+def _worst_offset_outside_a_change(frames):
     """`(labelled frame count, worst |lateral offset| on an unlabelled frame)`.
 
     The labelled count comes back with the answer rather than being left to
@@ -166,16 +254,12 @@ def _worst_offset_outside_a_change(route, frames):
     replay that drove no change at all reports a beautifully small worst
     offset and proves nothing about the exclusion it was written to test.
     """
-    labelled = sum(1 for _pre, _post, maneuver, _o in frames if maneuver in LANE_CHANGE_LABELS)
-    worst = max(
-        abs(route.lateral_offset(post))
-        for _pre, post, maneuver, _o in frames
-        if maneuver not in LANE_CHANGE_LABELS
-    )
+    labelled = sum(1 for f in frames if f.maneuver in LANE_CHANGE_LABELS)
+    worst = max(abs(f.lat) for f in frames if f.maneuver not in LANE_CHANGE_LABELS)
     return labelled, worst
 
 
-def _labelled_runs(route, frames):
+def _labelled_runs(frames):
     """Every unbroken run of `lane_change_*` frames, as
     `(start_index, seconds, |lateral offset| on its LAST labelled frame)`.
 
@@ -195,23 +279,9 @@ def _labelled_runs(route, frames):
     satisfy on its own, and which the 2.0 m guard cannot state, since these
     are precisely the frames it drops.
 
-    A run is separated from the next by at least one unlabelled frame even
-    when a fresh change starts immediately -- `BehaviorFSM._advance_return`
-    returns `None` on the tick it clears the manoeuvre -- so consecutive
-    changes read as separate runs here rather than merging into one long one.
+    See `_runs` for where a run begins and ends.
     """
-    runs, start = [], None
-    for i, (_pre, post, maneuver, _o) in enumerate(frames):
-        if maneuver in LANE_CHANGE_LABELS:
-            if start is None:
-                start = i
-            last = post
-        elif start is not None:
-            runs.append((start, (i - start) * DT, abs(route.lateral_offset(last))))
-            start = None
-    if start is not None:
-        runs.append((start, (len(frames) - start) * DT, abs(route.lateral_offset(last))))
-    return runs
+    return [(a, (b - a) * DT, abs(frames[b - 1].lat)) for a, b in _runs(frames)]
 
 
 def _initiations(frames):
@@ -240,12 +310,8 @@ def _initiations(frames):
     carry both direction labels in turn. That does not affect this scan,
     which reads only the frame a run starts on.)
     """
-    for i, (pre, _post, maneuver, _offset_m) in enumerate(frames):
-        if maneuver not in LANE_CHANGE_LABELS:
-            continue
-        if i and frames[i - 1][2] in LANE_CHANGE_LABELS:
-            continue
-        yield i, pre, (+1 if maneuver == "lane_change_left" else -1)
+    for a, _b in _runs(frames):
+        yield a, frames[a].pre, (+1 if frames[a].maneuver == "lane_change_left" else -1)
 
 
 def _fits_the_forward_carriageway(road, centre_offset: float) -> bool:
@@ -361,8 +427,7 @@ def test_the_reported_offset_never_wraps_across_a_lane_on_nob_hill(nob_hill_repl
     scene, frames = nob_hill_replay
     route = scene.ego_route
     records = [
-        (i * DT, offset_m, route.lateral_offset(post))
-        for i, (_pre, post, _maneuver, offset_m) in enumerate(frames)
+        (i * DT, f.offset_m, f.lat) for i, f in enumerate(frames)
     ]
     rebased, violations = _offsets_outside_their_own_lane(records)
     assert rebased > 100, (
@@ -448,17 +513,11 @@ def test_the_nob_hill_replay_actually_changes_lanes(nob_hill_replay):
     FSM, checked in `test_behavior.py`; this is a vacuity guard on the replay.
     """
     _scene, frames = nob_hill_replay
-    labelled = {
-        maneuver
-        for _pre, _post, maneuver, _offset_m in frames
-        if maneuver in LANE_CHANGE_LABELS
-    }
+    labelled = {f.maneuver for f in frames if f.maneuver in LANE_CHANGE_LABELS}
     assert labelled == set(LANE_CHANGE_LABELS), (
         f"the replay drove {sorted(labelled)}, not a complete lane change"
     )
-    assert any(
-        maneuver not in LANE_CHANGE_LABELS for _pre, _post, maneuver, _offset_m in frames
-    ), (
+    assert any(f.maneuver not in LANE_CHANGE_LABELS for f in frames), (
         "every frame is a lane change; nothing is left for the lane-holding scan to judge"
     )
 
@@ -548,7 +607,7 @@ def test_the_ego_still_holds_its_lane_outside_a_change(nob_hill_replay):
     independently -- is what keeps it fixed.
     """
     scene, frames = nob_hill_replay
-    labelled, worst = _worst_offset_outside_a_change(scene.ego_route, frames)
+    labelled, worst = _worst_offset_outside_a_change(frames)
     assert labelled, "no frame was labelled a lane change; the exclusion is dead code"
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
 
@@ -565,7 +624,7 @@ def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_re
     I1 was invisible to the suite while the milder half sat under an `xfail`.
     """
     scene, frames = grid_loop_replay
-    labelled, worst = _worst_offset_outside_a_change(scene.ego_route, frames)
+    labelled, worst = _worst_offset_outside_a_change(frames)
     assert labelled, "no frame was labelled a lane change; the exclusion is dead code"
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
 
@@ -588,7 +647,7 @@ def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
     stops being tested near anything.
     """
     scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
-    runs = _labelled_runs(scene.ego_route, frames)
+    runs = _labelled_runs(frames)
     assert runs, "no lane change was labelled at all -- this bounds nothing"
     over = [(round(i * DT, 2), round(s, 2)) for i, s, _e in runs if s > MAX_LABELLED_RUN_S]
     assert not over, (
@@ -602,6 +661,288 @@ def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
         f"{len(adrift)} of {len(runs)} labelled runs end with the car still "
         f"more than {SETTLED_BY_END_M} m off its lane, i.e. the label ran out "
         f"before the manoeuvre did (start t, offset): {adrift[:5]}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Does the manoeuvre achieve anything? (defect C2, finding I4)                  #
+# --------------------------------------------------------------------------- #
+#
+# Everything above judges the SHAPE of a lane change -- where it is legal, how
+# far off the route it puts the car, how long the label lasts. None of it asks
+# whether the car ever got anywhere, and the three tests below are the ones
+# that do.
+
+#: How close to the target lane's centreline this file calls "arrived", and
+#: how far past the lead it calls "passed".
+#:
+#: Literals, for the reason `_SCAN_TOL_M` above is a literal: both name a
+#: physical fact about the manoeuvre, and both have a same-named production
+#: constant (`LANE_CHANGE_SETTLE_M`, `LANE_CHANGE_PASS_BUFFER_M`) that the FSM
+#: uses to DECIDE the very thing measured here. Import those and the criterion
+#: becomes "the FSM stopped when the FSM decided to stop", which is true of any
+#: value it holds. `LANE_W` is imported because it is the width the scenes are
+#: built at, not a tolerance of the criterion.
+#:
+#: `_ARRIVED_M = 0.6` is twice the FSM's own 0.3 m settle tolerance: the claim
+#: here is "the traverse got there", not "it got there to within the tolerance
+#: it uses", and doubling it means tightening the production constant cannot
+#: make this scan stricter by accident. Measured post-fix, the worst
+#: non-shadowed episode peaks 3.36 m against a 3.6 m lane, i.e. 0.24 m short.
+#:
+#: `_PASSED_M = 12.0` is centre-to-centre along the ego route. The longest
+#: modelled vehicle is the 11.5 m bus in `sim/agents.py::_PROFILES` and the ego
+#: is 4.7 m (`sim/loop.py`'s `VehicleStatus.size`), so two of them are still
+#: overlapping until 8.1 m; 12.0 m puts a full car length of daylight between
+#: the worst pair before this file will call it a pass.
+_ARRIVED_M = 0.6
+_PASSED_M = 12.0
+
+#: The furthest the car may EVER be from the nearest lane centre, on any frame,
+#: labelled or not.
+#:
+#: Every other lateral guard in this file has an exclusion window the FSM
+#: itself defines -- the two 2.0 m lane-holding guards skip labelled frames,
+#: and `MAX_LABELLED_RUN_S`/`SETTLED_BY_END_M` bound that window rather than
+#: removing it. This one has no window at all, which is why it can say what
+#: they cannot: wherever the car is, and whatever it calls what it is doing, it
+#: is in a lane or crossing between two. A manoeuvre that parks the car on a
+#: lane line, or drives it off the carriageway, fails here no matter how it is
+#: labelled.
+#:
+#: `LANE_W / 2` (1.8 m) is the floor this could possibly take: a car exactly
+#: half way across is 1.8 m from both centrelines and that is correct
+#: behaviour, so the bound has to sit above it. 2.2 m allows 0.4 m of
+#: pure-pursuit overshoot past a lane centre -- measured worst 1.87 m, so 0.33 m
+#: of headroom -- and still refuses the 3.5 m excursions the pre-R4 replays
+#: drove between lanes.
+_NEAR_A_LANE_M = 2.2
+
+#: How many attempts on ONE lead the car may make in `_CYCLE_WINDOW_S` without
+#: getting past it. The deferred minor from P2-T6 and the symptom that opened
+#: C2: measured pre-fix, grid-loop made 5 attempts on `veh_00` between t=43.9 s
+#: and t=71.9 s and Nob Hill 4 on the same vehicle between t=373.4 s and
+#: t=390.7 s, none of which passed it.
+#:
+#: 2 in 30 s, rather than 1 ever: a first attempt that a junction cuts short is
+#: a reasonable thing to retry, and the traffic agents' speeds vary enough
+#: (`_PROFILES` multipliers, plus `slow()`) that a lead which was unpassable
+#: ten seconds ago may not be now. What is not reasonable is the pre-fix
+#: behaviour of trying again the moment the car is home, forever.
+_CYCLE_WINDOW_S = 30.0
+_MAX_UNSUCCESSFUL_ATTEMPTS = 2
+
+
+def _episodes(scene, frames):
+    """One record per labelled run: which vehicle it was for, and what happened.
+
+    Yields `(start_index, stop_index, lead_id, gap_at_start, closest_gap)`.
+
+    The triggering vehicle is identified HERE, from the detections of the
+    frame the run starts on -- the nearest one in the ego's own lane and ahead
+    -- rather than read back off `BehaviorFSM.lane_change`. That is the same
+    question `_held_up` answers, asked independently: a scan that took the
+    FSM's word for which car it was chasing could not tell a fix that passes
+    the lead from one that re-labels a different vehicle as the lead.
+
+    `closest_gap` is the smallest signed gap to that vehicle at any frame OF
+    THE RUN, measured centre-to-centre along the ego route, positive while it
+    is ahead. Negative means the ego got past it. Restricted to the run's own
+    frames deliberately: the claim is that the MANOEUVRE passed the lead, not
+    that the car eventually overtook it some time later.
+    """
+    route = scene.ego_route
+    for a, b in _runs(frames):
+        ahead = [
+            (route.signed_gap(frames[a].ego_s, route.project((d.pose.x, d.pose.y))), d)
+            for d in frames[a].dets
+            if d.lane_offset == 0
+        ]
+        ahead = [(gap, d) for gap, d in ahead if gap > 0]
+        if not ahead:
+            yield a, b, None, None, None
+            continue
+        gap0, lead = min(ahead, key=lambda pair: pair[0])
+        closest = min(
+            route.signed_gap(f.ego_s, route.project((d.pose.x, d.pose.y)))
+            for f in frames[a:b]
+            for d in f.dets
+            if d.id == lead.id
+        )
+        yield a, b, lead.id, gap0, closest
+
+
+def _junction_shadowed(frames, a, b) -> bool:
+    """Did the junction half of the FSM govern any tick of `frames[a:b]`?
+
+    See `Frame.fsm_state`. Anything other than CRUISE means a control point
+    was being obeyed, which is when `BehaviorFSM._junction_abort` turns a
+    lane change round wherever it happens to be.
+
+    It is an exclusion, so the caller asserts that most episodes survive it.
+    """
+    return any(f.fsm_state != "cruise" for f in frames[a:b])
+
+
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+def test_a_completed_overtake_actually_passes_the_lead(
+    scene_name, nob_hill_replay, grid_loop_replay
+):
+    """Finding I4: the only test that claimed an overtake asserted that the
+    string `"lane_change_left"` appeared on the wire.
+
+    A lateral excursion is not an overtake. Measured pre-fix, **0 of 10**
+    grid-loop episodes and **0 of 4** Nob Hill episodes ever got past the
+    vehicle they were triggered by -- the closest any came was 2.9 m on Nob
+    Hill, and that was the ego braking hard behind the same car after turning
+    back into its lane. The outbound phase ended on `LANE_CHANGE_COMMIT_S`,
+    which expired on the very tick the car arrived in the target lane, so the
+    manoeuvre spent its whole budget getting there and none of it gaining.
+
+    Asserted as "at least one episode passes", not "every episode passes",
+    and the difference is deliberate. An attempt can legitimately fail: the
+    lead speeds up, a junction takes the car, or the ego is curvature-capped
+    below the lead's speed and simply cannot gain (measured on grid-loop at
+    t=288 s, where the ego is accelerating out of a stop at 1.06 m/s behind a
+    4.43 m/s lead). What may not happen is what did happen -- that NO attempt
+    ever gains, on either scene, on any lead. `test_the_car_does_not_keep_
+    retrying_a_lead_it_never_passes` below is what stops "at least one" from
+    being satisfied by one success and a hundred failures.
+    """
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    episodes = list(_episodes(scene, frames))
+    assert episodes, "the replay drove no lane change at all -- this proves nothing"
+    with_a_lead = [e for e in episodes if e[2] is not None]
+    assert with_a_lead, (
+        f"none of {len(episodes)} episodes had a vehicle ahead in the ego's lane "
+        "when it started; nothing here was an overtake"
+    )
+    passed = [e for e in with_a_lead if e[4] < -_PASSED_M]
+    assert passed, (
+        f"0 of {len(with_a_lead)} overtakes got past the lead by {_PASSED_M} m. "
+        "Closest approach per episode (start t, lead, gap at start, best gap): "
+        + str(
+            [
+                (round(a * DT, 1), lead, round(g0, 1), round(best, 1))
+                for a, _b, lead, g0, best in with_a_lead[:6]
+            ]
+        )
+    )
+
+
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+def test_the_outbound_phase_reaches_the_lane_it_aimed_at(
+    scene_name, nob_hill_replay, grid_loop_replay
+):
+    """A traverse that stops half way is worse than not starting one.
+
+    Measured pre-fix, per-episode peak |lateral offset| against a 3.6 m lane:
+    grid-loop `[3.58, 3.34, 3.32, 1.16, 3.50, 3.42, 3.57, 3.36, 2.21, 3.38]`
+    and Nob Hill `[3.65, 2.35, 3.43, 2.90]`. Three of those fourteen leave the
+    car between lanes and turn it round from there, and one of them -- Nob
+    Hill's 2.35 m -- does it with the outbound phase having run its full
+    3.52 s, i.e. purely because the clock was calibrated for a speed the
+    manoeuvre itself removes (the car brakes for the lead it is passing until
+    it is half a lane clear of it).
+
+    Junction-shadowed episodes are excluded and NOT judged: R4's abort turns a
+    change round the moment a stop line takes priority, deliberately and
+    correctly, and such an episode is supposed to end short of the lane. The
+    exclusion is bounded by the assertion below it -- if it ever swallowed
+    most of the episodes there would be nothing left to judge.
+    """
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    runs = _runs(frames)
+    assert runs, "the replay drove no lane change at all -- this proves nothing"
+    judged = [(a, b) for a, b in runs if not _junction_shadowed(frames, a, b)]
+    assert len(judged) * 2 >= len(runs), (
+        f"only {len(judged)} of {len(runs)} episodes ran clear of a stop line; "
+        "the exclusion has swallowed the scan"
+    )
+    short = [
+        (round(a * DT, 1), round(max(abs(f.lat) for f in frames[a:b]), 2))
+        for a, b in judged
+        if max(abs(f.lat) for f in frames[a:b]) < LANE_W - _ARRIVED_M
+    ]
+    assert not short, (
+        f"{len(short)} of {len(judged)} episodes turned round without reaching "
+        f"the target lane ({LANE_W - _ARRIVED_M:.2f} m of a {LANE_W} m lane) "
+        f"(start t, peak offset): {short[:5]}"
+    )
+
+
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
+    scene_name, nob_hill_replay, grid_loop_replay
+):
+    """The symptom that opened C2, and the deferred minor from P2-T6.
+
+    Out, back, out again, five times against the same car in half a minute,
+    gaining nothing on any of them. Every individual manoeuvre is legal, ends
+    at home and inside every bound the rest of this file checks -- which is
+    exactly why this needs its own assertion.
+    """
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    episodes = [e for e in _episodes(scene, frames) if e[2] is not None]
+    assert episodes, "no overtake was attempted at all -- this bounds nothing"
+    failures = [(a, lead) for a, _b, lead, _g0, best in episodes if best >= -_PASSED_M]
+    crowded = []
+    for i, (a, lead) in enumerate(failures):
+        same = [
+            other for other, lead2 in failures[i:]
+            if lead2 == lead and (other - a) * DT < _CYCLE_WINDOW_S
+        ]
+        if len(same) > _MAX_UNSUCCESSFUL_ATTEMPTS:
+            crowded.append((round(a * DT, 1), lead, len(same)))
+    assert not crowded, (
+        f"{len(crowded)} windows of {_CYCLE_WINDOW_S} s contain more than "
+        f"{_MAX_UNSUCCESSFUL_ATTEMPTS} unsuccessful attempts on the same lead "
+        f"(start t, lead, attempts): {crowded[:5]}"
+    )
+
+
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+def test_the_ego_is_never_adrift_between_lanes(
+    scene_name, nob_hill_replay, grid_loop_replay
+):
+    """The one lateral guard in this file with no exclusion window.
+
+    See `_NEAR_A_LANE_M`. Judged against `scene.lanes`, the geometry the scene
+    was built with, and against every frame of the replay -- so unlike the two
+    2.0 m guards it cannot be satisfied by labelling a breach, and unlike
+    `MAX_LABELLED_RUN_S` it does not depend on the label lasting a sensible
+    length of time. It is the assertion that survives a manoeuvre being
+    renamed.
+
+    It is weaker than the 2.0 m guards where they apply, and deliberately so:
+    a car half way across a lane line is 1.8 m from two centrelines at once and
+    is behaving correctly. The two are complements, not substitutes.
+
+    Note what this does NOT say: `scene.lanes` contains the lane on the far
+    side of the ego route as well, which on both scenes is across the
+    centreline of a two-way street. Being near ITS centre would satisfy this
+    and is not legal driving -- that claim is
+    `test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway`'s,
+    and neither scene admits a leftward change for the scan to confuse.
+    """
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    lanes = scene.lanes
+    assert lanes is not None and len(lanes.lanes) > 1, "no neighbour lane to be near"
+    worst, worst_at = 0.0, None
+    for i, f in enumerate(frames):
+        # Cheap gate: a car within the bound of its OWN route is trivially
+        # within it of the nearest lane centre, and `Route.project` is a linear
+        # scan of a 1000-vertex polyline. Only the frames that could fail get
+        # the full search.
+        if abs(f.lat) <= _NEAR_A_LANE_M:
+            continue
+        d = min(abs(lane.route.lateral_offset(f.post)) for lane in lanes.lanes)
+        if d > worst:
+            worst, worst_at = d, (round(i * DT, 2), f.maneuver, round(f.lat, 3))
+    assert worst < _NEAR_A_LANE_M, (
+        f"the car reached {worst:.3f} m from every lane centre at "
+        f"t={worst_at[0]} s on maneuver {worst_at[1]!r} "
+        f"({worst_at[2]} m off the ego route)"
     )
 
 

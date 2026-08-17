@@ -13,14 +13,22 @@ from plan.behavior import (
     APPROACH_M,
     COMFORT_DECEL_MPS2,
     CREEP_MPS,
+    EGO_LENGTH_M,
     LANE_CHANGE_COMMIT_S,
+    LANE_CHANGE_OUTBOUND_MAX_S,
+    LANE_CHANGE_PASS_BUFFER_M,
+    LANE_CHANGE_PASS_MAX_S,
+    LANE_CHANGE_RETRY_COOLDOWN_S,
     LANE_CHANGE_RETURN_MAX_S,
-    LANE_CHANGE_RETURN_SETTLE_M,
+    LANE_CHANGE_SETTLE_M,
     MIN_FRONT_GAP_M,
     MIN_REAR_GAP_M,
     SLOW_LEAD_FRACTION,
     STOP_DWELL_S,
     STOP_MARGIN_M,
+    OUTBOUND,
+    PASSING,
+    RETURNING,
     BehaviorFSM,
     BehaviorState,
 )
@@ -591,20 +599,28 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     tick sidesteps that entirely; the tests below drive the settle condition
     explicitly with `ego_off_lane_at` instead.
 
+    Which exit it takes changed with R3, and the change is the point of the
+    helper's new bound. `ego_at` pins `y=0.0`, so the car never gets any
+    closer to `lane_left` than the 3.6 m it started at: the outbound phase
+    can NEVER satisfy `_settled_in`, and it now ends on
+    `LANE_CHANGE_OUTBOUND_MAX_S` -- a failed traverse -- rather than on
+    `LANE_CHANGE_COMMIT_S`. That is the path this helper drives, and it is why
+    the passing phase never appears in the tests built on it: a traverse that
+    never arrives has nothing to pass from.
+
     Bounded, not a bare `while`: if a regression ever restored the old
     unconditional clear (`self.lane_change = None` at expiry, `returning`
     never set), `fsm.lane_change` would stay `None` forever and this loop's
     exit condition would never be satisfied -- an infinite loop, not a
-    failing assertion. `detections=[]` here means `_held_up` can never
-    re-trigger a fresh outbound change either, so there is no other way out.
-    Measured transition (this fixture, `LANE_CHANGE_COMMIT_S=3.5`): the
-    return phase begins at `held=3.517 s`, one tick after the outbound
-    commitment expires. `LANE_CHANGE_COMMIT_S + 1.0` (4.5 s) is comfortably
-    above that -- about 0.98 s / 28% of headroom, enough to absorb the
-    commit-duration constant changing without the bound itself needing to
-    track it, while still failing fast (fractions of a second, not a hung
-    CI job with no pytest-timeout configured) under the regression it
-    guards against.
+    failing assertion. `detections=[]` here means `_lead_holding_us_up` can
+    never re-trigger a fresh outbound change either, so there is no other way
+    out. Measured transition (this fixture): the return phase begins at
+    `held=6.017 s`, one tick after `LANE_CHANGE_OUTBOUND_MAX_S`.
+    `LANE_CHANGE_OUTBOUND_MAX_S + 1.0` (7.0 s) is comfortably above that --
+    about 0.98 s / 16% of headroom, enough to absorb the backstop constant
+    changing without the bound itself needing to track it, while still
+    failing fast (fractions of a second, not a hung CI job with no
+    pytest-timeout configured) under the regression it guards against.
     """
     fsm.step(ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
              lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0)
@@ -612,7 +628,7 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     d = None
     while fsm.lane_change is None or not fsm.lane_change.returning:
         held += DT
-        assert held < LANE_CHANGE_COMMIT_S + 1.0, (
+        assert held < LANE_CHANGE_OUTBOUND_MAX_S + 1.0, (
             "the outbound change never reached the return phase"
         )
         d = fsm.step(ego_at(12.0 * held, 12.0), road, 12.0 * held, [], {}, DT,
@@ -620,15 +636,15 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     return d
 
 
-def test_the_commitment_expiring_begins_a_labelled_return(road):
-    """The manoeuvre is not over when the outbound timer expires -- it is
-    over when the car is back in a lane (see `LANE_CHANGE_RETURN_SETTLE_M`'s
-    docstring in `plan/behavior.py`). The decision immediately after
-    `LANE_CHANGE_COMMIT_S` elapses must still be a labelled lane change,
-    aimed back at the home lane -- not `None` -- or the wire reports
-    `keep_lane` while the car is still up to a full lane width off-course
-    (the defect this replaced: measured up to 3.64 m on the real Nob Hill
-    replay before this fix, `tests/test_lane_changes.py`).
+def test_a_traverse_that_never_arrives_begins_a_labelled_return(road):
+    """The manoeuvre is not over when a timer expires -- it is over when the
+    car is back in a lane (see `LANE_CHANGE_SETTLE_M`'s docstring in
+    `plan/behavior.py`). The decision immediately after the outbound backstop
+    elapses must still be a labelled lane change, aimed back at the home lane
+    -- not `None` -- or the wire reports `keep_lane` while the car is still up
+    to a full lane width off-course (the defect this replaced: measured up to
+    3.64 m on the real Nob Hill replay before this fix,
+    `tests/test_lane_changes.py`).
     """
     fsm = BehaviorFSM()
     lanes = two_lane_set(road)
@@ -643,7 +659,7 @@ def test_the_return_phase_stays_labelled_until_the_car_is_back_in_lane(road):
     """`_advance_return` ends on the geometric condition -- close to the
     home lane's centreline -- not merely because a tick passed. A pose still
     a full lane width off must not clear it; only a pose comfortably inside
-    `LANE_CHANGE_RETURN_SETTLE_M` may.
+    `LANE_CHANGE_SETTLE_M` may.
     """
     fsm = BehaviorFSM()
     lanes = two_lane_set(road)
@@ -656,7 +672,7 @@ def test_the_return_phase_stays_labelled_until_the_car_is_back_in_lane(road):
     assert fsm.lane_change is not None
     # Now comfortably inside the settle tolerance -- must clear.
     d = fsm.step(
-        ego_off_lane_at(101.0, LANE_CHANGE_RETURN_SETTLE_M / 2, 12.0),
+        ego_off_lane_at(101.0, LANE_CHANGE_SETTLE_M / 2, 12.0),
         road, 101.0, [], {}, DT,
         lanes=lanes, detections=[], limit_mps=12.0,
     )
@@ -686,6 +702,277 @@ def test_the_return_phase_terminates_via_the_backstop_if_it_never_settles(road):
         returning += DT
     assert d.target_lane_id is None, "backstop failed to end a return that never settles"
     assert fsm.lane_change is None
+
+
+# --------------------------------------------------------------------------- #
+# Arriving, and then getting past the lead (defect C2)                          #
+# --------------------------------------------------------------------------- #
+
+
+def lead_at(x, speed, *, length=4.6, lead_id="lead"):
+    """A detection in the ego's own lane at world x, with a chosen length.
+
+    `slow_lead` above always builds a 4.6 m car and always ahead. The pass
+    condition subtracts half of each vehicle's length before it will call the
+    lead passed, so a test of that has to be able to vary both.
+    """
+    from schema import Detection, Pose, Size
+
+    return Detection(
+        id=lead_id, cls="car", pose=Pose(x=x, y=0.0, heading=0.0),
+        size=Size(length=length, width=1.9, height=1.45), velocity=(speed, 0.0),
+        speed_mps=speed, confidence=1.0, hazard=False, hazard_label=None,
+        ttc_s=None, lane_offset=0,
+    )
+
+
+def _advance_to_the_passing_phase(fsm, road, lanes, lead=None):
+    """Commit to an outbound change and put the car IN the target lane.
+
+    Two ticks and no loop: the first commits (the lead is slow and the
+    neighbour is legal and clear), the second reports the car at
+    `lane_left`'s centreline, which is what `_settled_in` asks about. There is
+    no lateral physics behind these poses -- `two_lane_set` builds `lane_left`
+    at `y = +3.6`, so `ego_off_lane_at(_, 3.6, _)` IS arrival, exactly.
+    """
+    lead = lead if lead is not None else slow_lead(25.0, 3.0)
+    fsm.step(ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+             lanes=lanes, detections=[lead], limit_mps=12.0)
+    assert fsm.lane_change is not None and fsm.lane_change.phase == OUTBOUND
+    return fsm.step(ego_off_lane_at(12.0, 3.6, 12.0), road, 12.0, [], {}, DT,
+                    lanes=lanes, detections=[lead], limit_mps=12.0)
+
+
+def test_arriving_in_the_target_lane_starts_the_pass_not_the_return(road):
+    """Defect C2, first half. The outbound phase used to end on
+    `LANE_CHANGE_COMMIT_S`, and measured that clock expired on the very tick
+    the car arrived -- so the manoeuvre turned round at the exact moment it
+    got where it was going, and 0 of 14 episodes across both shipped scenes
+    ever gained on the lead they were triggered by.
+
+    Arrival must hand over to the passing phase, still aimed at the lane the
+    car has just reached. A fix that ended the outbound on arrival but went
+    straight home from there would satisfy "the traverse completes" and change
+    nothing about the defect, which is why `phase` and `target_lane_id` are
+    both asserted rather than just the label.
+    """
+    fsm = BehaviorFSM()
+    d = _advance_to_the_passing_phase(fsm, road, two_lane_set(road))
+    assert fsm.lane_change is not None
+    assert fsm.lane_change.phase == PASSING, (
+        f"arrival left the manoeuvre in {fsm.lane_change.phase!r}"
+    )
+    assert not fsm.lane_change.returning, "the car turned round the moment it arrived"
+    assert d.maneuver == "lane_change_left"
+    assert d.target_lane_id == "lane_left", (
+        "the aim point left the lane the car had just reached"
+    )
+
+
+def test_the_pass_ends_only_once_the_lead_is_behind_with_clearance(road):
+    """Defect C2, second half, and the margin the brief asked to be pinned.
+
+    `signed_gap` is centre to centre, so a lead at gap 0 is exactly alongside,
+    not behind. Ending the manoeuvre there would steer the ego back into the
+    space the lead occupies. The clearance is
+    `(EGO_LENGTH_M + lead.size.length) / 2 + LANE_CHANGE_PASS_BUFFER_M` --
+    8.3 m for this 4.6 m car -- and this drives both sides of it.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    _advance_to_the_passing_phase(fsm, road, lanes)
+    clearance = (EGO_LENGTH_M + 4.6) / 2 + LANE_CHANGE_PASS_BUFFER_M
+
+    # Alongside, and then just short of clear: the manoeuvre is not over.
+    for behind in (0.0, clearance - 0.5):
+        d = fsm.step(
+            ego_off_lane_at(100.0, 3.6, 12.0), road, 100.0, [], {}, DT,
+            lanes=lanes, detections=[lead_at(100.0 - behind, 3.0)], limit_mps=12.0,
+        )
+        assert fsm.lane_change is not None and fsm.lane_change.phase == PASSING, (
+            f"declared a pass with the lead only {behind:.2f} m behind"
+        )
+        assert d.target_lane_id == "lane_left"
+
+    # Clear: the manoeuvre is over and the car heads home, still labelled.
+    d = fsm.step(
+        ego_off_lane_at(101.0, 3.6, 12.0), road, 101.0, [], {}, DT,
+        lanes=lanes, detections=[lead_at(101.0 - clearance - 0.5, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.returning, (
+        "the lead was passed and the car stayed out in the other lane"
+    )
+    assert d.maneuver == "lane_change_right"
+    assert d.target_lane_id == EGO_LANE_ID
+
+
+def test_a_longer_lead_has_to_be_passed_by_further(road):
+    """The clearance reads the lead's OWN length, not a constant.
+
+    Same geometry, same gap, two vehicles: an 11.5 m bus (`_PROFILES`' longest)
+    is still alongside where a 2.1 m motorcycle is long gone. A fixed margin
+    that happened to clear the car case would call the bus passed with 1.4 m
+    of its tail still level with the ego.
+    """
+    behind = (EGO_LENGTH_M + 4.6) / 2 + LANE_CHANGE_PASS_BUFFER_M + 0.5
+    outcomes = {}
+    for length in (2.1, 11.5):
+        fsm = BehaviorFSM()
+        lanes = two_lane_set(road)
+        lead = lead_at(25.0, 3.0, length=length)
+        _advance_to_the_passing_phase(fsm, road, lanes, lead=lead)
+        fsm.step(
+            ego_off_lane_at(100.0, 3.6, 12.0), road, 100.0, [], {}, DT,
+            lanes=lanes, detections=[lead_at(100.0 - behind, 3.0, length=length)],
+            limit_mps=12.0,
+        )
+        assert fsm.lane_change is not None
+        outcomes[length] = fsm.lane_change.phase
+    assert outcomes[2.1] == RETURNING, "a short lead was not passed by 8.8 m"
+    assert outcomes[11.5] == PASSING, (
+        "an 11.5 m bus was called passed with 8.8 m of centre separation"
+    )
+
+
+def test_the_pass_ends_when_the_lead_is_no_longer_slow(road):
+    """A lead that gets going again is a reason to come home, not to keep
+    sitting in the other lane -- the same `SLOW_LEAD_FRACTION` test that
+    started the manoeuvre, asked again.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    _advance_to_the_passing_phase(fsm, road, lanes)
+    d = fsm.step(
+        ego_off_lane_at(100.0, 3.6, 12.0), road, 100.0, [], {}, DT,
+        lanes=lanes,
+        detections=[lead_at(110.0, 12.0 * SLOW_LEAD_FRACTION + 1.0)],
+        limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.returning
+    assert d.maneuver == "lane_change_right"
+
+
+def test_the_pass_ends_when_the_lead_disappears(road):
+    """Nothing left to pass. Without this the car would sit in the other lane
+    until `LANE_CHANGE_PASS_MAX_S`, chasing a vehicle that is no longer
+    detected at all.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    _advance_to_the_passing_phase(fsm, road, lanes)
+    d = fsm.step(
+        ego_off_lane_at(100.0, 3.6, 12.0), road, 100.0, [], {}, DT,
+        lanes=lanes, detections=[], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.returning
+    assert d.maneuver == "lane_change_right"
+
+
+#: How long this module's passing-phase tests allow a pass that never gains to
+#: run, and how long they insist it lasts at minimum.
+#:
+#: Literals, deliberately not `LANE_CHANGE_PASS_MAX_S` (8.0 s in
+#: `plan/behavior.py`) -- the same reasoning as `_ABORT_CAP_S` below. A bound
+#: imported from the constant it audits moves with it, so raising the backstop
+#: to 80 s would leave a test written that way still green while the car sat in
+#: the oncoming half of a two-lane road for over a minute.
+_PASS_FLOOR_S = 7.0
+_PASS_CAP_S = 9.0
+
+
+def test_a_pass_that_never_gains_gives_up_and_comes_home(road):
+    """The car cannot always pass: it may be curvature-capped below the lead's
+    own speed (measured on grid-loop at t=288 s, accelerating out of a stop at
+    1.06 m/s behind a 4.43 m/s lead). Sitting in the other lane forever is not
+    an option, so the phase is backstopped.
+
+    Bounded loop, not a bare `while`: under a regression that never leaves
+    PASSING this would hang the suite rather than fail it, which has happened
+    once in this project already (see
+    `_advance_to_the_moment_the_return_begins`). The lead is held at a fixed
+    gap, still slow and still ahead, so the backstop is the only exit.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    _advance_to_the_passing_phase(fsm, road, lanes)
+
+    held = 0.0
+    while fsm.lane_change is not None and fsm.lane_change.phase == PASSING:
+        held += DT
+        assert held < _PASS_CAP_S, "the passing phase never gave up"
+        fsm.step(
+            ego_off_lane_at(100.0, 3.6, 3.0), road, 100.0, [], {}, DT,
+            lanes=lanes, detections=[lead_at(112.0, 3.0)], limit_mps=12.0,
+        )
+    assert held > _PASS_FLOOR_S, (
+        f"the pass lasted only {held:.2f} s -- too short to overtake anything, "
+        "which is the defect rather than the fix"
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.returning
+
+
+def test_a_lead_that_could_not_be_passed_is_not_immediately_retried(road):
+    """The symptom that opened C2 and the deferred minor from P2-T6.
+
+    (a) and (b) alone do not stop it. An attempt that gives up leaves the car
+    home behind the same slow lead with the same reason to overtake, so the
+    next tick starts the whole thing again -- measured pre-fix as 5 attempts
+    on one vehicle in 28 s on grid-loop, none of which gained. The cooldown is
+    what breaks the loop, and it has to expire or the car would refuse to
+    overtake that vehicle for the rest of the session.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    # An outbound traverse that never arrives: `ego_at` pins y=0.0, so the car
+    # never reaches `lane_left` and the phase ends on its backstop -- a failed
+    # attempt, which is what sets the cooldown.
+    _advance_to_the_moment_the_return_begins(fsm, road, lanes)
+    fsm.step(ego_at(200.0, 12.0), road, 200.0, [], {}, DT,
+             lanes=lanes, detections=[], limit_mps=12.0)
+    assert fsm.lane_change is None, "the return did not settle"
+    assert "lead" in fsm.cooldown
+
+    # The ego is held at one arc length from here on, with the same lead 25 m
+    # ahead of it: nothing about the situation changes except the clock, so
+    # the cooldown is the only thing that can be refusing the change.
+    held = 0.0
+    for _ in range(int((LANE_CHANGE_RETRY_COOLDOWN_S - 1.0) / DT)):
+        held += DT
+        d = fsm.step(ego_at(200.0, 12.0), road, 200.0, [], {}, DT,
+                     lanes=lanes, detections=[slow_lead(225.0, 3.0)], limit_mps=12.0)
+        assert d.target_lane_id is None, (
+            f"retried the same lead after {held:.2f} s"
+        )
+
+    for _ in range(int(2.0 / DT)):
+        held += DT
+        d = fsm.step(ego_at(200.0, 12.0), road, 200.0, [], {}, DT,
+                     lanes=lanes, detections=[slow_lead(225.0, 3.0)], limit_mps=12.0)
+        if d.target_lane_id is not None:
+            break
+    assert d.target_lane_id == "lane_left", (
+        f"the cooldown never expired: still refusing after {held:.2f} s"
+    )
+
+
+def test_a_second_slow_car_is_still_overtaken_while_one_is_on_cooldown(road):
+    """The cooldown is per vehicle, not a global mute.
+
+    Both shipped scenes attempt the same car every time, so nothing in the
+    replays can tell a per-id cooldown from a blanket one -- and a blanket one
+    would stop the car overtaking anything for 20 s after any failed attempt.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.cooldown["lead"] = LANE_CHANGE_RETRY_COOLDOWN_S
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=lanes,
+        detections=[slow_lead(25.0, 3.0), lead_at(30.0, 3.0, lead_id="other")],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_left"
+    assert fsm.lane_change is not None and fsm.lane_change.lead_id == "other"
 
 
 def test_a_junction_stop_outranks_a_lane_change(road):
