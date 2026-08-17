@@ -180,6 +180,31 @@ MIN_REAR_GAP_M = 14.0
 #: limit of its own, so an oscillating target would be tracked faithfully.
 LANE_CHANGE_COMMIT_S = 3.5
 
+#: The manoeuvre is not over when the outbound timer expires -- it is over
+#: when the car is back in a lane. This is how close (in metres, from the
+#: home lane's centreline) counts as "back": tight enough that the car is
+#: unambiguously tracking its own lane again, not merely inside the 2.0 m
+#: peak-lateral-offset guard other code checks. Measured on the real Nob Hill
+#: replay (`tests/test_lane_changes.py`, seed=1, traffic_speed_scale=0.4):
+#: once the return phase is not itself interrupted by a fresh outbound
+#: decision (see `_lane_change_step`'s ordering below), offset decays roughly
+#: monotonically from a ~3.6 m outbound peak.
+LANE_CHANGE_RETURN_SETTLE_M = 0.3
+
+#: Hard backstop on the return phase's own duration. A manoeuvre that can
+#: only end on a geometric condition (settling within
+#: `LANE_CHANGE_RETURN_SETTLE_M`) can hang the FSM forever if that condition
+#: is never met -- a stalled tracker, a route with no stable centreline to
+#: converge to, or simply a slower vehicle than assumed. This bounds the
+#: total time the car can spend labelled mid-return regardless.
+#:
+#: Measured on the real Nob Hill replay (same fixture as above): three
+#: return phases in one 600 s run settled in 1.93 s, 2.48 s and 2.58 s.
+#: 6.0 s is >2.3x the slowest of those -- generous headroom over the
+#: measured figure, in the same spirit as `MAX_STEER_RATE_RAD_S` in
+#: `plan/control.py`, not tuned to trip near it.
+LANE_CHANGE_RETURN_MAX_S = 6.0
+
 
 @dataclass(slots=True)
 class LaneChange:
@@ -187,6 +212,13 @@ class LaneChange:
     to_lane_id: str
     direction: int  # +1 left, -1 right
     elapsed_s: float = 0.0
+    #: False while driving out to `to_lane_id`; True once the outbound
+    #: commitment has completed and the car is labelled driving BACK to
+    #: `from_lane_id` -- at which point `from_lane_id`/`to_lane_id` and
+    #: `direction` have been swapped/flipped by `_begin_return`, so
+    #: `to_lane_id` always names where this phase is currently headed and
+    #: `direction` always matches the label `_changing()` emits.
+    returning: bool = False
 
 
 class BehaviorState(str, Enum):
@@ -499,9 +531,20 @@ class BehaviorFSM:
 
         if self.lane_change is not None:
             self.lane_change.elapsed_s += dt
+            if self.lane_change.returning:
+                # Checked here, ahead of a fresh outbound decision below,
+                # deliberately: while `self.lane_change` is set the whole
+                # method returns before ever reaching the "not held up ->
+                # trigger a new change" logic, so a still-slow lead cannot
+                # re-trigger outbound while the car is mid-return. Measured
+                # without this ordering (i.e. clearing `lane_change` outright
+                # on timer expiry, the pre-fix behaviour): the same held-up
+                # lead re-triggered a fresh outbound change ~1 s into the
+                # unlabelled coast back, before the car had settled, three
+                # times in one 600 s Nob Hill run.
+                return self._advance_return(ego, lanes)
             if self.lane_change.elapsed_s >= LANE_CHANGE_COMMIT_S:
-                self.lane_change = None
-                return None
+                self._begin_return()
             return self._changing()
 
         if not self._held_up(route, ego_s, detections, limit_mps):
@@ -517,6 +560,42 @@ class BehaviorFSM:
             return None
 
         self.lane_change = LaneChange(current.id, current.left_id, +1)
+        return self._changing()
+
+    def _begin_return(self) -> None:
+        """Flip an outbound commitment into a labelled trip back.
+
+        Swapping the ids and negating `direction` is enough to make
+        `_changing()` emit the mirror-image decision (`lane_change_right`
+        after an outbound `lane_change_left`, `target_lane_id` now the
+        original home lane) with no other code path needing to know a
+        return is under way -- `_changing()` itself stays unchanged.
+        """
+        lc = self.lane_change
+        assert lc is not None
+        lc.from_lane_id, lc.to_lane_id = lc.to_lane_id, lc.from_lane_id
+        lc.direction = -lc.direction
+        lc.elapsed_s = 0.0
+        lc.returning = True
+
+    def _advance_return(self, ego, lanes: "LaneSet") -> BehaviorDecision | None:
+        """Continue (or end) the labelled trip back to the home lane.
+
+        Ends on whichever comes first: settling within
+        `LANE_CHANGE_RETURN_SETTLE_M` of the home lane's centreline (the
+        real condition -- the manoeuvre is over when the car is in a lane),
+        or `LANE_CHANGE_RETURN_MAX_S` elapsing (the backstop for whatever
+        prevents that, so this cannot hang the FSM indefinitely).
+        """
+        lc = self.lane_change
+        assert lc is not None
+        home = lanes.by_id(lc.to_lane_id)
+        settled = home is not None and abs(
+            home.route.lateral_offset((ego.x, ego.y))
+        ) < LANE_CHANGE_RETURN_SETTLE_M
+        if settled or lc.elapsed_s >= LANE_CHANGE_RETURN_MAX_S:
+            self.lane_change = None
+            return None
         return self._changing()
 
     def _changing(self) -> BehaviorDecision:

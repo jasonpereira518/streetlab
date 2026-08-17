@@ -7,11 +7,7 @@ where 87.7 % of the driven length has one forward lane and a lane change would
 be into oncoming traffic.
 """
 
-import json
-import tempfile
 from pathlib import Path
-
-import pytest
 
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
@@ -38,6 +34,21 @@ def test_the_ego_overtakes_a_slow_lead_where_two_lanes_exist():
 
 
 def test_the_ego_returns_to_its_own_lane_after_overtaking():
+    """A decision alone is not a manoeuvre: this drives the aim-point blend
+    (`plan/control.py::plan()`'s `aim_route`/`blend`) all the way through
+    `plan()` with live, non-empty detections -- the coverage gap Task 5's
+    review flagged, since both of its own new tests pass empty detections and
+    never make `fsm.lane_change` activate.
+
+    `2.0` for "left its lane at all": `EGO_LANE_INSET` (1.8 m, `map/scene_build.py`)
+    is the lane half-width the ego is normally held within, so clearing 2.0 m
+    of lateral offset is only reachable mid-change, not from steering noise on
+    the home lane. `1.8` for "ended off its lane": that same half-width -- the
+    car must be back within its own lane, not merely off the far one, once
+    the manoeuvre completes. Same 180 s / 3.09-lap window as the
+    positive-claim test above, for the same reason -- ample room for the
+    overtake to start, finish and settle.
+    """
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     route = sim.scene.ego_route
@@ -65,6 +76,17 @@ def test_no_lane_change_is_ever_initiated_where_the_road_has_one_forward_lane():
     segments -- so the loop below now runs long enough to actually exercise
     the gate, and the added `assert lc_frames` makes that non-vacuousness
     part of the test itself rather than an artifact of one measurement run.
+
+    Sampled at the PRE-step pose, not the post-step one: `sim/loop.py`'s
+    `state_update()` docstring documents that `frame.plan.maneuver` was
+    computed by `_plan()` from the pose at the START of the tick, while
+    `sim.ego.x/y` after `sim.step()` is the pose at its END -- a 1/60 s,
+    0.149 m skew at Nob Hill lap speed (deliberate, from Phase 1 Task 1). The
+    legality scan has to match the maneuver label to the position that
+    actually produced it, or `count_at` is being asked about a point ~0.15 m
+    further along the route than the one the FSM looked at when it decided
+    to change lanes. Do not "simplify" this back to the post-step pose --
+    that reintroduces the skew this fix removes.
     """
     import sys
 
@@ -77,11 +99,12 @@ def test_no_lane_change_is_ever_initiated_where_the_road_has_one_forward_lane():
     violations = []
     lc_frames = 0
     for _ in range(int(600.0 / DT)):
+        pre = (sim.ego.x, sim.ego.y)  # the pose `_plan()` consumed for this tick's maneuver
         sim.step()
         frame = sim.state_update()
         if frame.plan.maneuver in ("lane_change_left", "lane_change_right"):
             lc_frames += 1
-            s = route.project((sim.ego.x, sim.ego.y))
+            s = route.project(pre)
             if lanes.count_at(s) < 2:
                 violations.append(round(s, 1))
     assert lc_frames, "no lane change was ever attempted -- this run proves nothing"
@@ -90,7 +113,25 @@ def test_no_lane_change_is_ever_initiated_where_the_road_has_one_forward_lane():
 
 def test_the_ego_still_holds_its_lane_outside_a_change():
     """A lane change is the only time the car may be a lane width off the ego
-    route. Everywhere else the 1.8 m guard still binds.
+    route. Everywhere else the 2.0 m peak-lateral-offset guard from Phase 1 --
+    the same bound `test_loop.py`'s Nob Hill lap test checks -- still binds.
+
+    The brief's original 60 s at the default `traffic_speed_scale=1.0` never
+    triggers a lane change on Nob Hill at all -- the sibling negative-claim
+    test above measures the first one at t=373.4 s even at the more
+    permissive traffic_speed_scale=0.4. That means the `if ... continue`
+    exclusion below was DEAD CODE for the entire run: every frame counted
+    toward `worst` regardless of maneuver, so this test could not tell a
+    correct exclusion from a broken one (wrong maneuver strings, a stale
+    field, the branch deleted outright) -- it would pass identically either
+    way, and was functionally a duplicate of the pre-existing
+    `test_loop.py::test_the_ego_holds_its_lane_around_the_real_route`.
+
+    Fixed the same way as the vacuous 240 s window above: reuse the exact
+    same scan (traffic_speed_scale=0.4, 600 s, same seed=1 fixture) so lane
+    changes are guaranteed to occur on this deterministic replay, and assert
+    `excluded_frames` is nonzero so a future window/scale drift that makes
+    this vacuous again fails loudly instead of passing for the wrong reason.
     """
     import sys
 
@@ -98,31 +139,44 @@ def test_the_ego_still_holds_its_lane_outside_a_change():
     from test_junctions import _osm_sim
 
     sim = _osm_sim()
+    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
     route = sim.scene.ego_route
     worst = 0.0
-    for _ in range(3600):
+    excluded_frames = 0
+    for _ in range(int(600.0 / DT)):
         sim.step()
         frame = sim.state_update()
         if frame.plan.maneuver in ("lane_change_left", "lane_change_right"):
+            excluded_frames += 1
             continue
         worst = max(worst, abs(route.lateral_offset((sim.ego.x, sim.ego.y))))
+    assert excluded_frames, "no lane change occurred; this test's exclusion never ran"
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
 
 
 def test_all_seven_wire_maneuvers_are_now_reachable():
     """4 of 7 were dead protocol before Cycle 3.
 
-    `turn_left` is excluded alongside `lane_change_right`, for an unrelated,
-    pre-existing, and purely geometric reason: `grid-loop`'s block route is a
-    convex rectangle (`SyntheticGrid._block_route`'s four corners) driven
-    clockwise, and `_maneuver()` classifies a turn from the *sign* of route
-    curvature alone -- a convex loop traversed in one rotational sense can
-    only ever bend one way. `test_control.py::test_maneuver_reports_a_turn_
-    inside_a_corner` already documents this: "The loop is driven clockwise,
-    so every fillet is a right turn." No lane change or FSM change in this
-    phase touches `_maneuver`'s route argument (it is always `route`, the
-    lane-0 centreline, never the blended aim route), so this has nothing to
-    do with lane changes and is not a regression to chase here.
+    `lane_change_right` was previously excluded here: nothing returned the
+    car rightward on its own after an outbound `lane_change_left`, so the
+    blend expired and the tracker coasted back to lane 0 unlabelled. Now that
+    `BehaviorFSM._lane_change_step` runs a genuine, labelled return phase
+    (`_begin_return`/`_advance_return` in `plan/behavior.py`) -- driving back
+    to the home lane under `lane_change_right` rather than silently -- the
+    exclusion is dropped; `lane_change_right` is reachable on this same
+    grid-loop scenario, confirmed below.
+
+    `turn_left` stays excluded, for an unrelated, pre-existing, and purely
+    geometric reason: `grid-loop`'s block route is a convex rectangle
+    (`SyntheticGrid._block_route`'s four corners) driven clockwise, and
+    `_maneuver()` classifies a turn from the *sign* of route curvature alone
+    -- a convex loop traversed in one rotational sense can only ever bend one
+    way. `test_control.py::test_maneuver_reports_a_turn_inside_a_corner`
+    already documents this: "The loop is driven clockwise, so every fillet is
+    a right turn." No lane-change or FSM change in this phase touches
+    `_maneuver`'s route argument (it is always `route`, the lane-0
+    centreline, never the blended aim route), so this has nothing to do with
+    lane changes and is not a regression to chase here.
     """
     from schema import Maneuver
     from typing import get_args
@@ -130,5 +184,5 @@ def test_all_seven_wire_maneuvers_are_now_reachable():
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     seen = set(maneuvers_over(sim, 300.0))
-    missing = set(get_args(Maneuver)) - seen - {"lane_change_right", "turn_left"}
+    missing = set(get_args(Maneuver)) - seen - {"turn_left"}
     assert not missing, f"still unreachable: {sorted(missing)}"

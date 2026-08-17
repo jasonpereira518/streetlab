@@ -14,6 +14,8 @@ from plan.behavior import (
     COMFORT_DECEL_MPS2,
     CREEP_MPS,
     LANE_CHANGE_COMMIT_S,
+    LANE_CHANGE_RETURN_MAX_S,
+    LANE_CHANGE_RETURN_SETTLE_M,
     MIN_FRONT_GAP_M,
     MIN_REAR_GAP_M,
     SLOW_LEAD_FRACTION,
@@ -37,6 +39,13 @@ def road():
 
 def ego_at(s, speed):
     return VehicleState(x=s, y=0.0, heading=0.0, speed_mps=speed)
+
+
+def ego_off_lane_at(s, y, speed):
+    """Like `ego_at`, but laterally offset -- for driving the return phase's
+    geometric settle condition directly, without a real physics loop.
+    """
+    return VehicleState(x=s, y=y, heading=0.0, speed_mps=speed)
 
 
 def signal(cp_id, phase):
@@ -434,17 +443,99 @@ def test_a_committed_change_is_not_abandoned_when_the_reason_disappears(road):
     assert d.maneuver == "lane_change_left"
 
 
-def test_the_commitment_expires_and_the_car_settles(road):
-    fsm = BehaviorFSM()
-    lanes = two_lane_set(road)
+def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
+    """Commit to an outbound change, then drive the FSM one tick at a time
+    until `_begin_return` fires, returning that tick's decision.
+
+    Deliberately stops there rather than continuing past it the way
+    `test_the_commitment_expiring_begins_a_labelled_return`'s predecessor
+    used to (a "well past expiry, confirm it stays cleared" loop, safe under
+    the OLD unconditional-clear behaviour). It cannot safely continue here:
+    every ego pose in this style of test comes from `ego_at`, which always
+    fixes `y=0.0` -- so ANY further call to `_advance_return` at that fixed
+    pose reads as "already at the home lane's centreline" and clears the
+    manoeuvre immediately, a testing artefact of the fabricated pose (this
+    module drives the FSM in isolation, with no real lateral physics behind
+    `ego_at`'s `x`/`y`), not a real settle. Stopping at the exact transition
+    tick sidesteps that entirely; the tests below drive the settle condition
+    explicitly with `ego_off_lane_at` instead.
+    """
     fsm.step(ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
              lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0)
     held = 0.0
-    while held < LANE_CHANGE_COMMIT_S + DT:
+    d = None
+    while fsm.lane_change is None or not fsm.lane_change.returning:
+        held += DT
         d = fsm.step(ego_at(12.0 * held, 12.0), road, 12.0 * held, [], {}, DT,
                      lanes=lanes, detections=[], limit_mps=12.0)
-        held += DT
+    return d
+
+
+def test_the_commitment_expiring_begins_a_labelled_return(road):
+    """The manoeuvre is not over when the outbound timer expires -- it is
+    over when the car is back in a lane (see `LANE_CHANGE_RETURN_SETTLE_M`'s
+    docstring in `plan/behavior.py`). The decision immediately after
+    `LANE_CHANGE_COMMIT_S` elapses must still be a labelled lane change,
+    aimed back at the home lane -- not `None` -- or the wire reports
+    `keep_lane` while the car is still up to a full lane width off-course
+    (the defect this replaced: measured up to 3.64 m on the real Nob Hill
+    replay before this fix, `tests/test_lane_changes.py`).
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    d = _advance_to_the_moment_the_return_begins(fsm, road, lanes)
+    assert d.maneuver == "lane_change_right", "outbound completed without a labelled return"
+    assert d.target_lane_id == "lane_0"
+    assert fsm.lane_change is not None
+    assert fsm.lane_change.returning is True
+
+
+def test_the_return_phase_stays_labelled_until_the_car_is_back_in_lane(road):
+    """`_advance_return` ends on the geometric condition -- close to the
+    home lane's centreline -- not merely because a tick passed. A pose still
+    a full lane width off must not clear it; only a pose comfortably inside
+    `LANE_CHANGE_RETURN_SETTLE_M` may.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    _advance_to_the_moment_the_return_begins(fsm, road, lanes)
+    # Still a full lane width off -- must stay labelled.
+    d = fsm.step(ego_off_lane_at(100.0, 3.6, 12.0), road, 100.0, [], {}, DT,
+                 lanes=lanes, detections=[], limit_mps=12.0)
+    assert d.maneuver == "lane_change_right"
+    assert d.target_lane_id == "lane_0"
+    assert fsm.lane_change is not None
+    # Now comfortably inside the settle tolerance -- must clear.
+    d = fsm.step(
+        ego_off_lane_at(101.0, LANE_CHANGE_RETURN_SETTLE_M / 2, 12.0),
+        road, 101.0, [], {}, DT,
+        lanes=lanes, detections=[], limit_mps=12.0,
+    )
     assert d.target_lane_id is None
+    assert fsm.lane_change is None
+
+
+def test_the_return_phase_terminates_via_the_backstop_if_it_never_settles(road):
+    """The geometric settle condition is the real exit, but a car that (for
+    any reason) never converges cannot leave the FSM labelled `lane_change_*`
+    forever -- `LANE_CHANGE_RETURN_MAX_S` bounds the return phase regardless.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    _advance_to_the_moment_the_return_begins(fsm, road, lanes)
+    assert fsm.lane_change is not None  # sanity: the return phase is active
+
+    returning = 0.0
+    d = None
+    while returning < LANE_CHANGE_RETURN_MAX_S + DT:
+        # Always a full lane width off -- geometrically, this never settles.
+        d = fsm.step(
+            ego_off_lane_at(200.0 + returning, 3.6, 12.0),
+            road, 200.0 + returning, [], {}, DT,
+            lanes=lanes, detections=[], limit_mps=12.0,
+        )
+        returning += DT
+    assert d.target_lane_id is None, "backstop failed to end a return that never settles"
     assert fsm.lane_change is None
 
 
