@@ -13,6 +13,10 @@ from plan.behavior import (
     APPROACH_M,
     COMFORT_DECEL_MPS2,
     CREEP_MPS,
+    LANE_CHANGE_COMMIT_S,
+    MIN_FRONT_GAP_M,
+    MIN_REAR_GAP_M,
+    SLOW_LEAD_FRACTION,
     STOP_DWELL_S,
     STOP_MARGIN_M,
     BehaviorFSM,
@@ -254,3 +258,202 @@ def test_a_commitment_survives_red_on_a_closed_loop():
     d = fsm.step(ego_at(1.0, 12.0), loop, 1.0, cps, signal("tl", "red"), DT)
     assert d.state is BehaviorState.CRUISE
     assert "tl" in fsm.honoured
+
+
+def two_lane_set(road):
+    """A `LaneSet` whose whole length has two forward lanes."""
+    from sim.route import Lane, LaneSet
+
+    left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
+    return LaneSet(
+        lanes=(
+            Lane("lane_0", 0, road, "lane_1", None),
+            Lane("lane_1", 1, left, None, "lane_0"),
+        ),
+        count_along=tuple(2 for _ in range(len(road.points) - 1)),
+    )
+
+
+def one_lane_set(road):
+    from sim.route import Lane, LaneSet
+
+    return LaneSet(
+        lanes=(Lane("lane_0", 0, road, None, None),),
+        count_along=tuple(1 for _ in range(len(road.points) - 1)),
+    )
+
+
+def two_lane_geometry_one_lane_here(road):
+    """A `LaneSet` whose `lane_1` genuinely exists -- the route is wide
+    enough somewhere, so `lane_0.left_id` is not None -- but whose
+    `count_along` reports only one lane legal at every arc length on this
+    fixture's road. This is the actual Nob Hill shape: `count_at()` is what
+    says a lane doesn't exist HERE, distinct from `one_lane_set` above, where
+    `lane_1` is absent from the derived set entirely and `current.left_id is
+    None` already blocks the change one line earlier -- never reaching
+    `count_at()` at all.
+    """
+    from sim.route import Lane, LaneSet
+
+    left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
+    return LaneSet(
+        lanes=(
+            Lane("lane_0", 0, road, "lane_1", None),
+            Lane("lane_1", 1, left, None, "lane_0"),
+        ),
+        count_along=tuple(1 for _ in range(len(road.points) - 1)),
+    )
+
+
+def slow_lead(gap_m, speed):
+    from schema import Detection, Pose, Size
+
+    return Detection(
+        id="lead", cls="car", pose=Pose(x=gap_m, y=0.0, heading=0.0),
+        size=Size(length=4.6, width=1.9, height=1.45), velocity=(speed, 0.0),
+        speed_mps=speed, confidence=1.0, hazard=False, hazard_label=None,
+        ttc_s=None, lane_offset=0,
+    )
+
+
+def blocker(gap_m, speed, lane_offset):
+    from schema import Detection, Pose, Size
+
+    return Detection(
+        id=f"other_{gap_m}", cls="car", pose=Pose(x=gap_m, y=3.6 * lane_offset, heading=0.0),
+        size=Size(length=4.6, width=1.9, height=1.45), velocity=(speed, 0.0),
+        speed_mps=speed, confidence=1.0, hazard=False, hazard_label=None,
+        ttc_s=None, lane_offset=lane_offset,
+    )
+
+
+def test_a_slow_lead_with_a_clear_left_lane_wants_a_lane_change(road):
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road), detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_1"
+    assert d.maneuver == "lane_change_left"
+
+
+def test_no_lane_change_is_wanted_when_the_lead_is_not_slow(road):
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[slow_lead(25.0, 12.0 * SLOW_LEAD_FRACTION + 1.0)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id is None
+
+
+def test_no_lane_change_where_the_road_has_only_one_forward_lane(road):
+    """No `lane_1` exists in the derived set at all -- `current.left_id is
+    None` blocks the change. See `test_no_lane_change_where_the_second_
+    lane_exists_but_is_not_legal_here` below for the Nob Hill shape, where
+    `lane_1` exists but `count_at()` forbids it -- this test alone cannot
+    exercise that guard, since it never reaches it.
+    """
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=one_lane_set(road), detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert d.target_lane_id is None
+    assert d.maneuver != "lane_change_left"
+
+
+def test_no_lane_change_where_the_second_lane_exists_but_is_not_legal_here(road):
+    """The Nob Hill case: 87.7 % of the loop. `lane_1` genuinely exists in
+    the derived set -- the route is wide enough somewhere -- but `count_at()`
+    says it doesn't exist at this arc length. Geometry is not permission.
+
+    Deleting the `count_at` guard in `_lane_change_step` must flip this
+    test's assertion, unlike `test_no_lane_change_where_the_road_has_only_
+    one_forward_lane` above, whose `LaneSet` has no `lane_1` to reach it
+    through in the first place.
+    """
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_geometry_one_lane_here(road),
+        detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert d.target_lane_id is None
+    assert d.maneuver != "lane_change_left"
+
+
+def test_a_vehicle_occupying_the_front_gap_blocks_the_change(road):
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[slow_lead(25.0, 3.0), blocker(MIN_FRONT_GAP_M - 2.0, 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id is None
+
+
+def test_a_vehicle_occupying_the_rear_gap_blocks_the_change(road):
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[slow_lead(25.0, 3.0), blocker(-(MIN_REAR_GAP_M - 2.0), 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id is None
+
+
+def test_a_distant_vehicle_in_the_target_lane_does_not_block(road):
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[slow_lead(25.0, 3.0), blocker(MIN_FRONT_GAP_M + 40.0, 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_1"
+
+
+def test_a_committed_change_is_not_abandoned_when_the_reason_disappears(road):
+    """Dithering mid-manoeuvre is worse than either lane. Once the wheel is
+    turned, the change runs to completion.
+    """
+    fsm = BehaviorFSM()
+    fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road), detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    d = fsm.step(
+        ego_at(1.0, 12.0), road, 1.0, [], {}, DT,
+        lanes=two_lane_set(road), detections=[], limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_1"
+    assert d.maneuver == "lane_change_left"
+
+
+def test_the_commitment_expires_and_the_car_settles(road):
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+             lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0)
+    held = 0.0
+    while held < LANE_CHANGE_COMMIT_S + DT:
+        d = fsm.step(ego_at(12.0 * held, 12.0), road, 12.0 * held, [], {}, DT,
+                     lanes=lanes, detections=[], limit_mps=12.0)
+        held += DT
+    assert d.target_lane_id is None
+    assert fsm.lane_change is None
+
+
+def test_a_junction_stop_outranks_a_lane_change(road):
+    """Two constraints at once: obeying the road wins."""
+    fsm = BehaviorFSM()
+    d = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, light_at(20.0), signal("tl", "red"), DT,
+        lanes=two_lane_set(road), detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert d.maneuver == "stop"
+    assert d.target_lane_id is None

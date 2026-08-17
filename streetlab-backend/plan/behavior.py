@@ -27,8 +27,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
-from schema import SignalState
-from sim.route import ControlPoint, Route
+from map.lanes import LANE_W
+from schema import Detection, SignalState
+from sim.route import ControlPoint, LaneSet, Route
 from sim.vehicle import VehicleState
 
 #: How far ahead a control point starts to matter. Comfortably more than the
@@ -162,6 +163,31 @@ CLEARED_M = 2.0
 #: 100 m clears it with room to spare.
 COMMITMENT_MEMORY_M = 100.0
 
+#: A lead is worth overtaking only when it costs real time. Below this fraction
+#: of the governing limit, the car is being held up rather than merely followed.
+SLOW_LEAD_FRACTION = 0.7
+
+#: How far ahead a lead has to be to be worth planning around rather than
+#: simply following.
+LANE_CHANGE_LOOKAHEAD_M = 45.0
+
+#: Gaps required in the target lane, measured bumper to bumper along the route.
+MIN_FRONT_GAP_M = 18.0
+MIN_REAR_GAP_M = 14.0
+
+#: Once started, a change runs for this long before the decision reopens. The
+#: car cannot dither between two lanes; `BicycleModel` has no steering-rate
+#: limit of its own, so an oscillating target would be tracked faithfully.
+LANE_CHANGE_COMMIT_S = 3.5
+
+
+@dataclass(slots=True)
+class LaneChange:
+    from_lane_id: str
+    to_lane_id: str
+    direction: int  # +1 left, -1 right
+    elapsed_s: float = 0.0
+
 
 class BehaviorState(str, Enum):
     CRUISE = "cruise"
@@ -182,6 +208,10 @@ class BehaviorDecision:
     #: None to leave that alone.
     maneuver: str | None
     target: ControlPoint | None
+    #: The lane a lane-change decision wants to end up in, or None when no
+    #: change is under way. Defaulted so `_CRUISE` and every existing
+    #: `BehaviorDecision(...)` construction from Phase 1 stays valid.
+    target_lane_id: str | None = None
 
 
 _CRUISE = BehaviorDecision(BehaviorState.CRUISE, math.inf, None, None)
@@ -195,14 +225,45 @@ class BehaviorFSM:
     #: Control point id -> the ego's arc length AT THE MOMENT OF COMMITMENT
     #: (not the line's arc length -- see `_expire`).
     honoured: dict[str, float] = field(default_factory=dict)
+    #: The lane change under way, if any. Set only once a change has been
+    #: decided and committed to; cleared by a junction constraint or by
+    #: `LANE_CHANGE_COMMIT_S` running out.
+    lane_change: LaneChange | None = None
 
     def reset(self) -> None:
         self.state = BehaviorState.CRUISE
         self.target_id = None
         self.dwell_s = 0.0
         self.honoured.clear()
+        self.lane_change = None
 
     def step(
+        self,
+        ego: VehicleState,
+        route: Route,
+        ego_s: float,
+        control_points: Sequence[ControlPoint],
+        signals: Mapping[str, SignalState],
+        dt: float,
+        *,
+        lanes: "LaneSet | None" = None,
+        detections: Sequence[Detection] = (),
+        limit_mps: float = math.inf,
+    ) -> BehaviorDecision:
+        # Junction constraints outrank everything: a car about to stop at a
+        # red has no business changing lane, and the two ceilings would
+        # fight.
+        junction = self._junction_step(ego, route, ego_s, control_points, signals, dt)
+        if junction.state is not BehaviorState.CRUISE:
+            self.lane_change = None
+            return junction
+
+        change = self._lane_change_step(ego, route, ego_s, lanes, detections, limit_mps, dt)
+        if change is None:
+            return _CRUISE
+        return change
+
+    def _junction_step(
         self,
         ego: VehicleState,
         route: Route,
@@ -427,3 +488,72 @@ class BehaviorFSM:
     def _committed(distance: float, ego: VehicleState) -> bool:
         """True once the car can no longer stop at the line comfortably."""
         return distance <= ego.speed_mps**2 / (2 * COMFORT_DECEL_MPS2)
+
+    # -- lane change ---------------------------------------------------------- #
+
+    def _lane_change_step(
+        self, ego, route, ego_s, lanes, detections, limit_mps, dt
+    ) -> BehaviorDecision | None:
+        if lanes is None:
+            return None
+
+        if self.lane_change is not None:
+            self.lane_change.elapsed_s += dt
+            if self.lane_change.elapsed_s >= LANE_CHANGE_COMMIT_S:
+                self.lane_change = None
+                return None
+            return self._changing()
+
+        if not self._held_up(route, ego_s, detections, limit_mps):
+            return None
+
+        current = lanes.by_id(f"lane_{self._ego_lane_index(ego, route, ego_s, lanes)}")
+        if current is None or current.left_id is None:
+            return None
+        if lanes.count_at(ego_s) <= current.index_from_right + 1:
+            # The lane exists geometrically but not on this stretch of road.
+            return None
+        if not self._gap_is_acceptable(route, ego_s, detections, +1):
+            return None
+
+        self.lane_change = LaneChange(current.id, current.left_id, +1)
+        return self._changing()
+
+    def _changing(self) -> BehaviorDecision:
+        assert self.lane_change is not None
+        label = (
+            "lane_change_left" if self.lane_change.direction > 0 else "lane_change_right"
+        )
+        return BehaviorDecision(
+            state=BehaviorState.CRUISE,
+            speed_ceiling_mps=math.inf,
+            maneuver=label,
+            target=None,
+            target_lane_id=self.lane_change.to_lane_id,
+        )
+
+    @staticmethod
+    def _ego_lane_index(ego, route, ego_s, lanes) -> int:
+        offset = route.lateral_offset((ego.x, ego.y), ego_s)
+        return min(max(int(round(offset / LANE_W)), 0), len(lanes.lanes) - 1)
+
+    @staticmethod
+    def _held_up(route, ego_s, detections, limit_mps) -> bool:
+        """A lead close enough and slow enough to be costing real time."""
+        for d in detections:
+            if d.lane_offset != 0:
+                continue
+            gap = route.signed_gap(ego_s, route.project((d.pose.x, d.pose.y)))
+            if 0 < gap < LANE_CHANGE_LOOKAHEAD_M and d.speed_mps < limit_mps * SLOW_LEAD_FRACTION:
+                return True
+        return False
+
+    @staticmethod
+    def _gap_is_acceptable(route, ego_s, detections, direction: int) -> bool:
+        for d in detections:
+            if d.lane_offset != direction:
+                continue
+            gap = route.signed_gap(ego_s, route.project((d.pose.x, d.pose.y)))
+            if -MIN_REAR_GAP_M < gap < MIN_FRONT_GAP_M:
+                return False
+        return True

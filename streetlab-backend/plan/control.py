@@ -19,7 +19,7 @@ from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from plan.behavior import BehaviorFSM
 from schema import Detection, Plan, SignalState
-from sim.route import ControlPoint, Route
+from sim.route import ControlPoint, LaneSet, Route
 from sim.vehicle import VehicleState
 
 # Pure-pursuit lookahead: a floor for low speed, growing with velocity.
@@ -97,6 +97,7 @@ class PlanContext:
     dt: float
     signals: Mapping[str, SignalState] = field(default_factory=dict)
     control_points: Sequence[ControlPoint] = ()
+    lanes: LaneSet | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +155,10 @@ class CenterlineFollower:
         )
 
         decision = self.fsm.step(
-            ego, route, s, context.control_points, context.signals, context.dt
+            ego, route, s, context.control_points, context.signals, context.dt,
+            lanes=context.lanes,
+            detections=detections,
+            limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
         )
 
         steer = self._pure_pursuit(ego, route, s, lookahead)
