@@ -21,6 +21,19 @@ All of Phase 1's Global Constraints still apply, unchanged. In addition:
 - **The steering-rate limit must be inert in normal driving.** Task 6 measures the peak `|Δsteer|/Δt` on an unmodified lap first and sets the limit above it, or every existing tracking test moves.
 - Re-measure any number this plan quotes from Phase 1's end state before relying on it; Phase 1 changes lap times and therefore anything derived from them.
 
+> **SUPERSEDED IN PLACES — see `2026-08-16-cycle3-phase2-revision.md`.** This
+> plan is kept as the historical record of what was built and reviewed, not as
+> a description of the shipped code. Two things it specifies were measured
+> false and replaced. (1) The claim above that "the ego drives the rightmost
+> forward lane" is wrong wherever `lanes_forward >= 2` on a two-way road — the
+> ego drives the LEFTMOST forward lane there, which is finding C1; lane
+> legality is now carriageway containment, and `lane_index` is derived from
+> that rather than from `lane_count - 1`. (2) `lanes_forward_along` — named in
+> the File Structure table, in Task 1's heading and "Produces" line, and
+> exercised by the test snippets below — was REMOVED once containment replaced
+> the lane-count gate. Its callers now use `derive_lanes` and
+> `LaneSet.legal_at`. Read those references as history.
+
 ## File Structure
 
 | File | Change |

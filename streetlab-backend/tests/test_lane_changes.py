@@ -12,11 +12,27 @@ from pathlib import Path
 
 import pytest
 
-from map.lanes import LANE_FIT_TOL_M, LANE_W
+from map.lanes import LANE_W
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
 
 DT = 1 / 60
+
+#: The slack this file's acceptance criterion allows, deliberately NOT
+#: `map.lanes.LANE_FIT_TOL_M`. Importing that one made this scan's threshold
+#: move in lockstep with the planner's: measured at `LANE_FIT_TOL_M = 4.0`,
+#: `test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway`
+#: PASSED while certifying three changes at +1.7997/+1.7893/+1.7907 m -- the
+#: car crossing California Street's double yellow -- which is bit-for-bit the
+#: geometry it correctly rejects under a `may_change_at -> count_at(s) >= 2`
+#: mutation. Same shape as the two other checks in this phase that judged
+#: something against a value derived from it. 0.75 is the figure the design
+#: justifies from measurement (worst corner mitre 0.6614746 m on grid-loop);
+#: it lives here as a literal so that changing the production constant is
+#: caught rather than followed. `LANE_W` is still imported: that is the
+#: physical width the scenes are built from, not a tolerance of the criterion
+#: under test.
+_SCAN_TOL_M = 0.75
 
 #: The two wire labels a lane change is driven under, outbound and return.
 LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
@@ -114,14 +130,23 @@ def _fits_the_forward_carriageway(road, centre_offset: float) -> bool:
     `map.lanes.lane_change_is_legal`: this is the phase's acceptance criterion
     (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`), and a test
     that asks the production predicate whether the production predicate was
-    obeyed proves only that it is self-consistent.
+    obeyed proves only that it is self-consistent. The slack is `_SCAN_TOL_M`
+    for the same reason -- importing `LANE_FIT_TOL_M` reintroduced exactly that
+    self-consistency through the back door.
+
+    Deliberately omits production's `lanes_forward < 2` precondition, so this
+    restatement is containment-only and strictly MORE permissive than
+    `lane_change_is_legal`. That direction is safe for an acceptance scan: it
+    can only ever admit a change production would refuse, never refuse one
+    production admits. The precondition itself is pinned separately by
+    `test_a_single_forward_lane_refuses_what_containment_alone_would_admit`.
     """
     width = (road.lanes_forward + road.lanes_backward) * LANE_W
     lo = -width / 2.0
     hi = lo + road.lanes_forward * LANE_W
     return (
-        centre_offset - LANE_W / 2.0 >= lo - LANE_FIT_TOL_M
-        and centre_offset + LANE_W / 2.0 <= hi + LANE_FIT_TOL_M
+        centre_offset - LANE_W / 2.0 >= lo - _SCAN_TOL_M
+        and centre_offset + LANE_W / 2.0 <= hi + _SCAN_TOL_M
     )
 
 
@@ -288,9 +313,12 @@ def test_the_nob_hill_replay_actually_changes_lanes(nob_hill_replay):
     all is a separate fact from whether the car holds its lane outside one, and
     only the second is waiting on R4.
 
-    Both labels, not just one: an overtake that never returns and a return with
-    no outbound are each half a manoeuvre, and either would leave the scans
-    below judging a case they were not written for.
+    Both labels, not just one: a replay that only ever drove outbound changes,
+    or only ever returns, would leave the scans below judging a case they were
+    not written for. Note what this does NOT assert -- the labels are collected
+    into a set, so it cannot tell a matched outbound/return pair from two
+    independent changes in opposite directions. Pairing is a property of the
+    FSM, checked in `test_behavior.py`; this is a vacuity guard on the replay.
     """
     _scene, frames = nob_hill_replay
     labelled = {

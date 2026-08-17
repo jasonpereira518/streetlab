@@ -357,12 +357,16 @@ def test_the_containment_predicate_holds_at_its_tolerance_boundary():
     tolerance that BREAKS grid-loop) and failed at 0.9/1.0/1.4/1.75 only on
     which side of the tie IEEE-754 rounding landed.
 
-    -2.4615 m is grid-loop's worst ego offset (`Route.offset`'s mitre scaling
-    through a filleted corner, min of `ego_offset_along` -- see
+    -2.4615 m stands in for grid-loop's worst ego offset (`Route.offset`'s
+    mitre scaling through a filleted corner, min of `ego_offset_along` -- see
     test_the_lane_set_keeps_the_road_and_the_offset_it_judged_from, which pins
     it at -2.461); a right change from there needs 0.6615 m of slack, so the
     tolerance may not drop below that without refusing a change the shipped
-    grid-loop replay makes. -2.56 m needs 0.76 m and is not a case either
+    grid-loop replay makes. The TRUE worst is -2.4614746298367196, needing
+    0.6614746 m, so this literal is 25 um over-tight: tolerances in
+    [0.6614746, 0.6615) fail here while the replay is in fact fine. That is
+    the safe direction -- a false alarm, never a hole -- but a future
+    recalibration should start from the true number, not from this one. -2.56 m needs 0.76 m and is not a case either
     scene produces: it is the tripwire on the other side, so the tolerance
     cannot be loosened past 0.76 m without a fresh measurement replacing this
     literal. Together they pin `LANE_FIT_TOL_M` to [0.6615, 0.76).

@@ -908,7 +908,17 @@ def _legal_directions_along(
     `lanes_forward`/`lanes_backward` are read as the ROAD stores them, not
     swapped when the ego runs against that storage direction, and that is
     deliberate rather than overlooked. It matters only where the two differ,
-    and no matched road on either scene is asymmetric. Swapping them would
+    and no matched TWO-WAY road on either scene is asymmetric -- asserted by
+    `test_every_two_way_road_the_ego_drives_is_a_symmetric_carriageway`,
+    not merely believed, because
+    this premise is load-bearing and its predecessor ("no matched road on
+    either scene is asymmetric") was both false and unasserted: Clay Street
+    1/0 (43 segments), Washington Street 1/0 (25) and Sacramento Street 2/0
+    (16) are all matched and all asymmetric, being oneways. The extract also
+    holds seven asymmetric TWO-WAY ways this loop happens not to drive,
+    including `osm_w1373369088` California Street 2/1 -- one route
+    re-selection away, since the ego already drives California Street on a
+    neighbouring way id. Swapping them would
     also mean reporting zero forward lanes at 16 Nob Hill junction corners,
     where the ego is turning ACROSS a oneway rather than driving the wrong way
     up it and the match is the cross street -- a worse answer than the one
