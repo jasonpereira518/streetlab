@@ -243,3 +243,87 @@ def test_the_ego_route_leaves_in_the_direction_it_reports():
     forward = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
     error = abs(math.remainder(route.heading_at(0.0) - forward, math.tau))
     assert error < math.radians(5), f"start heading is {math.degrees(error):.1f} deg out"
+
+
+def test_nearest_road_along_indexes_the_road_governing_each_segment():
+    from map.lanes import nearest_road_along
+    from schema import Road
+    from sim.route import Route
+
+    roads = [
+        Road(
+            id="a", name="A St", road_class="arterial",
+            centerline=[(0.0, 0.0), (100.0, 0.0)], lanes_forward=2, lanes_backward=2,
+            lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
+            center_marking="double_yellow", has_sidewalk=True,
+        ),
+        Road(
+            id="b", name="B St", road_class="residential",
+            centerline=[(0.0, 200.0), (100.0, 200.0)], lanes_forward=1, lanes_backward=1,
+            lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+            center_marking="solid_white", has_sidewalk=True,
+        ),
+    ]
+    route = Route([(10.0, 1.0), (50.0, 1.0), (90.0, 1.0)], closed=False)
+    assert nearest_road_along(route, roads) == [0, 0]
+
+
+def test_nearest_road_along_reports_none_beyond_the_match_radius():
+    from map.lanes import _LIMIT_MAX_MATCH_M, nearest_road_along
+    from schema import Road
+    from sim.route import Route
+
+    roads = [
+        Road(
+            id="a", name="A St", road_class="arterial",
+            centerline=[(0.0, 0.0), (100.0, 0.0)], lanes_forward=2, lanes_backward=2,
+            lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
+            center_marking="double_yellow", has_sidewalk=True,
+        ),
+    ]
+    far = _LIMIT_MAX_MATCH_M + 20.0
+    route = Route([(10.0, far), (90.0, far)], closed=False)
+    assert nearest_road_along(route, roads) == [None]
+
+
+def test_lanes_forward_along_reports_the_forward_lane_count_per_segment():
+    from map.lanes import lanes_forward_along
+    from schema import Road
+    from sim.route import Route
+
+    roads = [
+        Road(
+            id="wide", name="Wide St", road_class="arterial",
+            centerline=[(0.0, 0.0), (50.0, 0.0)], lanes_forward=2, lanes_backward=2,
+            lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
+            center_marking="double_yellow", has_sidewalk=True,
+        ),
+        Road(
+            id="narrow", name="Narrow St", road_class="residential",
+            centerline=[(50.0, 0.0), (100.0, 0.0)], lanes_forward=1, lanes_backward=1,
+            lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+            center_marking="solid_white", has_sidewalk=True,
+        ),
+    ]
+    route = Route([(10.0, 0.5), (40.0, 0.5), (90.0, 0.5)], closed=False)
+    assert lanes_forward_along(route, roads) == [2, 1]
+
+
+def test_lanes_forward_along_returns_none_when_nothing_matches():
+    from map.lanes import lanes_forward_along
+    from sim.route import Route
+
+    assert lanes_forward_along(Route([(0.0, 0.0), (10.0, 0.0)], closed=False), []) is None
+
+
+def test_the_real_nob_hill_route_is_mostly_single_lane(nob_hill_scene):
+    """The measurement Phase 2's whole acceptance design rests on: 87.7 % of the
+    driven loop has one forward lane, so overtaking is illegal for most of it.
+    """
+    from map.lanes import lanes_forward_along
+
+    scene = nob_hill_scene
+    counts = lanes_forward_along(scene.ego_route, scene.description.roads)
+    assert counts is not None
+    single = sum(1 for c in counts if c < 2)
+    assert single / len(counts) > 0.7, f"only {single}/{len(counts)} segments single-lane"
