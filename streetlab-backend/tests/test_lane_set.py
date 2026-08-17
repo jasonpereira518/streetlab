@@ -20,13 +20,28 @@ def grid_loop():
 def test_lane_zero_is_the_ego_route(grid_loop):
     lanes = grid_loop.lanes
     assert lanes.lanes[0].route.points == grid_loop.ego_route.points
+    # Identity, not just equal points: lane 0 must be the SAME Route object as
+    # `ego_route`, not a reconstructed lookalike. A rebuilt lane 0 can silently
+    # diverge on anything `ego_route` carries beyond geometry -- `segment_limits`
+    # in particular, which `posted_limit()` (`sim/loop.py`) reads directly off
+    # `ego_route` and nothing would keep a separate copy in sync with.
+    assert lanes.lanes[0].route is grid_loop.ego_route
 
 
 def test_every_derived_lane_carries_segment_limits(grid_loop):
     """`Route.offset` deliberately drops them (`sim/route.py:27-34`), so a lane
     that forgot to re-attach would silently drive at the scene-wide figure.
+
+    Lane 0 is excluded: it IS `ego_route`, and `SyntheticGrid`'s `ego_route`
+    deliberately carries no per-segment limits at all (`sim/loop.py`'s
+    `posted_limit()` falls back to the scene-wide figure for exactly this
+    route) -- asserting limits on lane 0 here would demand `derive_lanes`
+    invent a second, disagreeing answer for the same route, which is worse
+    than not having one.
     """
     for lane in grid_loop.lanes.lanes:
+        if lane.index_from_right == 0:
+            continue
         assert lane.route.segment_limits is not None, f"{lane.id} has no limits"
         assert len(lane.route.segment_limits) == len(lane.route.points)
 
@@ -68,6 +83,13 @@ def test_the_osm_scene_derives_lanes_too(nob_hill_scene):
     lanes = nob_hill_scene.lanes
     assert lanes is not None and lanes.lanes
     assert lanes.lanes[0].route.points == nob_hill_scene.ego_route.points
+    # Same identity requirement as the grid case (see
+    # test_lane_zero_is_the_ego_route). Here it also confirms the OSM side of
+    # the asymmetry: `OsmSceneSource` attaches `segment_limits` to `ego_route`
+    # BEFORE calling `derive_lanes`, so lane 0, being that same object, must
+    # carry them too.
+    assert lanes.lanes[0].route is nob_hill_scene.ego_route
+    assert lanes.lanes[0].route.segment_limits is not None
 
 
 def test_most_of_the_nob_hill_loop_is_a_single_lane(nob_hill_scene):

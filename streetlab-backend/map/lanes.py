@@ -781,10 +781,19 @@ MAX_DERIVED_LANES = 3
 def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
     """Lanes running the ego's way, derived from the route it already drives.
 
-    Lane 0 IS `ego_route`'s geometry -- both scene sources offset the
-    centreline by `EGO_LANE_INSET` into the rightmost forward lane before this
-    is called, so constructing it again would only introduce a second,
-    slightly different copy of the path the car is tracking.
+    Lane 0 IS `ego_route` -- both scene sources offset the centreline by
+    `EGO_LANE_INSET` into the rightmost forward lane before this is called, so
+    constructing it again would only introduce a second, slightly different
+    copy of the path the car is tracking. It is taken as-is, limits included
+    or not: `OsmSceneSource` attaches `segment_limits` to `ego_route` before
+    calling this, so lane 0 there carries them; `SyntheticGrid` deliberately
+    never does (`sim/loop.py`'s `posted_limit()`: "SyntheticGrid never sets
+    them, so the synthetic scenarios behave exactly as they did before this
+    existed"), so lane 0 there has none. Giving lane 0 its own recomputed
+    limits regardless of what `ego_route` actually has would create a second
+    object with a different answer to `limit_at()` than `ego_route` itself --
+    exactly the trap `posted_limit()` was written to avoid, just moved one
+    layer over into whatever reads `LaneSet` instead.
 
     Each further lane is `+LANE_W` to the left, repaired by
     `remove_self_intersections` for the reason `OsmSceneSource._agent_routes`
@@ -792,33 +801,12 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
     self-crossing the narrower ego offset did not produce, and `Route.project`
     does a global nearest-segment search with no continuity guard. Limits are
     re-attached afterwards because `offset` deliberately drops them.
-
-    Lane 0 is a partial exception on limits, not geometry: `OsmSceneSource`
-    already attaches `segment_limits` to `ego_route` itself before calling
-    this, so lane 0 there is `ego_route` verbatim, object and all.
-    `SyntheticGrid` deliberately never does (`sim/loop.py:posted_limit`'s
-    docstring: "SyntheticGrid never sets them, so the synthetic scenarios
-    behave exactly as they did before this existed") -- mutating the shared
-    `ego_route` here would silently switch every synthetic scenario's planner
-    onto per-segment limits, a simulation behaviour change this task has no
-    business making. So when `ego_route` arrives without limits, lane 0 gets
-    its own Route with the SAME points -- not offset, not rebuilt -- carrying
-    limits computed just for the lane set; `ego_route` itself, and whatever
-    the sim tracks, is untouched.
     """
     counts = lanes_forward_along(ego_route, roads)
     widest = max(counts) if counts else 1
     n = max(1, min(widest, MAX_DERIVED_LANES))
 
-    lane0 = ego_route
-    if lane0.segment_limits is None:
-        lane0 = Route(
-            ego_route.points,
-            closed=ego_route.closed,
-            segment_limits=speed_limits_along(ego_route, roads),
-        )
-
-    routes = [lane0]
+    routes = [ego_route]
     for k in range(1, n):
         lane = remove_self_intersections(
             Route(ego_route.points, closed=ego_route.closed).offset(LANE_W * k)
