@@ -730,10 +730,24 @@ _HELD_MIN_S = 1.0
 #:
 #: `LANE_W / 2` (1.8 m) is the floor this could possibly take: a car exactly
 #: half way across is 1.8 m from both centrelines and that is correct
-#: behaviour, so the bound has to sit above it. 2.2 m allows 0.4 m of
-#: pure-pursuit overshoot past a lane centre -- measured worst 1.87 m, so 0.33 m
-#: of headroom -- and still refuses the 3.5 m excursions the pre-R4 replays
-#: drove between lanes.
+#: behaviour, so the bound has to sit above it. 2.2 m leaves 0.4 m for the
+#: places the two lane routes are further apart than `LANE_W` (`Route.offset`
+#: mitre-scales at corners) and for pure-pursuit overshoot past a centre.
+#:
+#: BE CLEAR ABOUT HOW STRONG THIS IS. Measured worst over all 54000 frames of
+#: both replays: 1.798 m (Nob Hill, t=391.93 s) and 1.799 m (grid-loop,
+#: t=290.93 s) -- i.e. exactly `LANE_W / 2`, the mid-crossing point, to within
+#: a millimetre. That is not a coincidence: `plan/control.py` steers at an aim
+#: point interpolated between two real lane routes, so half a lane IS the
+#: geometric worst the tracker can be asked for while the blend is what drives
+#: the manoeuvre. None of the four mutations run against this file's other
+#: tests trips this one, and no mutation of `plan/behavior.py` alone was found
+#: that does. It is a floor-level invariant kept for what it CANNOT be talked
+#: out of -- it has no exclusion window, so no amount of relabelling reaches it
+#: -- and not a substitute for the guards that do bite. It would not, for
+#: instance, have caught the pre-R4 breach it sits next to: a car coasting
+#: unlabelled 3.5 m off the ego route is 0.1 m from the neighbour lane's
+#: centre and satisfies this happily.
 _NEAR_A_LANE_M = 2.2
 
 #: How many attempts on ONE lead the car may make in `_CYCLE_WINDOW_S` without
