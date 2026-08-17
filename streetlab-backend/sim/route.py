@@ -422,7 +422,15 @@ class LaneSet:
         return self.legal_along[min(max(i, 0), len(self.legal_along) - 1)]
 
     def road_at(self, s: float) -> Road | None:
-        """The road governing arc length `s`, or None if none was matched."""
+        """The road governing arc length `s`.
+
+        `None` only when NOTHING on the route matched a road, which is what
+        leaves `road_along` empty. A single unmatched segment does not reach
+        here: `_governing_roads_from` fills those forward from their
+        predecessor (leading ones from the first real match), so an unmatched
+        stretch silently reports a neighbour's road rather than nothing at all.
+        Neither shipped scene has one -- every segment of both matches.
+        """
         if not self.road_along:
             return None
         i = self._segment_at(s)
@@ -431,9 +439,13 @@ class LaneSet:
     def ego_offset_at(self, s: float) -> float:
         """The ego route's own offset from that road's centreline, + = LEFT.
 
-        Zero where nothing was matched, which reads as "on the centreline" --
+        Zero only when NOTHING matched, which reads as "on the centreline" --
         the same answer a caller would have to invent, and the one that leaves
-        a single-lane carriageway reporting its only lane.
+        a single-lane carriageway reporting its only lane. Per-segment gaps are
+        filled forward instead (`_fill_forward`), and a LEADING gap is filled
+        BACKWARD from the first real offset, so an unmatched stretch inherits a
+        neighbouring segment's offset rather than zero. Neither shipped scene
+        has one.
         """
         if not self.ego_offset_along:
             return 0.0

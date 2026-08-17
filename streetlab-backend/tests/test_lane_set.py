@@ -137,8 +137,12 @@ def test_the_lane_set_keeps_the_road_and_the_offset_it_judged_from(grid_loop):
     # Measured on grid-loop: `EGO_LANE_INSET` puts the ego route half a lane
     # RIGHT of the centreline down every straight, and `Route.offset`'s mitre
     # scaling carries it to 2.46 m through the filleted corners. Never zero and
-    # never positive -- a positive offset here would mean the ego route had
-    # crossed to the far side of its own road's centreline.
+    # never positive -- on THIS scene, whose four straights each run parallel to
+    # one road. Not an invariant of the model: Nob Hill's own
+    # `ego_offset_along` reaches +0.3457 m on 19 of its 339 segments, where the
+    # route genuinely does cross to the far side of the centreline it was
+    # matched to, and `_lane_from_the_right`'s clamp is what keeps the wire's
+    # index inside the carriageway there.
     assert all(off < 0.0 for off in lanes.ego_offset_along)
     assert max(lanes.ego_offset_along) == pytest.approx(-1.800, abs=1e-3)
     assert min(lanes.ego_offset_along) == pytest.approx(-2.461, abs=1e-3)

@@ -45,16 +45,23 @@ def maneuvers_over(sim, seconds):
 def nob_hill_replay():
     """`NOB_HILL_REPLAY_S` of the real Nob Hill loop, driven once.
 
-    Three tests in this module judge the same deterministic replay, and driving
-    it three times costs ~2.5 minutes for three identical answers. Recorded per
-    frame as `(pre_pose, post_pose, maneuver)` because the two poses are not
-    interchangeable: `sim/loop.py`'s `state_update()` documents that
+    Four tests in this module judge the same deterministic replay, and driving
+    it four times costs ~3.5 minutes for four identical answers. Recorded per
+    frame as `(pre_pose, post_pose, maneuver, offset_m)` because the two poses
+    are not interchangeable: `sim/loop.py`'s `state_update()` documents that
     `frame.plan.maneuver` was computed by `_plan()` from the pose at the START
     of the tick, while `sim.ego.x/y` after `sim.step()` is the pose at its END
     -- a 1/60 s, 0.149 m skew at Nob Hill lap speed (deliberate, from Phase 1
     Task 1). A legality scan has to ask about the position that actually
     produced the label, so it reads `pre`; the lane-holding scan is about where
     the car ended up, so it reads `post`. Do not collapse these into one.
+
+    `offset_m` is the wire's own `telemetry.lane.offset_m` for the same frame,
+    kept because it cannot be recovered afterwards: it is a function of the
+    lane the car was IN, and re-deriving it from the recorded pose would be a
+    second implementation of the thing under test.  It pairs with `post` -- the
+    whole `StateUpdate` is assembled from the end-of-tick pose, unlike the
+    maneuver label beside it.
     """
     sys.path.insert(0, str(Path(__file__).parent))
     from test_junctions import _osm_sim
@@ -65,7 +72,10 @@ def nob_hill_replay():
     for _ in range(int(NOB_HILL_REPLAY_S / DT)):
         pre = (sim.ego.x, sim.ego.y)
         sim.step()
-        frames.append((pre, (sim.ego.x, sim.ego.y), sim.state_update().plan.maneuver))
+        frame = sim.state_update()
+        frames.append(
+            (pre, (sim.ego.x, sim.ego.y), frame.plan.maneuver, frame.telemetry.lane.offset_m)
+        )
     return sim.scene, frames
 
 
@@ -87,7 +97,7 @@ def _initiations(frames):
     outright whenever a junction constraint outranks it, so the frame after any
     gap in the labels is a fresh outbound decision.
     """
-    for i, (pre, _post, maneuver) in enumerate(frames):
+    for i, (pre, _post, maneuver, _offset_m) in enumerate(frames):
         if maneuver not in LANE_CHANGE_LABELS:
             continue
         if i and frames[i - 1][2] in LANE_CHANGE_LABELS:
@@ -112,6 +122,104 @@ def _fits_the_forward_carriageway(road, centre_offset: float) -> bool:
     return (
         centre_offset - LANE_W / 2.0 >= lo - LANE_FIT_TOL_M
         and centre_offset + LANE_W / 2.0 <= hi + LANE_FIT_TOL_M
+    )
+
+
+def _offsets_outside_their_own_lane(records):
+    """`(re-based frames, violations)` over `(t, offset_m, lateral_offset)` frames.
+
+    `LaneState.offset_m` is the car's offset within the lane the SAME frame
+    says it is in (`sim/loop.py::_lane_state`), which makes every frame one of
+    exactly two kinds. On most of them the car and its route are in the same
+    lane and the wire carries `Route.lateral_offset` through unchanged. On the
+    rest -- mid-change, or anywhere the ego route runs close enough to a lane
+    boundary that millimetres of drift cross it -- the wire re-bases onto the
+    reported lane's own centre, and a car inside that lane is at most half a
+    lane width from its centre. A larger value is an offset within some lane
+    the car is not in.
+
+    Which kind a frame is is read off the value itself rather than by
+    re-deriving `from_right` here, for two reasons: a scan that recomputed the
+    lane would be a second implementation of the thing under test, and a
+    `_lane_state` that stopped re-basing altogether would satisfy a bound
+    written that way while driving the re-based count -- which both callers
+    assert on -- to zero.
+    """
+    rebased, violations = 0, []
+    for t, offset_m, lateral in records:
+        if abs(offset_m - lateral) <= 1e-9:
+            continue
+        rebased += 1
+        if abs(offset_m) > LANE_W / 2.0 + 1e-9:
+            violations.append((round(t, 2), round(offset_m, 3), round(lateral, 3)))
+    return rebased, violations
+
+
+def test_the_reported_offset_never_wraps_across_a_lane_on_grid_loop():
+    """120 s of the overtake scenario the tests above drive, judged frame by
+    frame: 7200 frames, of which 761 re-base (measured).
+
+    Nothing in the suite bounded `offset_m` before this. Worst here was
+    2.446 m -- a car 1.154 m off its route on Hyde St reported as two thirds of
+    a lane further out than it is, because the old re-basing subtracted a whole
+    `LANE_W` from an offset already measured against the route rather than
+    against the lane it names. `LanePosition.tsx:37` draws the ego icon at this
+    number, so the wire has to mean what the renderer reads.
+
+    The 120 s window is the shortest measured one that reaches the re-basing
+    branch at all (first at t=46.5 s) with room to spare; the sibling tests'
+    180 s adds 3 s of suite time and no new re-based frames.
+    """
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    route = sim.scene.ego_route
+    records = []
+    for _ in range(int(120.0 / DT)):
+        sim.step()
+        frame = sim.state_update()
+        records.append(
+            (frame.t, frame.telemetry.lane.offset_m, route.lateral_offset((sim.ego.x, sim.ego.y)))
+        )
+    rebased, violations = _offsets_outside_their_own_lane(records)
+    assert rebased > 100, (
+        f"only {rebased} of {len(records)} frames re-based; this run never left "
+        "the ego route's own lane and bounds nothing"
+    )
+    assert not violations, (
+        f"{len(violations)} of {rebased} re-based frames report an offset "
+        f"outside the lane they name: {violations[:5]}"
+    )
+
+
+def test_the_reported_offset_never_wraps_across_a_lane_on_nob_hill(nob_hill_replay):
+    """The same bound on real OSM geometry, where the failure was worse and had
+    nothing to do with manoeuvring.
+
+    Sacramento Street is oneway 2/0 and the ego route sits within half a
+    millimetre of the boundary between its two lanes, so a 9 mm drift puts the
+    car and its route on opposite sides of it. The old whole-`LANE_W`
+    re-basing then reported 3.591 m of displacement -- a full lane width -- for
+    a car 0.009 m off its route on maneuver `yield`, not changing lanes at all,
+    and did it on every traversal of that street rather than once.
+
+    Judged over all 36000 frames of the shared replay, 536 of them re-based
+    (measured), so this is not a scan that only ever saw the straight-ahead
+    case.
+    """
+    scene, frames = nob_hill_replay
+    route = scene.ego_route
+    records = [
+        (i * DT, offset_m, route.lateral_offset(post))
+        for i, (_pre, post, _maneuver, offset_m) in enumerate(frames)
+    ]
+    rebased, violations = _offsets_outside_their_own_lane(records)
+    assert rebased > 100, (
+        f"only {rebased} of {len(records)} frames re-based; this replay never "
+        "left the ego route's own lane and bounds nothing"
+    )
+    assert not violations, (
+        f"{len(violations)} of {rebased} re-based frames report an offset "
+        f"outside the lane they name: {violations[:5]}"
     )
 
 
@@ -185,11 +293,17 @@ def test_the_nob_hill_replay_actually_changes_lanes(nob_hill_replay):
     below judging a case they were not written for.
     """
     _scene, frames = nob_hill_replay
-    labelled = {maneuver for _pre, _post, maneuver in frames if maneuver in LANE_CHANGE_LABELS}
+    labelled = {
+        maneuver
+        for _pre, _post, maneuver, _offset_m in frames
+        if maneuver in LANE_CHANGE_LABELS
+    }
     assert labelled == set(LANE_CHANGE_LABELS), (
         f"the replay drove {sorted(labelled)}, not a complete lane change"
     )
-    assert any(maneuver not in LANE_CHANGE_LABELS for _pre, _post, maneuver in frames), (
+    assert any(
+        maneuver not in LANE_CHANGE_LABELS for _pre, _post, maneuver, _offset_m in frames
+    ), (
         "every frame is a lane change; nothing is left for the lane-holding scan to judge"
     )
 
@@ -287,7 +401,7 @@ def test_the_ego_still_holds_its_lane_outside_a_change(nob_hill_replay):
     route = scene.ego_route
     worst = max(
         abs(route.lateral_offset(post))
-        for _pre, post, maneuver in frames
+        for _pre, post, maneuver, _offset_m in frames
         if maneuver not in LANE_CHANGE_LABELS
     )
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"

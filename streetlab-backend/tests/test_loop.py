@@ -473,13 +473,40 @@ def test_a_single_lane_road_reports_index_zero_and_a_kerb_marking():
     assert seen_single, "grid-loop never reported a single-lane stretch"
 
 
-def test_the_kerbside_marking_is_never_a_centre_divider():
-    sim = Simulation(SyntheticGrid(), seed=7)
-    for _ in range(600):
+def test_the_kerb_marking_tracks_the_kerbside_lane_where_there_is_another_one():
+    """The right edge is drawn as a kerb exactly when the car is in the
+    kerbside lane -- judged where those two can actually disagree.
+
+    What this asserted before was one direction of that ("kerbside index =>
+    solid_white") over 600 frames at the default traffic scale, which never
+    changes lanes. Every frame that reached the guard was therefore a
+    SINGLE-lane stretch, where index 0 is the only index there is and no
+    marking rule could fail: `from_right == 0`, `lane_index == lane_count - 1`
+    and "the ego is kerbside" are one fact with three names. Mutating
+    `_lane_state`'s `right_marking` condition from `from_right == 0` to
+    `from_right == count - 1` -- painting the kerb on the INNER lane of every
+    two-lane road -- left it passing.
+
+    So: the overtake scenario, so the car really does drive the kerbside lane
+    of a road that has a non-kerbside one; the biconditional, so a marking that
+    fires on the wrong lane fails rather than being skipped; and both
+    populations asserted non-empty, since either one being empty is what made
+    the original vacuous.
+    """
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    kerbside_of_many, inner = 0, 0
+    for _ in range(int(120.0 / DT)):
         sim.step()
         lane = sim.state_update().telemetry.lane
-        if lane.lane_index == lane.lane_count - 1:
-            assert lane.right_marking == "solid_white"
+        kerbside = lane.lane_index == lane.lane_count - 1
+        assert (lane.right_marking == "solid_white") == kerbside, lane
+        if kerbside and lane.lane_count > 1:
+            kerbside_of_many += 1
+        if not kerbside:
+            inner += 1
+    assert kerbside_of_many, "never drove the kerbside lane of a multi-lane road"
+    assert inner, "never drove a lane with another one to its right"
 
 
 # -- `_lane_state`'s left/right conversion, direct -------------------------- #
@@ -559,6 +586,38 @@ def test_lane_state_marks_an_interior_lane_with_neighbours_on_both_sides():
     assert lane.lane_index == 1
     assert lane.left_marking == "dashed_white"
     assert lane.right_marking == "dashed_white"
+    # The markings above say WHICH lane; this says where in it. Two whole lane
+    # widths from a route that sits on lane 0's centreline lands on lane 2's
+    # centreline, so the wire carries no displacement at all -- the value it
+    # would carry if the re-basing that makes `offset_m` lane-relative were
+    # dropped is the raw `LANE_W * 2`.
+    assert lane.offset_m == pytest.approx(0.0)
+
+
+def test_lane_state_puts_the_ego_in_the_lane_that_contains_it_not_the_nearest_edge():
+    """A displacement that is NOT a whole number of lane widths, which is what
+    separates containment from rounding.
+
+    Every other direct `_FixedLaneScene` test displaces the ego by whole lane
+    widths from a route on a lane centre, so `(off - lo) / LANE_W` is always an
+    exact half-integer -- and Python's banker's rounding happens to agree with
+    `math.floor` on every one of them (0.5 -> 0, 1.5 -> 2 clamped back to 1,
+    2.5 -> 2). Replacing `_lane_from_the_right`'s `math.floor` with `round`,
+    i.e. swapping "which lane contains the car" for "which lane boundary is
+    nearest", therefore passed the whole 646-test suite unchanged while
+    materially changing the wire (measured on the 600 s Nob Hill replay: worst
+    `|offset_m|` 3.591 -> 1.795 became 8 frames over half a lane -> 699 on
+    grid-loop, and lane changes stopped registering at all).
+
+    2.2 lane widths is past the middle of lane 2 but nowhere near lane 3:
+    containment says lane 2 (wire index 1 of 4), rounding says the nearest
+    boundary is lane 3's (index 0). `offset_m` is pinned alongside it because
+    the index alone leaves the value the renderer draws unmeasured -- 0.2 of a
+    lane past the centre of the lane the car is in.
+    """
+    lane = _lane_state(_FixedLaneScene(4), None, 0.0, LANE_W * 2.2, 0.0, [])
+    assert lane.lane_index == 1
+    assert lane.offset_m == pytest.approx(LANE_W * 0.2)
 
 
 def test_lane_state_clamps_an_overshooting_offset_to_the_widest_lane():

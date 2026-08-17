@@ -573,10 +573,11 @@ def _lane_state(
     # `count` then reports centred on the centreline -- the same lane 0 a
     # `LaneSet`-less scene has always reported.
     lo = -(count + (road.lanes_backward if road is not None else 0)) * LANE_W / 2.0
-    from_right = _lane_from_the_right(ego_off + offset, lo, count)
+    car_off = ego_off + offset
+    from_right = _lane_from_the_right(car_off, lo, count)
     # Where the ego's ROUTE sits in that carriageway. It differs from the car's
-    # own lane exactly while a change is under way, and that difference is what
-    # re-bases the offset below.
+    # own lane whenever the car has crossed a boundary its route has not, and
+    # that difference is what re-bases the offset below.
     route_from_right = _lane_from_the_right(ego_off, lo, count)
     index = count - 1 - from_right
 
@@ -584,14 +585,31 @@ def _lane_state(
         lane_index=index,
         lane_count=count,
         lane_width_m=LANE_W,
-        # Still the car's offset from its OWN lane's centreline. The ego's lane
-        # IS `ego_route` (`derive_lanes`), so inside it this is exactly
-        # `Route.lateral_offset` and nothing else; only a change that has
-        # actually crossed into another lane re-bases it, by whole lane widths.
-        # Measuring against the geometric lane centre instead would fold
-        # `EGO_LANE_INSET`'s up-to-1.8 m misplacement (ruling Q19) into every
-        # frame of a car that is driving perfectly straight.
-        offset_m=offset - (from_right - route_from_right) * LANE_W,
+        # The car's offset from the centre of the lane THIS FRAME REPORTS, and
+        # never further from it than half a lane. While the car is in its
+        # route's own lane that is exactly `Route.lateral_offset`: the ego's
+        # lane IS `ego_route` (`derive_lanes`), so nothing is re-based on the
+        # frames -- the overwhelming majority -- where the two agree.
+        #
+        # Where they disagree the offset is measured from the reported lane's
+        # GEOMETRIC centre instead. Subtracting whole `LANE_W`s from a
+        # route-relative offset, which is what this did, silently assumes the
+        # route sits on a lane centre; on Sacramento Street (oneway 2/0) it
+        # sits within half a millimetre of a lane BOUNDARY, so 9 mm of drift
+        # crossed it and the wire reported 3.591 m -- a full lane width of
+        # displacement for a car driving straight, which `LanePosition.tsx:37`
+        # draws by popping the ego icon into the next lane. It recurred on
+        # every traversal.
+        #
+        # Only on the disagreeing frames, deliberately: measuring from the
+        # geometric centre unconditionally would fold `EGO_LANE_INSET`'s
+        # up-to-1.8 m misplacement of the ego route itself (ruling Q19) into
+        # every frame of a car that is driving perfectly straight.
+        offset_m=(
+            offset
+            if from_right == route_from_right
+            else car_off - (lo + (from_right + 0.5) * LANE_W)
+        ),
         heading_error=heading_error,
         # No forward lane to the left means this lane's left edge IS the centre
         # divider, so it reports what the road says is painted there -- "none"

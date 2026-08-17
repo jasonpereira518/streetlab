@@ -721,9 +721,16 @@ def nearest_road_along(route: Route, roads: list[Road]) -> list[int | None]:
     return out
 
 
-def _fill_forward(values: list[float | int | None], default: float | int):
+def _fill_forward(values: list[float | int | None]):
     """Unmatched entries inherit their predecessor; leading ones inherit the
     first real value. Exactly the fallback `speed_limits_along` has always had.
+
+    `None` when nothing was matched at all: there is then no real value to fill
+    from, and what to do instead differs per caller -- a scene-wide speed limit,
+    an empty per-segment table -- so it is the caller's decision to make. This
+    took a `default` argument for that case which nothing ever read; the four
+    call sites passed `0.0`, `1`, `0` and `0.0`, which read as meaningful
+    fallbacks and were not.
     """
     out = []
     for v in values:
@@ -751,13 +758,11 @@ def speed_limits_along(route: Route, roads: list[Road]) -> list[float] | None:
     idx = nearest_road_along(route, roads)
     if all(i is None for i in idx):
         return None
-    return _fill_forward(
-        [None if i is None else roads[i].speed_limit_mps for i in idx], 0.0
-    )
+    return _fill_forward([None if i is None else roads[i].speed_limit_mps for i in idx])
 
 
 def _lanes_forward_from(idx: list[int | None], roads: list[Road]) -> list[int] | None:
-    return _fill_forward([None if i is None else roads[i].lanes_forward for i in idx], 1)
+    return _fill_forward([None if i is None else roads[i].lanes_forward for i in idx])
 
 
 def _governing_roads_from(idx: list[int | None], roads: list[Road]) -> list[Road] | None:
@@ -767,7 +772,7 @@ def _governing_roads_from(idx: list[int | None], roads: list[Road]) -> list[Road
     so the count a segment reports and the marking it reports can only ever
     come from one road.
     """
-    filled = _fill_forward(list(idx), 0)
+    filled = _fill_forward(list(idx))
     return None if filled is None else [roads[i] for i in filled]
 
 
@@ -870,7 +875,9 @@ def _ego_offsets_along(
 
     `None` where no road was matched, rather than a filled-in guess, because
     the two callers want different things from an unknown offset -- legality
-    refuses outright, the wire's lane index inherits its predecessor.
+    refuses outright, the wire's lane index inherits a neighbour (its
+    predecessor, or for a LEADING unmatched run the first real offset after it,
+    which `_fill_forward` back-fills).
     """
     ring = route.points + [route.points[0]] if route.closed else route.points
     out: list[float | None] = []
@@ -1000,7 +1007,7 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
         count_along=tuple(counts or (1,)),
         legal_along=tuple(_legal_directions_along(roads, idx, offsets)),
         road_along=tuple(_governing_roads_from(idx, roads) or ()),
-        ego_offset_along=tuple(_fill_forward(offsets, 0.0) or ()),
+        ego_offset_along=tuple(_fill_forward(offsets) or ()),
     )
 
 
