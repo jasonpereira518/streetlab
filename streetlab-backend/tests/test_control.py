@@ -231,8 +231,13 @@ def test_ego_does_not_drive_through_a_stopped_car(built, limits, ctx):
 
 
 def test_steering_reverses_sign_for_an_offset_to_the_other_side(built, limits, ctx):
+    """Each side gets its own planner: `CenterlineFollower` now rate-limits
+    steer across calls (Task 5), and this test's two offsets are not a
+    continuous drive but two disconnected states -- the rate limit would
+    otherwise clamp the second call toward the first, which is a fact about
+    the limiter, not about the raw geometric sign this test checks.
+    """
     route = built.ego_route
-    planner = CenterlineFollower()
     s = 20.0
     x, y = route.point_at(s)
     h = route.heading_at(s)
@@ -241,7 +246,7 @@ def test_steering_reverses_sign_for_an_offset_to_the_other_side(built, limits, c
         state = VehicleState(
             x=x - math.sin(h) * d, y=y + math.cos(h) * d, heading=h, speed_mps=8.0
         )
-        return planner.plan(state, route, [], limits, ctx).steer_rad
+        return CenterlineFollower().plan(state, route, [], limits, ctx).steer_rad
 
     left = steer_from_offset(1.5)
     right = steer_from_offset(-1.5)
@@ -512,3 +517,54 @@ def test_reset_clears_the_behaviour_state(built, limits):
     assert planner.fsm.honoured
     planner.reset()
     assert not planner.fsm.honoured
+
+
+def lane_context(built, target=None, dt=1 / 60):
+    from plan.control import PlanContext
+
+    return PlanContext(t=0.0, dt=dt, lanes=built.lanes)
+
+
+def test_the_steering_rate_is_bounded(built, limits):
+    """`BicycleModel` applies steer instantaneously (`sim/vehicle.py:63`), so a
+    step change in the aim point becomes a step change at the wheel.
+    """
+    from plan.control import MAX_STEER_RATE_RAD_S
+
+    route = built.ego_route
+    planner = CenterlineFollower()
+    s = straight_s(route)
+    dt = 1 / 60
+
+    # On the centreline, then abruptly a lane width off it.
+    on = start_state(route, speed=10.0, s=s)
+    x, y = route.point_at(s)
+    h = route.heading_at(s)
+    off = VehicleState(
+        x=x - math.sin(h) * -3.6, y=y + math.cos(h) * -3.6, heading=h, speed_mps=10.0
+    )
+    first = planner.plan(on, route, [], limits, lane_context(built, dt=dt)).steer_rad
+    second = planner.plan(off, route, [], limits, lane_context(built, dt=dt)).steer_rad
+    assert abs(second - first) <= MAX_STEER_RATE_RAD_S * dt + 1e-9
+
+
+def test_the_lap_test_still_holds_with_the_rate_limit(built, limits):
+    """The regression that matters: `test_control.py:5-6` says Cycle 3 must not
+    break this, and a rate limit set too low is exactly how it would.
+    """
+    route = built.ego_route
+    model = BicycleModel()
+    planner = CenterlineFollower()
+    state = start_state(route, speed=built.speed_limit_mps)
+    worst, travelled = 0.0, 0.0
+    for _ in range(60 * 120):
+        result = planner.plan(state, route, [], limits, lane_context(built))
+        state = model.step(
+            state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60
+        )
+        travelled += state.speed_mps / 60
+        worst = max(worst, abs(route.lateral_offset((state.x, state.y))))
+        if travelled > route.length_m:
+            break
+    assert travelled > route.length_m
+    assert worst < 1.8, f"ego wandered {worst:.2f} m off the centreline"

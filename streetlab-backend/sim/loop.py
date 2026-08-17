@@ -306,16 +306,13 @@ class Simulation:
             dt=dt,
             signals={s.id: s for s in signals},
             control_points=self.scene.control_points,
-            # `lanes` is deliberately left unpassed (defaults to None) --
-            # Task 4 (Cycle 3 Phase 2) only decides whether a lane change is
-            # wanted and legal; it builds no lateral motion. Wiring
-            # `self.scene.lanes` through here would make that decision
-            # observable on the wire (`Plan.maneuver`) with nothing behind
-            # it: the car would announce `lane_change_left`, hold it for
-            # `LANE_CHANGE_COMMIT_S`, and repeat, never actually moving.
-            # Task 5 adds `lanes=self.scene.lanes` here at the same moment it
-            # wires up the manoeuvre's execution, so the label and the
-            # motion arrive together.
+            # Wired at the same moment `CenterlineFollower` gains the
+            # execution behind a lane-change decision (Task 5, Cycle 3
+            # Phase 2) -- so the wire's `lane_change_left`/`_right` label and
+            # the car's actual lateral motion arrive together, rather than
+            # the FSM's decision (Task 4) being observable with nothing
+            # behind it.
+            lanes=self.scene.lanes,
         )
         result = self._planner.plan(
             self.world.ego,
