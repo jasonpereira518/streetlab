@@ -1095,7 +1095,31 @@ def test_a_second_slow_car_is_still_overtaken_while_one_is_on_cooldown(road):
 # are not bounds on the constants, they are the arithmetic that positions the
 # fixture either side of them, and a test that hard-coded 60.0 m of legal road
 # would silently stop straddling the threshold the moment the constant moved.
-# What pins the VALUES is the replay measurement in that file.
+#
+# WHAT PINS THE VALUES IS ALMOST NOTHING, and this comment used to end "what
+# pins the VALUES is the replay measurement in that file". That was false, and
+# it mattered, because it is the sentence that made the lockstep above look
+# harmless. Swept at Wave C:
+#
+# * `LANE_CHANGE_LEGAL_LOOKAHEAD_M` at 0, 10, 20, 25, 30, 40, 45, 50, 55, 56,
+#   57 and 58 all leave `contract/fixtures/state_update_hazard.json` BYTE
+#   identical (59 flips it), and at 0.0 the whole of
+#   `tests/test_lane_changes.py` is green -- both replays are green at 0.0,
+#   worst 2.1396 m and 1.7890 m, 0 frames over the bound. The usable band as
+#   measured is roughly [20, 58], and nothing inside it is distinguishable.
+# * `LANE_CHANGE_LEGAL_HOLD_M` at 0 through 50 gives bit-identical grid-loop
+#   replays and a byte-identical fixture; 60 moves both, and the replay suite
+#   does not go red until 90 -- a 4.5x inflation of the constant.
+#
+# So the replays pin NEITHER value, the upper bound on both comes from one
+# committed contract fixture on `grid-merge`, and the lower bound comes from
+# nothing that fails. The three tests below pin the SHAPE -- that each of the
+# three call sites asks the question at all -- and that is the whole of what
+# they claim. Both constants' docstrings in `plan/behavior.py` now record the
+# same thing rather than a derivation the suite does not enforce.
+#
+# Same family as the checks this phase kept turning up: not self-derived, but
+# the reason given for the number was not the reason that holds.
 
 
 def test_a_change_is_refused_when_the_target_lane_runs_out_inside_the_lookahead(

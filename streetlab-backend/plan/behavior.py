@@ -344,6 +344,24 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 
 #: How far ahead the target lane must STILL be legal before a change starts.
 #:
+#: THIS IS NOT THE SAFETY MECHANISM, and this docstring used to say it was.
+#: What keeps the car on the carriageway is the per-tick re-ask in
+#: `_advance_outbound` and `_advance_pass` over `LANE_CHANGE_LEGAL_HOLD_M`;
+#: the claim, the measurement and the margin all live there now. See Wave C
+#: below for the experiment that was misread, and what the two mechanisms
+#: really do separately.
+#:
+#: What THIS buys, which is worth having and is not safety: the car does not
+#: START a manoeuvre it cannot finish. Without it a doomed change is admitted
+#: and then killed by the re-ask on the very next tick -- measured on
+#: grid-loop with this at 0.0 and the hold at its shipped 20.0, the t=288.00 s
+#: manoeuvre comes back as a run of 0.0333 s, i.e. TWO frames, ending 0.0020 m
+#: off the ego route. Two frames is not a driving hazard; it is two frames of
+#: `lane_change_right` on the wire, which `server/cli.py` prints and
+#: `TopToolbar.tsx` renders, for a manoeuvre that was never going to happen.
+#: Declining to begin an overtake with 13.5 m of legal road left is also
+#: simply the better driver. Ruling Q101: the horizon stays, for that reason.
+#:
 #: `LaneSet.may_change_at` answers about one station. A manoeuvre is not one
 #: station: it is a traverse out, a pass, and a traverse home, and the car
 #: covers real ground over all three. Asking once, at the decision, and never
@@ -369,14 +387,31 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 #: single metric horizon cannot serve both, and taking the cross-scene maximum
 #: makes the slow scenes pay the fast scene's bill. Measured, it does: at 60.0
 #: m this constant refuses a legitimate overtake on the THIRD scene,
-#: `grid-merge` (same 295 m block as grid-loop, `seed=4`), where the fixture's
-#: ego sits at s=27.35 with **51.5 m** of legal road left and needs about
-#: 32 m -- flipping `contract/fixtures/state_update_hazard.json` from
-#: `lane_change_right` to `keep_lane`, a wire-visible change to a committed
-#: fixture shared with the TypeScript validator. That fixture is the only
-#: witness this phase has on that scene, and catching this is the whole of its
-#: value here. 40.0 m sits between the 32 m the manoeuvre needs and the 51.5 m
-#: it has. A speed-scaled horizon is the right answer and is not this task.
+#: `grid-merge` (same 295 m block as grid-loop, `seed=4`) -- flipping
+#: `contract/fixtures/state_update_hazard.json` from `lane_change_right` to
+#: `keep_lane`, a wire-visible change to a committed fixture shared with the
+#: TypeScript validator. `tests/test_lane_changes.py` now drives that scene
+#: too, but this fixture is still the only witness for THIS constant on it.
+#:
+#: WAVE C -- the number that justified 40.0 was read off the wrong station,
+#: and was 7 m out. This said "the fixture's ego sits at s=27.35 with 51.5 m
+#: of legal road left". s=27.35 is where the fixture is CAPTURED, 0.87 s after
+#: the decision; the horizon is applied where the change is DECIDED. Measured
+#: by instrumenting `contract/validate_py_test.py::generate`'s own drive: the
+#: decision falls at t=5.75 s, **s=19.930**, and the legal-right stretch on
+#: that block runs [0.000, 78.515] m, so **58.585 m** of legal road remains
+#: there -- not 51.5. (51.163 m is the correct figure for s=27.352, which is
+#: the station nothing is gated on.)
+#:
+#: Swept against the committed fixture, one full `generate()` per value: 0,
+#: 10, 20, 25, 30, 40, 45, 50, 55, 56, 57 and 58 m all reproduce it BYTE for
+#: byte, and **59 m flips it**. That is exactly the arithmetic above --
+#: `_stays_legal` always samples `ahead_m` itself, and 19.930 + 59 = 78.930
+#: is past 78.515 while 19.930 + 58 = 77.930 is not. So the real headroom
+#: between 40.0 and the refusal is **18.6 m**, not the ~11.5 m the old figure
+#: implied, and 40.0 m sits between the ~32 m a grid round trip needs and the
+#: 58.6 m this one has. A speed-scaled horizon is the right answer and is not
+#: this task.
 #:
 #: What that costs, measured, and the margin on both sides. The legal road
 #: remaining at the seven initiations is 13.5, 24.5, 86.5, 112.0, 145.0, 148.0
@@ -411,6 +446,17 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 #: 145 m (Nob Hill) -- so a horizon that proved it would refuse every change on
 #: both scenes. What covers the rest is the per-tick re-ask in
 #: `_advance_outbound` and `_advance_pass`; see `LANE_CHANGE_LEGAL_HOLD_M`.
+#:
+#: WAVE C -- HOW LITTLE PINS THIS VALUE, since the paragraphs above spend a
+#: page deriving it. Nothing in the suite fails at any of 0, 10, 20, 25, 30,
+#: 45, 50, 55, 56, 57 or 58: the two shipped replays are bit-identical from
+#: 25 upward and green (2.1396 m / 1.7890 m, 0 frames over) at 0, and the
+#: `grid-merge` fixture is byte-identical up to 58. The one thing that moves
+#: below 25 is the two-frame wire artifact this constant exists to prevent.
+#: So the usable band as MEASURED is roughly [20, 58] -- bounded above by one
+#: contract fixture and below by nothing that fails. Sized from the
+#: out-and-back cost because the evidence cannot choose within that band, and
+#: recorded as such rather than presented as a derivation the suite enforces.
 LANE_CHANGE_LEGAL_LOOKAHEAD_M = 40.0
 
 #: How far ahead the lane the car is ALREADY IN has to stay legal, re-asked
@@ -425,13 +471,78 @@ LANE_CHANGE_LEGAL_LOOKAHEAD_M = 40.0
 #: 20.0 m, measured: the seven return phases on the two shipped scenes cover
 #: 9.3-18.6 m of road each. 20.0 m covers the worst.
 #:
-#: This is a BACKSTOP and not the primary defence. On both shipped scenes it
-#: never fires, because `LANE_CHANGE_LEGAL_LOOKAHEAD_M` has already refused
-#: every manoeuvre that would have needed it -- measured by running the whole
-#: replay with this set to 0.0 and comparing, see the task report. It exists
-#: for the case the lookahead cannot see: a lane that runs out further ahead
-#: than 40 m, which on a scene with shorter legal stretches than these two is
-#: the ordinary case rather than the exception.
+#: THIS IS THE MECHANISM THAT KEEPS THE CAR ON THE CARRIAGEWAY. Moved here at
+#: Wave C from `LANE_CHANGE_LEGAL_LOOKAHEAD_M`, which claimed it, on the
+#: strength of an experiment that did not show what it was read as showing.
+#:
+#: What the old text said: "a per-tick re-ask ALONE does not get there --
+#: measured with `LANE_CHANGE_LEGAL_HOLD_M` and `LANE_CHANGE_LEGAL_LOOKAHEAD_M`
+#: both at 0.0, grid-loop's worst is 3.1158 m with 39 frames still over". The
+#: numbers are real; the configuration is not "the re-ask alone". Setting this
+#: constant to 0.0 does not weaken the re-ask -- it DELETES it. `_stays_legal`
+#: degenerates to a single `may_change_at` at the car's own station, which is
+#: the pre-fix question verbatim. Confirmed at Wave C by driving the two
+#: configurations separately: `_stays_legal` neutered to
+#: `lanes.may_change_at(ego_s, direction)` (defect C-1 restored) and both
+#: horizons at 0.0 give BIT-IDENTICAL grid-loop replays -- 2315 labelled
+#: frames, 5 runs, the same run spans, worst 3.1158 m, 39 frames over, worst
+#: overhang 4.3741 m in both. They are one experiment, and it is the C-1
+#: experiment.
+#:
+#: Measured properly, one mechanism at a time, over the full replays:
+#:
+#: | config | grid-loop | Nob Hill |
+#: | --- | --- | --- |
+#: | shipped (look 40, hold 20) | 2.1396 m, 0 over, 1947 labelled | 1.7890 m, 0 over, 473 labelled |
+#: | **hold alone** (look 0.0) | **2.1396 m, 0 over**, 1949 labelled | **1.7890 m, 0 over**, 534 labelled |
+#: | **lookahead alone** (hold 0.0) | bit-identical to shipped | bit-identical to shipped |
+#: | neither (both 0.0 = C-1) | 3.1158 m, **39 over** | 1.8669 m, 0 over, overhang **3.6129 m, 24 over** |
+#:
+#: So BOTH mechanisms are individually sufficient on both shipped scenes, and
+#: this one is the sufficient one that is about the road under the car rather
+#: than about a prediction made before the car got there. With the lookahead
+#: at 0.0 the two doomed manoeuvres are re-admitted and then killed by this
+#: re-ask -- grid-loop's t=288.00 s one after 0.0333 s (two frames, ending
+#: 0.0020 m off the ego route), Nob Hill's t=384.02 s one after 1.0167 s -- and
+#: neither replay breaches anything. What the lookahead adds is that those two
+#: frames never reach the wire; see that constant.
+#:
+#: It also covers the case the lookahead structurally cannot see: a lane that
+#: runs out further ahead than 40 m, which on a scene with shorter legal
+#: stretches than these two is the ordinary case rather than the exception.
+#:
+#: WHAT PINS 20.0, measured at Wave C by sweeping it. DOWNWARD: nothing at
+#: all. 0.0, 5.0, 10.0 and everything up to 50.0 give bit-identical grid-loop
+#: replays, because the lookahead has already refused everything this would
+#: have caught -- which the table above is what makes a statement about
+#: REDUNDANCY rather than about this constant being idle.
+#:
+#: UPWARD it is pinned, and the previous text's "backstop, never fires" read
+#: as though it were free to raise. Swept on grid-loop (300 s, labelled
+#: frames of 18000) and against the committed contract fixture:
+#:
+#: | hold | grid-loop | `state_update_hazard.json` |
+#: | ---: | --- | --- |
+#: | hold | grid-loop labelled | `tests/test_lane_changes.py` | fixture |
+#: | ---: | ---: | --- | --- |
+#: | 0-50 | 1947, bit-identical | 21 passed | byte-identical |
+#: | 60 | 1906 | not run | **flips to `keep_lane`** |
+#: | 70 | 1763 | not run | flipped |
+#: | 90 | 1179 | **2 failed, 19 passed** | flipped |
+#: | 150 | **8** of 18000 | not run | flipped |
+#:
+#: So the usable band is **[0, 50]**, and the binding constraint at the top is
+#: the same `grid-merge` contract fixture that bounds
+#: `LANE_CHANGE_LEGAL_LOOKAHEAD_M` -- not a replay: the fixture moves at 60
+#: and the replay suite does not notice until 90. What fails at 90 is worth
+#: knowing, because it is not the scan a reader would expect: it is
+#: `test_a_traverse_that_reaches_the_lane_holds_it[grid_loop]` and
+#: `test_a_completed_overtake_actually_passes_the_lead`, i.e. manoeuvres cut
+#: short before they achieve anything. The overhang scan is still green there
+#: with 529 judged frames; it only goes vacuous at 150, where 8 labelled
+#: frames in 18000 leave it 0 frames to judge. 20.0 sits at the bottom of a
+#: wide flat floor and is chosen from the measured return cost above rather
+#: than by the suite.
 LANE_CHANGE_LEGAL_HOLD_M = 20.0
 
 #: The stride both lookaheads sample legality at.
@@ -960,6 +1071,22 @@ class BehaviorFSM:
 
         Only the last sets a cooldown. The first three are not failures.
 
+        ORDER MATTERS HERE AND IS CURRENTLY WRONG IN ONE CORNER (Wave C).
+        The legality re-ask below runs BEFORE the lead is looked at, so on the
+        tick a lane runs out, a lead the car has in fact already passed is
+        `_decline`d and put on `LANE_CHANGE_RETRY_COOLDOWN_S` -- a successful
+        overtake recorded as a failed one, and 20 s of not trying that vehicle
+        again. Asking `_passed` first would end the manoeuvre cleanly and then
+        go home for the same geometric reason, with no cooldown.
+
+        Left as it is deliberately: it is unreachable on all three scenes in
+        the suite -- the re-ask never fires on any of them at the shipped
+        constants (`LANE_CHANGE_LEGAL_HOLD_M` records the drive that shows
+        that), so no measurement distinguishes the two orders and swapping
+        them would be an unwitnessed behaviour change at the end of a
+        docstring-only task. It is a latent WRONG ATTRIBUTION rather than a
+        driving hazard, and it is written down instead of fixed quietly.
+
         The car keeps the `lane_change_*` label through this phase, which is
         the one uncomfortable thing here: it is holding a lane, not changing
         one. It gets the label because `target_lane_id` and the label travel
@@ -1220,6 +1347,35 @@ class BehaviorFSM:
 
     @staticmethod
     def _gap_is_acceptable(route, ego_s, detections, direction: int) -> bool:
+        """Is the space the car is crossing into clear, one lane over?
+
+        `Detection.lane_offset` is EGO-RELATIVE (`perception/service.py`): it
+        counts lanes from wherever the car IS, not from the lane it started
+        the manoeuvre in. Asked once at the decision that is the same thing.
+        R3-FIX re-asks it every tick of the outbound traverse, and mid-traverse
+        the two stop coinciding, in both directions:
+
+        * the car it is meant to watch drifts out of view. Past the half-way
+          point a vehicle in the TARGET lane starts reporting `lane_offset ==
+          0`, so this question stops finding it. Recorded in
+          `_advance_outbound`: it covers the first half of the traverse, the
+          half where turning back is still cheap.
+        * NEW FALSE POSITIVE, and the mirror image of it (Wave C). Past the
+          same half-way point a vehicle TWO lanes over -- one beyond the
+          target -- reports `lane_offset == direction` and is read as
+          occupying the lane being entered. A car in a lane the manoeuvre
+          never touches aborts the traverse, sets a cooldown on the lead, and
+          sends the ego home.
+
+        Unreachable on every scene in the suite, which is the only reason this
+        is a comment and not a fix: it needs THREE forward lanes, and measured
+        over the road records themselves there is no such road. Every
+        `SyntheticGrid` road is 2 forward / 2 back or 1 / 1; the Nob Hill
+        extract's 339 are (1,0), (1,1), (2,0) or (2,2). Two forward is the
+        maximum anywhere. The fix is for the traverse to carry the lane index
+        it left from and ask about the absolute lane rather than the relative
+        one, which is a `perception` change this task did not open.
+        """
         for d in detections:
             if d.lane_offset != direction:
                 continue
