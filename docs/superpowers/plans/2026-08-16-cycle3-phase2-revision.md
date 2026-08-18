@@ -202,6 +202,21 @@ visible but not a hazard. Phase 3 roadmap.
    **Status after R3-FIX: MET on both scenes** -- Nob Hill worst 1.7890 m,
    grid-loop worst 2.1396 m, 0 frames at or over the bound on either,
    36000/36000 and 18000/18000 frames judged (re-measured at Wave B).
+
+   **Status after Wave C: MET on all THREE scenes.** `grid-merge` (`seed=4`,
+   scene defaults, 210 s) is now driven by both frame-level scans: criterion
+   worst **1.7971 m**, 12600/12600 frames judged, 0 over; overhang worst
+   **0.0000 m** over 430 judged frames. "Both scenes" was a two-of-three
+   claim throughout this phase and is no longer one.
+
+   The scope of the criterion, measured rather than implied. With defect C-1
+   restored, only ONE of the three scenes fails it: grid-loop at 3.1158 m.
+   Nob Hill reads 1.8669 m and grid-merge 1.9199 m and both stay green,
+   because a car half way across a traverse is 1.80 m from two centrelines
+   whether or not the lane it is entering is road. On those two scenes the
+   frame-level overhang scan is the one that catches the defect (3.6129 m and
+   **4.4070 m** against its 1.5 m bound), which is why Wave C parametrised
+   both onto the third scene and not only the criterion.
 4. `LaneState.left_marking` / `right_marking` come from `Road.center_marking`.
 5. 628 backend + 3 contract + 150 vitest + 12 Playwright still green, with the
    new assertions added rather than substituted.

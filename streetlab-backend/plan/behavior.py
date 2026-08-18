@@ -511,6 +511,15 @@ LANE_CHANGE_LEGAL_LOOKAHEAD_M = 40.0
 #: runs out further ahead than 40 m, which on a scene with shorter legal
 #: stretches than these two is the ordinary case rather than the exception.
 #:
+#: DOES IT EVER FIRE AT THE SHIPPED CONSTANTS? Counted directly, by wrapping
+#: both call sites and recording every tick on which this re-ask answers
+#: False: grid-loop over 300 s and Nob Hill over 600 s never reach it at all,
+#: and `grid-merge` over 210 s reaches it ONCE, in `_advance_outbound` --
+#: which is why grid-merge is the one scene whose replay is not bit-identical
+#: with this at 0.0 (1118 labelled frames against 1228). The PASSING-phase
+#: re-ask fires on no scene. So the redundancy above is real but not total,
+#: and the third scene is what shows it.
+#:
 #: WHAT PINS 20.0, measured at Wave C by sweeping it. DOWNWARD: nothing at
 #: all. 0.0, 5.0, 10.0 and everything up to 50.0 give bit-identical grid-loop
 #: replays, because the lookahead has already refused everything this would
@@ -521,8 +530,6 @@ LANE_CHANGE_LEGAL_LOOKAHEAD_M = 40.0
 #: as though it were free to raise. Swept on grid-loop (300 s, labelled
 #: frames of 18000) and against the committed contract fixture:
 #:
-#: | hold | grid-loop | `state_update_hazard.json` |
-#: | ---: | --- | --- |
 #: | hold | grid-loop labelled | `tests/test_lane_changes.py` | fixture |
 #: | ---: | ---: | --- | --- |
 #: | 0-50 | 1947, bit-identical | 21 passed | byte-identical |
@@ -1080,12 +1087,15 @@ class BehaviorFSM:
         go home for the same geometric reason, with no cooldown.
 
         Left as it is deliberately: it is unreachable on all three scenes in
-        the suite -- the re-ask never fires on any of them at the shipped
-        constants (`LANE_CHANGE_LEGAL_HOLD_M` records the drive that shows
-        that), so no measurement distinguishes the two orders and swapping
-        them would be an unwitnessed behaviour change at the end of a
-        docstring-only task. It is a latent WRONG ATTRIBUTION rather than a
-        driving hazard, and it is written down instead of fixed quietly.
+        the suite. Counted directly by wrapping this method and recording
+        every tick on which the re-ask answers False, THIS one fires on no
+        tick of any of the three replays -- 0 over grid-loop's 300 s, 0 over
+        Nob Hill's 600 s, 0 over grid-merge's 210 s (the outbound re-ask
+        fires once, on grid-merge; see `LANE_CHANGE_LEGAL_HOLD_M`). So no
+        measurement distinguishes the two orders, and swapping them would be
+        an unwitnessed behaviour change at the end of a docstring-only task.
+        It is a latent WRONG ATTRIBUTION rather than a driving hazard, and it
+        is written down instead of fixed quietly.
 
         The car keeps the `lane_change_*` label through this phase, which is
         the one uncomfortable thing here: it is holding a lane, not changing
