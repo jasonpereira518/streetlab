@@ -4,17 +4,19 @@ An FSD-style driving-simulator front end: a Tauri 2 desktop shell around a
 React + TypeScript UI and a Three.js WebGPU viewport, driven entirely by a
 message stream.
 
-This repository currently contains **the frontend and an in-process mock
-simulator**. A separate backend will replace the mock with a real Python
-process speaking the same schema over a WebSocket — nothing in the UI needs to
-change when it does.
+The real backend is `../streetlab-backend`, a Python simulator speaking this
+schema over a WebSocket; the packaged Tauri app spawns it as a sidecar and
+connects to it with no configuration. `src/net/mockServer.ts` is still here and
+still maintained — it is the in-process simulator the unit tests and offline
+frontend development run against, behind the same `Transport` seam, so nothing
+in the UI knows or cares which one is on the other end.
 
 ```bash
 npm install
-npm run tauri dev      # native window
-npm run dev            # or just the web app at localhost:1420
-npm test               # 78 unit tests
-npm run test:e2e       # 9 Playwright tests against the real build
+npm run tauri dev      # native window, with the Python sidecar
+npm run dev            # or just the web app at localhost:1420, on the mock
+npx vitest run         # 151 unit tests, includes ../contract
+npm run test:e2e       # 12 Playwright tests against the real build
 ```
 
 Requires Node ≥ 20 and a Rust toolchain (`aarch64-apple-darwin`).

@@ -1,7 +1,7 @@
 [project]
 name = "streetlab-backend"
 version = "0.1.0"
-description = "StreetLab simulator backend — Cycle 1 walking skeleton"
+description = "StreetLab simulator backend — deterministic kinematic world, OSM scenes, reactive traffic"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "pydantic>=2.9",
