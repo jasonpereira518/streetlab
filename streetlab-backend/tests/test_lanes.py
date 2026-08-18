@@ -243,3 +243,139 @@ def test_the_ego_route_leaves_in_the_direction_it_reports():
     forward = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
     error = abs(math.remainder(route.heading_at(0.0) - forward, math.tau))
     assert error < math.radians(5), f"start heading is {math.degrees(error):.1f} deg out"
+
+
+def test_nearest_road_along_indexes_the_road_governing_each_segment():
+    from map.lanes import nearest_road_along
+    from schema import Road
+    from sim.route import Route
+
+    roads = [
+        Road(
+            id="a", name="A St", road_class="arterial",
+            centerline=[(0.0, 0.0), (100.0, 0.0)], lanes_forward=2, lanes_backward=2,
+            lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
+            center_marking="double_yellow", has_sidewalk=True,
+        ),
+        Road(
+            id="b", name="B St", road_class="residential",
+            centerline=[(0.0, 200.0), (100.0, 200.0)], lanes_forward=1, lanes_backward=1,
+            lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+            center_marking="solid_white", has_sidewalk=True,
+        ),
+    ]
+    route = Route([(10.0, 1.0), (50.0, 1.0), (90.0, 1.0)], closed=False)
+    assert nearest_road_along(route, roads) == [0, 0]
+
+
+def test_nearest_road_along_reports_none_beyond_the_match_radius():
+    from map.lanes import _LIMIT_MAX_MATCH_M, nearest_road_along
+    from schema import Road
+    from sim.route import Route
+
+    roads = [
+        Road(
+            id="a", name="A St", road_class="arterial",
+            centerline=[(0.0, 0.0), (100.0, 0.0)], lanes_forward=2, lanes_backward=2,
+            lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
+            center_marking="double_yellow", has_sidewalk=True,
+        ),
+    ]
+    far = _LIMIT_MAX_MATCH_M + 20.0
+    route = Route([(10.0, far), (90.0, far)], closed=False)
+    assert nearest_road_along(route, roads) == [None]
+
+
+def test_the_forward_lane_count_is_reported_per_segment():
+    """`derive_lanes`' `count_along`, on a route that crosses from a two-lane
+    street onto a one-lane one. Asked through the `LaneSet` because the
+    standalone `lanes_forward_along` wrapper is gone -- one nearest-road pass
+    now answers every question, so there is nothing left to ask separately.
+    """
+    from map.lanes import derive_lanes
+    from schema import Road
+    from sim.route import Route
+
+    roads = [
+        Road(
+            id="wide", name="Wide St", road_class="arterial",
+            centerline=[(0.0, 0.0), (50.0, 0.0)], lanes_forward=2, lanes_backward=2,
+            lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
+            center_marking="double_yellow", has_sidewalk=True,
+        ),
+        Road(
+            id="narrow", name="Narrow St", road_class="residential",
+            centerline=[(50.0, 0.0), (100.0, 0.0)], lanes_forward=1, lanes_backward=1,
+            lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+            center_marking="solid_white", has_sidewalk=True,
+        ),
+    ]
+    route = Route([(10.0, 0.5), (40.0, 0.5), (90.0, 0.5)], closed=False)
+    assert derive_lanes(route, roads).count_along == (2, 1)
+
+
+def test_the_real_nob_hill_route_is_mostly_single_lane(nob_hill_scene):
+    """The measurement Phase 2's whole acceptance design rests on: 87.7 % of the
+    driven loop has one forward lane, so overtaking is illegal for most of it.
+
+    That 87.7 % is length-weighted (metres of route with lanes_forward == 1),
+    the figure the spec cites. This assertion is a cheaper proxy: fraction of
+    *segments*, which measures 85.5 % on the real fixture -- a different
+    number from the same route, not a discrepancy. Both clear 0.7 comfortably.
+    Do not "fix" this to assert 0.877; that would be asserting the wrong
+    metric and would fail for no real reason.
+    """
+    counts = nob_hill_scene.lanes.count_along
+    assert counts
+    single = sum(1 for c in counts if c < 2)
+    assert single / len(counts) > 0.7, f"only {single}/{len(counts)} segments single-lane"
+
+
+def test_speed_limits_and_lane_counts_fill_a_mid_route_gap_from_the_predecessor():
+    """A route that runs beside the only road, swings 400 m away, then comes
+    back parallel to it (never rejoining). The middle two segments sit far
+    beyond `_LIMIT_MAX_MATCH_M` and are unmatched -- they must inherit the
+    last real match rather than being dropped or defaulted to 0/1.
+
+    No other test in the suite reaches this branch: the existing "implausibly
+    far away" test calls `speed_limits_along` on two routes that are each
+    either wholly matched or wholly unmatched, and the real Nob Hill fixture
+    matches all 339 of its segments outright. Without this test, `_fill_forward`
+    could be replaced with `return values` -- dropping the forward-fill
+    entirely -- and nothing would notice.
+    """
+    from map.lanes import derive_lanes, nearest_road_along
+
+    road = Road(
+        id="only", name="Only St", road_class="residential",
+        centerline=[(0.0, 0.0), (40.0, 0.0)], lanes_forward=2, lanes_backward=1,
+        lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+        center_marking="dashed_white", has_sidewalk=True,
+    )
+    route = Route([(5.0, 0.0), (35.0, 0.0), (35.0, 400.0), (5.0, 400.0)], closed=False)
+
+    assert nearest_road_along(route, [road]) == [0, None, None]
+    assert speed_limits_along(route, [road]) == [11.2, 11.2, 11.2]
+    assert derive_lanes(route, [road]).count_along == (2, 2, 2)
+
+
+def test_speed_limits_and_lane_counts_patch_a_leading_unmatched_run():
+    """The mirror case: the route starts 400 m from the only road and only
+    reaches it on its last segment. The leading unmatched entries have no
+    predecessor to inherit -- they must be patched from the first real match
+    once one is known, which is a separate line in `_fill_forward` from the
+    mid-route gap above (that one only ever inherits `out[-1]`, which is None
+    until the first real value arrives)."""
+    from map.lanes import derive_lanes, nearest_road_along
+
+    road = Road(
+        id="only", name="Only St", road_class="residential",
+        centerline=[(0.0, 0.0), (40.0, 0.0)], lanes_forward=2, lanes_backward=1,
+        lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+        center_marking="dashed_white", has_sidewalk=True,
+    )
+    route = Route([(5.0, 400.0), (35.0, 400.0), (35.0, 0.0), (5.0, 0.0)], closed=False)
+
+    assert nearest_road_along(route, [road]) == [None, None, 0]
+    assert speed_limits_along(route, [road]) == [11.2, 11.2, 11.2]
+    assert derive_lanes(route, [road]).count_along == (2, 2, 2)

@@ -482,38 +482,46 @@ def test_ego_route_from_the_real_fixture_is_simple():
     assert LinearRing(route.points).is_simple
 
 
-def test_agent_left_lane_route_can_also_be_repaired():
+def test_a_neighbour_lane_route_can_also_be_repaired():
     """The ego route's own repair does not transitively cover a route built
-    by offsetting it again: `map/osm_source.py`'s `_agent_routes` offsets the
+    by offsetting it again: `map/lanes.py`'s `_neighbour_lane` offsets the
     (already-simple) ego route by `LANE_W` (3.6 m) rather than
-    `EGO_LANE_INSET` (1.8 m) to place traffic in the left lane, and a wider
+    `EGO_LANE_INSET` (1.8 m) to build the lane either side of it, and a wider
     offset can push a sharp turn's mitre join into a self-crossing the
     narrower offset didn't produce -- confirmed on the real fixture: simple
-    ego route in, self-intersecting left lane out. Traffic agents call
-    `Route.project()` every tick exactly as the ego planner does, so this
-    route needs the same repair, applied separately -- which is exactly what
-    `osm_source.py` now does.
+    ego route in, self-intersecting neighbour out. Anything tracking that
+    lane calls `Route.project()` exactly as the ego planner does, so it needs
+    the same repair, applied separately -- which is what `_neighbour_lane`
+    does.
+
+    This test was `test_agent_left_lane_route_can_also_be_repaired` and named
+    `osm_source.py`'s `_agent_routes` as the caller. That caller is gone --
+    traffic is no longer placed in the lane to the ego's LEFT, which on a
+    two-way road is oncoming (`map/osm_source.py::_agent_routes`). The
+    geometry under test is unchanged: `_neighbour_lane` performs the identical
+    `offset(LANE_W)` -> `remove_self_intersections` on the identical route, so
+    this keeps binding on a live caller rather than on a deleted one.
     """
     graph = parse_overpass(json.loads(FIXTURE.read_text()))
     ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (0.0, 0.0))
     assert LinearRing(ego_route.points).is_simple  # the premise this test isolates
 
-    left_lane_raw = Route(ego_route.points, closed=True).offset(LANE_W)
-    assert not LinearRing(left_lane_raw.points).is_simple  # proves the repair is doing real work
+    neighbour_raw = Route(ego_route.points, closed=True).offset(LANE_W)
+    assert not LinearRing(neighbour_raw.points).is_simple  # proves the repair is doing real work
 
-    left_lane = remove_self_intersections(left_lane_raw)
-    assert LinearRing(left_lane.points).is_simple
-    assert left_lane.closed is True
-    assert all(math.isfinite(x) and math.isfinite(y) for x, y in left_lane.points)
+    neighbour = remove_self_intersections(neighbour_raw)
+    assert LinearRing(neighbour.points).is_simple
+    assert neighbour.closed is True
+    assert all(math.isfinite(x) and math.isfinite(y) for x, y in neighbour.points)
     # Repair should trim a self-crossing artifact, not gut the route -- the
     # real bug this guards against (see `test_splice_keeps_the_long_arc_...`
     # below) collapsed a comparable route to a handful of metres.
-    assert left_lane.length_m > left_lane_raw.length_m * 0.5
+    assert neighbour.length_m > neighbour_raw.length_m * 0.5
 
 
 def test_splice_keeps_the_long_arc_even_when_the_crossing_sits_near_the_wrap():
     """Direct regression test for a defect found (and fixed) while verifying
-    the repair against the agent left-lane route above -- not part of the
+    the repair against the neighbour-lane route above -- not part of the
     controller's original ask. `_splice_out_crossing` must cut the *shorter*
     of the two arcs a crossing splits the ring into, not always the one
     between the lower and higher segment index. An earlier version always cut

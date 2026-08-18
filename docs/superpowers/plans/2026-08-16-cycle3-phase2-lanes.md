@@ -21,6 +21,19 @@ All of Phase 1's Global Constraints still apply, unchanged. In addition:
 - **The steering-rate limit must be inert in normal driving.** Task 6 measures the peak `|Δsteer|/Δt` on an unmodified lap first and sets the limit above it, or every existing tracking test moves.
 - Re-measure any number this plan quotes from Phase 1's end state before relying on it; Phase 1 changes lap times and therefore anything derived from them.
 
+> **SUPERSEDED IN PLACES — see `2026-08-16-cycle3-phase2-revision.md`.** This
+> plan is kept as the historical record of what was built and reviewed, not as
+> a description of the shipped code. Two things it specifies were measured
+> false and replaced. (1) The claim above that "the ego drives the rightmost
+> forward lane" is wrong wherever `lanes_forward >= 2` on a two-way road — the
+> ego drives the LEFTMOST forward lane there, which is finding C1; lane
+> legality is now carriageway containment, and `lane_index` is derived from
+> that rather than from `lane_count - 1`. (2) `lanes_forward_along` — named in
+> the File Structure table, in Task 1's heading and "Produces" line, and
+> exercised by the test snippets below — was REMOVED once containment replaced
+> the lane-count gate. Its callers now use `derive_lanes` and
+> `LaneSet.legal_at`. Read those references as history.
+
 ## File Structure
 
 | File | Change |
@@ -304,6 +317,10 @@ existing tests are the proof."
 **Interfaces:**
 - Consumes: `lanes_forward_along`, `speed_limits_along`, `remove_self_intersections`, `Route.offset` (Task 1 and existing).
 - Produces: `sim.route.Lane(id, index_from_right, route, left_id, right_id)`; `sim.route.LaneSet(lanes, count_along)` with `.count_at(s) -> int` and `.by_id(lane_id) -> Lane`; `map.lanes.derive_lanes(ego_route, roads) -> LaneSet`; `BuiltScene.lanes: LaneSet | None`. Task 3 reports it on the wire, Task 4 uses it to decide legality.
+
+> **Superseded, this line included.** The note below arrived one line too late to cover the "Produces" line above it, which is now wrong in three places: `Lane.index_from_right` became `Lane.offset_m` (an index into the carriageway is not recoverable — see the note); `LaneSet` carries `legal_along`, `road_along` and `ego_offset_along` beside `count_along`; and R1-FIX deleted `lanes_forward_along`, whose answers `derive_lanes` now reads off its own single nearest-road pass. Read `sim/route.py` and `map/lanes.py` for the shipped shapes.
+
+> **Superseded by `2026-08-16-cycle3-phase2-revision.md` (defect C1).** The sentence below — "into the rightmost forward lane" — is FALSE and was never measured. `EGO_LANE_INSET` is a fixed half-lane inset from `Road.centerline`, which is the *divider* on a two-way road, so the ego lands in the **leftmost** forward lane wherever `lanes_forward >= 2`: measured −1.79 m on grid-loop's California St and −1.81 m on Nob Hill's California Street, with the derived `lane_1` at **+1.77 m / +1.79 m**, across the double yellow. R1 replaces this with a carriageway-containment model; see the revision plan.
 
 Lane 0 **is** the ego route — `select_ego_route` and `_block_route` both already offset the centreline by `-EGO_LANE_INSET` into the rightmost forward lane. Higher indices are successively left, at `+LANE_W` each. Derived lanes go through `remove_self_intersections` for the reason `osm_source.py:330-341` gives: a wider offset can push a sharp turn's mitre into a self-crossing the narrower ego offset did not produce, and `Route.project` has no continuity guard.
 

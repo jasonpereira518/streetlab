@@ -15,6 +15,8 @@ import math
 from bisect import bisect_right
 from dataclasses import dataclass, field
 
+from schema import Road
+
 Point = tuple[float, float]
 
 
@@ -306,6 +308,152 @@ class Route:
                 out.append((cx + math.cos(a) * radius, cy + math.sin(a) * radius))
 
         return Route(out, closed=self.closed)
+
+
+#: The id of the ego's own lane in every `LaneSet` this codebase builds. The
+#: set is anchored on it -- neighbours are named by which side of it they are
+#: on, not by a position in the carriageway, because the ego has no honest
+#: position in the carriageway to count from (see `Lane.offset_m`).
+EGO_LANE_ID = "lane_ego"
+
+
+@dataclass(frozen=True, slots=True)
+class Lane:
+    """One lane of travel, as a `Route` the tracker can follow directly."""
+
+    id: str
+    #: This lane's signed lateral offset from the EGO's route, positive to the
+    #: left of travel. Replaces an `index_from_right` that claimed lane 0 was
+    #: the kerbside lane: measured false on both shipped scenes, where the ego
+    #: sits in the leftmost forward lane wherever two run its way. A true index
+    #: is not recoverable either -- `EGO_LANE_INSET` is a fixed half-lane inset
+    #: from a centreline that means the divider on a two-way road and the
+    #: carriageway centre on a oneway, so it does not land on a lane centre at
+    #: all there (measured: off by up to 2.15 m on 40/339 Nob Hill segments).
+    offset_m: float
+    route: Route
+    left_id: str | None
+    right_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LaneSet:
+    """The ego's lane and its neighbours, plus where a change to each is legal.
+
+    `lanes` is what was geometrically constructed; a neighbour exists in it
+    whether or not the car may ever enter it. Four per-segment tables, all
+    indexed the same way `Route.segment_limits` is, answer the questions that
+    were previously conflated into one lane count:
+
+    `count_along` -- how many lanes run the ego's way -- is what the wire
+    reports, and nothing else. `legal_along` -- which directions a change is
+    legal in -- is the only one the planner may act on. A count of 2 says
+    another lane exists somewhere on the carriageway; it does not say the ego
+    is not already in it, and on both shipped scenes it is
+    (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`). Reading the
+    count as permission is what built lane 1 across a double yellow line.
+
+    `road_along` and `ego_offset_along` carry the two inputs the carriageway
+    model is built from, so a caller that has to place the ego WITHIN the
+    carriageway -- the wire's `lane_index` and its markings -- reads the same
+    numbers `legal_along` was decided from instead of a second, disagreeing
+    derivation of them. They are kept rather than recomputed because there is
+    no way to recover them from a finished `LaneSet`: `derive_lanes` matches
+    each segment to its nearest centreline once, and repeating that search is
+    both the expensive half of a scene build and a chance to match a different
+    road.
+    """
+
+    lanes: tuple[Lane, ...]
+    count_along: tuple[int, ...]
+    #: Which directions (+1 left, -1 right) a change is legal in, per segment.
+    #: Defaults to empty -- refuse everything -- so a `LaneSet` assembled
+    #: without one cannot silently authorise a manoeuvre.
+    legal_along: tuple[tuple[int, ...], ...] = ()
+    #: The `Road` governing each segment: the same nearest-centreline match
+    #: `count_along` is read off, kept whole so a caller can ask for
+    #: `lanes_backward` or `center_marking` without a parallel copy of either.
+    road_along: tuple[Road, ...] = ()
+    #: The EGO ROUTE's own signed offset from that road's centreline, positive
+    #: to the LEFT of travel. Not the car's offset from the route -- that is
+    #: `Route.lateral_offset`, measured per frame, and the two add.
+    ego_offset_along: tuple[float, ...] = ()
+
+    @property
+    def ego(self) -> Lane:
+        """The ego's own lane. Every `LaneSet` has one; `derive_lanes` builds it.
+
+        Raises rather than falling back to `lanes[0]`, on the same
+        refuse-by-default principle `legal_along`'s empty default follows.
+        `lanes[0]` is `lane_right` in `derive_lanes` order -- a route one lane
+        width off the one the car is actually tracking -- and every per-station
+        answer here (`_segment_at`, and therefore `count_at`, `legal_at`,
+        `road_at`, `ego_offset_at`) plus `neighbour` keys off this, so a
+        silent fallback keys all of them to the wrong lane. No live path
+        reaches it; that is the point of failing loudly if one ever does.
+        """
+        ego = self.by_id(EGO_LANE_ID)
+        if ego is None:
+            raise ValueError(f"LaneSet has no ego lane ({EGO_LANE_ID!r})")
+        return ego
+
+    def by_id(self, lane_id: str) -> Lane | None:
+        return next((l for l in self.lanes if l.id == lane_id), None)
+
+    def neighbour(self, direction: int) -> Lane | None:
+        """The lane one step `direction` (+1 left, -1 right) of the ego's."""
+        ego = self.ego
+        return self.by_id((ego.left_id if direction > 0 else ego.right_id) or "")
+
+    def _segment_at(self, s: float) -> int:
+        route = self.ego.route
+        return bisect_right(route._cum, route.normalise(s)) - 1
+
+    def count_at(self, s: float) -> int:
+        if not self.count_along:
+            return 1
+        i = self._segment_at(s)
+        return self.count_along[min(max(i, 0), len(self.count_along) - 1)]
+
+    def legal_at(self, s: float) -> tuple[int, ...]:
+        if not self.legal_along:
+            return ()
+        i = self._segment_at(s)
+        return self.legal_along[min(max(i, 0), len(self.legal_along) - 1)]
+
+    def road_at(self, s: float) -> Road | None:
+        """The road governing arc length `s`.
+
+        `None` only when NOTHING on the route matched a road, which is what
+        leaves `road_along` empty. A single unmatched segment does not reach
+        here: `_governing_roads_from` fills those forward from their
+        predecessor (leading ones from the first real match), so an unmatched
+        stretch silently reports a neighbour's road rather than nothing at all.
+        Neither shipped scene has one -- every segment of both matches.
+        """
+        if not self.road_along:
+            return None
+        i = self._segment_at(s)
+        return self.road_along[min(max(i, 0), len(self.road_along) - 1)]
+
+    def ego_offset_at(self, s: float) -> float:
+        """The ego route's own offset from that road's centreline, + = LEFT.
+
+        Zero only when NOTHING matched, which reads as "on the centreline" --
+        the same answer a caller would have to invent, and the one that leaves
+        a single-lane carriageway reporting its only lane. Per-segment gaps are
+        filled forward instead (`_fill_forward`), and a LEADING gap is filled
+        BACKWARD from the first real offset, so an unmatched stretch inherits a
+        neighbouring segment's offset rather than zero. Neither shipped scene
+        has one.
+        """
+        if not self.ego_offset_along:
+            return 0.0
+        i = self._segment_at(s)
+        return self.ego_offset_along[min(max(i, 0), len(self.ego_offset_along) - 1)]
+
+    def may_change_at(self, s: float, direction: int) -> bool:
+        return direction in self.legal_at(s)
 
 
 def _menger_curvature(a: Point, b: Point, c: Point) -> float:

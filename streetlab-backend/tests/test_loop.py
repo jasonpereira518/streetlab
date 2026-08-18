@@ -11,6 +11,7 @@ import logging
 import math
 import threading
 import time
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,12 +19,12 @@ import pytest
 
 from map.cache import DiskCache
 from map.geocode import Place
-from map.lanes import NoDrivableRoad
+from map.lanes import NoDrivableRoad, nearest_road_along
 from map.osm_source import LocationSpec, OsmSceneSource
 from map.overpass import BBox, OverpassClient
-from map.scene_build import SyntheticGrid
-from schema import StateUpdate, parse_server_message
-from sim.loop import SimLoop, Simulation
+from map.scene_build import LANE_W, SyntheticGrid
+from schema import Road, StateUpdate, parse_server_message
+from sim.loop import SimLoop, Simulation, _lane_state
 from sim.route import Route
 
 DT = 1 / 60
@@ -369,6 +370,265 @@ def test_lane_state_tracks_the_ego_offset(sim):
     frame = sim.state_update()
     actual = sim.scene.ego_route.lateral_offset((sim.ego.x, sim.ego.y))
     assert frame.telemetry.lane.offset_m == pytest.approx(actual, abs=1e-6)
+
+
+def test_the_lane_count_reported_matches_the_road_the_ego_is_on():
+    sim = Simulation(SyntheticGrid(), seed=7)
+    for _ in range(600):
+        sim.step()
+        frame = sim.state_update()
+        s = sim.scene.ego_route.project((sim.ego.x, sim.ego.y))
+        assert frame.telemetry.lane.lane_count == sim.scene.lanes.count_at(s)
+
+
+def test_the_ego_starts_in_the_leftmost_forward_lane():
+    """The mirror, corrected -- and the reason this test used to say the
+    opposite (`lane_index == lane_count - 1`, "the kerbside lane the ego
+    drives").
+
+    It does not drive the kerbside lane. `EGO_LANE_INSET` is a fixed half-lane
+    inset from `Road.centerline`, which on a two-way street IS the divider, so
+    on grid-loop's California St -- 2 lanes each way, forward carriageway
+    `[-7.2, 0]` signed left-positive -- the ego route sits at -1.8 m and is the
+    INNER forward lane. `LanePosition.tsx:47-48` counts `lane_index` from the
+    left (`leftExists = lane_index > 0`), so the honest index there is 0, and
+    the `count - 1 - from_right` this replaces reported its mirror image, 1.
+
+    The markings are pinned alongside it because they are what makes the index
+    legible: index 0 means the lane's left edge is the centre divider, and
+    California St really does carry a double yellow.
+    """
+    sim = Simulation(SyntheticGrid(), seed=7)
+    sim.step()
+    lane = sim.state_update().telemetry.lane
+    assert lane.lane_count == 2, "grid-loop no longer starts on a two-lane street"
+    assert lane.lane_index == 0
+    assert lane.left_marking == "double_yellow"
+    assert lane.right_marking == "dashed_white"
+
+
+def test_the_left_marking_is_the_governing_roads_own(nob_hill_scene):
+    """`Road.center_marking` reaches the wire, rather than being guessed back
+    from the lane count.
+
+    The oneway stretches are what distinguish the two rules. Clay Street is
+    oneway with one forward lane and `center_marking = "none"` -- nothing is
+    painted down the middle of a one-way street -- and the count rule this
+    replaces could not say so: `count == 1` always answered "solid_white" and
+    `count > 1` always "double_yellow", so a oneway got a centre divider drawn
+    on it either way.
+
+    Asserted against `nearest_road_along` rather than against the `LaneSet`'s
+    own per-segment table, so a table built from the wrong road fails here
+    instead of agreeing with itself.
+    """
+    route, roads = nob_hill_scene.ego_route, nob_hill_scene.description.roads
+    reported = Counter()
+    for k, i in enumerate(nearest_road_along(route, roads)):
+        if i is None:
+            continue  # neither shipped scene reaches this
+        road = roads[i]
+        s = (route._cum[k] + route._cum[k + 1]) / 2.0
+        lane = _lane_state(nob_hill_scene, None, s, 0.0, 0.0, [])
+        if lane.lane_index == 0:
+            # Index 0 means no forward lane to the ego's left, so its left edge
+            # IS the centre divider -- whatever the road says is painted there.
+            assert lane.left_marking == road.center_marking, road.name
+            reported[road.center_marking] += 1
+    # Non-vacuity: every marking the extract actually carries is reached, so
+    # this cannot pass on a walk that only ever saw one of them.
+    assert set(reported) == {"none", "solid_white", "double_yellow"}, reported
+
+
+def test_the_lane_index_is_always_inside_the_lane_count():
+    sim = Simulation(SyntheticGrid(), seed=7)
+    for _ in range(1200):
+        sim.step()
+        lane = sim.state_update().telemetry.lane
+        assert 0 <= lane.lane_index < lane.lane_count
+
+
+def test_a_single_lane_road_reports_index_zero_and_a_kerb_marking():
+    """The visible consequence of real data: most of Nob Hill draws one lane.
+
+    Renamed from `..._reports_no_neighbour_on_either_side`: the backend has no
+    `leftExists`/`rightExists` concept (that is `LanePosition.tsx`'s, derived
+    from `lane_index`/`lane_count` on the frontend) -- this test only asserts
+    what `_lane_state` itself produces, index 0 and a kerb-style left edge.
+    """
+    sim = Simulation(SyntheticGrid(), seed=7)
+    seen_single = False
+    for _ in range(2400):
+        sim.step()
+        lane = sim.state_update().telemetry.lane
+        if lane.lane_count == 1:
+            seen_single = True
+            assert lane.lane_index == 0
+            # Now the road's own answer rather than a count rule: a
+            # `SyntheticGrid` street with one lane each way is built
+            # `center_marking="solid_white"` (`map/scene_build.py`), and the
+            # permissive `in (...)` this assertion used to be would pass no
+            # matter what `_lane_state` did here.
+            assert lane.left_marking == "solid_white"
+    assert seen_single, "grid-loop never reported a single-lane stretch"
+
+
+def test_the_kerb_marking_tracks_the_kerbside_lane_where_there_is_another_one():
+    """The right edge is drawn as a kerb exactly when the car is in the
+    kerbside lane -- judged where those two can actually disagree.
+
+    What this asserted before was one direction of that ("kerbside index =>
+    solid_white") over 600 frames at the default traffic scale, which never
+    changes lanes. Every frame that reached the guard was therefore a
+    SINGLE-lane stretch, where index 0 is the only index there is and no
+    marking rule could fail: `from_right == 0`, `lane_index == lane_count - 1`
+    and "the ego is kerbside" are one fact with three names. Mutating
+    `_lane_state`'s `right_marking` condition from `from_right == 0` to
+    `from_right == count - 1` -- painting the kerb on the INNER lane of every
+    two-lane road -- left it passing.
+
+    So: the overtake scenario, so the car really does drive the kerbside lane
+    of a road that has a non-kerbside one; the biconditional, so a marking that
+    fires on the wrong lane fails rather than being skipped; and both
+    populations asserted non-empty, since either one being empty is what made
+    the original vacuous.
+    """
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    kerbside_of_many, inner = 0, 0
+    for _ in range(int(120.0 / DT)):
+        sim.step()
+        lane = sim.state_update().telemetry.lane
+        kerbside = lane.lane_index == lane.lane_count - 1
+        assert (lane.right_marking == "solid_white") == kerbside, lane
+        if kerbside and lane.lane_count > 1:
+            kerbside_of_many += 1
+        if not kerbside:
+            inner += 1
+    assert kerbside_of_many, "never drove the kerbside lane of a multi-lane road"
+    assert inner, "never drove a lane with another one to its right"
+
+
+# -- `_lane_state`'s left/right conversion, direct -------------------------- #
+#
+# Both shipped scenes put the ego route in the same place -- the inner forward
+# lane of a road with at most two lanes each way -- so no frame observed above
+# ever reaches a lane with a neighbour on BOTH sides, and none reaches the
+# clamp. The tests below call `_lane_state` directly against a fabricated
+# carriageway and a hand-picked `offset` so those branches are exercised by
+# something other than code inspection and a frozen fixture snapshot.
+
+
+class _FixedLaneSet:
+    """A `LaneSet` stand-in for one uniform road, with a fixed lane count.
+
+    `_lane_state` asks `scene.lanes` three things: how many lanes run the ego's
+    way (`count_at`), which road governs -- for `lanes_backward` and
+    `center_marking` -- (`road_at`), and where the ego's ROUTE sits on that
+    road's carriageway (`ego_offset_at`). Nothing else about a real `LaneSet`
+    (lane geometry, the per-segment tables themselves) matters here.
+
+    The road is symmetric and two-way, and the ego route is put on the centre
+    of its KERBSIDE forward lane -- which is where the shipped scenes do NOT
+    put it, deliberately: it makes the `offset` each test passes a real
+    displacement leftward across real lanes, so the index it produces is being
+    computed rather than read back off the same placement every fixture has.
+    """
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+        self._road = Road(
+            id="stub", name="Stub St", road_class="arterial",
+            centerline=[(0.0, 0.0), (100.0, 0.0)],
+            lanes_forward=count, lanes_backward=count, lane_width_m=LANE_W,
+            speed_limit_mps=15.0, oneway=False, center_marking="double_yellow",
+            has_sidewalk=True,
+        )
+
+    def count_at(self, s: float) -> int:
+        return self._count
+
+    def road_at(self, s: float) -> Road:
+        return self._road
+
+    def ego_offset_at(self, s: float) -> float:
+        # Kerbside forward lane's centre: half a lane in from the carriageway
+        # edge at `-(count + count) * LANE_W / 2`.
+        return -self._count * LANE_W + LANE_W / 2.0
+
+
+class _FixedLaneScene:
+    def __init__(self, count: int) -> None:
+        self.lanes = _FixedLaneSet(count)
+
+
+def test_lane_state_reports_the_lane_the_ego_has_actually_moved_into():
+    """Two-lane road, ego one full lane width left of lane 0's centreline --
+    i.e. actually driving lane 1 of 2, wire index 0 (leftmost of two).
+    """
+    lane = _lane_state(_FixedLaneScene(2), None, 0.0, LANE_W, 0.0, [])
+    assert lane.lane_index == 0
+    assert lane.left_marking == "double_yellow"
+    assert lane.right_marking == "dashed_white"
+    # offset_m is relative to the ego's OWN lane centre, not lane 0's -- the
+    # ego sits exactly on lane 1's centreline here, so it is zero, not LANE_W.
+    assert lane.offset_m == pytest.approx(0.0)
+
+
+def test_lane_state_marks_an_interior_lane_with_neighbours_on_both_sides():
+    """Four-lane road, ego two lane widths left of lane 0 -- an interior lane
+    bordered by another lane on both sides, not a kerb or a centre divider.
+    No fixture or driven-sim test produces this marking combination: neither
+    shipped scene has a road wide enough for a lane with neighbours on both
+    sides of it.
+    """
+    lane = _lane_state(_FixedLaneScene(4), None, 0.0, LANE_W * 2, 0.0, [])
+    assert lane.lane_index == 1
+    assert lane.left_marking == "dashed_white"
+    assert lane.right_marking == "dashed_white"
+    # The markings above say WHICH lane; this says where in it. Two whole lane
+    # widths from a route that sits on lane 0's centreline lands on lane 2's
+    # centreline, so the wire carries no displacement at all -- the value it
+    # would carry if the re-basing that makes `offset_m` lane-relative were
+    # dropped is the raw `LANE_W * 2`.
+    assert lane.offset_m == pytest.approx(0.0)
+
+
+def test_lane_state_puts_the_ego_in_the_lane_that_contains_it_not_the_nearest_edge():
+    """A displacement that is NOT a whole number of lane widths, which is what
+    separates containment from rounding.
+
+    Every other direct `_FixedLaneScene` test displaces the ego by whole lane
+    widths from a route on a lane centre, so `(off - lo) / LANE_W` is always an
+    exact half-integer -- and Python's banker's rounding happens to agree with
+    `math.floor` on every one of them (0.5 -> 0, 1.5 -> 2 clamped back to 1,
+    2.5 -> 2). Replacing `_lane_from_the_right`'s `math.floor` with `round`,
+    i.e. swapping "which lane contains the car" for "which lane boundary is
+    nearest", therefore passed the whole 646-test suite unchanged while
+    materially changing the wire (measured on the 600 s Nob Hill replay: worst
+    `|offset_m|` 3.591 -> 1.795 became 8 frames over half a lane -> 699 on
+    grid-loop, and lane changes stopped registering at all).
+
+    2.2 lane widths is past the middle of lane 2 but nowhere near lane 3:
+    containment says lane 2 (wire index 1 of 4), rounding says the nearest
+    boundary is lane 3's (index 0). `offset_m` is pinned alongside it because
+    the index alone leaves the value the renderer draws unmeasured -- 0.2 of a
+    lane past the centre of the lane the car is in.
+    """
+    lane = _lane_state(_FixedLaneScene(4), None, 0.0, LANE_W * 2.2, 0.0, [])
+    assert lane.lane_index == 1
+    assert lane.offset_m == pytest.approx(LANE_W * 0.2)
+
+
+def test_lane_state_clamps_an_overshooting_offset_to_the_widest_lane():
+    """A measured offset can transiently exceed `(count - 1) * LANE_W`
+    (steering noise, a corner overshoot); `from_right` clamps to the widest
+    lane that actually exists rather than reporting an index outside
+    `[0, lane_count)`.
+    """
+    lane = _lane_state(_FixedLaneScene(2), None, 0.0, LANE_W * 5, 0.0, [])
+    assert 0 <= lane.lane_index < lane.lane_count
+    assert lane.lane_index == 0  # clamped to the widest (leftmost) lane
 
 
 def test_radar_returns_accompany_detections(sim):

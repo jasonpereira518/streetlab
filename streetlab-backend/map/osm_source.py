@@ -29,11 +29,10 @@ from map.features import (
 )
 from map.geocode import Geocoder, NominatimGeocoder, Place
 from map.lanes import (
-    LANE_W,
     build_roads,
     build_route_graph,
+    derive_lanes,
     project_control_points,
-    remove_self_intersections,
     select_ego_route,
     speed_limits_along,
 )
@@ -300,6 +299,7 @@ class OsmSceneSource:
             speed_limit_mps=self._speed_limit(roads),
             traffic_count=spec.traffic,
             control_points=control_points,
+            lanes=derive_lanes(ego_route, roads),
         )
 
     def _bounds(
@@ -341,19 +341,42 @@ class OsmSceneSource:
         return Bounds(min_x=min(xs), min_y=min(ys), max_x=max(xs), max_y=max(ys))
 
     def _agent_routes(self, ego_route: Route, traffic: int) -> list[Route]:
-        """Traffic shares the ego's loop: same lane ahead, or the lane to its left.
+        """Traffic shares the ego's lane, all of it.
 
-        `ego_route` is already simple (`select_ego_route` repairs it), but
-        offsetting it again here by a different distance is a distinct
-        geometric operation and does not inherit that guarantee -- a wider
-        offset can push a sharp turn's mitre join into a self-crossing that
-        the narrower ego-lane offset didn't produce. Traffic agents call
-        `Route.project()` every tick exactly as the ego planner does, so an
-        unrepaired left lane is the same discontinuous-`s` hazard, just for a
-        different route.
+        Every third agent used to drive
+        `remove_self_intersections(Route(ego_route.points, closed=True).offset(LANE_W))`
+        -- the lane to the ego's LEFT. A positive offset is left of travel, and
+        C1 established that the ego already occupies the leftmost forward lane
+        wherever two run its way, so that lane is across the divider. Measured
+        on this extract: 25 of 132 agent samples on two-way roads running two
+        lanes the ego's way sat on the oncoming side of the centreline, at
+        +1.76 to +1.78 m across California Street's `double_yellow`. It shipped
+        at default settings.
+
+        The kerbside lane `derive_lanes` builds is the obvious replacement and
+        is NOT used, because an agent route is one closed loop for the whole lap
+        while that lane exists on only part of it: 144.8 m of Nob Hill's 1182.3
+        m loop, in two runs of 62.8 m and 81.9 m. A route correct on California
+        Street is on the pavement on Clay Street, which is the same defect
+        mirrored rather than fixed.
+
+        Occupying the kerbside lane only where it legally exists is expressible
+        -- blend the ego route toward `lanes.neighbour(-1).route` under a
+        distance-tapered weight -- but it is a new geometric construction, and
+        measured it buys little: a 25 m merge at each end of those two runs
+        leaves a car actually beside the ego for 44.7 m of the lap, 3.8 %. It
+        also bakes an unsignalled agent lane change into geometry, which is the
+        job of the `TrafficModel` replacement `sim/agents.py` reserves for
+        IDM/MOBIL, not of a route builder. Deferred there rather than
+        pre-empted here.
+
+        So: no second-lane agents. This loses the "traffic beside you" visual
+        and puts every agent on a lane that certainly exists, everywhere. The
+        `remove_self_intersections` repair that guarded the old left lane goes
+        with it -- `ego_route` is already simple (`select_ego_route` repairs
+        it) and nothing offsets it again.
         """
-        left_lane = remove_self_intersections(Route(ego_route.points, closed=True).offset(LANE_W))
-        return [ego_route if i % 3 != 2 else left_lane for i in range(traffic)]
+        return [ego_route] * traffic
 
     def _speed_limit(self, roads: list[Road]) -> float:
         """The limit governing the most *metres* of road, not the most roads.

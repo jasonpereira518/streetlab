@@ -17,9 +17,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-from plan.behavior import BehaviorFSM
+from plan.behavior import LANE_CHANGE_COMMIT_S, BehaviorFSM
 from schema import Detection, Plan, SignalState
-from sim.route import ControlPoint, Route
+from sim.route import ControlPoint, LaneSet, Route
 from sim.vehicle import VehicleState
 
 # Pure-pursuit lookahead: a floor for low speed, growing with velocity.
@@ -67,6 +67,21 @@ _PLAN_STEP_M = 3.0
 # Heading change across the preview beyond which the manoeuvre is a turn.
 _TURN_THRESHOLD_RAD = 0.45
 
+#: Bound on how fast the commanded steering angle may move. `BicycleModel`
+#: applies steer instantaneously (`sim/vehicle.py:63`), so without this a lane
+#: change reads as a snap of the wheel. Set above the peak the unmodified
+#: tracker already uses on a real lap: measured 0.728 rad/s peak |dsteer/dt|
+#: over a full Nob Hill lap (junction stops, creeps and re-accelerations
+#: included -- `tests/test_junctions.py`'s `_osm_sim`, 6000 ticks at 60 Hz).
+#: 1.2 rad/s clears that by ~65 %, comfortably above without re-tuning lane
+#: holding -- this bounds a manoeuvre transient, it does not re-tune it.
+MAX_STEER_RATE_RAD_S = 1.2
+
+#: Fraction of the commitment window spent actually moving across. The rest is
+#: settling time in the new lane, so the manoeuvre ends straight rather than
+#: still crossing.
+_LANE_CHANGE_TRAVERSE = 0.75
+
 
 @dataclass(frozen=True, slots=True)
 class PlanLimits:
@@ -97,6 +112,7 @@ class PlanContext:
     dt: float
     signals: Mapping[str, SignalState] = field(default_factory=dict)
     control_points: Sequence[ControlPoint] = ()
+    lanes: LaneSet | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,9 +150,11 @@ class Planner(Protocol):
 class CenterlineFollower:
     wheelbase_m: float = 2.9
     fsm: BehaviorFSM = field(default_factory=BehaviorFSM)
+    last_steer: float = 0.0
 
     def reset(self) -> None:
         self.fsm.reset()
+        self.last_steer = 0.0
 
     def plan(
         self,
@@ -154,10 +172,32 @@ class CenterlineFollower:
         )
 
         decision = self.fsm.step(
-            ego, route, s, context.control_points, context.signals, context.dt
+            ego, route, s, context.control_points, context.signals, context.dt,
+            lanes=context.lanes,
+            detections=detections,
+            limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
         )
 
-        steer = self._pure_pursuit(ego, route, s, lookahead)
+        aim_route = route
+        blend = 0.0
+        if decision.target_lane_id is not None and context.lanes is not None:
+            target = context.lanes.by_id(decision.target_lane_id)
+            if target is not None and self.fsm.lane_change is not None:
+                progress = min(
+                    1.0,
+                    self.fsm.lane_change.elapsed_s
+                    / max(LANE_CHANGE_COMMIT_S * _LANE_CHANGE_TRAVERSE, 1e-6),
+                )
+                blend = _smoothstep(progress)
+                aim_route = target.route
+
+        steer = self._pure_pursuit_blended(ego, route, aim_route, s, lookahead, blend)
+        steer = _clamp(
+            steer,
+            self.last_steer - MAX_STEER_RATE_RAD_S * context.dt,
+            self.last_steer + MAX_STEER_RATE_RAD_S * context.dt,
+        )
+        self.last_steer = steer
         curvature = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
         target = self._target_speed(limits, curvature, detections, ego, route, s)
         # The behaviour ceiling folds in exactly like the curvature and
@@ -180,14 +220,28 @@ class CenterlineFollower:
             accel_mps2=accel,
         )
 
-    def _pure_pursuit(
-        self, ego: VehicleState, route: Route, s: float, lookahead: float
+    def _pure_pursuit_blended(
+        self,
+        ego: VehicleState,
+        route: Route,
+        target_route: Route,
+        s: float,
+        lookahead: float,
+        blend: float,
     ) -> float:
-        tx, ty = route.point_at(s + lookahead)
-        # Bearing to the lookahead point, expressed in the vehicle frame.
-        alpha = math.remainder(
-            math.atan2(ty - ego.y, tx - ego.x) - ego.heading, math.tau
-        )
+        """Aim at a point interpolated between two lanes.
+
+        Interpolating the AIM POINT rather than switching routes is what keeps
+        this a tracker: there is no second control law for lane changes, and
+        the manoeuvre inherits the lookahead and curvature behaviour that was
+        tuned for the real Nob Hill route.
+        """
+        ax, ay = route.point_at(s + lookahead)
+        if blend > 0.0:
+            ts = target_route.project((ax, ay))
+            bx, by = target_route.point_at(ts)
+            ax, ay = ax + (bx - ax) * blend, ay + (by - ay) * blend
+        alpha = math.remainder(math.atan2(ay - ego.y, ax - ego.x) - ego.heading, math.tau)
         return math.atan2(2.0 * self.wheelbase_m * math.sin(alpha), lookahead)
 
     def _target_speed(
@@ -254,6 +308,11 @@ def _maneuver(route: Route, s: float) -> str:
     if turn < -_TURN_THRESHOLD_RAD:
         return "turn_right"
     return "keep_lane"
+
+
+def _smoothstep(t: float) -> float:
+    t = _clamp(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:

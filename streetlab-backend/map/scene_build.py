@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Protocol, runtime_checkable
 
-from map.lanes import project_control_points
+from map.lanes import derive_lanes, project_control_points
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -35,7 +35,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import ControlPoint, Route
+from sim.route import ControlPoint, LaneSet, Route
 
 # --------------------------------------------------------------------------- #
 # The seam                                                                     #
@@ -58,6 +58,9 @@ class BuiltScene:
     # Defaulted so `dataclasses.replace` in `OsmSceneSource.build` keeps
     # working without naming it.
     control_points: list[ControlPoint] = field(default_factory=list)
+    # Lanes running the ego's way. None only for a scene built before this
+    # existed; both shipped sources always supply one.
+    lanes: LaneSet | None = None
 
 
 @runtime_checkable
@@ -250,6 +253,7 @@ class SyntheticGrid:
             speed_limit_mps=self._route_speed_limit(scenario.block),
             traffic_count=scenario.traffic,
             control_points=self._control_points(ego_route),
+            lanes=derive_lanes(ego_route, description.roads),
         )
 
     # -- catalog ----------------------------------------------------------- #
@@ -339,17 +343,27 @@ class SyntheticGrid:
         return min((s.speed_mph for s in used), default=25) * MPH
 
     def _agent_routes(self, scenario: _Scenario, ego_route: Route) -> list[Route]:
-        """Traffic shares the ego's loop: same lane ahead, or the lane to its left.
+        """Traffic shares the ego's lane, all of it.
+
+        Every third agent used to drive `block_route.offset(LANE_W)`, the lane
+        to the ego's LEFT. `_block_route` traverses the corners clockwise so a
+        NEGATIVE offset is the kerbside lane; a positive one crosses the
+        centreline, which on California St and Hyde St -- two lanes each way,
+        `double_yellow` -- is the oncoming carriageway. Measured: 14 of 54 agent
+        samples on those two streets sat at +0.57 to +1.71 m, on the wrong side
+        of the line, at default settings.
+
+        See `map/osm_source.py::_agent_routes` for why the kerbside lane
+        `derive_lanes` builds is not the replacement, and why partial-loop
+        occupancy is left to the `TrafficModel` that replaces `ScriptedTraffic`
+        rather than baked into a route here. The short version is that this
+        scenario's kerbside lane exists on 147.6 m of a 295.2 m loop, so a
+        second-lane agent is on the pavement for the other half.
 
         Cycle 3 replaces the scripted followers with IDM/MOBIL agents, but the
         route seam stays as it is.
         """
-        block_route = self._block_route(scenario.block)
-        left_lane = Route(block_route.points, closed=True).offset(LANE_W)
-        routes = []
-        for i in range(scenario.traffic):
-            routes.append(ego_route if i % 3 != 2 else left_lane)
-        return routes
+        return [ego_route] * scenario.traffic
 
     # -- intersections ----------------------------------------------------- #
 

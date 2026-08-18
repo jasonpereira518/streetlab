@@ -306,6 +306,13 @@ class Simulation:
             dt=dt,
             signals={s.id: s for s in signals},
             control_points=self.scene.control_points,
+            # Wired at the same moment `CenterlineFollower` gains the
+            # execution behind a lane-change decision (Task 5, Cycle 3
+            # Phase 2) -- so the wire's `lane_change_left`/`_right` label and
+            # the car's actual lateral motion arrive together, rather than
+            # the FSM's decision (Task 4) being observable with nothing
+            # behind it.
+            lanes=self.scene.lanes,
         )
         result = self._planner.plan(
             self.world.ego,
@@ -513,6 +520,111 @@ class Simulation:
 # --------------------------------------------------------------------------- #
 
 
+def _lane_from_the_right(off: float, lo: float, count: int) -> int:
+    """Which of `count` forward lanes contains `off`, counting 0 from the kerb.
+
+    `off` and `lo` are both signed from the road's centreline, positive to the
+    LEFT, with `lo` the kerbside edge of the forward carriageway. Containment,
+    the same rule `lane_change_is_legal` fits a target lane by -- clamped,
+    because an ego that has strayed past either edge is still in the nearest
+    real lane and `lane_count` has to bound the index the wire carries.
+    """
+    return min(max(int(math.floor((off - lo) / LANE_W)), 0), count - 1)
+
+
+def _lane_state(
+    scene: BuiltScene,
+    route,
+    ego_s: float,
+    offset: float,
+    heading_error: float,
+    detections: Sequence[Detection],
+) -> LaneState:
+    """Report the lane the ego is in, not the lane it was assumed to be in.
+
+    The carriageway model is `map/lanes.py`'s, read back off the `LaneSet`
+    rather than derived again: a road `(lanes_forward + lanes_backward) *
+    LANE_W` wide has its forward half at `[-W/2, -W/2 + lanes_forward *
+    LANE_W]` signed from its centreline, left-positive, and the car sits at its
+    route's own offset from that centreline plus whatever it has strayed from
+    the route. Which lane of that half contains the sum is the answer.
+
+    What this replaces was the MIRROR of it -- `count - 1 - round(offset /
+    LANE_W)` read the car's offset from its own ROUTE as an offset from the
+    kerbside lane, on the premise that the ego drives kerbside. It does not:
+    `EGO_LANE_INSET` is a half-lane inset from a centreline that means the
+    DIVIDER on a two-way street, so wherever two lanes run the ego's way it is
+    the inner one (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`).
+    On grid-loop's California St that made the wire say lane 1 of 2 for a car
+    measurably in lane 0.
+
+    `lane_index` counts from the LEFT because `LanePosition.tsx:47-48` reads it
+    that way (`leftExists = lane_index > 0`); the carriageway counts from the
+    right, so the two are converted here rather than either side changing
+    convention.
+    """
+    lanes = scene.lanes
+    count = lanes.count_at(ego_s) if lanes is not None else 1
+    road = lanes.road_at(ego_s) if lanes is not None else None
+    ego_off = lanes.ego_offset_at(ego_s) if lanes is not None else 0.0
+
+    # The kerbside edge of the forward carriageway. With no matched road there
+    # is no oncoming half to sit beside, which leaves the one forward lane
+    # `count` then reports centred on the centreline -- the same lane 0 a
+    # `LaneSet`-less scene has always reported.
+    lo = -(count + (road.lanes_backward if road is not None else 0)) * LANE_W / 2.0
+    car_off = ego_off + offset
+    from_right = _lane_from_the_right(car_off, lo, count)
+    # Where the ego's ROUTE sits in that carriageway. It differs from the car's
+    # own lane whenever the car has crossed a boundary its route has not, and
+    # that difference is what re-bases the offset below.
+    route_from_right = _lane_from_the_right(ego_off, lo, count)
+    index = count - 1 - from_right
+
+    return LaneState(
+        lane_index=index,
+        lane_count=count,
+        lane_width_m=LANE_W,
+        # The car's offset from the centre of the lane THIS FRAME REPORTS, and
+        # never further from it than half a lane. While the car is in its
+        # route's own lane that is exactly `Route.lateral_offset`: the ego's
+        # lane IS `ego_route` (`derive_lanes`), so nothing is re-based on the
+        # frames -- the overwhelming majority -- where the two agree.
+        #
+        # Where they disagree the offset is measured from the reported lane's
+        # GEOMETRIC centre instead. Subtracting whole `LANE_W`s from a
+        # route-relative offset, which is what this did, silently assumes the
+        # route sits on a lane centre; on Sacramento Street (oneway 2/0) it
+        # sits within half a millimetre of a lane BOUNDARY, so 9 mm of drift
+        # crossed it and the wire reported 3.591 m -- a full lane width of
+        # displacement for a car driving straight, which `LanePosition.tsx:37`
+        # draws by popping the ego icon into the next lane. It recurred on
+        # every traversal.
+        #
+        # Only on the disagreeing frames, deliberately: measuring from the
+        # geometric centre unconditionally would fold `EGO_LANE_INSET`'s
+        # up-to-1.8 m misplacement of the ego route itself (ruling Q19) into
+        # every frame of a car that is driving perfectly straight.
+        offset_m=(
+            offset
+            if from_right == route_from_right
+            else car_off - (lo + (from_right + 0.5) * LANE_W)
+        ),
+        heading_error=heading_error,
+        # No forward lane to the left means this lane's left edge IS the centre
+        # divider, so it reports what the road says is painted there -- "none"
+        # on a oneway, which the `"double_yellow" if count > 1` guess this
+        # replaces could not say at all.
+        left_marking=(
+            (road.center_marking if road is not None else "solid_white")
+            if index == 0
+            else "dashed_white"
+        ),
+        right_marking="solid_white" if from_right == 0 else "dashed_white",
+        neighbors=[_neighbor(d, route, ego_s) for d in detections],
+    )
+
+
 def assemble_state_update(
     *,
     world: WorldState,
@@ -593,16 +705,7 @@ def assemble_state_update(
         plan=plan,
         telemetry=Telemetry(
             radar=_radar(ego, detections),
-            lane=LaneState(
-                lane_index=0,
-                lane_count=2,
-                lane_width_m=LANE_W,
-                offset_m=offset,
-                heading_error=heading_error,
-                left_marking="double_yellow",
-                right_marking="solid_white",
-                neighbors=[_neighbor(d, route, ego_s) for d in detections],
-            ),
+            lane=_lane_state(scene, route, ego_s, offset, heading_error, detections),
             ttc_s=ttc,
             vehicle=_vehicle_status(world),
             trajectory=_trajectory(world, offset, detections),

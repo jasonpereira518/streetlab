@@ -9,15 +9,15 @@
   "scenario_id": "grid-merge",
   "ego": {
     "pose": {
-      "x": 1.8175888345545121,
-      "y": 25.758862065211467,
-      "heading": 1.5667106021050294
+      "x": 1.9591230407682696,
+      "y": 25.742046522022996,
+      "heading": 1.5079502928199489
     },
-    "speed_mps": 9.412467749745844,
-    "accel_mps2": 1.6113492641916154,
-    "steering_angle": 0.0054286604052605665,
-    "yaw_rate": 0.017619859636047425,
-    "throttle": 0.7324314837234615,
+    "speed_mps": 9.410244615045674,
+    "accel_mps2": 1.6133805547806028,
+    "steering_angle": -0.03676822110070273,
+    "yaw_rate": -0.1193634335966531,
+    "throttle": 0.7333547976275466,
     "brake": 0.0,
     "gear": "D",
     "speed_limit_mps": 11.176,
@@ -53,7 +53,7 @@
       "confidence": 1.0,
       "hazard": true,
       "hazard_label": "Closing on lead vehicle",
-      "ttc_s": 3.994926332813063,
+      "ttc_s": 3.9976435353429522,
       "lane_offset": 0
     },
     {
@@ -77,7 +77,31 @@
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
-      "ttc_s": 19.090100994889497,
+      "ttc_s": 19.100242919766394,
+      "lane_offset": 0
+    },
+    {
+      "id": "veh_02",
+      "cls": "truck",
+      "pose": {
+        "x": 75.34271975420573,
+        "y": 77.2907498261303,
+        "heading": -0.49087385212339874
+      },
+      "size": {
+        "length": 7.8,
+        "width": 2.4,
+        "height": 3.1
+      },
+      "velocity": [
+        3.17553280255164,
+        -1.6973576455408517
+      ],
+      "speed_mps": 3.6006987595406335,
+      "confidence": 1.0,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": 21.397868958848708,
       "lane_offset": 0
     },
     {
@@ -132,8 +156,8 @@
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
-        "x": 2.403524437220475,
-        "y": -0.15282971673843235,
+        "x": 4.464157813589474,
+        "y": 2.8131690157938065,
         "heading": 2.454369260617026
       },
       "size": {
@@ -142,128 +166,136 @@
         "height": 1.3
       },
       "velocity": [
-        -3.4730925732126763,
-        2.850293413420179
+        -2.730825021407714,
+        2.241130176533533
       ],
-      "speed_mps": 4.49294386395952,
+      "speed_mps": 3.5327142207820414,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": 1
+      "lane_offset": 0
     }
   ],
   "plan": {
     "polyline": [
       [
         1.7999999999999996,
-        25.60198900844398
+        25.585509039624007
       ],
       [
         1.7999999999999996,
-        28.60198900844398
+        28.585509039624007
       ],
       [
         1.7999999999999996,
-        31.60198900844398
+        31.585509039624007
       ],
       [
         1.7999999999999994,
-        34.60198900844398
+        34.58550903962401
       ],
       [
         1.7999999999999994,
-        37.60198900844398
+        37.58550903962401
       ],
       [
         1.7999999999999994,
-        40.60198900844398
+        40.58550903962401
       ],
       [
         1.7999999999999994,
-        43.60198900844398
+        43.58550903962401
       ],
       [
         1.7999999999999994,
-        46.60198900844398
+        46.58550903962401
       ],
       [
         1.7999999999999992,
-        49.60198900844398
+        49.58550903962401
       ],
       [
         1.7999999999999992,
-        52.60198900844398
+        52.58550903962401
       ],
       [
         1.7999999999999992,
-        55.60198900844398
+        55.58550903962401
       ],
       [
         1.7999999999999992,
-        58.60198900844398
+        58.58550903962401
       ],
       [
         1.7999999999999992,
-        61.60198900844398
+        61.58550903962401
       ],
       [
         1.799999999999999,
-        64.60198900844398
+        64.585509039624
       ],
       [
         1.799999999999999,
-        67.60198900844398
+        67.585509039624
       ],
       [
         1.799999999999999,
-        70.60198900844398
+        70.585509039624
       ]
     ],
     "target_speed_mps": 11.176,
-    "maneuver": "keep_lane",
+    "maneuver": "lane_change_right",
     "confidence": 1.0
   },
   "telemetry": {
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": 0.0046,
-        "range_m": 37.34,
+        "azimuth": 0.0671,
+        "range_m": 37.36,
         "range_rate_mps": -9.41,
         "rcs_db": 9.01,
         "tracked": true
       },
       {
         "id": "veh_01",
-        "azimuth": -0.8657,
-        "range_m": 81.31,
+        "azimuth": -0.8057,
+        "range_m": 81.21,
         "range_rate_mps": -5.9,
         "rcs_db": 5.5,
         "tracked": true
       },
       {
+        "id": "veh_02",
+        "azimuth": -0.8956,
+        "range_m": 89.68,
+        "range_rate_mps": -5.81,
+        "rcs_db": 4.83,
+        "tracked": true
+      },
+      {
         "id": "veh_03",
-        "azimuth": -1.8509,
-        "range_m": 78.02,
+        "azimuth": -1.7924,
+        "range_m": 77.88,
         "range_rate_mps": -5.83,
-        "rcs_db": 5.76,
+        "rcs_db": 5.77,
         "tracked": true
       },
       {
         "id": "veh_04",
-        "azimuth": -2.0463,
-        "range_m": 51.92,
-        "range_rate_mps": -1.62,
-        "rcs_db": 7.85,
+        "azimuth": -1.9885,
+        "range_m": 51.79,
+        "range_rate_mps": -1.61,
+        "rcs_db": 7.86,
         "tracked": true
       },
       {
         "id": "veh_05",
-        "azimuth": -3.1149,
-        "range_m": 25.92,
-        "range_rate_mps": -4.92,
-        "rcs_db": 9.93,
+        "azimuth": -2.9699,
+        "range_m": 23.07,
+        "range_rate_mps": -5.88,
+        "rcs_db": 10.15,
         "tracked": true
       },
       {
@@ -319,16 +351,16 @@
       "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
-      "offset_m": -0.017588834554512545,
-      "heading_error": -0.004085724689867121,
+      "offset_m": -0.15912304076827,
+      "heading_error": -0.0628460339749477,
       "left_marking": "double_yellow",
-      "right_marking": "solid_white",
+      "right_marking": "dashed_white",
       "neighbors": [
         {
           "id": "veh_00",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": 37.34,
+          "longitudinal_m": 37.35,
           "lateral_m": 0.0,
           "speed_mps": 0.0,
           "hazard": true
@@ -337,16 +369,25 @@
           "id": "veh_01",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": 112.01,
+          "longitudinal_m": 112.02,
           "lateral_m": 0.0,
           "speed_mps": 3.5100983463883426,
+          "hazard": false
+        },
+        {
+          "id": "veh_02",
+          "cls": "truck",
+          "lane_offset": 0,
+          "longitudinal_m": 123.58,
+          "lateral_m": 0.0,
+          "speed_mps": 3.6006987595406335,
           "hazard": false
         },
         {
           "id": "veh_03",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": -96.9,
+          "longitudinal_m": -96.88,
           "lateral_m": 0.0,
           "speed_mps": 3.584550815275244,
           "hazard": false
@@ -355,7 +396,7 @@
           "id": "veh_04",
           "cls": "bus",
           "lane_offset": 0,
-          "longitudinal_m": -67.45,
+          "longitudinal_m": -67.43,
           "lateral_m": 0.0,
           "speed_mps": 7.796610009476339,
           "hazard": false
@@ -363,15 +404,15 @@
         {
           "id": "veh_05",
           "cls": "motorcycle",
-          "lane_offset": 1,
-          "longitudinal_m": -23.84,
-          "lateral_m": 3.6,
-          "speed_mps": 4.49294386395952,
+          "lane_offset": 0,
+          "longitudinal_m": -23.82,
+          "lateral_m": 0.0,
+          "speed_mps": 3.5327142207820414,
           "hazard": false
         }
       ]
     },
-    "ttc_s": 3.995,
+    "ttc_s": 3.998,
     "vehicle": {
       "battery_pct": 91.87,
       "range_km": 404.2,
@@ -731,235 +772,235 @@
         },
         {
           "t": -0.683,
-          "lateral_m": 0.056
+          "lateral_m": 0.055
         },
         {
           "t": -0.667,
-          "lateral_m": 0.053
+          "lateral_m": 0.052
         },
         {
           "t": -0.65,
-          "lateral_m": 0.05
+          "lateral_m": 0.049
         },
         {
           "t": -0.633,
-          "lateral_m": 0.047
+          "lateral_m": 0.046
         },
         {
           "t": -0.617,
-          "lateral_m": 0.044
+          "lateral_m": 0.042
         },
         {
           "t": -0.6,
-          "lateral_m": 0.041
+          "lateral_m": 0.039
         },
         {
           "t": -0.583,
-          "lateral_m": 0.038
-        },
-        {
-          "t": -0.567,
           "lateral_m": 0.036
         },
         {
-          "t": -0.55,
+          "t": -0.567,
           "lateral_m": 0.033
         },
         {
+          "t": -0.55,
+          "lateral_m": 0.029
+        },
+        {
           "t": -0.533,
-          "lateral_m": 0.031
-        },
-        {
-          "t": -0.517,
-          "lateral_m": 0.028
-        },
-        {
-          "t": -0.5,
           "lateral_m": 0.026
         },
         {
-          "t": -0.483,
+          "t": -0.517,
           "lateral_m": 0.023
         },
         {
-          "t": -0.467,
-          "lateral_m": 0.021
-        },
-        {
-          "t": -0.45,
+          "t": -0.5,
           "lateral_m": 0.019
         },
         {
-          "t": -0.433,
-          "lateral_m": 0.017
+          "t": -0.483,
+          "lateral_m": 0.016
         },
         {
-          "t": -0.417,
-          "lateral_m": 0.015
+          "t": -0.467,
+          "lateral_m": 0.012
         },
         {
-          "t": -0.4,
-          "lateral_m": 0.013
-        },
-        {
-          "t": -0.383,
-          "lateral_m": 0.011
-        },
-        {
-          "t": -0.367,
+          "t": -0.45,
           "lateral_m": 0.009
         },
         {
-          "t": -0.35,
-          "lateral_m": 0.007
-        },
-        {
-          "t": -0.333,
+          "t": -0.433,
           "lateral_m": 0.005
         },
         {
-          "t": -0.317,
-          "lateral_m": 0.004
+          "t": -0.417,
+          "lateral_m": 0.001
         },
         {
-          "t": -0.3,
-          "lateral_m": 0.002
+          "t": -0.4,
+          "lateral_m": -0.003
         },
         {
-          "t": -0.283,
-          "lateral_m": 0.0
+          "t": -0.383,
+          "lateral_m": -0.007
         },
         {
-          "t": -0.267,
-          "lateral_m": -0.001
-        },
-        {
-          "t": -0.25,
-          "lateral_m": -0.002
-        },
-        {
-          "t": -0.233,
-          "lateral_m": -0.004
-        },
-        {
-          "t": -0.217,
-          "lateral_m": -0.005
-        },
-        {
-          "t": -0.2,
-          "lateral_m": -0.006
-        },
-        {
-          "t": -0.183,
-          "lateral_m": -0.008
-        },
-        {
-          "t": -0.167,
-          "lateral_m": -0.009
-        },
-        {
-          "t": -0.15,
-          "lateral_m": -0.01
-        },
-        {
-          "t": -0.133,
+          "t": -0.367,
           "lateral_m": -0.011
         },
         {
-          "t": -0.117,
-          "lateral_m": -0.012
-        },
-        {
-          "t": -0.1,
-          "lateral_m": -0.013
-        },
-        {
-          "t": -0.083,
-          "lateral_m": -0.014
-        },
-        {
-          "t": -0.067,
-          "lateral_m": -0.015
-        },
-        {
-          "t": -0.05,
-          "lateral_m": -0.015
-        },
-        {
-          "t": -0.033,
+          "t": -0.35,
           "lateral_m": -0.016
         },
         {
+          "t": -0.333,
+          "lateral_m": -0.02
+        },
+        {
+          "t": -0.317,
+          "lateral_m": -0.025
+        },
+        {
+          "t": -0.3,
+          "lateral_m": -0.03
+        },
+        {
+          "t": -0.283,
+          "lateral_m": -0.035
+        },
+        {
+          "t": -0.267,
+          "lateral_m": -0.04
+        },
+        {
+          "t": -0.25,
+          "lateral_m": -0.046
+        },
+        {
+          "t": -0.233,
+          "lateral_m": -0.051
+        },
+        {
+          "t": -0.217,
+          "lateral_m": -0.057
+        },
+        {
+          "t": -0.2,
+          "lateral_m": -0.063
+        },
+        {
+          "t": -0.183,
+          "lateral_m": -0.07
+        },
+        {
+          "t": -0.167,
+          "lateral_m": -0.076
+        },
+        {
+          "t": -0.15,
+          "lateral_m": -0.083
+        },
+        {
+          "t": -0.133,
+          "lateral_m": -0.091
+        },
+        {
+          "t": -0.117,
+          "lateral_m": -0.098
+        },
+        {
+          "t": -0.1,
+          "lateral_m": -0.106
+        },
+        {
+          "t": -0.083,
+          "lateral_m": -0.114
+        },
+        {
+          "t": -0.067,
+          "lateral_m": -0.122
+        },
+        {
+          "t": -0.05,
+          "lateral_m": -0.131
+        },
+        {
+          "t": -0.033,
+          "lateral_m": -0.14
+        },
+        {
           "t": -0.017,
-          "lateral_m": -0.017
+          "lateral_m": -0.149
         },
         {
           "t": 0.0,
-          "lateral_m": -0.018
+          "lateral_m": -0.159
         },
         {
           "t": 0.25,
-          "lateral_m": -0.014
+          "lateral_m": -0.129
         },
         {
           "t": 0.5,
-          "lateral_m": -0.012
+          "lateral_m": -0.105
         },
         {
           "t": 0.75,
-          "lateral_m": -0.009
+          "lateral_m": -0.085
         },
         {
           "t": 1.0,
-          "lateral_m": -0.008
+          "lateral_m": -0.069
         },
         {
           "t": 1.25,
-          "lateral_m": -0.006
+          "lateral_m": -0.056
         },
         {
           "t": 1.5,
-          "lateral_m": -0.005
+          "lateral_m": -0.046
         },
         {
           "t": 1.75,
-          "lateral_m": -0.004
+          "lateral_m": -0.037
         },
         {
           "t": 2.0,
-          "lateral_m": -0.003
+          "lateral_m": -0.03
         },
         {
           "t": 2.25,
-          "lateral_m": -0.003
+          "lateral_m": -0.024
         },
         {
           "t": 2.5,
-          "lateral_m": -0.002
+          "lateral_m": -0.02
         },
         {
           "t": 2.75,
-          "lateral_m": -0.002
+          "lateral_m": -0.016
         },
         {
           "t": 3.0,
-          "lateral_m": -0.001
+          "lateral_m": -0.013
         },
         {
           "t": 3.25,
-          "lateral_m": -0.001
+          "lateral_m": -0.011
         },
         {
           "t": 3.5,
-          "lateral_m": -0.001
+          "lateral_m": -0.009
         },
         {
           "t": 3.75,
-          "lateral_m": -0.001
+          "lateral_m": -0.007
         },
         {
           "t": 4.0,
-          "lateral_m": -0.001
+          "lateral_m": -0.006
         }
       ],
       "cutin": [
