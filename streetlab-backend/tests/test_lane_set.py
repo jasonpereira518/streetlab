@@ -41,7 +41,6 @@ def test_the_ego_lane_is_the_ego_route(grid_loop):
     # `segment_limits` in particular, which `posted_limit()` (`sim/loop.py`)
     # reads directly off `ego_route` and nothing would keep a copy in sync with.
     assert lanes.ego.route is grid_loop.ego_route
-    assert lanes.ego.offset_m == 0.0
 
 
 def test_a_lane_set_without_an_ego_lane_refuses_to_designate_one():
@@ -60,7 +59,7 @@ def test_a_lane_set_without_an_ego_lane_refuses_to_designate_one():
     from sim.route import Lane, LaneSet
 
     orphan = LaneSet(
-        lanes=(Lane("lane_right", -LANE_W, Route([(0.0, 0.0), (10.0, 0.0)], closed=False), None, None),),
+        lanes=(Lane("lane_right", Route([(0.0, 0.0), (10.0, 0.0)], closed=False), None, None),),
         count_along=(1,),
     )
     with pytest.raises(ValueError, match="no ego lane"):
@@ -88,7 +87,7 @@ def test_every_derived_lane_carries_segment_limits(grid_loop):
 def test_neighbour_handles_link_the_lanes_in_order(grid_loop):
     """The set is anchored on the ego's lane, with one neighbour either side."""
     lanes = grid_loop.lanes
-    assert [lane.offset_m for lane in lanes.lanes] == [-LANE_W, 0.0, LANE_W]
+    assert [lane.id for lane in lanes.lanes] == ["lane_right", EGO_LANE_ID, "lane_left"]
     for a, b in zip(lanes.lanes, lanes.lanes[1:]):
         assert a.left_id == b.id
         assert b.right_id == a.id
@@ -156,8 +155,12 @@ def test_each_neighbour_sits_one_lane_width_to_its_own_side(grid_loop, direction
     s = ego.length_m * 0.5
     lane = lanes.neighbour(direction)
     point = lane.route.point_at(lane.route.project(ego.point_at(s)))
+    # Geometry only. The `offset_m` label this used to assert alongside was a
+    # hard-coded literal in `derive_lanes` compared against the same literal
+    # expression, so it stayed green through the very sign error that built
+    # lane 1 across a double yellow -- that defect lived in `_neighbour_lane`,
+    # which is what the line above measures.
     assert ego.lateral_offset(point) == pytest.approx(direction * LANE_W, abs=0.6)
-    assert lane.offset_m == direction * LANE_W
 
 
 def test_the_osm_scene_derives_lanes_too(nob_hill_scene):

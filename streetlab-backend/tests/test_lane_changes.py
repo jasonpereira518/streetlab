@@ -886,9 +886,12 @@ def test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway(
     )
 
 
-#: How far a full-width lane centred where the car ACTUALLY IS may stick out
-#: of the forward carriageway, on any frame where the car has left its route
-#: by half a lane or more.
+#: How far a full-width lane centred on the NEIGHBOUR THE CAR HAS MOVED
+#: TOWARD may stick out of the forward carriageway, on any frame where the car
+#: has left its route by half a lane or more. The centre is
+#: `ego_off + sign(lat) * LANE_W`, not `ego_off + lat` -- the lane the car is
+#: entering, chosen by the sign of its measured pose. Earlier wording here said
+#: "centred where the car ACTUALLY IS", which describes neither.
 #:
 #: NOT `_SCAN_TOL_M`, and the difference is the point. `_SCAN_TOL_M` (0.75 m)
 #: is the slack the DESIGN allows a target lane at the moment of decision.
@@ -909,8 +912,8 @@ _LANE_OVERHANG_M = 1.5
 
 
 def _overhang_of_the_occupied_lane(road, ego_off: float, lat: float) -> float:
-    """How far a full-width lane centred where the car actually IS sticks out
-    of `road`'s forward carriageway. 0.0 when it fits.
+    """How far a full-width lane centred on the neighbour the car has moved
+    TOWARD sticks out of `road`'s forward carriageway. 0.0 when it fits.
 
     `lat` is the car's signed offset from the EGO ROUTE (positive left), so
     `ego_off + sign(lat) * LANE_W` is the centreline of whichever neighbour

@@ -313,24 +313,30 @@ class Route:
 #: The id of the ego's own lane in every `LaneSet` this codebase builds. The
 #: set is anchored on it -- neighbours are named by which side of it they are
 #: on, not by a position in the carriageway, because the ego has no honest
-#: position in the carriageway to count from (see `Lane.offset_m`).
+#: position in the carriageway to count from (see `Lane`).
 EGO_LANE_ID = "lane_ego"
 
 
 @dataclass(frozen=True, slots=True)
 class Lane:
-    """One lane of travel, as a `Route` the tracker can follow directly."""
+    """One lane of travel, as a `Route` the tracker can follow directly.
+
+    Carries no position in the carriageway, and that absence is the finding
+    rather than an omission. An `index_from_right` here once claimed lane 0 was
+    the kerbside lane: measured false on both shipped scenes, where the ego
+    sits in the LEFTMOST forward lane wherever two run its way. A true index is
+    not recoverable either -- `EGO_LANE_INSET` is a fixed half-lane inset from
+    a centreline that means the divider on a two-way road and the carriageway
+    centre on a oneway, so it does not land on a lane centre at all there
+    (measured: off by up to 2.15 m on 40/339 Nob Hill segments). A signed
+    `offset_m` replaced the index and was itself removed: nothing in `plan/`,
+    `sim/` or `server/` ever read it, and the only test that pinned it compared
+    a hard-coded literal against the same literal, so it certified a label
+    while the geometry beside it went unchecked. Ask `LaneSet.ego_offset_at`
+    for a measured position instead.
+    """
 
     id: str
-    #: This lane's signed lateral offset from the EGO's route, positive to the
-    #: left of travel. Replaces an `index_from_right` that claimed lane 0 was
-    #: the kerbside lane: measured false on both shipped scenes, where the ego
-    #: sits in the leftmost forward lane wherever two run its way. A true index
-    #: is not recoverable either -- `EGO_LANE_INSET` is a fixed half-lane inset
-    #: from a centreline that means the divider on a two-way road and the
-    #: carriageway centre on a oneway, so it does not land on a lane centre at
-    #: all there (measured: off by up to 2.15 m on 40/339 Nob Hill segments).
-    offset_m: float
     route: Route
     left_id: str | None
     right_id: str | None

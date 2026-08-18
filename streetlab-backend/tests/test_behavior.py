@@ -285,8 +285,8 @@ def two_lane_set(road):
     left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
     return LaneSet(
         lanes=(
-            Lane(EGO_LANE_ID, 0.0, road, "lane_left", None),
-            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
+            Lane(EGO_LANE_ID, road, "lane_left", None),
+            Lane("lane_left", left, None, EGO_LANE_ID),
         ),
         count_along=tuple(2 for _ in range(len(road.points) - 1)),
         legal_along=tuple((1,) for _ in range(len(road.points) - 1)),
@@ -297,7 +297,7 @@ def one_lane_set(road):
     from sim.route import EGO_LANE_ID, Lane, LaneSet
 
     return LaneSet(
-        lanes=(Lane(EGO_LANE_ID, 0.0, road, None, None),),
+        lanes=(Lane(EGO_LANE_ID, road, None, None),),
         count_along=tuple(1 for _ in range(len(road.points) - 1)),
         legal_along=tuple((1,) for _ in range(len(road.points) - 1)),
     )
@@ -321,8 +321,8 @@ def two_lane_geometry_one_lane_here(road):
     left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
     return LaneSet(
         lanes=(
-            Lane(EGO_LANE_ID, 0.0, road, "lane_left", None),
-            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
+            Lane(EGO_LANE_ID, road, "lane_left", None),
+            Lane("lane_left", left, None, EGO_LANE_ID),
         ),
         count_along=tuple(2 for _ in range(len(road.points) - 1)),
         legal_along=tuple(() for _ in range(len(road.points) - 1)),
@@ -344,8 +344,8 @@ def kerbside_lane_set(road):
     right = Route([(x, y - 3.6) for x, y in road.points], closed=road.closed)
     return LaneSet(
         lanes=(
-            Lane("lane_right", -3.6, right, EGO_LANE_ID, None),
-            Lane(EGO_LANE_ID, 0.0, road, None, "lane_right"),
+            Lane("lane_right", right, EGO_LANE_ID, None),
+            Lane(EGO_LANE_ID, road, None, "lane_right"),
         ),
         count_along=tuple(2 for _ in range(len(road.points) - 1)),
         legal_along=tuple((-1,) for _ in range(len(road.points) - 1)),
@@ -367,9 +367,9 @@ def both_neighbours_legal_set(road):
     right = Route([(x, y - 3.6) for x, y in road.points], closed=road.closed)
     return LaneSet(
         lanes=(
-            Lane("lane_right", -3.6, right, EGO_LANE_ID, None),
-            Lane(EGO_LANE_ID, 0.0, road, "lane_left", "lane_right"),
-            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
+            Lane("lane_right", right, EGO_LANE_ID, None),
+            Lane(EGO_LANE_ID, road, "lane_left", "lane_right"),
+            Lane("lane_left", left, None, EGO_LANE_ID),
         ),
         count_along=tuple(3 for _ in range(len(road.points) - 1)),
         legal_along=tuple((1, -1) for _ in range(len(road.points) - 1)),
@@ -405,8 +405,8 @@ def lane_set_legal_until(road, metres):
     seg = road.length_m / n
     return LaneSet(
         lanes=(
-            Lane(EGO_LANE_ID, 0.0, road, "lane_left", None),
-            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
+            Lane(EGO_LANE_ID, road, "lane_left", None),
+            Lane("lane_left", left, None, EGO_LANE_ID),
         ),
         count_along=tuple(2 for _ in range(n)),
         legal_along=tuple((1,) if (i + 1) * seg <= metres else () for i in range(n)),

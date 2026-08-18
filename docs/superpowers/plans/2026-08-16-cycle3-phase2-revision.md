@@ -2,7 +2,8 @@
 
 **Status:** revision of `2026-08-16-cycle3-phase2-lanes.md`, opened after the
 whole-branch review over `8cea1cd..99d276e` returned *Not mergeable*.
-**Baseline:** 628 backend, 3 contract, 150 vitest, 12 Playwright at `99d276e`.
+**Baseline:** 628 backend (contract's 3 included via `testpaths`), 151 vitest,
+12 Playwright at `99d276e`.
 
 ## Why this exists
 
@@ -175,12 +176,33 @@ visible but not a hazard. Phase 3 roadmap.
    - About half that 0.70 m pays for the criterion's own measurement error:
      at a fillet `_offset_from` signs by the ego route's heading while
      snapping to the road's nearest centreline point, so `ego_off` swings up
-     to 0.943 m on grid-loop. At corners it degrades toward "within 2.5 m of
-     the ego route".
+     to 0.943 m on grid-loop. Stated exactly (merge gate, measured): because
+     the ego's own centre is always a candidate and neighbours can only lower
+     a `min`, the criterion is **never stronger than "within 2.5 m of the ego
+     route" on any frame** -- equality on 35694/36000 Nob Hill frames
+     (99.2 %), 16956/18000 grid-loop, 12170/12600 grid-merge. "Degrades at
+     corners" understated it: corners are where the two differ most, not where
+     the reduction begins.
    - It is strictly weaker than the 2.0 m guard it replaces across the
      2.0-2.5 m band, which is the band both of this phase's breaches lived
      in. Both 2.0 m guards are retained, so the suite loses nothing; the GATE
      does.
+
+     **Corrected at the merge gate, and it corrects a decision made here.**
+     "Retained but no longer gating" reads as though the criterion is now the
+     binding check. Measured the other way round: biasing the tracker so the
+     car drives the whole grid-loop lap 0.4552 m into the oncoming half across
+     a `double_yellow`, the criterion **passes** at 2.2552 m, while
+     `test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop` fails
+     at 2.26 m and the overhang scan fails with it. The retained guards bite at
+     ~0.26 m of intrusion where the criterion needs ~0.70 m, so the phase has
+     nominated the WEAKEST of the three frame-level checks as its acceptance
+     criterion. That is safe as shipped -- all three run in CI, and the
+     criterion's virtue was never tightness but the absence of an exclusion
+     window that could be widened. It is unsafe as FRAMING: anyone deleting
+     the 2.0 m guards on the strength of "they no longer gate the phase" drops
+     the net from ~0.26 m to ~0.70 m of oncoming intrusion. Do not delete
+     them.
 
    It also has no LABEL exclusion window, which is not the same as no window:
    the replay length is one. `tests/test_lane_changes.py::_JUDGED_THROUGH_S`
@@ -218,5 +240,5 @@ visible but not a hazard. Phase 3 roadmap.
    **4.4070 m** against its 1.5 m bound), which is why Wave C parametrised
    both onto the third scene and not only the criterion.
 4. `LaneState.left_marking` / `right_marking` come from `Road.center_marking`.
-5. 628 backend + 3 contract + 150 vitest + 12 Playwright still green, with the
+5. 628 backend (contract's 3 included) + 151 vitest + 12 Playwright still green, with the
    new assertions added rather than substituted.

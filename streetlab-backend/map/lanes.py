@@ -1013,21 +1013,18 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
     lanes = (
         Lane(
             id="lane_right",
-            offset_m=-LANE_W,
             route=_neighbour_lane(ego_route, roads, -1),
             left_id=EGO_LANE_ID,
             right_id=None,
         ),
         Lane(
             id=EGO_LANE_ID,
-            offset_m=0.0,
             route=ego_route,
             left_id="lane_left",
             right_id="lane_right",
         ),
         Lane(
             id="lane_left",
-            offset_m=LANE_W,
             route=_neighbour_lane(ego_route, roads, +1),
             left_id=None,
             right_id=EGO_LANE_ID,
