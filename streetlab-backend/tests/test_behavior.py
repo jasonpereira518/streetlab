@@ -504,6 +504,105 @@ def test_a_vehicle_occupying_the_front_gap_blocks_the_change(road):
     assert d.target_lane_id is None
 
 
+#: Centre-to-centre distance at which the ego (4.7 m, `sim/loop.py`) and the
+#: longest modelled vehicle (the 11.5 m bus, `sim/agents.py::_PROFILES`) stop
+#: overlapping: (4.7 + 11.5) / 2. Written out rather than imported from either
+#: module because it is the floor the gap constants must clear, and a floor
+#: that moves with the thing it bounds is not a floor.
+_OVERLAP_FLOOR_M = 8.1
+
+#: Where the ego stands for the REAR pin. NOT s=0: the `road` fixture starts
+#: at x=0, so `Route.project` clamps every negative x to s=0 and reports a gap
+#: of 0.0 m. `test_a_vehicle_occupying_the_rear_gap_blocks_the_change` above is
+#: green for exactly that reason -- its blocker at -12.0 m projects to the
+#: ego's own station, so it is refused as a car ON TOP of the ego and the rear
+#: gap it names is never consulted. Measured while adding this: -8.5, -14.0,
+#: -16.0, -20.0 and -25.0 all project to s=0.000 and gap 0.000.
+_EGO_S_M = 100.0
+
+#: A blocker just clear of that floor and far inside the shipped gaps, and one
+#: comfortably outside them. Literals on purpose: every other test in this file
+#: places its blocker at `MIN_FRONT_GAP_M +/- k`, so all of them move in
+#: lockstep with the constant and none can pin it. Measured: with the shipped
+#: 18.0 / 14.0 set to 5.0 / 3.0 -- a 3.6x and 4.7x loosening of the space the
+#: car demands before pulling into it -- all 82 unit tests and all 23
+#: acceptance replays passed. These two are what bite.
+_INSIDE_THE_GAP_M = 8.5
+_OUTSIDE_THE_GAP_M = 20.0
+
+
+def test_the_front_gap_admits_no_overlap_and_still_admits_a_clear_lane(road):
+    """The front gap refuses a car 8.5 m ahead and accepts one 20.0 m ahead.
+
+    8.5 m is 0.4 m clear of `_OVERLAP_FLOOR_M`, so a gate that admitted it
+    would be admitting a change into a space where the two bodies nearly touch.
+    20.0 m is the other side of the shipped 18.0. Together they bracket it: the
+    constant cannot be lowered past 8.5 or raised past 20.0 without one of
+    these failing.
+    """
+    fsm = BehaviorFSM()
+    blocked = fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[slow_lead(25.0, 3.0), blocker(_INSIDE_THE_GAP_M, 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert blocked.target_lane_id is None, (
+        f"a car {_INSIDE_THE_GAP_M} m ahead in the target lane -- only "
+        f"{_INSIDE_THE_GAP_M - _OVERLAP_FLOOR_M:.1f} m clear of bodily overlap "
+        f"-- did not block the change"
+    )
+
+    clear = BehaviorFSM().step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[slow_lead(25.0, 3.0), blocker(_OUTSIDE_THE_GAP_M, 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert clear.target_lane_id is not None, (
+        f"a car {_OUTSIDE_THE_GAP_M} m ahead blocked the change; the front gap "
+        f"has been raised past it and the car will refuse room it has"
+    )
+
+
+def test_the_rear_gap_admits_no_overlap_and_still_admits_a_clear_lane(road):
+    """The mirror, behind -- driven from `_EGO_S_M` so there is road back there.
+
+    Every other rear-gap test in this file stands the ego at s=0 and places its
+    blocker at a negative x, which `Route.project` clamps to s=0: the gap is
+    0.0 m and the refusal says nothing about `MIN_REAR_GAP_M`. From 100 m along
+    a 400 m straight, a blocker 8.5 m back really is 8.5 m back.
+    """
+    fsm = BehaviorFSM()
+    blocked = fsm.step(
+        ego_at(_EGO_S_M, 12.0), road, _EGO_S_M, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[
+            slow_lead(_EGO_S_M + 25.0, 3.0),
+            blocker(_EGO_S_M - _INSIDE_THE_GAP_M, 12.0, 1),
+        ],
+        limit_mps=12.0,
+    )
+    assert blocked.target_lane_id is None, (
+        f"a car {_INSIDE_THE_GAP_M} m behind in the target lane did not block "
+        f"the change"
+    )
+
+    clear = BehaviorFSM().step(
+        ego_at(_EGO_S_M, 12.0), road, _EGO_S_M, [], {}, DT,
+        lanes=two_lane_set(road),
+        detections=[
+            slow_lead(_EGO_S_M + 25.0, 3.0),
+            blocker(_EGO_S_M - _OUTSIDE_THE_GAP_M, 12.0, 1),
+        ],
+        limit_mps=12.0,
+    )
+    assert clear.target_lane_id is not None, (
+        f"a car {_OUTSIDE_THE_GAP_M} m behind blocked the change; the rear gap "
+        f"has been raised past it"
+    )
+
+
 def test_a_vehicle_occupying_the_rear_gap_blocks_the_change(road):
     fsm = BehaviorFSM()
     d = fsm.step(

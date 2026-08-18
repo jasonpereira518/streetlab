@@ -170,7 +170,36 @@ SLOW_LEAD_FRACTION = 0.7
 #: simply following.
 LANE_CHANGE_LOOKAHEAD_M = 45.0
 
-#: Gaps required in the target lane, measured bumper to bumper along the route.
+#: Gaps required in the target lane before a change may start, measured
+#: CENTRE TO CENTRE along the route -- `_gap_is_acceptable` compares them
+#: against `Route.signed_gap`, which is arc length between projected poses and
+#: knows nothing about bodywork. An earlier comment here said "bumper to
+#: bumper"; that was never what the code measured.
+#:
+#: THE FLOOR IS GEOMETRY, and it is the only part of these numbers that is
+#: derived rather than chosen. The ego is 4.7 m long (`sim/loop.py`'s `Size`)
+#: and the longest modelled vehicle is the 11.5 m bus (`sim/agents.py`'s
+#: `_PROFILES`), so two of them centre-to-centre physically OVERLAP below
+#: (4.7 + 11.5) / 2 = **8.1 m**. Any value at or under that admits a change
+#: into a space already occupied by the car it is measuring against. The
+#: shipped 18.0 sits 2.22x above it and 14.0 sits 1.73x above it.
+#:
+#: WHAT THEY ARE NOT: a comfort guarantee. `plan/control.py`'s spacing law
+#: wants `_STANDSTILL_GAP_M + follow_distance_s * speed` = 5.0 + 1.5v, which at
+#: grid-loop's measured 11.9 m/s is 22.9 m before the lead's own half-length is
+#: added -- more than 18.0. So the ego CAN arrive inside its own follow
+#: distance and brake on entry. That is a deliberate trade: sizing these to the
+#: spacing law would demand ~28 m and refuse nearly every change the shipped
+#: scenes can offer. They gate COLLISION, not comfort.
+#:
+#: Pinned from both sides by literals in `test_behavior.py`
+#: (`test_the_front_gap_admits_no_overlap`, `..._rear_...`): a blocker at 8.5 m
+#: -- just clear of the overlap floor, far inside the shipped value -- must be
+#: REFUSED, and one at 20.0 m must be ADMITTED. Literals, not
+#: `MIN_FRONT_GAP_M +/- k`: every test that used to reference these derived its
+#: fixture FROM them and so moved in lockstep, which is why setting them to
+#: 5.0 / 3.0 -- a 3.6x and 4.7x loosening -- passed all 82 unit tests and all
+#: 23 acceptance replays.
 MIN_FRONT_GAP_M = 18.0
 MIN_REAR_GAP_M = 14.0
 
@@ -581,6 +610,18 @@ RETURNING = "returning"
 
 @dataclass(slots=True)
 class LaneChange:
+    """One lane change in flight: where it came from, where it is going, and
+    how far through it is.
+
+    Mutable and owned solely by `BehaviorFSM`, which is why it is a plain
+    dataclass rather than a frozen one: `_begin_return` swaps the two ids and
+    negates `direction` in place so `_changing()` emits the mirror-image
+    decision with no other code path needing to know a return is under way.
+    `direction` therefore always matches the label on the wire, and
+    `from_lane_id` is the lane the CURRENT phase started in, not the lane the
+    manoeuvre started in.
+    """
+
     from_lane_id: str
     to_lane_id: str
     direction: int  # +1 left, -1 right
@@ -1356,7 +1397,12 @@ class BehaviorFSM:
         )
 
     @staticmethod
-    def _gap_is_acceptable(route, ego_s, detections, direction: int) -> bool:
+    def _gap_is_acceptable(
+        route: Route,
+        ego_s: float,
+        detections: Sequence[Detection],
+        direction: int,
+    ) -> bool:
         """Is the space the car is crossing into clear, one lane over?
 
         `Detection.lane_offset` is EGO-RELATIVE (`perception/service.py`): it
