@@ -53,7 +53,7 @@ from schema import (
     VehicleStatus,
     parse_command,
 )
-from sim.agents import ScriptedTraffic, TrafficModel, TrafficWorld
+from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
 from sim.vehicle import BicycleModel, VehicleState
 
 log = logging.getLogger("streetlab.sim")
@@ -189,7 +189,7 @@ class Simulation:
     def adopt_scene(self, scene: BuiltScene) -> None:
         """Install an already-built scene. The only mutation point for `scene`."""
         self.scene: BuiltScene = scene
-        self._traffic: TrafficModel = ScriptedTraffic(
+        self._traffic: TrafficModel = IdmTraffic(
             routes=self.scene.agent_routes,
             speed_limit_mps=self.scene.speed_limit_mps,
             seed=self._seed,

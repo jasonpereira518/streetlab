@@ -9,21 +9,21 @@
   "scenario_id": "grid-merge",
   "ego": {
     "pose": {
-      "x": 2.5174729866807906,
-      "y": 5.101892917463978,
-      "heading": 2.079387088085904
+      "x": 2.517472986680788,
+      "y": 5.10189291746398,
+      "heading": 2.0793870880859036
     },
-    "speed_mps": 3.162255494077876,
-    "accel_mps2": 0.31917957151144927,
-    "steering_angle": -0.4138804824474944,
-    "yaw_rate": -0.4789754383997085,
-    "throttle": 0.14508162341429512,
+    "speed_mps": 3.1622554940778764,
+    "accel_mps2": 0.3191795715114509,
+    "steering_angle": -0.4138804824474947,
+    "yaw_rate": -0.4789754383997089,
+    "throttle": 0.14508162341429584,
     "brake": 0.0,
     "gear": "D",
     "speed_limit_mps": 11.176,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 3.5115798028987397
+      "set_speed_mps": 3.511579802898742
     },
     "size": {
       "length": 4.7,
@@ -37,7 +37,7 @@
       "cls": "car",
       "pose": {
         "x": 1.7999999999999992,
-        "y": 61.776372444038955,
+        "y": 62.05034575306674,
         "heading": 1.5707963267948966
       },
       "size": {
@@ -46,10 +46,10 @@
         "height": 1.45
       },
       "velocity": [
-        2.855588576095027e-16,
-        4.6635300530458235
+        4.2436679689744794e-16,
+        6.930435733681068
       ],
-      "speed_mps": 4.6635300530458235,
+      "speed_mps": 6.930435733681068,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
@@ -60,7 +60,7 @@
       "id": "veh_01",
       "cls": "car",
       "pose": {
-        "x": 34.59183001571455,
+        "x": 32.51674684716707,
         "y": 78.2,
         "heading": 0.0
       },
@@ -70,10 +70,10 @@
         "height": 1.5
       },
       "velocity": [
-        9.55061419910662,
+        8.490900861347283,
         0.0
       ],
-      "speed_mps": 9.55061419910662,
+      "speed_mps": 8.490900861347283,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
@@ -85,7 +85,7 @@
       "cls": "car",
       "pose": {
         "x": 78.2,
-        "y": 16.843958683512753,
+        "y": 21.840183988265082,
         "heading": -1.5707963267948966
       },
       "size": {
@@ -94,10 +94,10 @@
         "height": 1.42
       },
       "velocity": [
-        3.910629711608723e-16,
-        -6.386542984199944
+        4.4970457563514e-16,
+        -7.344233062924622
       ],
-      "speed_mps": 6.386542984199944,
+      "speed_mps": 7.344233062924622,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
@@ -108,9 +108,9 @@
       "id": "veh_04",
       "cls": "bus",
       "pose": {
-        "x": 73.99501802531634,
-        "y": 2.104721069450843,
-        "heading": -2.8470683423157492
+        "x": 72.714770364578,
+        "y": 1.8507004556139657,
+        "heading": -3.043417883165112
       },
       "size": {
         "length": 11.5,
@@ -118,10 +118,10 @@
         "height": 3.3
       },
       "velocity": [
-        -3.5544827095747276,
-        -1.0782405418891374
+        -3.7081871815351675,
+        -0.3652245594204471
       ],
-      "speed_mps": 3.714424585159736,
+      "speed_mps": 3.726129513597936,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
@@ -132,7 +132,7 @@
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
-        "x": 17.440417959397777,
+        "x": 22.433104967579013,
         "y": 1.799999999999999,
         "heading": 3.141592653589793
       },
@@ -142,10 +142,10 @@
         "height": 1.3
       },
       "velocity": [
-        -5.929845149082368,
-        7.261965881263182e-16
+        -7.430319709281657,
+        9.099517248613273e-16
       ],
-      "speed_mps": 5.929845149082368,
+      "speed_mps": 7.430319709281657,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
@@ -156,12 +156,12 @@
   "plan": {
     "polyline": [
       [
-        2.5066321612633296,
-        5.036351885239079
+        2.5066321612633287,
+        5.036351885239082
       ],
       [
         1.7999999999999998,
-        7.9174420765294355
+        7.917442076529437
       ],
       [
         1.7999999999999998,
@@ -220,7 +220,7 @@
         49.91744207652943
       ]
     ],
-    "target_speed_mps": 3.5115798028987397,
+    "target_speed_mps": 3.511579802898742,
     "maneuver": "turn_right",
     "confidence": 1.0
   },
@@ -228,42 +228,42 @@
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": -0.4959,
-        "range_m": 56.68,
-        "range_rate_mps": 1.5,
-        "rcs_db": 7.47,
+        "azimuth": -0.496,
+        "range_m": 56.95,
+        "range_rate_mps": 3.77,
+        "rcs_db": 7.44,
         "tracked": true
       },
       {
         "id": "veh_01",
-        "azimuth": -0.9221,
-        "range_m": 79.83,
-        "range_rate_mps": 6.39,
-        "rcs_db": 5.61,
+        "azimuth": -0.898,
+        "range_m": 79.01,
+        "range_rate_mps": 5.33,
+        "rcs_db": 5.68,
         "tracked": true
       },
       {
         "id": "veh_03",
-        "azimuth": -1.9255,
-        "range_m": 76.59,
-        "range_rate_mps": 3.22,
-        "rcs_db": 5.87,
+        "azimuth": -1.8617,
+        "range_m": 77.51,
+        "range_rate_mps": 4.18,
+        "rcs_db": 5.8,
         "tracked": true
       },
       {
         "id": "veh_04",
-        "azimuth": -2.1213,
-        "range_m": 71.54,
-        "range_rate_mps": 0.55,
-        "rcs_db": 6.28,
+        "azimuth": -2.1257,
+        "range_m": 70.27,
+        "range_rate_mps": 0.56,
+        "rcs_db": 6.38,
         "tracked": true
       },
       {
         "id": "veh_05",
-        "azimuth": -2.2971,
-        "range_m": 15.28,
-        "range_rate_mps": 2.77,
-        "rcs_db": 10.78,
+        "azimuth": -2.2437,
+        "range_m": 20.19,
+        "range_rate_mps": 4.27,
+        "rcs_db": 10.39,
         "tracked": true
       },
       {
@@ -319,8 +319,8 @@
       "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
-      "offset_m": -0.04045658317777167,
-      "heading_error": 0.017716909167603045,
+      "offset_m": -0.04045658317776968,
+      "heading_error": 0.0177169091676026,
       "left_marking": "double_yellow",
       "right_marking": "dashed_white",
       "neighbors": [
@@ -328,45 +328,45 @@
           "id": "veh_00",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": 56.81,
+          "longitudinal_m": 57.08,
           "lateral_m": 0.0,
-          "speed_mps": 4.6635300530458235,
+          "speed_mps": 6.930435733681068,
           "hazard": false
         },
         {
           "id": "veh_01",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": 103.43,
+          "longitudinal_m": 101.36,
           "lateral_m": 0.0,
-          "speed_mps": 9.55061419910662,
+          "speed_mps": 8.490900861347283,
           "hazard": false
         },
         {
           "id": "veh_03",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": -89.43,
+          "longitudinal_m": -94.43,
           "lateral_m": 0.0,
-          "speed_mps": 6.386542984199944,
+          "speed_mps": 7.344233062924622,
           "hazard": false
         },
         {
           "id": "veh_04",
           "cls": "bus",
           "lane_offset": 0,
-          "longitudinal_m": -72.81,
+          "longitudinal_m": -71.5,
           "lateral_m": 0.0,
-          "speed_mps": 3.714424585159736,
+          "speed_mps": 3.726129513597936,
           "hazard": false
         },
         {
           "id": "veh_05",
           "cls": "motorcycle",
           "lane_offset": 0,
-          "longitudinal_m": -16.22,
+          "longitudinal_m": -21.21,
           "lateral_m": 0.0,
-          "speed_mps": 5.929845149082368,
+          "speed_mps": 7.430319709281657,
           "hazard": false
         }
       ]
