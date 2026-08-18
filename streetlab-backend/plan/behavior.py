@@ -284,6 +284,87 @@ LANE_CHANGE_RETURN_MAX_S = 6.0
 #: leaving has nothing to be discouraged from.
 LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 
+#: How far ahead the target lane must STILL be legal before a change starts.
+#:
+#: `LaneSet.may_change_at` answers about one station. A manoeuvre is not one
+#: station: it is a traverse out, a pass, and a traverse home, and the car
+#: covers real ground over all three. Asking once, at the decision, and never
+#: again is defect C-1 -- measured on grid-loop, a change initiated LEGALLY on
+#: Hyde St at t=288.00 s (s=65.0, two forward lanes) with only 13.5 m of legal
+#: road left held the kerbside lane round the corner onto Sacramento St, which
+#: is one forward lane and one back. The lane the car was sitting in is centred
+#: 5.44 m from that road's centreline; the forward half of the carriageway ends
+#: at 3.60 m. 241 frames -- 4.02 s -- with the car's own centre off the
+#: carriageway, `lane_change_right` on the wire.
+#:
+#: 60.0 m, and it is derived from the road a manoeuvre actually spends rather
+#: than picked to make the two bad episodes go away. Measured per phase across
+#: all seven manoeuvres on both shipped scenes, the OUT-AND-BACK cost -- the
+#: outbound traverse plus the return traverse, i.e. the road the car needs to
+#: leave its lane and be home again -- is 21.0-53.2 m (outbound 9.8-34.6 m,
+#: return 9.3-18.6 m). 60.0 m covers the worst of those with 13 % to spare, so
+#: a change is refused unless there is room to make the round trip.
+#:
+#: What that costs, measured, and the margin on both sides. The legal road
+#: remaining at the seven initiations is 13.5, 24.5, 86.5, 112.0, 145.0, 148.0
+#: and 148.0 m. Any horizon in (24.5, 86.5] removes exactly the two manoeuvres
+#: that drive off the carriageway and keeps the other five; 60.0 sits 2.4x
+#: above the largest doomed case and 1.4x below the smallest surviving one.
+#: **The brief's suggested 25.0 m is inside that band by 0.5 m** -- it removes
+#: the Nob Hill episode with 24.5 m left only just, and a scene whose geometry
+#: moved that figure half a metre would silently stop removing it.
+#:
+#: What this does NOT do, stated plainly because the docstring above reads
+#: stronger than the guarantee. It does not prove the lane lasts the whole
+#: manoeuvre. The structural ceiling is `LANE_CHANGE_OUTBOUND_MAX_S +
+#: LANE_CHANGE_PASS_MAX_S + LANE_CHANGE_RETURN_MAX_S` = 16.5 s, which at the
+#: 13.4 m/s the ego reaches on Nob Hill is 221 m of road, while the LONGEST
+#: continuously legal stretch on either shipped scene is 147 m (grid-loop) and
+#: 145 m (Nob Hill) -- so a horizon that proved it would refuse every change on
+#: both scenes. What covers the rest is the per-tick re-ask in
+#: `_advance_outbound` and `_advance_pass`; see `LANE_CHANGE_LEGAL_HOLD_M`.
+LANE_CHANGE_LEGAL_LOOKAHEAD_M = 60.0
+
+#: How far ahead the lane the car is ALREADY IN has to stay legal, re-asked
+#: every tick of the outbound and passing phases.
+#:
+#: Zero would mean "the ground under the car is still carriageway", which is
+#: too late: noticing at the boundary still leaves the whole return traverse to
+#: drive, and that traverse is the seconds the car would spend off the road.
+#: This is the distance the return costs, so the trip home finishes before the
+#: lane runs out instead of starting when it has.
+#:
+#: 20.0 m, measured: the seven return phases on the two shipped scenes cover
+#: 9.3-18.6 m of road each. 20.0 m covers the worst.
+#:
+#: This is a BACKSTOP and not the primary defence. On both shipped scenes it
+#: never fires, because `LANE_CHANGE_LEGAL_LOOKAHEAD_M` has already refused
+#: every manoeuvre that would have needed it -- measured by running the whole
+#: replay with this set to 0.0 and comparing, see the task report. It exists
+#: for the case the lookahead cannot see: a lane that runs out further ahead
+#: than 60 m, which on a scene with shorter legal stretches than these two is
+#: the ordinary case rather than the exception.
+LANE_CHANGE_LEGAL_HOLD_M = 20.0
+
+#: The stride both lookaheads sample legality at.
+#:
+#: Sampling, not exhaustive: `legal_along` is per ego-route SEGMENT, and the
+#: segments are far shorter than this in places -- measured, grid-loop has 36
+#: segments spanning 1.18-64.40 m and Nob Hill 339 spanning 0.00-126.19 m, with
+#: a median of 1.18 m and 0.00 m respectively (both scenes carry zero-length
+#: segments at junction fillets). So a short illegal stretch BETWEEN two
+#: sampled stations is stepped over, and this constant cannot promise
+#: otherwise.
+#:
+#: 5.0 m is justified by measurement rather than by that argument: swept over
+#: every station of both scenes on a 0.5 m grid and in both directions, a
+#: stride of 5.0 m and a stride of 0.5 m return the same answer at every
+#: station, for both the 60.0 m and the 20.0 m horizon -- so on these two
+#: scenes nothing is being stepped over. Re-measure it on a new scene rather
+#: than assuming it; the honest fix is for `LaneSet` to answer over an
+#: INTERVAL, which is a change to R1's table this task did not open.
+LANE_CHANGE_LEGAL_STEP_M = 5.0
+
 #: The three phases of one manoeuvre, in order. Strings rather than an Enum to
 #: match `BehaviorState`'s `str` mixin and keep `LaneChange` cheap to inspect
 #: in a debugger.
@@ -671,8 +752,8 @@ class BehaviorFSM:
                 # times in one 600 s Nob Hill run.
                 return self._advance_return(ego, lanes)
             if self.lane_change.phase == PASSING:
-                return self._advance_pass(route, ego_s, detections, limit_mps, dt)
-            return self._advance_outbound(ego, lanes)
+                return self._advance_pass(route, ego_s, lanes, detections, limit_mps, dt)
+            return self._advance_outbound(ego, route, ego_s, lanes, detections)
 
         lead = self._lead_holding_us_up(route, ego_s, detections, limit_mps)
         if lead is None:
@@ -685,7 +766,14 @@ class BehaviorFSM:
         # still tried first, since overtaking on the left is what a driver does
         # wherever the road allows it.
         current = lanes.ego
-        direction = next((d for d in (+1, -1) if lanes.may_change_at(ego_s, d)), None)
+        direction = next(
+            (
+                d
+                for d in (+1, -1)
+                if self._stays_legal(lanes, ego_s, d, LANE_CHANGE_LEGAL_LOOKAHEAD_M)
+            ),
+            None,
+        )
         if direction is None:
             return None
         target = lanes.neighbour(direction)
@@ -699,7 +787,9 @@ class BehaviorFSM:
 
     # -- the three phases of one manoeuvre ------------------------------------ #
 
-    def _advance_outbound(self, ego, lanes: "LaneSet") -> BehaviorDecision:
+    def _advance_outbound(
+        self, ego, route, ego_s: float, lanes: "LaneSet", detections
+    ) -> BehaviorDecision:
         """Cross into the target lane; stop crossing when the car is IN it.
 
         The outbound phase used to end on `LANE_CHANGE_COMMIT_S`, and that
@@ -715,18 +805,45 @@ class BehaviorFSM:
         Running out of time means the traverse failed -- the car is somewhere
         between two lanes and no longer converging -- so it goes straight home
         and `_decline` stops it immediately trying the same thing again.
+
+        Two conditions decided at the initiation are re-asked here every tick,
+        because both of them guard a WINDOW and the window is a traverse long:
+
+        * legality, over `LANE_CHANGE_LEGAL_HOLD_M` -- defect C-1. A lane the
+          car may enter is not a lane it may stay in.
+        * the gap in the target lane (`_gap_is_acceptable`) -- a vehicle that
+          moves into the space the car is crossing into is a reason to stop
+          crossing, and asking only at the decision leaves the whole traverse
+          uncovered. Note the limit, which is why the test for this is a unit
+          test rather than a replay scan: `Detection.lane_offset` is
+          EGO-RELATIVE (`perception/service.py`), so once the ego is more than
+          half way across, a car in the target lane starts reporting
+          `lane_offset == 0` and this question stops finding it. It covers the
+          first half of the traverse, which is the half where turning back is
+          still cheap.
+
+        Both take the same exit as a traverse that ran out of time: home, with
+        the lead declined. Neither is the lead's fault, but retrying it on the
+        next tick would re-run the same refusal against the same geometry.
         """
         lc = self.lane_change
         assert lc is not None
         target = lanes.by_id(lc.to_lane_id)
-        if self._settled_in(target, ego):
+        if not self._stays_legal(
+            lanes, ego_s, lc.direction, LANE_CHANGE_LEGAL_HOLD_M
+        ) or not self._gap_is_acceptable(route, ego_s, detections, lc.direction):
+            self._decline(lc.lead_id)
+            self._begin_return()
+        elif self._settled_in(target, ego):
             lc.phase = PASSING
         elif target is None or lc.elapsed_s >= LANE_CHANGE_OUTBOUND_MAX_S:
             self._decline(lc.lead_id)
             self._begin_return()
         return self._changing()
 
-    def _advance_pass(self, route, ego_s, detections, limit_mps, dt) -> BehaviorDecision:
+    def _advance_pass(
+        self, route, ego_s, lanes: "LaneSet", detections, limit_mps, dt
+    ) -> BehaviorDecision:
         """Hold the target lane until the lead is behind -- or until it is
         clear that it will not be.
 
@@ -769,6 +886,15 @@ class BehaviorFSM:
         lc = self.lane_change
         assert lc is not None
         lc.pass_s += dt
+        if not self._stays_legal(lanes, ego_s, lc.direction, LANE_CHANGE_LEGAL_HOLD_M):
+            # The fifth way out, and the only one about the ROAD rather than
+            # about the lead: the lane being held stops being carriageway
+            # ahead. Declined like the backstop below -- this lead cannot be
+            # passed from a lane that is running out, and the next tick would
+            # put the same question to the same geometry.
+            self._decline(lc.lead_id)
+            self._begin_return()
+            return self._changing()
         lead = next((d for d in detections if d.id == lc.lead_id), None)
         gap = (
             None
@@ -979,6 +1105,30 @@ class BehaviorFSM:
             if 0 < gap < best_gap and self._holds_us_up(gap, d, limit_mps):
                 best, best_gap = d, gap
         return best
+
+    @staticmethod
+    def _stays_legal(
+        lanes: "LaneSet", ego_s: float, direction: int, ahead_m: float
+    ) -> bool:
+        """Is a change in `direction` legal everywhere from `ego_s` to
+        `ahead_m` further on?
+
+        `LaneSet.may_change_at` is a per-STATION answer and a manoeuvre is not
+        a station -- see `LANE_CHANGE_LEGAL_LOOKAHEAD_M` for the defect that
+        follows from confusing the two, and for what this does and does not
+        guarantee.
+
+        Sampled rather than exact, at `LANE_CHANGE_LEGAL_STEP_M`. `ahead_m`
+        itself is always one of the samples, so the far end is never the one
+        that gets stepped over, and `ahead_m == 0` degenerates to a single
+        `may_change_at` at `ego_s`.
+        """
+        step = LANE_CHANGE_LEGAL_STEP_M
+        n = max(math.ceil(ahead_m / step), 0)
+        return all(
+            lanes.may_change_at(ego_s + min(k * step, ahead_m), direction)
+            for k in range(n + 1)
+        )
 
     @staticmethod
     def _gap_is_acceptable(route, ego_s, detections, direction: int) -> bool:
