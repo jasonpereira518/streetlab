@@ -275,8 +275,10 @@ LANE_CHANGE_OUTBOUND_MAX_S = 4.5
 #: * DOWNWARD by `test_a_traverse_that_reaches_the_lane_holds_it`, which since
 #:   R3-FIX asks that a held pass actually CLOSES on its lead rather than only
 #:   that it lasted longer than `_HELD_MIN_S`. Measured, grid-loop's one
-#:   self-terminated episode gains 1.46 m in 5.97 s of holding; at 1.2 s it
-#:   gains 0.28 m and fails there.
+#:   self-terminated episode gains 1.46 m in 5.97 s of holding; mutated to
+#:   1.2 s it LOSES 0.041 m in 1.15 s and fails there. Note what does NOT fire
+#:   under that mutation: 1.15 s is longer than `_HELD_MIN_S`, so the duration
+#:   half of that test stays green. Only the gain assertion sees it.
 LANE_CHANGE_PASS_MAX_S = 6.0
 
 #: Daylight required BEYOND bumper-to-bumper before the lead counts as passed.
