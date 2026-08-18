@@ -122,13 +122,44 @@ visible but not a hazard. Phase 3 roadmap.
 | R4 | explicit abort path when a junction interrupts a change | `plan/behavior.py` | I1 |
 | R5 | core assertions on `SyntheticGrid`; assert a real pass; deferred minors 1/2/4 | tests | I3, I4 |
 
+**This table is what was planned, not what ran.** Five tasks were scoped; the
+revision took thirty-two commits, because every review of a fix found something
+the fix had concealed or created. What actually landed, in order:
+
+| | what | found by |
+| --- | --- | --- |
+| R1 | carriageway containment legality | the plan |
+| R2 | `_lane_state` index and real markings | the plan |
+| R1-FIX, R1-FIX2 | the headline safety scan judged itself; the tolerance was pinned by nothing | review of R1 |
+| R2-FIX | `offset_m` wrapped a full lane; `floor`→`round` killed no test | review of R2 |
+| R6 | traffic was placed in the oncoming carriageway — C1's twin | chasing a missing mutation kill |
+| R4 | junction interrupts left the car unlabelled a lane width off | the plan |
+| R3 | outbound ended on a clock, so no overtake ever completed | the plan |
+| R5 | the acceptance criterion itself was not a safety property | three independent measurements |
+| Wave A | a hard-coded `lane_offset = 0` passed the entire suite | review of R6 |
+| Wave B | the criterion could be trimmed out of its own replay | review of R5 |
+| R3-FIX | the car held a lane 4.02 s after it stopped being carriageway | review of R3 |
+| Wave C | the safety claim sat on the mechanism that did not provide it | review of R3-FIX |
+| final | gap constants pinned by nothing; five assertions ran on two scenes of three | asked whether the phase was complete |
+
+Three of the five Criticals in this revision were found by reviewing the fix
+for the previous one. That is the shape worth carrying into Phase 3, not the
+task list.
+
 ## Done when
 
 1. No derived lane target lies left of the centreline on a two-way road, on
-   either scene, asserted rather than observed.
+   **all three scenes**, asserted rather than observed
+   (`test_no_legal_change_targets_a_lane_left_of_a_two_way_centreline`, plus
+   the initiation scan `test_no_lane_change_is_ever_initiated_into_lane_that_
+   is_not_carriageway`). Both read "either scene" until the final pass: they
+   ran on grid-loop and Nob Hill while skipping `grid-merge`, which starts more
+   lane changes than either. Each carries its own non-vacuity assertion, so the
+   third parametrisation would have failed rather than passed quietly if it
+   judged nothing.
 2. Outbound lane changes terminate on the lead being behind the ego; an
    episode that gains nothing does not repeat.
-3. On **every frame** of **both** scenes, with no frame excluded for any
+3. On **every frame** of **all three** scenes, with no frame excluded for any
    reason -- not its label, not a junction, not a corner -- the car is within
    2.5 m of the centreline of a lane that legally exists at its station: its
    own lane, or a neighbour whose full width fits inside the forward
@@ -228,8 +259,20 @@ visible but not a hazard. Phase 3 roadmap.
    **Status after Wave C: MET on all THREE scenes.** `grid-merge` (`seed=4`,
    scene defaults, 210 s) is now driven by both frame-level scans: criterion
    worst **1.7971 m**, 12600/12600 frames judged, 0 over; overhang worst
-   **0.0000 m** over 430 judged frames. "Both scenes" was a two-of-three
-   claim throughout this phase and is no longer one.
+   **0.0000 m** over 430 judged frames.
+
+   **Scene coverage, final.** "Both scenes" was a two-of-three claim
+   throughout this phase. All five legality and lane-holding assertions now
+   run on all three: the two frame-level scans (Wave C), and the lane-set
+   legality test, the initiation scan and the no-repeat-retry test (final
+   pass). The ONE that stays single-scene is
+   `test_a_completed_overtake_actually_passes_the_lead`, on Nob Hill, and the
+   reason is measured rather than assumed: neither synthetic scene can
+   complete a pass. grid-loop's 295 m block puts a corner every ~74 m and the
+   curvature cap holds the ego near traffic speed (R3); `grid-merge` shares
+   that block and was measured here -- 3 episodes at t=7.3/48.9/178.1 s,
+   closing 44.9 m to 34.7/33.7/33.6 m and never reaching the lead. A pass
+   assertion there would assert something the geometry forbids.
 
    The scope of the criterion, measured rather than implied. With defect C-1
    restored, only ONE of the three scenes fails it: grid-loop at 3.1158 m.

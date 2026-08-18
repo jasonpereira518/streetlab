@@ -28,6 +28,15 @@ from sim.route import EGO_LANE_ID, Route
 
 
 @pytest.fixture(scope="module")
+def grid_merge():
+    """The third scene. It changes lanes at its own defaults where grid-loop
+    needs a tuned seed and slowed traffic to manage one, so a legality claim
+    that skips it skips the busiest lane-change fixture in the suite.
+    """
+    return SyntheticGrid().build("grid-merge")
+
+
+@pytest.fixture(scope="module")
 def grid_loop():
     return SyntheticGrid().build("grid-loop")
 
@@ -226,7 +235,7 @@ def _segments(scene):
             yield (route._cum[k] + route._cum[k + 1]) / 2.0, roads[i]
 
 
-@pytest.mark.parametrize("scene_name", ["grid_loop", "nob_hill_scene"])
+@pytest.mark.parametrize("scene_name", ["grid_loop", "nob_hill_scene", "grid_merge"])
 def test_no_legal_change_targets_a_lane_left_of_a_two_way_centreline(
     scene_name, request
 ):
@@ -259,7 +268,7 @@ def test_no_legal_change_targets_a_lane_left_of_a_two_way_centreline(
     )
 
 
-@pytest.mark.parametrize("scene_name", ["grid_loop", "nob_hill_scene"])
+@pytest.mark.parametrize("scene_name", ["grid_loop", "nob_hill_scene", "grid_merge"])
 def test_every_two_way_road_the_ego_drives_is_a_symmetric_carriageway(
     scene_name, request
 ):

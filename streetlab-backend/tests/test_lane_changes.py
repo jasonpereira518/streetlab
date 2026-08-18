@@ -800,9 +800,9 @@ def test_the_nob_hill_replay_actually_changes_lanes(nob_hill_replay):
     )
 
 
-@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop", "grid_merge"])
 def test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_loop_replay, grid_merge_replay
 ):
     """The claim that matters on real data, asserted against CONTAINMENT.
 
@@ -856,7 +856,11 @@ def test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway(
     exists: it reads the FIRST FRAME of each run, and defect C-1 was a lane
     that stopped being carriageway several seconds AFTER that frame.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {
+        "nob_hill": nob_hill_replay,
+        "grid_loop": grid_loop_replay,
+        "grid_merge": grid_merge_replay,
+    }[scene_name]
     route, lanes = scene.ego_route, scene.lanes
     # The same independent offset measurement the lane-set suite uses. Imported
     # rather than copied so there is exactly one re-derivation of it, and it
@@ -1596,9 +1600,9 @@ def test_a_traverse_that_reaches_the_lane_holds_it(
     )
 
 
-@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop", "grid_merge"])
 def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_loop_replay, grid_merge_replay
 ):
     """The symptom that opened C2, and the deferred minor from P2-T6.
 
@@ -1607,7 +1611,11 @@ def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
     at home and inside every bound the rest of this file checks -- which is
     exactly why this needs its own assertion.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {
+        "nob_hill": nob_hill_replay,
+        "grid_loop": grid_loop_replay,
+        "grid_merge": grid_merge_replay,
+    }[scene_name]
     episodes = [e for e in _episodes(scene, frames) if e[2] is not None]
     assert episodes, "no overtake was attempted at all -- this bounds nothing"
     failures = [(a, lead) for a, _b, lead, _g0, best in episodes if best >= -_PASSED_M]
