@@ -194,6 +194,7 @@ class Simulation:
             speed_limit_mps=self.scene.speed_limit_mps,
             seed=self._seed,
             speed_scale=float(self.world.params["traffic_speed_scale"]),
+            lanes=self.scene.lanes,
         )
         self._signals = SignalController(self.scene.signal_groups)
         self._reset_dynamics()
