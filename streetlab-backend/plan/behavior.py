@@ -343,22 +343,38 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 #: at 3.60 m. 241 frames -- 4.02 s -- with the car's own centre off the
 #: carriageway, `lane_change_right` on the wire.
 #:
-#: 60.0 m, and it is derived from the road a manoeuvre actually spends rather
-#: than picked to make the two bad episodes go away. Measured per phase across
-#: all seven manoeuvres on both shipped scenes, the OUT-AND-BACK cost -- the
-#: outbound traverse plus the return traverse, i.e. the road the car needs to
-#: leave its lane and be home again -- is 21.0-53.2 m (outbound 9.8-34.6 m,
-#: return 9.3-18.6 m). 60.0 m covers the worst of those with 13 % to spare, so
-#: a change is refused unless there is room to make the round trip.
+#: 40.0 m, derived from the road a manoeuvre actually spends rather than picked
+#: to make the two bad episodes go away. Measured per phase across all seven
+#: manoeuvres on both shipped scenes, the OUT-AND-BACK cost -- the outbound
+#: traverse plus the return traverse, i.e. the road the car needs to leave its
+#: lane and be home again -- is 21.0-53.2 m: 25.2-32.0 m on grid-loop and
+#: 21.0-53.2 m on Nob Hill. 40.0 m covers every grid-scene round trip with
+#: 25 % to spare.
+#:
+#: It does NOT cover Nob Hill's 53.2 m worst, and that is a deliberate refusal
+#: to over-fit. The out-and-back cost is a TIME turned into a distance by the
+#: car's speed -- that episode ran at 13.4 m/s against grid's 9.4 m/s -- so a
+#: single metric horizon cannot serve both, and taking the cross-scene maximum
+#: makes the slow scenes pay the fast scene's bill. Measured, it does: at 60.0
+#: m this constant refuses a legitimate overtake on the THIRD scene,
+#: `grid-merge` (same 295 m block as grid-loop, `seed=4`), where the fixture's
+#: ego sits at s=27.35 with **51.5 m** of legal road left and needs about
+#: 32 m -- flipping `contract/fixtures/state_update_hazard.json` from
+#: `lane_change_right` to `keep_lane`, a wire-visible change to a committed
+#: fixture shared with the TypeScript validator. That fixture is the only
+#: witness this phase has on that scene, and catching this is the whole of its
+#: value here. 40.0 m sits between the 32 m the manoeuvre needs and the 51.5 m
+#: it has. A speed-scaled horizon is the right answer and is not this task.
 #:
 #: What that costs, measured, and the margin on both sides. The legal road
 #: remaining at the seven initiations is 13.5, 24.5, 86.5, 112.0, 145.0, 148.0
 #: and 148.0 m. Any horizon in (24.5, 86.5] refuses exactly the two manoeuvres
-#: that cannot afford the round trip and keeps the other five; 60.0 sits 2.4x
-#: above the larger of the two and 1.4x below the smallest surviving one.
-#: Driven end to end, 25.0 m and 60.0 m give BIT-IDENTICAL replays on both
-#: scenes -- same four grid-loop episodes, same one on Nob Hill, same worst
-#: distance-from-a-legal-lane to four decimal places.
+#: that cannot afford the round trip and keeps the other five; 40.0 sits 1.6x
+#: above the larger of the two and 2.2x below the smallest surviving one.
+#: Driven end to end, 25.0 m, 40.0 m and 60.0 m give BIT-IDENTICAL replays on
+#: both scenes -- same four grid-loop episodes, same one on Nob Hill, same
+#: worst distance-from-a-legal-lane to four decimal places. They differ only
+#: on `grid-merge`, above.
 #:
 #: Only ONE of the two refused manoeuvres was a hazard, and the docstring
 #: should not imply otherwise. grid-loop's (13.5 m left) is the C-1 defect:
@@ -383,7 +399,7 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 #: 145 m (Nob Hill) -- so a horizon that proved it would refuse every change on
 #: both scenes. What covers the rest is the per-tick re-ask in
 #: `_advance_outbound` and `_advance_pass`; see `LANE_CHANGE_LEGAL_HOLD_M`.
-LANE_CHANGE_LEGAL_LOOKAHEAD_M = 60.0
+LANE_CHANGE_LEGAL_LOOKAHEAD_M = 40.0
 
 #: How far ahead the lane the car is ALREADY IN has to stay legal, re-asked
 #: every tick of the outbound and passing phases.
@@ -402,7 +418,7 @@ LANE_CHANGE_LEGAL_LOOKAHEAD_M = 60.0
 #: every manoeuvre that would have needed it -- measured by running the whole
 #: replay with this set to 0.0 and comparing, see the task report. It exists
 #: for the case the lookahead cannot see: a lane that runs out further ahead
-#: than 60 m, which on a scene with shorter legal stretches than these two is
+#: than 40 m, which on a scene with shorter legal stretches than these two is
 #: the ordinary case rather than the exception.
 LANE_CHANGE_LEGAL_HOLD_M = 20.0
 
