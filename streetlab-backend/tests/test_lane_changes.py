@@ -209,7 +209,9 @@ GRID_MERGE_REPLAY_S = 210.0
 #: the hole B-1 names is a test-side hole -- but it means the mutation that
 #: demonstrates it is `GRID_LOOP_REPLAY_S = 285.0`, not a production edit.
 #: Measured: at 285.0 this assertion is the ONLY thing in the file that
-#: fails.
+#: fails. Same for the third scene: `GRID_MERGE_REPLAY_S` 210.0 -> 190.0
+#: gives **2 failed, 21 passed**, and the two are exactly the grid-merge
+#: parametrisations of the two scans this floor guards.
 _JUDGED_THROUGH_S = {"nob_hill": 398.18, "grid_loop": 293.35, "grid_merge": 197.30}
 
 #: The longest a single unbroken `lane_change_*` run may last, in seconds, and
@@ -261,7 +263,10 @@ _JUDGED_THROUGH_S = {"nob_hill": 398.18, "grid_loop": 293.35, "grid_merge": 197.
 #: * the two bounds WERE asserted in order, so when the duration bound fired
 #:   the share bound below never ran, and its 23.37 % had to be measured by
 #:   hand. Fixed at Wave C: the test collects all three of its bounds and
-#:   asserts once, so this mutation now reports both in one message.
+#:   asserts once. Re-run there, the same mutation now reports both in one
+#:   message -- "1 of 8 labelled runs outlast 15.0 s (start t, duration):
+#:   [(176.0, 15.58)]; 4207 of 18000 frames (23.4 %) wear a lane-change
+#:   label, over 16 %" -- against `3 failed, 20 passed` for the file.
 #:
 #: The honest statement of what the DURATION bound alone cannot see: it is one
 #: number against the longest single run, and a backstop can be inflated
@@ -977,6 +982,13 @@ def test_no_frame_of_a_change_sits_in_a_lane_that_is_not_carriageway(
     overhang. Correct driving on this scene reads **0.0000 m** over 430 judged
     frames -- no corner-mitre artifact at all, because grid-merge's manoeuvres
     do not fall on fillets -- so here the bound separates 0.0 from 4.4.
+
+    Mutation-checked on the new parametrisation, both `git diff`-ed before
+    running and run with `__pycache__` cleared: `_stays_legal` neutered to
+    `lanes.may_change_at(ego_s, direction)` KILLS `[grid_merge]` at 57 of 933
+    frames, worst 4.4070 m (the file goes `5 failed, 18 passed`, this scan on
+    all three scenes); `map.lanes.lane_change_is_legal -> return True` kills it
+    too (`13 failed, 10 passed`).
     """
     scene, frames = {
         "nob_hill": nob_hill_replay,
@@ -1683,6 +1695,12 @@ def test_the_ego_is_never_adrift_from_every_legal_lane(
     grid-merge -- never breach 2.5 m even with the defect back. That is the
     honest scope of the gate, and the reason both scans are parametrised here
     rather than only this one.
+
+    So what DOES kill the grid-merge parametrisation of this test, since C-1
+    does not? `map.lanes.lane_change_is_legal -> return True`, the mutation
+    `_legal_lane_centres` is written against: **3.6464 m** at t=40.12 s,
+    `lane_change_right`, on Leavenworth St, with the file at `13 failed, 10
+    passed`. It binds; it just does not bind on C-1.
 
     NOTHING ELSE IN THE SUITE SEES IT, which is the argument for this test in
     one sentence. `test_no_lane_change_is_ever_initiated_into_lane_that_is_not_
