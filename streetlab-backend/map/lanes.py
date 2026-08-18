@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Sequence, TypeVar
 
 from shapely.geometry import LinearRing, LineString
 
@@ -721,7 +721,14 @@ def nearest_road_along(route: Route, roads: list[Road]) -> list[int | None]:
     return out
 
 
-def _fill_forward(values: list[float | int | None]):
+#: `_fill_forward` is element-type agnostic on purpose -- its three callers
+#: pass floats (speed limits), ints (lane counts) and road indices through the
+#: same gap-filling, and a concrete annotation on any one of them would be
+#: wrong for the other two.
+_T = TypeVar("_T")
+
+
+def _fill_forward(values: list[_T | None]) -> list[_T] | None:
     """Unmatched entries inherit their predecessor; leading ones inherit the
     first real value. Exactly the fallback `speed_limits_along` has always had.
 

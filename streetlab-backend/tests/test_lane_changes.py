@@ -98,8 +98,9 @@ LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
 #: `LANE_CHANGE_LOOKAHEAD_M` of a lead, `_held_up` never fires, and not one
 #: change is attempted -- every assertion below would pass with the legality
 #: gate deleted outright. 600 s (~2.4 compliant laps) was measured to produce
-#: the FSM's first attempt at t=373.4 s and 4 changes / 1353 labelled frames by
-#: t=600 s. `test_the_nob_hill_replay_actually_changes_lanes` makes that
+#: the FSM's first attempt at t=373.4 s and, re-measured at `e64b769`,
+#: 2 manoeuvres / 1105 labelled frames by t=600 s (the figure here read
+#: "4 changes / 1353" from before R3 merged two of them into one longer run). `test_the_nob_hill_replay_actually_changes_lanes` makes that
 #: non-vacuousness an assertion rather than an artifact of one measurement run.
 NOB_HILL_REPLAY_S = 600.0
 
@@ -141,7 +142,7 @@ GRID_LOOP_REPLAY_S = 300.0
 #: (12.25 s on grid-loop, 22 % of headroom) and BELOW that structural ceiling,
 #: so a backstop mis-tuned upward still trips this rather than being absorbed.
 #:
-#: End-of-run offset: worst 0.296 m on grid-loop, 0.475 m on Nob Hill (the one
+#: End-of-run offset: worst 0.298 m on grid-loop, 0.475 m on Nob Hill (the one
 #: episode whose return runs out at a crawl in a fillet). 1.2 m clears that by
 #: 60 % and is still inside `map.lanes.LANE_W / 2`, so it is a strictly
 #: stronger statement than the 2.0 m guard, made on exactly the frames that
@@ -353,6 +354,52 @@ def _fits_the_forward_carriageway(road, centre_offset: float) -> bool:
     )
 
 
+def _legal_lane_centres(road, ego_off: float) -> list[float]:
+    """Every lane the car may legally be in at this station, as signed offsets
+    from `road`'s centreline, positive to the LEFT of travel.
+
+    The ego's own lane always counts -- it is the lane the route is in, and a
+    car sitting on its own route is not adrift. Either neighbour counts only
+    where a full-width lane centred there fits inside the forward carriageway,
+    which is the same containment question `_fits_the_forward_carriageway`
+    answers for the legality scan above, restated from the road's raw
+    `lanes_forward` / `lanes_backward` rather than asked of the planner.
+
+    WHY NOT `LaneSet.legal_at(s)` / `may_change_at(s, d)`, which is the obvious
+    thing to reach for and what this task's brief prescribed. That table is the
+    one `BehaviorFSM._lane_change_step` gates the manoeuvre on. A criterion
+    that reads it is asking the planner's own permission slip whether the
+    planner had permission, so a legality table that authorises a change into
+    oncoming produces a car in oncoming AND a criterion that certifies it.
+    Demonstrated rather than argued: with `map.lanes.lane_change_is_legal`
+    replaced by `return True`, Nob Hill drives 30 changes instead of 4 and puts
+    the car 4.29 m from the nearest legal lane centre -- a full lane into
+    oncoming traffic across California Street's double yellow -- and a version
+    of the test below reading `legal_at` reports a worst of 1.7994 m and
+    PASSES. This version fails it at 4.2903 m. Same family as `_SCAN_TOL_M`
+    above and the six other checks in this phase that were judged against a
+    value derived from the thing under test.
+
+    `LaneSet.road_at(s)` is still used, and is not the same problem: it is a
+    passthrough of the `Road` record the scene was built from, matched to the
+    EGO ROUTE's station rather than to the car's own pose -- so a car that
+    wandered onto a parallel street is still judged against the street its
+    route is on, and fails, instead of being re-scored against wherever it
+    ended up.
+
+    Containment-only, exactly as `_fits_the_forward_carriageway` documents:
+    production also requires `lanes_forward >= 2`, which this omits. That makes
+    the candidate set here a superset of production's, which can only ever
+    ADMIT a lane production would refuse -- it weakens this bound, it cannot
+    manufacture a failure.
+    """
+    return [ego_off] + [
+        ego_off + d * LANE_W
+        for d in (+1, -1)
+        if _fits_the_forward_carriageway(road, ego_off + d * LANE_W)
+    ]
+
+
 def _offsets_outside_their_own_lane(records):
     """`(re-based frames, violations)` over `(t, offset_m, lateral_offset)` frames.
 
@@ -532,10 +579,18 @@ def test_the_nob_hill_replay_actually_changes_lanes(nob_hill_replay):
     )
 
 
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
 def test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway(
-    nob_hill_replay,
+    scene_name, nob_hill_replay, grid_loop_replay
 ):
     """The claim that matters on real data, asserted against CONTAINMENT.
+
+    On BOTH scenes (finding I3). It ran on Nob Hill alone, which is the scene
+    where the claim is most dramatic -- 87.7 % of the loop has one forward lane
+    -- but also the one that drives the FEWEST manoeuvres: 1 initiation in
+    600 s against grid-loop's 4 in 300 s (measured). A safety scan judging a
+    single decision is one behaviour change away from judging none, and the
+    vacuity assertion below would then be the only thing left standing.
 
     A car that overtakes wherever it likes on Nob Hill is driving into oncoming
     traffic for 87.7 % of the loop. What this used to assert -- that
@@ -556,7 +611,7 @@ def test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway(
     4 changes, all `lane_change_right` onto California Street's 2/2
     carriageway, needing at most 0.013 m of the 0.75 m `LANE_FIT_TOL_M`.
     """
-    scene, frames = nob_hill_replay
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
     route, lanes = scene.ego_route, scene.lanes
     # The same independent offset measurement the lane-set suite uses. Imported
     # rather than copied so there is exactly one re-derivation of it, and it
@@ -626,8 +681,8 @@ def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_re
     """The same claim on `SyntheticGrid`, where it fails harder (finding I3).
 
     grid-loop is the scene with two-lane arterials on two of its four sides, so
-    it changes lanes far more often than Nob Hill does -- 3254 labelled frames
-    in 300 s against Nob Hill's 1603 in 600 s (measured post-fix) -- and it
+    it changes lanes far more often than Nob Hill does -- 2496 labelled frames
+    in 300 s against Nob Hill's 1105 in 600 s, re-measured at `e64b769` -- and it
     takes four junction interrupts to Nob Hill's one. Its breach was
     correspondingly worse: 3.50 m at t=47.67 s on maneuver `stop`, against Nob
     Hill's 2.32 m. No test covered it here, so the more severe half of defect
@@ -647,14 +702,18 @@ def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
     against. See `_labelled_runs` for why it has to exist.
 
     Stated on both scenes because they exercise opposite halves of it.
-    grid-loop supplies the volume -- 10 runs in 300 s against Nob Hill's 4 in
-    600 s, and four of the five junction interrupts across both scenes -- but
-    every one of its runs settles, worst 6.57 s and 0.297 m. Nob Hill supplies
-    the extreme: one run of 9.53 s ending at 0.735 m, the only case on either
-    scene where the abort begins with the car already braking, so it is at rest
-    at the line and cannot steer the last stretch home before the return
-    phase's backstop expires. Drop either scene and one of the two bounds
-    stops being tested near anything.
+    grid-loop supplies the volume -- re-measured at `e64b769`, 5 runs in 300 s
+    against Nob Hill's 2 in 600 s, and four of the five junction interrupts
+    across both scenes -- and it is where the DURATION bound is tested near
+    anything: worst 12.25 s against the 15.0 s ceiling, with every run settling
+    by 0.298 m. Nob Hill supplies the other extreme: one run ending 0.475 m
+    off, the only case on either scene where the abort begins with the car
+    already braking, so it is at rest at the line and cannot steer the last
+    stretch home before the return phase's backstop expires. Drop either scene
+    and one of the two bounds stops being tested near anything. (These figures
+    read "10 runs / 4 runs, worst 6.57 s and 0.297 m / one run of 9.53 s ending
+    at 0.735 m" and were measured before R3, which lengthened the runs and
+    merged several of them.)
     """
     scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
     runs = _labelled_runs(frames)
@@ -716,39 +775,59 @@ _ARRIVED_M = 0.25
 _PASSED_M = 12.0
 _HELD_MIN_S = 1.0
 
-#: The furthest the car may EVER be from the nearest lane centre, on any frame,
-#: labelled or not.
+#: The furthest the car may EVER be from the centreline of a lane that LEGALLY
+#: EXISTS where it is, on any frame, labelled or not. This phase's acceptance
+#: criterion (`docs/superpowers/plans/2026-08-16-cycle3-phase2-revision.md`
+#: "Done when" 3).
 #:
-#: Every other lateral guard in this file has an exclusion window the FSM
-#: itself defines -- the two 2.0 m lane-holding guards skip labelled frames,
-#: and `MAX_LABELLED_RUN_S`/`SETTLED_BY_END_M` bound that window rather than
-#: removing it. This one has no window at all, which is why it can say what
-#: they cannot: wherever the car is, and whatever it calls what it is doing, it
-#: is in a lane or crossing between two. A manoeuvre that parks the car on a
-#: lane line, or drives it off the carriageway, fails here no matter how it is
-#: labelled.
+#: It replaces "outside a labelled change, peak lateral offset < 2.0 m", which
+#: three independent measurements showed is not a safety property: it excludes
+#: exactly the frames capable of failing it (R4 satisfied it on Nob Hill with
+#: 780 of 780 poses bit-identical -- the 2.32 m breach frame is still 2.32 m
+#: off route, it is now spelled `lane_change_left` instead of `stop`); it is
+#: unsatisfiable alongside a real overtake except by relabelling, since a pass
+#: requires seconds spent a lane width off `ego_route`; and it cleared by 13 cm.
+#: The two 2.0 m guards are kept above -- they still bind on the frames they do
+#: look at -- but they are no longer what the phase is judged on.
+#:
+#: There is NO exclusion window here at all. Not labelled frames, not junction
+#: frames, not corners. There is nothing to cloak because nothing is excluded:
+#: during a legitimate change the car is between two lanes that both legally
+#: exist and peaks at `LANE_W / 2`; in oncoming, or on the pavement, or
+#: holding a lane that has run out, it exceeds that at once regardless of what
+#: the FSM chose to call the frame.
 #:
 #: `LANE_W / 2` (1.8 m) is the floor this could possibly take: a car exactly
 #: half way across is 1.8 m from both centrelines and that is correct
-#: behaviour, so the bound has to sit above it. 2.2 m leaves 0.4 m for the
-#: places the two lane routes are further apart than `LANE_W` (`Route.offset`
-#: mitre-scales at corners) and for pure-pursuit overshoot past a centre.
+#: behaviour, so the bound has to sit above it. Above that sits one artifact
+#: that is geometry rather than driving: at a corner `Route.offset`'s mitre
+#: scaling moves the ego route away from its nominal half-lane inset -- worst
+#: measured |ego_off + LANE_W/2| is 0.943 m on grid-loop -- and where that
+#: swing exceeds the containment slack the kerbside lane is refused for a few
+#: frames while the car is legitimately inside it (worst shortfall 0.193 m on
+#: grid-loop). 2.5 m clears 1.8 m plus that swing.
 #:
-#: BE CLEAR ABOUT HOW STRONG THIS IS. Measured worst over all 54000 frames of
-#: both replays: 1.798 m (Nob Hill, t=391.93 s) and 1.799 m (grid-loop,
-#: t=290.93 s) -- i.e. exactly `LANE_W / 2`, the mid-crossing point, to within
-#: a millimetre. That is not a coincidence: `plan/control.py` steers at an aim
-#: point interpolated between two real lane routes, so half a lane IS the
-#: geometric worst the tracker can be asked for while the blend is what drives
-#: the manoeuvre. None of the four mutations run against this file's other
-#: tests trips this one, and no mutation of `plan/behavior.py` alone was found
-#: that does. It is a floor-level invariant kept for what it CANNOT be talked
-#: out of -- it has no exclusion window, so no amount of relabelling reaches it
-#: -- and not a substitute for the guards that do bite. It would not, for
-#: instance, have caught the pre-R4 breach it sits next to: a car coasting
-#: unlabelled 3.5 m off the ego route is 0.1 m from the neighbour lane's
-#: centre and satisfies this happily.
-_NEAR_A_LANE_M = 2.2
+#: Measured at `e64b769`: Nob Hill worst **1.8669 m** (t=397.98 s), 25 % of
+#: headroom, 0 frames at or over the bound. grid-loop worst **3.6094 m**
+#: (t=295.43 s) with **218 frames** at or over it, spanning t=292.42-296.03 s
+#: -- see the test below: that is a real defect and this criterion is
+#: deliberately RED on it. On a prototype of the queued R3-FIX (declining the
+#: two manoeuvres that had no legal road left, and nothing else) grid-loop's
+#: worst falls to 2.1396 m -- one of those corner frames -- so 2.5 m sits
+#: ~17 % above the tightest passing case this is expected to see and 31 %
+#: below the defect it has to fail. 2.2 m would clear that corner frame by
+#: 6 cm, which is a coin toss, not a bound.
+#:
+#: HOW THIS DIFFERS FROM WHAT IT REPLACES IN THIS FILE. The previous version of
+#: the test below measured the car against `scene.lanes`, i.e. against ANY
+#: derived lane, and R3 recorded honestly that this made it a floor-level
+#: invariant: worst 1.798 m / 1.799 m -- `LANE_W / 2` to the millimetre -- and
+#: no mutation of `plan/behavior.py` violated it. Of course not: `derive_lanes`
+#: builds a neighbour on BOTH sides unconditionally and makes no claim that
+#: either is road, so "near some derived lane" is satisfied by a car in
+#: oncoming traffic. The legality qualifier is the whole content of the
+#: criterion.
+_NEAR_A_LEGAL_LANE_M = 2.5
 
 #: How many attempts on ONE lead the car may make in `_CYCLE_WINDOW_S` without
 #: getting past it. The deferred minor from P2-T6 and the symptom that opened
@@ -981,47 +1060,107 @@ def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
 
 
 @pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
-def test_the_ego_is_never_adrift_between_lanes(
+def test_the_ego_is_never_adrift_from_every_legal_lane(
     scene_name, nob_hill_replay, grid_loop_replay
 ):
-    """The one lateral guard in this file with no exclusion window.
+    """THE PHASE'S ACCEPTANCE CRITERION. See `_NEAR_A_LEGAL_LANE_M`.
 
-    See `_NEAR_A_LANE_M`. Judged against `scene.lanes`, the geometry the scene
-    was built with, and against every frame of the replay -- so unlike the two
-    2.0 m guards it cannot be satisfied by labelling a breach, and unlike
-    `MAX_LABELLED_RUN_S` it does not depend on the label lasting a sensible
-    length of time. It is the assertion that survives a manoeuvre being
-    renamed.
+    THIS IS RED ON grid-loop AT `e64b769`, ON PURPOSE, AND IT IS NOT A FLAKE.
+    It is the criterion catching the defect it was written to catch, and the
+    production fix is queued separately as R3-FIX rather than made here.
+    `BehaviorFSM` asks `LaneSet.may_change_at` ONCE, at the decision
+    (`plan/behavior.py`), and no later phase re-asks it. R3's PASSING phase
+    lets the car hold the neighbour lane for up to `LANE_CHANGE_PASS_MAX_S`
+    plus `LANE_CHANGE_RETURN_MAX_S`, over 60-100 m of road, so the lane it
+    committed to can stop being a carriageway lane underneath it. Measured on
+    grid-loop, the manoeuvre starting t=288.00 s: legal at birth on Hyde St
+    (2 forward lanes), then held round the corner onto Sacramento St (1
+    forward lane, 1 back), where the lane it is sitting in is centred 5.44 m
+    from the road centreline and the forward half of the carriageway ends at
+    3.60 m. 241 frames -- 4.02 s -- with the car's own centre outside the
+    carriageway; 218 of them at or over this bound; worst 3.6094 m.
+    `may_change_at` is False on all 241, and so is the containment restatement
+    this file uses. Pre-R3 the same excursion lasted 40 frames (0.67 s), so R3
+    multiplied the exposure ~6x.
 
-    It is weaker than the 2.0 m guards where they apply, and deliberately so:
-    a car half way across a lane line is 1.8 m from two centrelines at once and
-    is behaving correctly. The two are complements, not substitutes.
+    NOTHING ELSE IN THE SUITE SEES IT, which is the argument for this test in
+    one sentence. `test_no_lane_change_is_ever_initiated_into_lane_that_is_not_
+    carriageway` scans `_initiations`, i.e. the FIRST FRAME of each run, and
+    that frame was legal. The two 2.0 m lane-holding guards exclude the frames
+    for being labelled. And the version of THIS test that measured against any
+    derived lane reported ~0 m, because the car is neatly centred in the
+    illegal lane -- it was never off a lane, it was off a LEGAL one.
 
-    Note what this does NOT say: `scene.lanes` contains the lane on the far
-    side of the ego route as well, which on both scenes is across the
-    centreline of a two-way street. Being near ITS centre would satisfy this
-    and is not legal driving -- that claim is
-    `test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway`'s,
-    and neither scene admits a leftward change for the scan to confuse.
+    Every frame of both replays is judged and none is excluded -- not labelled
+    ones, not junction ones. That is the property the criterion it replaces
+    could not have: that one measured the car only where the FSM declined to
+    put a lane-change label, so a breach could be answered by labelling it, and
+    R4 was measured doing exactly that (780 of 780 Nob Hill poses identical
+    before and after its fix). Here there is no window to widen.
+
+    Each frame asks one question: how far is the car from the nearest
+    centreline of a lane that legally exists at its station? Both offsets are
+    measured from the governing road's own centreline by `_offset_from`, the
+    re-derivation `test_lane_set.py` owns, so nothing in the answer comes
+    through `map.lanes`' arithmetic. The candidate lanes come from
+    `_legal_lane_centres`, which reads the road's raw lane counts and NOT
+    `legal_at` -- see that helper for the demonstration of why the difference
+    is the whole test.
+
+    The station is `Frame.ego_s`, the projection of the PRE-step pose, paired
+    with the POST-step position. The 1/60 s skew between them is 0.149 m at lap
+    speed and it only chooses which road segment governs; a road runs for tens
+    of metres, so it changes the answer nowhere. Re-projecting `post` would
+    double this replay's most expensive per-frame call for that.
     """
     scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
-    lanes = scene.lanes
-    assert lanes is not None and len(lanes.lanes) > 1, "no neighbour lane to be near"
-    worst, worst_at = 0.0, None
+    route, lanes = scene.ego_route, scene.lanes
+    assert lanes is not None, "the scene has no lane set to be legal in"
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_lane_set import _offset_from
+
+    judged, alone, worst, worst_at = 0, 0, 0.0, None
     for i, f in enumerate(frames):
-        # Cheap gate: a car within the bound of its OWN route is trivially
-        # within it of the nearest lane centre, and `Route.project` is a linear
-        # scan of a 1000-vertex polyline. Only the frames that could fail get
-        # the full search.
-        if abs(f.lat) <= _NEAR_A_LANE_M:
+        road = lanes.road_at(f.ego_s)
+        if road is None:
             continue
-        d = min(abs(lane.route.lateral_offset(f.post)) for lane in lanes.lanes)
+        judged += 1
+        heading = route.heading_at(f.ego_s)
+        ego_off = _offset_from(road, route.point_at(f.ego_s), heading)
+        centres = _legal_lane_centres(road, ego_off)
+        alone += len(centres) == 1
+        d = min(abs(_offset_from(road, f.post, heading) - c) for c in centres)
         if d > worst:
-            worst, worst_at = d, (round(i * DT, 2), f.maneuver, round(f.lat, 3))
-    assert worst < _NEAR_A_LANE_M, (
-        f"the car reached {worst:.3f} m from every lane centre at "
-        f"t={worst_at[0]} s on maneuver {worst_at[1]!r} "
-        f"({worst_at[2]} m off the ego route)"
+            worst, worst_at = d, (round(i * DT, 2), f.maneuver, road.name, len(centres))
+
+    # Non-vacuity, and deliberately NOT "how many frames were excluded". The
+    # guard this replaces used its exclusion count as the witness that it was
+    # measuring something, which inverts: the more the FSM labelled, the more
+    # non-vacuous it looked and the less it measured (ruling Q70). The witness
+    # here is that NOTHING was dropped -- every frame of the replay reached the
+    # comparison -- plus the two facts that make the comparison mean anything:
+    # the replay drove a manoeuvre, and a large share of it ran where the ego's
+    # is the ONLY legal lane, which is where the bound is a real statement
+    # rather than a statement about being between two lanes. Measured: 36000 of
+    # 36000 frames judged on Nob Hill with 33515 (93 %) single-lane, and 18000
+    # of 18000 on grid-loop with 9519 (53 %).
+    assert judged == len(frames), (
+        f"only {judged} of {len(frames)} frames had a governing road; the rest "
+        "were never judged"
+    )
+    assert any(f.maneuver in LANE_CHANGE_LABELS for f in frames), (
+        "the replay never changed lanes, so this bounds a car that only ever "
+        "drove straight ahead"
+    )
+    assert alone > judged // 4, (
+        f"only {alone} of {judged} frames ran where the ego's is the only legal "
+        "lane; on this replay the bound is almost never more than 'the car is "
+        "between two lanes'"
+    )
+    assert worst < _NEAR_A_LEGAL_LANE_M, (
+        f"the car reached {worst:.4f} m from every lane that legally exists "
+        f"where it was, at t={worst_at[0]} s on maneuver {worst_at[1]!r}, on "
+        f"{worst_at[2]} ({worst_at[3]} legal lane(s) there)"
     )
 
 

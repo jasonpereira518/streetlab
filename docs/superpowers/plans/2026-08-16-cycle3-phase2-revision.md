@@ -127,7 +127,47 @@ visible but not a hazard. Phase 3 roadmap.
    either scene, asserted rather than observed.
 2. Outbound lane changes terminate on the lead being behind the ego; an
    episode that gains nothing does not repeat.
-3. Outside a labelled change, peak lateral offset < 2.0 m on **both** scenes.
+3. On **every frame** of **both** scenes, with no exclusion window of any
+   kind, the car is within 2.5 m of the centreline of a lane that legally
+   exists at its station -- its own lane, or a neighbour whose full width fits
+   inside the forward carriageway there.
+   (`tests/test_lane_changes.py::test_the_ego_is_never_adrift_from_every_legal_lane`.)
+
+   **Replaces** "outside a labelled change, peak lateral offset < 2.0 m on both
+   scenes", which is not a safety property. Three independent measurements,
+   ruling Q72:
+
+   - **It is satisfiable by relabelling, and was satisfied that way.** R4's
+     Nob Hill replay gives 780 of 780 bit-identical poses before and after its
+     fix. The 2.32 m breach frame is still 2.32 m off route; it is now spelled
+     `lane_change_left` instead of `stop`. 250 frames moved from the measured
+     set into the excluded set, and they were the frames carrying the failure.
+   - **It contradicts the phase's own goal.** A pass requires the car to spend
+     seconds a lane width off `ego_route`; the guard forbids that outside a
+     label; so the only way to have both is to label those seconds (Q71).
+   - **It cleared by 13 cm.** Worst unlabelled offset at `e64b769` was 1.8668 m
+     against 2.0 m, inside the same junction-abort window as R4's 2.32 m
+     breach.
+
+   The replacement has no window to widen: during a legitimate change the car
+   is between two lanes that both legally exist and peaks at `LANE_W / 2`
+   (1.8 m); in oncoming, on the pavement, or holding a lane that has run out,
+   it exceeds that at once whatever the frame is called. Legality is
+   re-derived in the test from the road's raw lane counts, NOT read from
+   `LaneSet.legal_at` -- reading the planner's own permission table would make
+   a planner that steers into oncoming agree with the criterion that judges it.
+
+   The two 2.0 m guards are kept rather than deleted: they still bind on the
+   frames they do look at, and done-criterion 5 asks for addition, not
+   substitution.
+
+   **Status: met on Nob Hill (worst 1.8669 m, 0 frames at or over the bound);
+   NOT met on grid-loop** (worst 3.6094 m, 218 frames over, t=292.42-296.03 s).
+   That is a real defect, not a threshold problem: `may_change_at` is asked
+   once at the decision and never re-asked, so R3's PASSING phase can carry the
+   car onto a stretch where the lane it committed to is not a carriageway lane
+   -- 4.02 s with the car centre outside the carriageway on Sacramento Street.
+   Queued as R3-FIX; this criterion is deliberately left RED on it.
 4. `LaneState.left_marking` / `right_marking` come from `Road.center_marking`.
 5. 628 backend + 3 contract + 150 vitest + 12 Playwright still green, with the
    new assertions added rather than substituted.

@@ -519,7 +519,7 @@ def test_reset_clears_the_behaviour_state(built, limits):
     assert not planner.fsm.honoured
 
 
-def lane_context(built, target=None, dt=1 / 60):
+def lane_context(built, dt=1 / 60):
     from plan.control import PlanContext
 
     return PlanContext(t=0.0, dt=dt, lanes=built.lanes)
