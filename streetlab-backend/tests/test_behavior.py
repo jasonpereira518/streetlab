@@ -950,6 +950,31 @@ def test_a_pass_that_never_gains_gives_up_and_comes_home(road):
     assert fsm.lane_change is not None and fsm.lane_change.returning
 
 
+#: How long the cooldown must still be refusing, and by when it must have let
+#: go. Both LITERALS, and that is finding I-4.
+#:
+#: This test used to build its window by importing
+#: `LANE_CHANGE_RETRY_COOLDOWN_S` -- it refused for `COOLDOWN - 1.0` s and
+#: then looked for a retry within 2.0 s. That window moves in LOCKSTEP with
+#: the constant, so it can only ever catch the cooldown getting LONGER than
+#: itself, which is the harmless direction. Measured at `16aba1e`:
+#: `LANE_CHANGE_RETRY_COOLDOWN_S` 20.0 -> 5.0 gave `2 passed` here, and
+#: 20.0 -> 1.0 left only a grid-loop replay parameter failing, because the
+#: first loop became zero iterations and asserted nothing at all. The shipped
+#: 20.0 was unconstrained downward across roughly [5, infinity).
+#:
+#: 15.0 / 25.0 straddle it with 5 s either side. They are not derived from the
+#: constant and do not follow it: 20.0 -> 5.0 now fails the first loop (the
+#: car retries 5 s in, well inside 15.0 s) and 20.0 -> 30.0 fails the second
+#: (still refusing at 25.0 s). What justifies the PAIR rather than the exact
+#: numbers is the measurement `LANE_CHANGE_RETRY_COOLDOWN_S` records: the
+#: shorter shipped lap is 295.2 m, about 65 s at these speeds, so a cooldown
+#: anywhere in [15, 25] s leaves a genuinely passable lead attemptable several
+#: times per lap while breaking the measured 5-attempts-in-28-s cycle.
+_COOLDOWN_HOLDS_FOR_S = 15.0
+_COOLDOWN_GONE_BY_S = 25.0
+
+
 def test_a_lead_that_could_not_be_passed_is_not_immediately_retried(road):
     """The symptom that opened C2 and the deferred minor from P2-T6.
 
@@ -959,6 +984,10 @@ def test_a_lead_that_could_not_be_passed_is_not_immediately_retried(road):
     on one vehicle in 28 s on grid-loop, none of which gained. The cooldown is
     what breaks the loop, and it has to expire or the car would refuse to
     overtake that vehicle for the rest of the session.
+
+    Both halves are bounded by LITERALS -- see `_COOLDOWN_HOLDS_FOR_S`. That
+    is the whole of finding I-4: written against the imported constant, this
+    test could not see the cooldown shrink.
     """
     fsm = BehaviorFSM()
     lanes = two_lane_set(road)
@@ -975,22 +1004,24 @@ def test_a_lead_that_could_not_be_passed_is_not_immediately_retried(road):
     # ahead of it: nothing about the situation changes except the clock, so
     # the cooldown is the only thing that can be refusing the change.
     held = 0.0
-    for _ in range(int((LANE_CHANGE_RETRY_COOLDOWN_S - 1.0) / DT)):
+    for _ in range(int(_COOLDOWN_HOLDS_FOR_S / DT)):
         held += DT
         d = fsm.step(ego_at(200.0, 12.0), road, 200.0, [], {}, DT,
                      lanes=lanes, detections=[slow_lead(225.0, 3.0)], limit_mps=12.0)
         assert d.target_lane_id is None, (
-            f"retried the same lead after {held:.2f} s"
+            f"retried the same lead after {held:.2f} s, inside "
+            f"{_COOLDOWN_HOLDS_FOR_S} s"
         )
 
-    for _ in range(int(2.0 / DT)):
+    while held < _COOLDOWN_GONE_BY_S:
         held += DT
         d = fsm.step(ego_at(200.0, 12.0), road, 200.0, [], {}, DT,
                      lanes=lanes, detections=[slow_lead(225.0, 3.0)], limit_mps=12.0)
         if d.target_lane_id is not None:
             break
     assert d.target_lane_id == "lane_left", (
-        f"the cooldown never expired: still refusing after {held:.2f} s"
+        f"the cooldown never expired: still refusing after "
+        f"{_COOLDOWN_GONE_BY_S} s"
     )
 
 
