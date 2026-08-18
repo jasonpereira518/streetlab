@@ -15,6 +15,8 @@ from plan.behavior import (
     CREEP_MPS,
     EGO_LENGTH_M,
     LANE_CHANGE_COMMIT_S,
+    LANE_CHANGE_LEGAL_HOLD_M,
+    LANE_CHANGE_LEGAL_LOOKAHEAD_M,
     LANE_CHANGE_OUTBOUND_MAX_S,
     LANE_CHANGE_PASS_BUFFER_M,
     LANE_CHANGE_PASS_MAX_S,
@@ -372,6 +374,43 @@ def both_neighbours_legal_set(road):
         ),
         count_along=tuple(3 for _ in range(len(road.points) - 1)),
         legal_along=tuple((1, -1) for _ in range(len(road.points) - 1)),
+    )
+
+
+@pytest.fixture
+def staged_road():
+    """A 400 m open straight with a vertex every 10 m.
+
+    The `road` fixture above is a SINGLE segment, and `legal_along` is indexed
+    per segment, so no `LaneSet` built on it can say "legal here, not legal
+    forty metres on" -- which is the only shape defect C-1 lives in. Every
+    lookahead test below needs a road with segments to vary across.
+    """
+    return Route([(float(x), 0.0) for x in range(0, 401, 10)], closed=False)
+
+
+def lane_set_legal_until(road, metres):
+    """A `LaneSet` whose left neighbour is legal for the first `metres` of
+    `road` and refused from there on.
+
+    The Hyde-St-into-Sacramento-St shape, in miniature: a change that is
+    legal where the car decides on it and is not legal where the manoeuvre
+    would put the car. `legal_along` flips per SEGMENT, so `metres` is
+    rounded down to a segment boundary -- with `staged_road`'s 10 m vertices
+    that is exact for any multiple of 10.
+    """
+    from sim.route import EGO_LANE_ID, Lane, LaneSet
+
+    left = Route([(x, y + 3.6) for x, y in road.points], closed=road.closed)
+    n = len(road.points) - 1
+    seg = road.length_m / n
+    return LaneSet(
+        lanes=(
+            Lane(EGO_LANE_ID, 0.0, road, "lane_left", None),
+            Lane("lane_left", 3.6, left, None, EGO_LANE_ID),
+        ),
+        count_along=tuple(2 for _ in range(n)),
+        legal_along=tuple((1,) if (i + 1) * seg <= metres else () for i in range(n)),
     )
 
 
@@ -973,6 +1012,190 @@ def test_a_second_slow_car_is_still_overtaken_while_one_is_on_cooldown(road):
     )
     assert d.target_lane_id == "lane_left"
     assert fsm.lane_change is not None and fsm.lane_change.lead_id == "other"
+
+
+# --------------------------------------------------------------------------- #
+# A lane the car MAY ENTER is not a lane it may STAY IN (defect C-1)            #
+# --------------------------------------------------------------------------- #
+#
+# `may_change_at` was asked once, at the decision, and no later phase re-asked
+# it. The three tests below put the question to each of the three places that
+# now ask it. `LANE_CHANGE_LEGAL_LOOKAHEAD_M` and `LANE_CHANGE_LEGAL_HOLD_M`
+# ARE imported here, unlike the bounds in `tests/test_lane_changes.py`: these
+# are not bounds on the constants, they are the arithmetic that positions the
+# fixture either side of them, and a test that hard-coded 60.0 m of legal road
+# would silently stop straddling the threshold the moment the constant moved.
+# What pins the VALUES is the replay measurement in that file.
+
+
+def test_a_change_is_refused_when_the_target_lane_runs_out_inside_the_lookahead(
+    staged_road,
+):
+    """The decision half of C-1, in isolation.
+
+    The lane is legal AT the car and stops being legal well inside the
+    lookahead. A planner that asks `may_change_at(ego_s, d)` and nothing else
+    says yes here, commits, and drives the car onto the stretch where that
+    lane is not carriageway -- which is exactly what grid-loop did at
+    t=288.00 s with 13.5 m of legal road left.
+    """
+    fsm = BehaviorFSM()
+    lanes = lane_set_legal_until(staged_road, LANE_CHANGE_LEGAL_LOOKAHEAD_M / 2.0)
+    assert lanes.may_change_at(0.0, +1), (
+        "the fixture must be legal AT the car, or this passes for the old reason"
+    )
+    d = fsm.step(
+        ego_at(0.0, 12.0), staged_road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert d.target_lane_id is None
+    assert fsm.lane_change is None
+
+
+def test_the_same_change_is_allowed_where_the_lane_runs_on(staged_road):
+    """The other half of the pair, and the reason the test above is evidence
+    about the lookahead rather than about the fixture.
+
+    Identical in every respect except how far the legal stretch runs: past the
+    lookahead instead of half way into it. If this failed too, the test above
+    would be proving only that `lane_set_legal_until` refuses everything.
+    """
+    fsm = BehaviorFSM()
+    lanes = lane_set_legal_until(staged_road, LANE_CHANGE_LEGAL_LOOKAHEAD_M * 2.0)
+    d = fsm.step(
+        ego_at(0.0, 12.0), staged_road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert d.target_lane_id == "lane_left"
+    assert fsm.lane_change is not None and fsm.lane_change.phase == OUTBOUND
+
+
+def test_a_lane_that_runs_out_mid_traverse_turns_the_car_round(staged_road):
+    """The OUTBOUND half of the re-ask.
+
+    The car commits where there is room and is then carried to a station where
+    the lane it is crossing into has `LANE_CHANGE_LEGAL_HOLD_M` or less of
+    legal road left. It must give up the traverse and go home LABELLED, not
+    arrive in a lane that has run out.
+    """
+    fsm = BehaviorFSM()
+    legal_to = 200.0
+    lanes = lane_set_legal_until(staged_road, legal_to)
+    fsm.step(
+        ego_at(0.0, 12.0), staged_road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.phase == OUTBOUND
+
+    s = legal_to - LANE_CHANGE_LEGAL_HOLD_M / 2.0
+    d = fsm.step(
+        ego_at(s, 12.0), staged_road, s, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(s + 25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.returning
+    assert d.maneuver == "lane_change_right", "went home without saying so"
+    assert "lead" in fsm.cooldown
+
+
+def test_a_lane_that_runs_out_mid_pass_sends_the_car_home(staged_road):
+    """The PASSING half of the re-ask, which is where the 4.02 s off the
+    carriageway was actually spent: 3.10 s in PASSING against 0.92 s in
+    RETURNING (measured on grid-loop at `e64b769`).
+
+    The lead is held slow and ahead throughout, so none of the passing phase's
+    other four exits can fire and the legality re-ask is the only thing that
+    can end this.
+    """
+    fsm = BehaviorFSM()
+    legal_to = 200.0
+    lanes = lane_set_legal_until(staged_road, legal_to)
+    _advance_to_the_passing_phase(fsm, staged_road, lanes)
+    assert fsm.lane_change is not None and fsm.lane_change.phase == PASSING
+
+    s = legal_to - LANE_CHANGE_LEGAL_HOLD_M / 2.0
+    d = fsm.step(
+        ego_off_lane_at(s, 3.6, 12.0), staged_road, s, [], {}, DT,
+        lanes=lanes, detections=[lead_at(s + 25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.returning
+    assert d.maneuver == "lane_change_right"
+
+
+def test_a_pass_on_a_lane_that_runs_on_is_not_disturbed(staged_road):
+    """The negative control for the two above: same fixture, same phase, same
+    lead, and a station with legal road well beyond the hold distance. The
+    pass must continue.
+
+    Without this, `_stays_legal` returning False unconditionally would satisfy
+    both re-ask tests and end every manoeuvre the moment it started.
+    """
+    fsm = BehaviorFSM()
+    lanes = lane_set_legal_until(staged_road, 400.0)
+    _advance_to_the_passing_phase(fsm, staged_road, lanes)
+    d = fsm.step(
+        ego_off_lane_at(100.0, 3.6, 12.0), staged_road, 100.0, [], {}, DT,
+        lanes=lanes, detections=[lead_at(125.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.phase == PASSING
+    assert d.maneuver == "lane_change_left"
+
+
+def test_a_vehicle_that_takes_the_gap_mid_traverse_turns_the_car_back(road):
+    """Finding M-3: `_gap_is_acceptable` was asked once too.
+
+    It guards the space the car is steering into, and R3 grew the window it
+    guards from one tick to a whole traverse. A vehicle that moves into that
+    space after the decision was invisible.
+
+    Not reachable from either shipped replay -- R6 moved all traffic into the
+    ego's own lane, so every detection on both scenes has `lane_offset == 0`
+    and this predicate is vacuously true there -- which is why it is a unit
+    test. Note also what the production code cannot do here and says so:
+    `lane_offset` is EGO-RELATIVE, so a car in the target lane stops being
+    reported as `lane_offset == direction` once the ego is more than half way
+    across.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.phase == OUTBOUND
+
+    d = fsm.step(
+        ego_at(0.2, 12.0), road, 0.2, [], {}, DT,
+        lanes=lanes,
+        detections=[slow_lead(25.0, 3.0), blocker(MIN_FRONT_GAP_M - 2.0, 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and fsm.lane_change.returning
+    assert d.maneuver == "lane_change_right"
+    assert "lead" in fsm.cooldown
+
+
+def test_a_distant_vehicle_in_the_target_lane_does_not_turn_the_car_back(road):
+    """The negative control for the test above. Same shape, same tick, one
+    vehicle -- placed beyond `MIN_FRONT_GAP_M` instead of inside it.
+
+    A re-ask that aborted on the mere PRESENCE of a car in the target lane
+    would pass the test above and would also refuse every real overtake, since
+    the whole point of the manoeuvre is that there is traffic about.
+    """
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    d = fsm.step(
+        ego_at(0.2, 12.0), road, 0.2, [], {}, DT,
+        lanes=lanes,
+        detections=[slow_lead(25.0, 3.0), blocker(MIN_FRONT_GAP_M + 10.0, 12.0, 1)],
+        limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None and not fsm.lane_change.returning
+    assert d.maneuver == "lane_change_left"
 
 
 def test_a_junction_stop_outranks_a_lane_change(road):
