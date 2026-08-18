@@ -134,10 +134,37 @@ NOB_HILL_REPLAY_S = 600.0
 #: comment; this paragraph is here so that the number in it has a reason.
 GRID_LOOP_REPLAY_S = 300.0
 
+#: How long the grid-merge replay below runs -- THE THIRD SCENE (Wave C).
+#:
+#: `grid-merge` (`SyntheticGrid`, `seed=4`, scene defaults) shares grid-loop's
+#: 295.2 m block and its two legal right-change stretches, [0.00, 78.51] and
+#: [226.14, 295.24], but carries 6 traffic agents against grid-loop's 3. Until
+#: Wave C nothing in this file drove it: every "both scenes" claim in the
+#: phase was a two-of-three claim, and its only witness anywhere in the repo
+#: was `contract/fixtures/state_update_hazard.json`.
+#:
+#: It is the scene that manoeuvres WITHOUT COAXING, which is the argument for
+#: it. grid-loop needs `seed=7` AND `traffic_speed_scale=0.45` to produce a
+#: single lane change and Nob Hill needs 600 s to produce one; grid-merge
+#: drives 3 runs and 1118 labelled frames at its own defaults, with lane
+#: counts of 1 and 2 forward along the route, so the legality machinery is
+#: exercised without the scene being tuned to exercise it.
+#:
+#: 210.0 s, and NOT the 120 s the third scene was proposed at. 120 s is the
+#: `GRID_LOOP_REPLAY_S = 285` trap of finding B-1, one scene over: measured by
+#: restoring defect C-1 (`_stays_legal` neutered to the single-station
+#: `may_change_at`), grid-merge's RED window is **t=135.27-197.23 s** and
+#: NOTHING is red before it. At 120 s both scans below would have been added
+#: to this scene already unable to fail on the phase's own headline defect --
+#: green, non-vacuous, and inert. 210.0 s is the scenario's own declared
+#: duration and clears the measured window by 12.7 s.
+GRID_MERGE_REPLAY_S = 210.0
+
 #: How far into each replay the two frame-level scans below must still be
-#: judging, in seconds. A floor under `NOB_HILL_REPLAY_S` and
-#: `GRID_LOOP_REPLAY_S`, deliberately NOT computed from either of them -- it
-#: is what pins them, and a floor derived from the thing it pins is no floor.
+#: judging, in seconds. A floor under `NOB_HILL_REPLAY_S`,
+#: `GRID_LOOP_REPLAY_S` and `GRID_MERGE_REPLAY_S`, deliberately NOT computed
+#: from any of them -- it is what pins them, and a floor derived from the
+#: thing it pins is no floor.
 #:
 #: FINDING B-1. `test_the_ego_is_never_adrift_from_every_legal_lane` excludes
 #: no frame by LABEL, and said so as "there is NO exclusion window here at
@@ -159,6 +186,8 @@ GRID_LOOP_REPLAY_S = 300.0
 #: | grid-loop | overhang | 66 | t=292.27-293.35 s |
 #: | Nob Hill | criterion | 0 | -- (never breaches 2.5 m, even under C-1) |
 #: | Nob Hill | overhang | 24 | t=397.80-398.18 s |
+#: | grid-merge | criterion | 0 | -- (worst 1.9199 m under C-1) |
+#: | **grid-merge** | **overhang** | **57** | **t=135.27-197.23 s** |
 #:
 #: So each scene's number is the last instant at which either scan has been
 #: MEASURED capable of failing on that scene, rounded down to the frame:
@@ -167,6 +196,13 @@ GRID_LOOP_REPLAY_S = 300.0
 #: starts at t=373.42 s, so a replay shorter than ~381 s drives no lane change
 #: at all and several assertions in this file go vacuous first.
 #:
+#: grid-merge's 197.30 s (Wave C) is the wider of its two windows: 197.23 s
+#: under C-1 restored, and 197.30 s under `map.lanes.lane_change_is_legal ->
+#: True`, the other mutation these scans are sized against. Its RED window
+#: starts at t=135.27 s, so this is the one scene of the three where a replay
+#: could be trimmed by a THIRD and still look green -- which is why it is
+#: carried here rather than left to `GRID_MERGE_REPLAY_S`'s prose.
+#:
 #: WHAT THIS CANNOT DO, said plainly. It is a bound on the TEST, not on the
 #: car: no mutation of `plan/behavior.py` or `map/lanes.py` can fail it, and
 #: the only thing that can is shortening a replay. That is the whole point --
@@ -174,7 +210,7 @@ GRID_LOOP_REPLAY_S = 300.0
 #: demonstrates it is `GRID_LOOP_REPLAY_S = 285.0`, not a production edit.
 #: Measured: at 285.0 this assertion is the ONLY thing in the file that
 #: fails.
-_JUDGED_THROUGH_S = {"nob_hill": 398.18, "grid_loop": 293.35}
+_JUDGED_THROUGH_S = {"nob_hill": 398.18, "grid_loop": 293.35, "grid_merge": 197.30}
 
 #: The longest a single unbroken `lane_change_*` run may last, in seconds, and
 #: how close to its own lane the car must be on the last frame of one.
@@ -222,9 +258,10 @@ _JUDGED_THROUGH_S = {"nob_hill": 398.18, "grid_loop": 293.35}
 #:
 #: * Nob Hill is **bit-identical** under the mutation (1 run, 473 labelled,
 #:   7.8833 s, worst 1.7890 m). This is a one-scene kill.
-#: * the two bounds are asserted in order, so when the duration bound fires
-#:   the share bound below never runs. Its figure -- 23.37 % against 16 % --
-#:   is measured separately, not read off that test run.
+#: * the two bounds WERE asserted in order, so when the duration bound fired
+#:   the share bound below never ran, and its 23.37 % had to be measured by
+#:   hand. Fixed at Wave C: the test collects all three of its bounds and
+#:   asserts once, so this mutation now reports both in one message.
 #:
 #: The honest statement of what the DURATION bound alone cannot see: it is one
 #: number against the longest single run, and a backstop can be inflated
@@ -351,6 +388,25 @@ def grid_loop_replay():
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     return sim.scene, _drive(sim, GRID_LOOP_REPLAY_S)
+
+
+@pytest.fixture(scope="module")
+def grid_merge_replay():
+    """`GRID_MERGE_REPLAY_S` of the third scene, driven once. See that constant.
+
+    NO `set_param` AND NO SEED OVERRIDE, which is the point of it. The other
+    two fixtures above both tune their scene until it manoeuvres -- grid-loop
+    at `seed=7` / `traffic_speed_scale=0.45`, Nob Hill at 0.4 over 600 s --
+    and a lane-change claim measured only on scenes selected for changing
+    lanes is a claim about the tuning as much as about the car. `seed=4` is
+    the seed `contract/validate_py_test.py` already builds this scene with, so
+    the replay and the committed fixture describe the same drive.
+
+    Same `Frame` shape as the other two, so the scans below take it by
+    parametrisation rather than by a third code path.
+    """
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    return sim.scene, _drive(sim, GRID_MERGE_REPLAY_S)
 
 
 def _drive(sim, seconds: float) -> list[Frame]:
@@ -874,9 +930,9 @@ def _overhang_of_the_occupied_lane(road, ego_off: float, lat: float) -> float:
     return max(lo - (centre - LANE_W / 2.0), (centre + LANE_W / 2.0) - hi, 0.0)
 
 
-@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop", "grid_merge"])
 def test_no_frame_of_a_change_sits_in_a_lane_that_is_not_carriageway(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_loop_replay, grid_merge_replay
 ):
     """The legality scan, extended from the DECISION to the whole manoeuvre.
 
@@ -909,8 +965,24 @@ def test_no_frame_of_a_change_sits_in_a_lane_that_is_not_carriageway(
     Measured after R3-FIX: worst overhang 0.0151 m on Nob Hill and 0.7832 m on
     grid-loop, against the 1.5 m bound -- see `_LANE_OVERHANG_M` for why that
     is not `_SCAN_TOL_M`.
+
+    ON grid-merge THIS IS THE SCAN THAT BINDS, AND THE CRITERION BELOW IS NOT
+    (Wave C, and the reason the third scene was given both rather than only
+    the criterion it was asked for). Measured with defect C-1 restored,
+    grid-merge's worst overhang is **4.4070 m** over 57 frames against this
+    1.5 m bound, while the acceptance criterion on the same drive reads
+    1.9199 m and stays GREEN. That is the mid-traverse gap this docstring
+    describes, demonstrated on a scene rather than argued: a car half a lane
+    into a lane that is not road is 1.80 m from two centrelines and 2.9 m of
+    overhang. Correct driving on this scene reads **0.0000 m** over 430 judged
+    frames -- no corner-mitre artifact at all, because grid-merge's manoeuvres
+    do not fall on fillets -- so here the bound separates 0.0 from 4.4.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {
+        "nob_hill": nob_hill_replay,
+        "grid_loop": grid_loop_replay,
+        "grid_merge": grid_merge_replay,
+    }[scene_name]
     route, lanes = scene.ego_route, scene.lanes
     sys.path.insert(0, str(Path(__file__).parent))
     from test_lane_set import _offset_from
@@ -1032,29 +1104,41 @@ def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
     scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
     runs = _labelled_runs(frames)
     assert runs, "no lane change was labelled at all -- this bounds nothing"
+
+    # THREE INDEPENDENT BOUNDS, REPORTED TOGETHER (Wave C). These were three
+    # `assert`s in a row, which meant only the first one to fire could ever be
+    # seen: `LANE_CHANGE_PASS_MAX_S` 6.0 -> 10.0 trips the duration bound at
+    # 15.5833 s AND the share bound at 23.37 %, and the second figure had to be
+    # measured by hand because the test stopped at the first. They are gathered
+    # into one verdict so a run that breaks two of them says so.
+    problems = []
     over = [(round(i * DT, 2), round(s, 2)) for i, s, _e in runs if s > MAX_LABELLED_RUN_S]
-    assert not over, (
-        f"{len(over)} of {len(runs)} labelled runs outlast {MAX_LABELLED_RUN_S} s "
-        f"(start t, duration): {over[:5]}"
-    )
+    if over:
+        problems.append(
+            f"{len(over)} of {len(runs)} labelled runs outlast {MAX_LABELLED_RUN_S} s "
+            f"(start t, duration): {over[:5]}"
+        )
     adrift = [
         (round(i * DT, 2), round(e, 3)) for i, _s, e in runs if e > SETTLED_BY_END_M
     ]
-    assert not adrift, (
-        f"{len(adrift)} of {len(runs)} labelled runs end with the car still "
-        f"more than {SETTLED_BY_END_M} m off its lane, i.e. the label ran out "
-        f"before the manoeuvre did (start t, offset): {adrift[:5]}"
-    )
+    if adrift:
+        problems.append(
+            f"{len(adrift)} of {len(runs)} labelled runs end with the car still "
+            f"more than {SETTLED_BY_END_M} m off its lane, i.e. the label ran out "
+            f"before the manoeuvre did (start t, offset): {adrift[:5]}"
+        )
     # The other axis of the same window (finding I-1). A backstop inflated far
     # enough to matter shows up here as MORE manoeuvres rather than as one
-    # longer one, which the bound above cannot see. See `MAX_LABELLED_RUN_S`.
+    # longer one, which the duration bound cannot see. See `MAX_LABELLED_RUN_S`.
     labelled = sum(1 for f in frames if f.maneuver in LANE_CHANGE_LABELS)
     share = labelled / len(frames)
-    assert share < MAX_LABELLED_SHARE, (
-        f"{labelled} of {len(frames)} frames ({share:.1%}) wear a lane-change "
-        f"label, over {MAX_LABELLED_SHARE:.0%}; that is the window both 2.0 m "
-        "lane-holding guards are excused from looking at"
-    )
+    if share >= MAX_LABELLED_SHARE:
+        problems.append(
+            f"{labelled} of {len(frames)} frames ({share:.1%}) wear a lane-change "
+            f"label, over {MAX_LABELLED_SHARE:.0%}; that is the window both 2.0 m "
+            "lane-holding guards are excused from looking at"
+        )
+    assert not problems, "; ".join(problems)
 
 
 # --------------------------------------------------------------------------- #
@@ -1527,11 +1611,33 @@ def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
     )
 
 
-@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop", "grid_merge"])
 def test_the_ego_is_never_adrift_from_every_legal_lane(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_loop_replay, grid_merge_replay
 ):
     """THE PHASE'S ACCEPTANCE CRITERION. See `_NEAR_A_LEGAL_LANE_M`.
+
+    "NEVER ADRIFT" IS THE TEST'S NAME, NOT ITS GUARANTEE. Three limits, all
+    measured, before anything else in this docstring is read as stronger than
+    it is; `_NEAR_A_LEGAL_LANE_M` carries the full versions.
+
+    * It cannot see an ego route that itself leaves the carriageway, because
+      `_legal_lane_centres` always offers `ego_off` and a car on its own route
+      is 0 m from a candidate by construction. Measured on Nob Hill, **3863 of
+      36000 frames** put the car's own centre outside the governing road's
+      forward half -- worst 0.6689 m -- and 4436 put the EGO ROUTE there,
+      worst 0.4427 m. That is the pre-existing ruling-Q19 artifact of
+      `EGO_LANE_INSET` against real OSM lane counts, not this phase's
+      driving, and this criterion is blind to all of it.
+    * Probed at the limit rather than argued: rebuilt with `EGO_LANE_INSET =
+      0` so the ego drives grid-loop's whole lap down the double yellow, this
+      criterion reads 1.7995 m and PASSES all 18000 frames.
+    * It is a DISTANCE to the nearest legal centreline, so a car exactly half
+      way across a traverse is 1.80 m from two of them and passes at 2.5 m
+      whether or not the lane it is entering is road.
+      `test_no_frame_of_a_change_sits_in_a_lane_that_is_not_carriageway` is
+      the scan that says the lane itself has to be carriageway, and on
+      grid-merge it is the only one of the two that catches defect C-1.
 
     THIS WAS RED ON grid-loop AT `e64b769`, ON PURPOSE. It was the criterion
     catching the defect it was written to catch, and R3-FIX fixed the car
@@ -1555,10 +1661,28 @@ def test_the_ego_is_never_adrift_from_every_legal_lane(
 
     R3-FIX refuses to START a manoeuvre without `LANE_CHANGE_LEGAL_LOOKAHEAD_M`
     of legal road ahead, and re-asks every tick of the outbound and passing
-    phases over `LANE_CHANGE_LEGAL_HOLD_M`. Both scenes are green: worst
-    1.7890 m on Nob Hill and 2.1396 m on grid-loop, 0 frames at or over 2.5 m.
-    See `_NEAR_A_LEGAL_LANE_M` for what the re-ask alone would have got (3.1158
-    m, still red) and why the lookahead is the part that fixes it.
+    phases over `LANE_CHANGE_LEGAL_HOLD_M`. All three scenes are green: worst
+    1.7890 m on Nob Hill, 2.1396 m on grid-loop and 1.7971 m on grid-merge, 0
+    frames at or over 2.5 m on any of them.
+
+    WHICH OF THE TWO MECHANISMS FIXES IT (corrected at Wave C). This used to
+    say the re-ask alone would still have been red at 3.1158 m and that the
+    lookahead was the part that fixed it. That figure came from a drive with
+    BOTH horizons at 0.0, which does not weaken the re-ask -- it deletes it,
+    collapsing `_stays_legal` to the single-station question C-1 was. Driven
+    one at a time, EITHER mechanism alone leaves every scene green; see
+    `plan/behavior.py::LANE_CHANGE_LEGAL_HOLD_M` for the table.
+
+    THE THIRD SCENE, AND WHAT IT SHOWS ABOUT THIS CRITERION (Wave C). Every
+    "both scenes" claim in this phase was a two-of-three claim; `grid-merge`
+    is the third and is the only one that manoeuvres at its own defaults. It
+    is GREEN here at 1.7971 m over 12600 frames. It is also the scene on which
+    THIS criterion cannot catch the phase's own headline defect: with C-1
+    restored grid-merge reads 1.9199 m and stays green, while the overhang
+    scan reads 4.4070 m and fails. Two of the three scenes -- Nob Hill and
+    grid-merge -- never breach 2.5 m even with the defect back. That is the
+    honest scope of the gate, and the reason both scans are parametrised here
+    rather than only this one.
 
     NOTHING ELSE IN THE SUITE SEES IT, which is the argument for this test in
     one sentence. `test_no_lane_change_is_ever_initiated_into_lane_that_is_not_
@@ -1590,7 +1714,11 @@ def test_the_ego_is_never_adrift_from_every_legal_lane(
     of metres, so it changes the answer nowhere. Re-projecting `post` would
     double this replay's most expensive per-frame call for that.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {
+        "nob_hill": nob_hill_replay,
+        "grid_loop": grid_loop_replay,
+        "grid_merge": grid_merge_replay,
+    }[scene_name]
     route, lanes = scene.ego_route, scene.lanes
     assert lanes is not None, "the scene has no lane set to be legal in"
     sys.path.insert(0, str(Path(__file__).parent))
@@ -1619,8 +1747,9 @@ def test_the_ego_is_never_adrift_from_every_legal_lane(
     # the replay drove a manoeuvre, and a large share of it ran where the ego's
     # is the ONLY legal lane, which is where the bound is a real statement
     # rather than a statement about being between two lanes. Measured: 36000 of
-    # 36000 frames judged on Nob Hill with 33545 (93 %) single-lane, and 18000
-    # of 18000 on grid-loop with 9495 (53 %).
+    # 36000 frames judged on Nob Hill with 33545 (93 %) single-lane, 18000
+    # of 18000 on grid-loop with 9495 (53 %), and 12600 of 12600 on grid-merge
+    # with 6719 (53 %).
     assert judged == len(frames), (
         f"only {judged} of {len(frames)} frames had a governing road; the rest "
         "were never judged"
