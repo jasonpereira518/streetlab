@@ -133,3 +133,83 @@ def test_agents_carry_a_wire_class_and_size(built):
     for agent in make(built).agents:
         assert agent.cls in ("car", "truck", "bus", "motorcycle", "cyclist", "pedestrian", "unknown")
         assert agent.size.length > 0 and agent.size.width > 0 and agent.size.height > 0
+
+
+def test_scripted_traffic_accepts_a_world_and_ignores_it(built):
+    """The seam, proved before anything uses it.
+
+    Two populations stepped with wildly different egos must stay identical:
+    `ScriptedTraffic` is what every existing test here and the determinism test
+    in `test_loop.py` measure, and Task 1 must not move any of it.
+    """
+    from sim.agents import TrafficWorld
+    from sim.vehicle import VehicleState
+
+    a, b = make(built), make(built)
+    near = TrafficWorld(
+        ego=VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=0.0),
+        ego_route=built.ego_route,
+        t=0.0,
+    )
+    far = TrafficWorld(
+        ego=VehicleState(x=9999.0, y=9999.0, heading=0.0, speed_mps=30.0),
+        ego_route=built.ego_route,
+        t=0.0,
+    )
+    for _ in range(300):
+        a.step(1 / 60, near)
+        b.step(1 / 60, far)
+    assert [x.s for x in a.agents] == [x.s for x in b.agents]
+
+
+def test_a_traffic_world_cannot_be_used_to_move_the_ego():
+    """Frozen, and carrying the ego by value.
+
+    The one-way flow -- the sim advances traffic, traffic never advances the
+    sim -- is what keeps the step order comprehensible, and a mutable handle
+    on the ego is all it would take to lose it.
+    """
+    from sim.agents import TrafficWorld
+    from sim.vehicle import VehicleState
+
+    world = TrafficWorld(
+        ego=VehicleState(x=1.0, y=2.0, heading=0.0, speed_mps=3.0),
+        ego_route=SyntheticGrid().build("grid-merge").ego_route,
+        t=0.0,
+    )
+    with pytest.raises(Exception):
+        world.ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=0.0)
+
+
+def test_the_simulation_hands_the_traffic_model_the_current_ego():
+    from sim.loop import Simulation
+
+    seen = []
+
+    class _Recording:
+        """Everything `TrafficModel` requires, delegated, plus a note of the world."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        @property
+        def agents(self):
+            return self.inner.agents
+
+        def step(self, dt, world):
+            seen.append((world.t, world.ego.x, world.ego.y))
+            self.inner.step(dt, world)
+
+        def set_speed_scale(self, scale):
+            self.inner.set_speed_scale(scale)
+
+        def slow(self, agent, *, to_mps, for_s):
+            self.inner.slow(agent, to_mps=to_mps, for_s=for_s)
+
+    sim = Simulation(SyntheticGrid(), seed=7)
+    sim._traffic = _Recording(sim._traffic)
+    sim.step()
+    sim.step()
+    assert len(seen) == 2
+    assert seen[0][0] == 0.0
+    assert seen[1] != seen[0], "the ego never moved between ticks"

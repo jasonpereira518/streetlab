@@ -51,6 +51,26 @@ class Agent:
     override_until_s: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class TrafficWorld:
+    """What an agent may know about the world outside its own route.
+
+    `step(dt)` could not express car-following at all: an agent that cannot see
+    the ego cannot yield to it, and one that cannot see its own neighbours
+    drives through them -- which is exactly what Cycle 1's agents do, by design
+    and by this module's own docstring above.
+
+    Frozen, and carrying the ego BY VALUE: a traffic model holding a live
+    reference to `WorldState` could mutate the ego, and the one-way flow -- the
+    sim advances traffic, traffic never advances the sim -- is what keeps the
+    step order comprehensible.
+    """
+
+    ego: VehicleState
+    ego_route: Route
+    t: float
+
+
 @runtime_checkable
 class TrafficModel(Protocol):
     """Anything that advances a population of agents."""
@@ -60,8 +80,8 @@ class TrafficModel(Protocol):
         """The current population. Read every frame; never mutated by callers."""
         ...
 
-    def step(self, dt: float) -> None:
-        """Advance every agent by `dt` seconds."""
+    def step(self, dt: float, world: TrafficWorld) -> None:
+        """Advance every agent by `dt` seconds, given what it may see."""
         ...
 
     def set_speed_scale(self, scale: float) -> None:
@@ -140,7 +160,13 @@ class ScriptedTraffic:
         agent.override_speed_mps = max(0.0, to_mps)
         agent.override_until_s = self._elapsed + for_s
 
-    def step(self, dt: float) -> None:
+    def step(self, dt: float, world: TrafficWorld | None = None) -> None:
+        """Advance the population. `world` is accepted and deliberately ignored.
+
+        Defaulted here and only here: `ScriptedTraffic` is constructed directly
+        by a dozen tests that have no world to give it, while the protocol
+        itself requires one so a model that needs it cannot be handed nothing.
+        """
         self._elapsed += dt
         for agent in self._agents:
             if (

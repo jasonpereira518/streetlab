@@ -53,7 +53,7 @@ from schema import (
     VehicleStatus,
     parse_command,
 )
-from sim.agents import ScriptedTraffic, TrafficModel
+from sim.agents import ScriptedTraffic, TrafficModel, TrafficWorld
 from sim.vehicle import BicycleModel, VehicleState
 
 log = logging.getLogger("streetlab.sim")
@@ -246,7 +246,12 @@ class Simulation:
                 return
             self.world.pending_steps -= 1
 
-        self._traffic.step(dt)
+        self._traffic.step(
+            dt,
+            TrafficWorld(
+                ego=self.world.ego, ego_route=self.scene.ego_route, t=self.world.t
+            ),
+        )
 
         self._guard_world()
         result = self._plan(dt)
