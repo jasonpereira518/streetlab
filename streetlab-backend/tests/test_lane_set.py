@@ -328,32 +328,52 @@ def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, re
 # --------------------------------------------------------------------------- #
 
 
-def _agent_samples_where_a_second_forward_lane_runs(scene):
-    """Each agent route, sampled at every ego station on a TWO-WAY road running
-    two or more lanes the ego's way, as `(route index, s, road, offset)`.
+def _agent_samples_on_a_two_way_road(scene):
+    """Each agent route, sampled at every ego station on a TWO-WAY road, as
+    `(route index, s, road, offset)`.
 
     The offset is signed against the EGO's heading, positive to the LEFT --
-    which on a two-way road is across the divider, into oncoming traffic.
+    which on a two-way road is across the divider, into oncoming traffic. The
+    ego's own carriageway therefore runs from the centreline out to
+    `-lanes_forward * lane_width_m`, and traffic belongs between the two: over
+    the line is oncoming, past the kerb edge is the pavement.
 
     Sampled at the EGO's stations rather than at each agent route's own
     vertices, and that is the whole point of the measurement rather than an
     implementation convenience: the question is where the traffic is when the
-    ego is on a stretch of road that has a second forward lane, and only the
-    ego route has stations to ask that of. An agent route offset from it has
-    its own, differently-spliced vertex list (304 for the pre-fix Nob Hill left
-    lane against the ego's 339), so scanning those instead answers a slightly
-    different question and returns a different count.
+    ego is on a given stretch of road, and only the ego route has stations to
+    ask that of. An agent route offset from it has its own, differently-spliced
+    vertex list (304 for the pre-fix Nob Hill left lane against the ego's 339),
+    so scanning those instead answers a slightly different question and returns
+    a different count.
 
     Oneway roads are excluded: their centreline is the middle of the
-    carriageway, not a divider, so a lane left of it is road. Roads with one
-    forward lane are excluded because no second lane is claimed there by
-    anything -- the defect this measures is traffic placed in a lane that does
-    not exist ON THE EGO'S SIDE, and `test_no_legal_change_targets_a_lane_left_
-    of_a_two_way_centreline` above is the same property asked of the lane model.
+    carriageway, not a divider, so a lane left of it is road.
+
+    Single-forward-lane roads are NOT excluded, though the version of this
+    helper written for the oncoming check alone did exclude them, and that
+    exclusion is what left the kerb-side half of the property unassertable.
+    Measured: putting every third agent on `ego_route.offset(-LANE_W)` -- the
+    kerbside lane both scene sources reject as today's defect mirrored -- lands
+    it at -5.414 m on grid-loop and -5.440 m on Nob Hill at the stations that
+    scan looked at, and a 2+2 road's forward carriageway reaches -7.2 m, so
+    there it is legitimately road. The stations where it is NOT road are the
+    single-forward-lane ones, whose carriageway stops at -3.6 m: the same route
+    sits 1.814 m (grid-loop) and 2.103 m (Nob Hill) past the kerb there. A
+    bound applied only where two forward lanes run cannot see that, whichever
+    way it is written.
+
+    Known limit, not fixed here: the reference road comes from
+    `nearest_road_along`, so it is chosen by proximity to the very ego station
+    whose surroundings are then judged. A route that wandered onto a parallel
+    street would be scored against THAT street's centreline and pass. A fix
+    needs a road identity that does not come from proximity -- the ego route
+    carrying the way ids it was built from, say -- which neither scene source
+    records today.
     """
     route = scene.ego_route
     for s, road in _segments(scene):
-        if road.oneway or road.lanes_forward < 2:
+        if road.oneway:
             continue
         here, heading = route.point_at(s), route.heading_at(s)
         for i, agent in enumerate(scene.agent_routes):
@@ -383,6 +403,23 @@ def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     this module's independent `_offset_from`, so a scene source that puts
     traffic in the wrong lane fails here whatever the lane model believes.
 
+    ONE-SIDED, deliberately, and the other side lives in
+    `test_no_traffic_is_placed_beyond_the_kerb_edge_of_its_own_carriageway`
+    rather than here. The `lanes_forward < 2` filter is what makes that
+    necessary: it is not decoration, it is the reason the two bounds cannot
+    share a sample set. Widening THIS assertion to every two-way station fails
+    on Nob Hill today, on the ego's own geometry rather than on the traffic --
+    36 of its 1020 two-way samples read up to +0.3457 m, the route crossing the
+    centreline of a single-lane street it was matched to (ruling Q19's
+    `EGO_LANE_INSET` defect, the same +0.3457 m
+    `test_the_lane_set_keeps_the_road_and_the_offset_it_judged_from` records).
+
+    A fragile threshold, worth knowing before reading a future failure here.
+    On Nob Hill the worst sample under this metric is -0.1577 m against a hard
+    `0.0`: a 16 cm shift in EGO geometry turns this red and the message will
+    blame the traffic model. Pre-existing placement, but this assertion now
+    depends on it. grid-loop has 1.80 m of room and is not close.
+
     `expected_samples` is a measured fixture property (3 agents x 18 grid-loop
     stations, 4 x 33 on Nob Hill), pinned exactly rather than as `> 0`. A
     source that shipped no traffic, or a route that stopped matching California
@@ -395,7 +432,9 @@ def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     """
     scene = request.getfixturevalue(scene_name)
     judged, crossings = 0, []
-    for i, s, road, offset in _agent_samples_where_a_second_forward_lane_runs(scene):
+    for i, s, road, offset in _agent_samples_on_a_two_way_road(scene):
+        if road.lanes_forward < 2:
+            continue
         judged += 1
         if offset > 0.0:
             crossings.append((i, round(s, 1), road.name, round(offset, 2)))
@@ -406,6 +445,63 @@ def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     assert not crossings, (
         f"{len(crossings)} of {judged} agent-route samples sit on the oncoming "
         f"side of a two-way centreline: {crossings[:10]}"
+    )
+
+
+@pytest.mark.parametrize(
+    "scene_name, expected_samples, worst_offset",
+    [("grid_loop", 108, -2.4615), ("nob_hill_scene", 1020, -2.1031)],
+)
+def test_no_traffic_is_placed_beyond_the_kerb_edge_of_its_own_carriageway(
+    scene_name, expected_samples, worst_offset, request
+):
+    """The other side of the same bound, and the side the oncoming scan is blind to.
+
+    `test_no_traffic_...oncoming_side...` above forbids crossing the divider and
+    says nothing about leaving the road, so the placement it rejects has an exact
+    mirror it accepts: put every third agent on
+    `Route(ego_route.points, closed=True).offset(-LANE_W)` -- the "kerbside lane"
+    both scene sources reject in as many words, `SyntheticGrid._agent_routes`
+    calling it a car "on the pavement for the other half" of the loop -- and that
+    scan stays green on both scenes with its judged count unmoved at 54/132.
+
+    Here the same mutation puts agent[2] 1.814 m (grid-loop, Sacramento St) and
+    2.103 m (Nob Hill, Hyde Street) past the kerb edge of a single-lane forward
+    carriageway. The bound is the road's own tagged geometry -- `lanes_forward`
+    lanes of `lane_width_m` out from the centreline -- not `LANE_W`, and the
+    offset is this module's independent `_offset_from`, so neither side of the
+    comparison comes from the lane model that authorises changes.
+
+    `worst_offset` pins the headroom, in the same measured-fixture idiom as
+    `expected_samples`: without it a bound loosened to any large negative number
+    would still read as green. Note what it is: with every agent on `ego_route`
+    itself, this scan's extreme IS the ego route's own worst offset, and
+    grid-loop's -2.4615 is the same corner `test_the_lane_set_keeps_the_road_and_
+    the_offset_it_judged_from` pins at -2.461 through `map.lanes`' own arithmetic
+    -- an independent second derivation agreeing, not a second copy of one.
+
+    Slack today: 1.139 m on grid-loop and 1.497 m on Nob Hill.
+    """
+    scene = request.getfixturevalue(scene_name)
+    offsets, beyond = [], []
+    for i, s, road, offset in _agent_samples_on_a_two_way_road(scene):
+        offsets.append(offset)
+        kerb = -road.lanes_forward * road.lane_width_m
+        if offset < kerb:
+            beyond.append(
+                (i, round(s, 1), road.name, road.lanes_forward, round(offset, 2))
+            )
+    assert len(offsets) == expected_samples, (
+        f"judged {len(offsets)} agent samples, not the measured "
+        f"{expected_samples}; the scene's traffic or its matched roads have moved"
+    )
+    assert not beyond, (
+        f"{len(beyond)} of {len(offsets)} agent-route samples sit beyond the kerb "
+        f"edge of the ego's own carriageway: {beyond[:10]}"
+    )
+    assert min(offsets) == pytest.approx(worst_offset, abs=1e-3), (
+        f"worst offset {min(offsets)!r} is not the measured {worst_offset}; the "
+        "headroom this bound is judged with has moved"
     )
 
 
