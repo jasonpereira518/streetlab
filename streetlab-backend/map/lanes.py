@@ -952,12 +952,26 @@ def _legal_directions_along(
 def _neighbour_lane(ego_route: Route, roads: list[Road], direction: int) -> Route:
     """`ego_route` shifted one lane width `direction`, as a drivable route.
 
-    Repaired by `remove_self_intersections` for the reason
-    `OsmSceneSource._agent_routes` gives: a wider offset can push a sharp
-    turn's mitre join into a self-crossing the narrower ego offset did not
-    produce, and `Route.project` does a global nearest-segment search with no
-    continuity guard. Limits are re-attached afterwards because `offset`
-    deliberately drops them.
+    Repaired by `remove_self_intersections` because a wider offset can push a
+    sharp turn's mitre join into a self-crossing the narrower ego offset did
+    not produce, and `Route.project` does a global nearest-segment search with
+    no continuity guard, so a crossing lets arc length jump discontinuously as
+    a tracker passes through it. Confirmed on the Nob Hill extract: simple ego
+    route in, self-intersecting neighbour out.
+
+    Spelled out here rather than cited from `OsmSceneSource._agent_routes`,
+    which is where this reason used to live. That method now argues the
+    opposite -- it dropped the offset lane, and says "nothing offsets it again"
+    -- so the citation pointed at a passage that had stopped supporting it.
+    This function is what still offsets it.
+
+    What binds this call is `tests/test_osm_source.py::test_every_route_in_the_
+    built_scene_is_simple`, which scans `scene.lanes`. NOT
+    `tests/test_route_selection.py::test_a_neighbour_lane_route_can_also_be_
+    repaired`, which re-runs the same recipe inline and never reaches here:
+    measured, deleting this repair leaves that file at 19 passed.
+
+    Limits are re-attached afterwards because `offset` deliberately drops them.
     """
     lane = remove_self_intersections(
         Route(ego_route.points, closed=ego_route.closed).offset(direction * LANE_W)

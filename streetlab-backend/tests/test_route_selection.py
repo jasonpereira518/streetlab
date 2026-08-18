@@ -494,13 +494,28 @@ def test_a_neighbour_lane_route_can_also_be_repaired():
     the same repair, applied separately -- which is what `_neighbour_lane`
     does.
 
-    This test was `test_agent_left_lane_route_can_also_be_repaired` and named
-    `osm_source.py`'s `_agent_routes` as the caller. That caller is gone --
-    traffic is no longer placed in the lane to the ego's LEFT, which on a
-    two-way road is oncoming (`map/osm_source.py::_agent_routes`). The
-    geometry under test is unchanged: `_neighbour_lane` performs the identical
-    `offset(LANE_W)` -> `remove_self_intersections` on the identical route, so
-    this keeps binding on a live caller rather than on a deleted one.
+    What this does NOT do is call `_neighbour_lane`. It re-runs that recipe
+    inline, so it binds on `Route.offset` and `remove_self_intersections`, not
+    on the caller that composes them: measured, deleting the repair from
+    `map/lanes.py`'s `_neighbour_lane` leaves this file at 19 passed. An
+    earlier docstring here claimed the opposite ("this keeps binding on a live
+    caller"), inherited from when this test was
+    `test_agent_left_lane_route_can_also_be_repaired` and did drive a live
+    caller, `osm_source.py`'s `_agent_routes` -- which is gone, traffic no
+    longer being placed in the lane to the ego's LEFT.
+
+    The live caller IS covered, by
+    `tests/test_osm_source.py::test_every_route_in_the_built_scene_is_simple`,
+    which scans `scene.lanes` and does fail when that repair is removed. Only
+    the attribution was wrong; the coverage is real, it is just in the other
+    file. What is left here is the isolated geometric claim, which that
+    seam-level scan cannot make: that the unrepaired offset self-intersects at
+    all, and that the repair trims rather than guts it.
+
+    One divergence to know before trusting this as a stand-in: it builds the
+    route `closed=True`, while `_neighbour_lane` passes
+    `closed=ego_route.closed`. Both are True for the OSM ego route used here,
+    so the two agree today on this fixture and only on this fixture.
     """
     graph = parse_overpass(json.loads(FIXTURE.read_text()))
     ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (0.0, 0.0))
