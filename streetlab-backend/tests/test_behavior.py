@@ -17,7 +17,6 @@ from plan.behavior import (
     LANE_CHANGE_COMMIT_S,
     LANE_CHANGE_LEGAL_HOLD_M,
     LANE_CHANGE_LEGAL_LOOKAHEAD_M,
-    LANE_CHANGE_OUTBOUND_MAX_S,
     LANE_CHANGE_PASS_BUFFER_M,
     LANE_CHANGE_PASS_MAX_S,
     LANE_CHANGE_RETRY_COOLDOWN_S,
@@ -621,6 +620,35 @@ def test_a_committed_change_is_not_abandoned_when_the_reason_disappears(road):
     assert d.maneuver == "lane_change_left"
 
 
+#: The latest the OUTBOUND backstop may turn a failed traverse round, in
+#: seconds, on the fixture below. A LITERAL, and deliberately not
+#: `LANE_CHANGE_OUTBOUND_MAX_S + 1.0`, which is what it used to be.
+#:
+#: FINDING B-4. R3-FIX removed the only episode on either replay that ever
+#: reached that backstop, and recorded the consequence in the constant's own
+#: docstring: 4.5, 5.0 and 6.0 now give bit-identical replays on both scenes,
+#: so NOTHING in the suite constrained `LANE_CHANGE_OUTBOUND_MAX_S` upward.
+#: The replays cannot: a backstop nothing reaches is invisible to them. This
+#: fixture can, because `ego_at` pins `y=0.0` so the traverse can never
+#: arrive and the backstop is the ONLY exit.
+#:
+#: 5.0 s, and the physical statement is "a traverse that is not going to
+#: arrive must be given up within five seconds", not "4.5 plus a bit".
+#: Measured: traverses that DO arrive complete in 3.05-3.90 s across both
+#: scenes (Wave B), so 5.0 s cuts no real traverse short; the transition on
+#: this fixture is at `held=4.517 s`, one tick after the backstop, leaving
+#: 0.48 s / 10.7 % of margin. The fixture is fully deterministic -- fixed dt,
+#: fabricated poses -- so that margin is slack, not noise, and the only thing
+#: that moves `held` is the constant itself. It catches
+#: `LANE_CHANGE_OUTBOUND_MAX_S` at or above ~4.98 s and fails fast (fractions
+#: of a second, not a hung CI job with no pytest-timeout configured).
+#:
+#: What it does NOT catch: an inflation from 4.5 to anything under 5.0. That
+#: band is unguarded and no measurement in this phase distinguishes values
+#: inside it -- the replays are bit-identical across it.
+_OUTBOUND_TURNS_ROUND_BY_S = 5.0
+
+
 def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     """Commit to an outbound change, then drive the FSM one tick at a time
     until `_begin_return` fires, returning that tick's decision.
@@ -653,13 +681,12 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     exit condition would never be satisfied -- an infinite loop, not a
     failing assertion. `detections=[]` here means `_lead_holding_us_up` can
     never re-trigger a fresh outbound change either, so there is no other way
-    out. Measured transition (this fixture): the return phase begins at
-    `held=4.517 s`, one tick after `LANE_CHANGE_OUTBOUND_MAX_S`.
-    `LANE_CHANGE_OUTBOUND_MAX_S + 1.0` (5.5 s) is comfortably above that --
-    about 0.98 s / 22% of headroom, enough to absorb the backstop constant
-    changing without the bound itself needing to track it, while still
-    failing fast (fractions of a second, not a hung CI job with no
-    pytest-timeout configured) under the regression it guards against.
+    out.
+
+    The bound is `_OUTBOUND_TURNS_ROUND_BY_S`, and it does a second job now:
+    see that constant. It used to be `LANE_CHANGE_OUTBOUND_MAX_S + 1.0`, which
+    moved in lockstep with the constant and so could never say anything about
+    its value.
     """
     fsm.step(ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
              lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0)
@@ -667,8 +694,11 @@ def _advance_to_the_moment_the_return_begins(fsm, road, lanes):
     d = None
     while fsm.lane_change is None or not fsm.lane_change.returning:
         held += DT
-        assert held < LANE_CHANGE_OUTBOUND_MAX_S + 1.0, (
-            "the outbound change never reached the return phase"
+        assert held < _OUTBOUND_TURNS_ROUND_BY_S, (
+            f"the outbound change had still not turned round at {held:.3f} s. "
+            "Either the backstop stopped firing (the regression this loop is "
+            "bounded against) or `LANE_CHANGE_OUTBOUND_MAX_S` has been raised "
+            f"past {_OUTBOUND_TURNS_ROUND_BY_S} s -- see that constant."
         )
         d = fsm.step(ego_at(12.0 * held, 12.0), road, 12.0 * held, [], {}, DT,
                      lanes=lanes, detections=[], limit_mps=12.0)

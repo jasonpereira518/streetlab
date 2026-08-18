@@ -212,7 +212,9 @@ LANE_CHANGE_SETTLE_M = 0.3
 #: Hard backstop on the OUTBOUND traverse, for when arrival never happens.
 #:
 #: The traverse is nominally `LANE_CHANGE_COMMIT_S` (3.5 s) and measured
-#: arrivals land at 3.3-4.0 s, but a car that is curvature-capped, braking, or
+#: arrivals land at 3.05-3.90 s (re-measured at Wave B from the FSM's own
+#: phase transitions; this read 3.3-4.0 s), but a car that is
+#: curvature-capped, braking, or
 #: crossing at 2 m/s can take longer, and the pre-fix behaviour of turning it
 #: round at 3.5 s regardless is what left it stranded between lanes: measured
 #: peak offsets of 1.16 m, 2.21 m and 2.35 m against a 3.6 m lane, on episodes
@@ -239,17 +241,24 @@ LANE_CHANGE_SETTLE_M = 0.3
 #: trip. Re-measured after R3-FIX: 4.5 -> 5.0 -> 6.0 changes NOTHING on Nob
 #: Hill, all three giving a worst unlabelled offset of 1.4126 m, an
 #: adrift-from-a-legal-lane worst of 1.7890 m and a bit-identical replay; no
-#: grid-loop traverse reaches 4.5 s either (measured outbound phases 3.38,
-#: 3.83, 3.85 and 3.90 s).
+#: grid-loop traverse reaches 4.5 s either (outbound phases 3.38, 3.40, 3.83
+#: and 3.90 s, re-measured at Wave B -- the "3.85" this used to list is not
+#: one of them).
 #:
-#: So: **nothing in the suite now constrains this constant upward.** Said
-#: plainly rather than left for the next reviewer to find, because it is a
-#: weakening that R3-FIX introduced. The usable window is [3.9, infinity) as
-#: measured, not the [3.9, 4.7] it was, and 4.5 is kept at the value the
-#: measurement that no longer exists chose for it. What still binds is the
-#: EXISTENCE of the backstop, in
+#: So: **no REPLAY in the suite constrains this constant upward**, and that is
+#: a weakening R3-FIX introduced. Said plainly rather than left for the next
+#: reviewer to find. The measured window from the replays alone is
+#: [3.9, infinity), not the [3.9, 4.7] it was, and 4.5 is kept at the value
+#: the measurement that no longer exists chose for it.
+#:
+#: What binds it now (Wave B). The EXISTENCE of the backstop is checked by
 #: `tests/test_behavior.py::test_a_traverse_that_never_arrives_begins_a_
-#: labelled_return`, which imports this constant and so moves with it.
+#: labelled_return`. Its VALUE is bounded above, in the same file, by
+#: `_OUTBOUND_TURNS_ROUND_BY_S` = 5.0 s -- a literal, on a fixture whose
+#: traverse can never arrive, so this backstop is its only exit. That is the
+#: one place in the suite where raising this constant fails something; the
+#: replays are bit-identical across 4.5, 5.0 and 6.0 and always will be while
+#: no episode reaches it. Anything in (4.5, 5.0) is still unguarded.
 LANE_CHANGE_OUTBOUND_MAX_S = 4.5
 
 #: Hard backstop on the passing phase: how long the car may sit in the target
@@ -305,11 +314,14 @@ EGO_LENGTH_M = 4.7
 #: converge to, or simply a slower vehicle than assumed. This bounds the
 #: total time the car can spend labelled mid-return regardless.
 #:
-#: Measured on the real Nob Hill replay (same fixture as above): three
-#: return phases in one 600 s run settled in 1.93 s, 2.48 s and 2.58 s.
-#: 6.0 s is >2.3x the slowest of those -- generous headroom over the
-#: measured figure, in the same spirit as `MAX_STEER_RATE_RAD_S` in
-#: `plan/control.py`, not tuned to trip near it.
+#: Re-measured at Wave B from the FSM's own phase transitions, on both
+#: scenes: the one Nob Hill return settles in 1.45 s, and grid-loop's four in
+#: 1.70, 1.78, 1.78 and 2.33 s. 6.0 s is 2.6x the slowest of those --
+#: generous headroom over the measured figure, in the same spirit as
+#: `MAX_STEER_RATE_RAD_S` in `plan/control.py`, not tuned to trip near it.
+#: (This used to read "three return phases in one 600 s run settled in
+#: 1.93 s, 2.48 s and 2.58 s"; Nob Hill drives one manoeuvre now, and the
+#: figures were never taken on grid-loop at all.)
 LANE_CHANGE_RETURN_MAX_S = 6.0
 
 #: How long a lead is left alone after an attempt on it achieved nothing.

@@ -127,10 +127,13 @@ visible but not a hazard. Phase 3 roadmap.
    either scene, asserted rather than observed.
 2. Outbound lane changes terminate on the lead being behind the ego; an
    episode that gains nothing does not repeat.
-3. On **every frame** of **both** scenes, with no exclusion window of any
-   kind, the car is within 2.5 m of the centreline of a lane that legally
-   exists at its station -- its own lane, or a neighbour whose full width fits
-   inside the forward carriageway there.
+3. On **every frame** of **both** scenes, with no frame excluded for any
+   reason -- not its label, not a junction, not a corner -- the car is within
+   2.5 m of the centreline of a lane that legally exists at its station: its
+   own lane, or a neighbour whose full width fits inside the forward
+   carriageway there. (This read "with no exclusion window of any kind" until
+   Wave B; the replay length is a window, and `_JUDGED_THROUGH_S` is what
+   guards it. See below.)
    (`tests/test_lane_changes.py::test_the_ego_is_never_adrift_from_every_legal_lane`.)
 
    **Replaces** "outside a labelled change, peak lateral offset < 2.0 m on both
@@ -149,25 +152,56 @@ visible but not a hazard. Phase 3 roadmap.
      against 2.0 m, inside the same junction-abort window as R4's 2.32 m
      breach.
 
-   The replacement has no window to widen: during a legitimate change the car
-   is between two lanes that both legally exist and peaks at `LANE_W / 2`
-   (1.8 m); in oncoming, on the pavement, or holding a lane that has run out,
-   it exceeds that at once whatever the frame is called. Legality is
-   re-derived in the test from the road's raw lane counts, NOT read from
-   `LaneSet.legal_at` -- reading the planner's own permission table would make
-   a planner that steers into oncoming agree with the criterion that judges it.
+   The replacement excludes no FRAME: during a legitimate change the car is
+   between two lanes that both legally exist and peaks at `LANE_W / 2`
+   (1.8 m). Legality is re-derived in the test from the road's raw lane
+   counts, NOT read from `LaneSet.legal_at` -- reading the planner's own
+   permission table would make a planner that steers into oncoming agree with
+   the criterion that judges it.
+
+   **What it does and does not bound (Wave B, measured).** It is not the
+   catch-all this section first claimed ("in oncoming, on the pavement, or
+   holding a lane that has run out, it exceeds that at once"). Three limits,
+   all measured, all now recorded in `_NEAR_A_LEGAL_LANE_M`'s docstring:
+
+   - The ego's own lane centre is always a candidate, so the criterion admits
+     any car within `2.5 - LANE_W/2` = **0.70 m beyond the outer edge of the
+     outermost legal lane**, either side. On a 1-forward/1-backward street --
+     87.75 % of Nob Hill, and 93 % of its frames run where the ego's is the
+     only legal lane -- that is a car held 0.70 m into the oncoming half
+     indefinitely. Probed with `EGO_LANE_INSET = 0` on both builders, so the
+     ego drives grid-loop's whole lap on the double yellow: the criterion
+     reads 0.5855 m outside a change, 1.7995 m overall, and passes.
+   - About half that 0.70 m pays for the criterion's own measurement error:
+     at a fillet `_offset_from` signs by the ego route's heading while
+     snapping to the road's nearest centreline point, so `ego_off` swings up
+     to 0.943 m on grid-loop. At corners it degrades toward "within 2.5 m of
+     the ego route".
+   - It is strictly weaker than the 2.0 m guard it replaces across the
+     2.0-2.5 m band, which is the band both of this phase's breaches lived
+     in. Both 2.0 m guards are retained, so the suite loses nothing; the GATE
+     does.
+
+   It also has no LABEL exclusion window, which is not the same as no window:
+   the replay length is one. `tests/test_lane_changes.py::_JUDGED_THROUGH_S`
+   pins it, because at `e64b769` the criterion's only RED frames were the last
+   2.6 % of a 300 s replay whose stated justification stopped at 285 s.
 
    The two 2.0 m guards are kept rather than deleted: they still bind on the
    frames they do look at, and done-criterion 5 asks for addition, not
    substitution.
 
-   **Status: met on Nob Hill (worst 1.8669 m, 0 frames at or over the bound);
-   NOT met on grid-loop** (worst 3.6094 m, 218 frames over, t=292.42-296.03 s).
-   That is a real defect, not a threshold problem: `may_change_at` is asked
-   once at the decision and never re-asked, so R3's PASSING phase can carry the
-   car onto a stretch where the lane it committed to is not a carriageway lane
-   -- 4.02 s with the car centre outside the carriageway on Sacramento Street.
-   Queued as R3-FIX; this criterion is deliberately left RED on it.
+   **Status at `e64b769`: met on Nob Hill (worst 1.8669 m, 0 frames at or over
+   the bound); NOT met on grid-loop** (worst 3.6094 m, 218 frames over,
+   t=292.42-296.03 s). That was a real defect, not a threshold problem:
+   `may_change_at` was asked once at the decision and never re-asked, so R3's
+   PASSING phase could carry the car onto a stretch where the lane it
+   committed to is not a carriageway lane -- 4.02 s with the car centre
+   outside the carriageway on Sacramento Street.
+
+   **Status after R3-FIX: MET on both scenes** -- Nob Hill worst 1.7890 m,
+   grid-loop worst 2.1396 m, 0 frames at or over the bound on either,
+   36000/36000 and 18000/18000 frames judged (re-measured at Wave B).
 4. `LaneState.left_marking` / `right_marking` come from `Road.center_marking`.
 5. 628 backend + 3 contract + 150 vitest + 12 Playwright still green, with the
    new assertions added rather than substituted.
