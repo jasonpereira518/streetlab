@@ -100,8 +100,9 @@ LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
 #: gate deleted outright. 600 s (~2.4 compliant laps) was measured to produce
 #: the FSM's first attempt at t=373.4 s and, re-measured at `e64b769`,
 #: 2 manoeuvres / 1105 labelled frames by t=600 s (the figure here read
-#: "4 changes / 1353" from before R3 merged two of them into one longer run). `test_the_nob_hill_replay_actually_changes_lanes` makes that
-#: non-vacuousness an assertion rather than an artifact of one measurement run.
+#: "4 changes / 1353" from before R3 merged two of them into one longer run).
+#: `test_the_nob_hill_replay_actually_changes_lanes` makes that non-vacuousness
+#: an assertion rather than an artifact of one measurement run.
 NOB_HILL_REPLAY_S = 600.0
 
 #: How long the grid-loop replay below runs, and why not less.
@@ -371,14 +372,25 @@ def _legal_lane_centres(road, ego_off: float) -> list[float]:
     that reads it is asking the planner's own permission slip whether the
     planner had permission, so a legality table that authorises a change into
     oncoming produces a car in oncoming AND a criterion that certifies it.
-    Demonstrated rather than argued: with `map.lanes.lane_change_is_legal`
-    replaced by `return True`, Nob Hill drives 30 changes instead of 4 and puts
-    the car 4.29 m from the nearest legal lane centre -- a full lane into
-    oncoming traffic across California Street's double yellow -- and a version
-    of the test below reading `legal_at` reports a worst of 1.7994 m and
-    PASSES. This version fails it at 4.2903 m. Same family as `_SCAN_TOL_M`
-    above and the six other checks in this phase that were judged against a
-    value derived from the thing under test.
+    Demonstrated rather than argued, on two mutations, both measured:
+
+    * `map.lanes.lane_change_is_legal` replaced by `return True`. Nob Hill goes
+      from 2 manoeuvres to 9 and from 1105 labelled frames to 4122 -- the car
+      changes lanes along a road that has one forward lane. THIS version
+      reports 3.7869 m and fails; the `legal_at` version reports **1.7983 m**
+      and passes.
+    * `derive_lanes`' neighbour sign flip, i.e. defect C1 put back, so the lane
+      the planner calls `lane_right` is built at `+LANE_W`, across the divider.
+      The car drives a full lane into oncoming. THIS version reports 3.7105 m
+      on Nob Hill and 3.7510 m on grid-loop and fails both; the `legal_at`
+      version reports **1.7987 m** and **1.7975 m** and passes both.
+
+    Both times the `legal_at` reading returns `LANE_W / 2` to the millimetre,
+    which is the signature of a check that cannot fail: it asks the planner's
+    own permission table whether the planner had permission, and reads the
+    planner's own geometry for where the permitted lane is. Same family as
+    `_SCAN_TOL_M` above and the six other checks in this phase that were judged
+    against a value derived from the thing under test.
 
     `LaneSet.road_at(s)` is still used, and is not the same problem: it is a
     passthrough of the `Road` record the scene was built from, matched to the
