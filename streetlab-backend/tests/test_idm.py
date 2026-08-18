@@ -144,7 +144,7 @@ def test_hazard_injection_still_holds_an_agent_slow(scene):
     """An injected hazard is an instruction, not a negotiation with IDM."""
     traffic = make(scene)
     victim = traffic.agents[0]
-    traffic.slow(victim, to_mps=0.0, for_s=6.0)
+    traffic.hold(victim, at_mps=0.0, for_s=6.0)
     for _ in range(180):
         traffic.step(DT, world(scene))
     assert victim.state.speed_mps < 1.0

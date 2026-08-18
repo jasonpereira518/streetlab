@@ -61,6 +61,11 @@ class Agent:
     lateral_m: float = 0.0
     #: Seconds left before another change may be considered.
     lane_change_cooldown_s: float = 0.0
+    #: Seconds this agent has left to live, or None to live as long as the
+    #: scene does. What a scenario-spawned participant is: a jaywalker that
+    #: never left would re-cross forever (arc length wraps), and an obstacle
+    #: that never cleared would deadlock a one-lane street permanently.
+    lifetime_s: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,8 +105,28 @@ class TrafficModel(Protocol):
         """Apply the `traffic_speed_scale` parameter."""
         ...
 
-    def slow(self, agent: Agent, *, to_mps: float, for_s: float) -> None:
-        """Temporarily hold one agent at a lower speed, then let it recover."""
+    def hold(self, agent: Agent, *, at_mps: float, for_s: float) -> None:
+        """Run one agent at a commanded speed for a while, then let it recover.
+
+        Not "slow": `sim/events.py` uses this in both directions -- a
+        `sudden_brake` holds its victim at zero, an `emergency_vehicle` holds
+        one above the posted limit -- and the recovery is the point either way.
+        A permanent override deadlocks the world; the ego stops behind a
+        stalled car and neither ever moves again.
+        """
+        ...
+
+    def spawn(self, agent: Agent) -> None:
+        """Add a participant mid-scene.
+
+        Ids must stay unique across the population's whole life: `Detection.id`
+        is the frontend's tracking key, and two live vehicles sharing one are
+        drawn as a single object teleporting between them.
+        """
+        ...
+
+    def despawn(self, agent_id: str) -> None:
+        """Remove a participant. Unknown ids are not an error."""
         ...
 
 
@@ -163,14 +188,38 @@ class ScriptedTraffic:
     def set_speed_scale(self, scale: float) -> None:
         self._speed_scale = max(0.0, float(scale))
 
-    def slow(self, agent: Agent, *, to_mps: float = 0.0, for_s: float = 8.0) -> None:
-        """Hold one agent slow for a while, then let it resume.
+    def hold(self, agent: Agent, *, at_mps: float = 0.0, for_s: float = 8.0) -> None:
+        """Run one agent at `at_mps` for `for_s` seconds, then let it resume.
 
         A permanent override would be simpler, but it deadlocks the world: ego
         stops behind the stalled car and neither ever moves again.
         """
-        agent.override_speed_mps = max(0.0, to_mps)
+        agent.override_speed_mps = max(0.0, at_mps)
         agent.override_until_s = self._elapsed + for_s
+
+    def spawn(self, agent: Agent) -> None:
+        if any(existing.id == agent.id for existing in self._agents):
+            raise ValueError(f"an agent already has the id {agent.id!r}")
+        self._agents.append(agent)
+
+    def despawn(self, agent_id: str) -> None:
+        # In place, not rebound: `agents` hands this list out by reference and
+        # `sim/loop.py` reads it every tick.
+        self._agents[:] = [a for a in self._agents if a.id != agent_id]
+
+    def _expire(self, dt: float) -> None:
+        """Retire agents whose lifetime has run out. Once per step.
+
+        Removal goes through `despawn` rather than filtering the list here, so
+        there is one way an agent leaves the population however it was decided.
+        """
+        for agent in self._agents:
+            if agent.lifetime_s is not None:
+                agent.lifetime_s -= dt
+        for agent in [
+            a for a in self._agents if a.lifetime_s is not None and a.lifetime_s <= 0.0
+        ]:
+            self.despawn(agent.id)
 
     def step(self, dt: float, world: TrafficWorld | None = None) -> None:
         """Advance the population. `world` is accepted and deliberately ignored.
@@ -180,6 +229,7 @@ class ScriptedTraffic:
         itself requires one so a model that needs it cannot be handed nothing.
         """
         self._elapsed += dt
+        self._expire(dt)
         for agent in self._agents:
             if (
                 agent.override_speed_mps is not None
@@ -217,7 +267,7 @@ class ScriptedTraffic:
         x, y = agent.route.point_at(s)
         heading = agent.route.heading_at(s)
         if agent.lateral_m:
-            nx, ny = _lateral_unit(agent.route, s)
+            nx, ny = lateral_unit(agent.route, s)
             x, y = x + nx * agent.lateral_m, y + ny * agent.lateral_m
         if lateral_rate and speed > 0.1:
             # The body points where the car is going, not where the lane does.
@@ -282,15 +332,18 @@ _MOBIL_THRESHOLD = 0.2
 _MOBIL_SAFE_DECEL = 4.0
 #: How long after one change before another is considered. Also what keeps an
 #: agent from oscillating across the line where two lanes are equally good.
-_MOBIL_COOLDOWN_S = 4.0
+MOBIL_COOLDOWN_S = 4.0
 #: Half the span of the centred difference the lateral normal is taken from.
-#: See `_lateral_unit`.
+#: See `lateral_unit`.
 _NORMAL_SPAN_M = 1.0
 
 #: The clear space, beyond both vehicles' half-lengths, a change needs in the
 #: target lane. A gap a car is already occupying is not a gap, and "it fits
 #: exactly" is not a lane change anyone makes.
 _MOBIL_MIN_CLEARANCE_M = 1.0
+
+#: Below this a held vehicle counts as stopped rather than driving slowly.
+_STANDSTILL_MPS = 0.5
 
 #: How fast an agent slides sideways into a lane it has just entered, m/s.
 #: 1.2 m/s puts a 3.6 m traverse at 3.0 s, which is an unhurried real-world
@@ -341,6 +394,7 @@ class IdmTraffic(ScriptedTraffic):
 
     def step(self, dt: float, world: TrafficWorld | None = None) -> None:
         self._elapsed += dt
+        self._expire(dt)
         ego_s_by_route = self._project_ego(world)
 
         for agent in self._agents:
@@ -373,9 +427,14 @@ class IdmTraffic(ScriptedTraffic):
             self._advance(
                 agent, speed, dt, lateral_rate=(agent.lateral_m - was) / dt if dt else 0.0
             )
-            if agent.override_speed_mps is None:
-                # A held vehicle is under instruction; it does not go looking
-                # for a better lane while it is.
+            stopped = (
+                agent.override_speed_mps is not None
+                and agent.override_speed_mps <= _STANDSTILL_MPS
+            )
+            if not stopped:
+                # A vehicle commanded to a standstill is not looking for a
+                # better lane. One commanded to a SPEED still is -- that is an
+                # emergency vehicle, and getting past is the whole scenario.
                 self._consider_lane_change(agent, world, ego_s_by_route)
 
     def _project_ego(self, world: TrafficWorld | None) -> dict[int, float]:
@@ -516,7 +575,7 @@ class IdmTraffic(ScriptedTraffic):
         agent.lateral_m = _lateral_of(lane.route, position, agent.s)
         agent.route = lane.route
         agent.lane_id = lane.id
-        agent.lane_change_cooldown_s = _MOBIL_COOLDOWN_S
+        agent.lane_change_cooldown_s = MOBIL_COOLDOWN_S
 
     def _evaluate(
         self,
@@ -621,7 +680,7 @@ def _nearest_behind(
     return best if best_gap <= _IDM_HORIZON_M else None
 
 
-def _lateral_unit(route: Route, s: float) -> tuple[float, float]:
+def lateral_unit(route: Route, s: float) -> tuple[float, float]:
     """The left-pointing unit normal to `route` at `s`, continuously in `s`.
 
     NOT from `Route.heading_at`, which is piecewise constant -- it steps a
@@ -638,7 +697,7 @@ def _lateral_unit(route: Route, s: float) -> tuple[float, float]:
 
 
 def _lateral_of(route: Route, position: tuple[float, float], s: float) -> float:
-    """`position`'s signed offset from `route` at `s`, on `_lateral_unit`'s normal.
+    """`position`'s signed offset from `route` at `s`, on `lateral_unit`'s normal.
 
     Deliberately not `Route.lateral_offset`, which measures on `heading_at`'s
     normal: a lane change has to leave the pose exactly where it was, and it
@@ -646,7 +705,7 @@ def _lateral_of(route: Route, position: tuple[float, float], s: float) -> float:
     on the same axis.
     """
     cx, cy = route.point_at(s)
-    nx, ny = _lateral_unit(route, s)
+    nx, ny = lateral_unit(route, s)
     return (position[0] - cx) * nx + (position[1] - cy) * ny
 
 

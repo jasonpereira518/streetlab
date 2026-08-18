@@ -404,7 +404,13 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   },
 
   injectHazard() {
-    get().send({ cmd: 'inject_hazard', kind: 'cutin' });
+    // `cut_in` is the backend's own name for this scenario
+    // (`streetlab-backend/sim/events.py`). This shipped as `cutin`, which cost
+    // nothing while every kind produced the identical hard-brake and would
+    // cost the button its ack now that they do not. The backend still accepts
+    // the old spelling as an alias, so an older build of this app keeps
+    // working against a newer sidecar.
+    get().send({ cmd: 'inject_hazard', kind: 'cut_in' });
   },
 }));
 
