@@ -11,8 +11,8 @@ import pytest
 
 from map.scene_build import SyntheticGrid
 from perception.service import GroundTruthPerception, PerceptionSource
-from schema import Detection
-from sim.agents import ScriptedTraffic
+from schema import Detection, Size
+from sim.agents import Agent, ScriptedTraffic
 from sim.vehicle import VehicleState
 
 
@@ -82,6 +82,99 @@ def test_lane_offset_is_zero_for_an_agent_in_the_ego_lane(built, traffic, ego):
     dets = perception.observe(ego, traffic.agents, built.ego_route)
     same_lane = [d for d in dets if d.lane_offset == 0]
     assert same_lane, "expected at least one agent sharing the ego lane"
+
+
+# A station on one of grid-merge's straights. Not s=0.0: that sits inside a
+# filleted corner, where the perpendicular construction below reads -3.5827 m
+# instead of -3.6 and only the sign of the answer survives.
+_STRAIGHT_S = 20.0
+
+
+def _beside(route, s, lanes_left):
+    """A point `lanes_left` lane widths to the LEFT of `route` at `s`, and the
+    heading there.
+
+    Placed from `heading_at` and the literal 3.6, NOT from
+    `perception.service._LANE_W`: displacing the agent by the same constant the
+    detector divides by is an algebraic identity that reads 1 whatever that
+    constant becomes, so it would pin the arithmetic to itself rather than to
+    a lane width.
+    """
+    x, y = route.point_at(s)
+    heading = route.heading_at(s)
+    return (
+        x - math.sin(heading) * 3.6 * lanes_left,
+        y + math.cos(heading) * 3.6 * lanes_left,
+        heading,
+    )
+
+
+def _one_agent_at(route, x, y, heading):
+    return Agent(
+        id="lat-1",
+        cls="car",
+        state=VehicleState(x=x, y=y, heading=heading, speed_mps=8.0),
+        size=Size(length=4.5, width=1.9, height=1.5),
+        route=route,
+        s=route.project((x, y)),
+        target_speed_mps=8.0,
+    )
+
+
+@pytest.mark.parametrize("lanes_left, expected", [(1, 1), (-1, -1)])
+def test_an_agent_a_lane_width_aside_is_reported_in_that_neighbouring_lane(
+    built, lanes_left, expected
+):
+    """The counterweight `test_lane_offset_is_zero_for_an_agent_in_the_ego_lane`
+    above never had.
+
+    That test asks only that SOME detection reads `lane_offset == 0`, which a
+    hard-coded zero satisfies maximally, and the committed contract corpus lost
+    its last non-zero value when Phase 2 regenerated it -- `{0: 64, 1: 18}`
+    became `{0: 84}`, so
+    `contract/validate_py_test.py::test_committed_fixtures_match_the_live_simulation`
+    stopped killing that mutation too. The field is not dead: over a 120 s
+    grid-merge window 2654 of 36716 detections (7.2 %) carry
+    `lane_offset == 1`, and `_closest_lead`, `_held_up` (`plan/control.py`) and
+    `sim/loop.py`'s `lateral_m = lane_offset * LANE_W` all read it, so a silent
+    zero makes the ego car-follow a vehicle in the ADJACENT lane.
+
+    Both signs are asserted, not just non-zeroness: `lane_offset` is signed the
+    way `Route.lateral_offset` is (`sim/route.py`), positive to the LEFT of
+    travel, and a subtraction written the other way round is still non-zero.
+    """
+    route = built.ego_route
+    ex, ey = route.point_at(_STRAIGHT_S)
+    ego = VehicleState(
+        x=ex, y=ey, heading=route.heading_at(_STRAIGHT_S), speed_mps=8.0
+    )
+    ax, ay, heading = _beside(route, _STRAIGHT_S, lanes_left)
+
+    dets = GroundTruthPerception().observe(
+        ego, [_one_agent_at(route, ax, ay, heading)], route
+    )
+    assert [d.lane_offset for d in dets] == [expected]
+
+
+def test_lane_offset_is_counted_from_the_ego_not_from_the_centreline(built):
+    """The ego-relative reading, which is where the live non-zero values come from.
+
+    The ego sits one lane RIGHT of the route and the agent ON it, so the two
+    are a lane apart while the agent's own offset from the centreline is zero.
+    Dropping the `- ego_lat` term reads that as the ego's own lane; keeping it
+    reads it as one lane left, which is what the car is looking at. Nothing
+    else in the suite distinguishes the two -- both shipped scenes put every
+    agent on `ego_route` itself, so agent and centreline coincide there.
+    """
+    route = built.ego_route
+    ex, ey, heading = _beside(route, _STRAIGHT_S, -1)
+    ego = VehicleState(x=ex, y=ey, heading=heading, speed_mps=8.0)
+    ax, ay = route.point_at(_STRAIGHT_S)
+
+    dets = GroundTruthPerception().observe(
+        ego, [_one_agent_at(route, ax, ay, heading)], route
+    )
+    assert [d.lane_offset for d in dets] == [1]
 
 
 def test_ttc_is_none_when_nothing_is_ahead(built):
