@@ -216,10 +216,40 @@ LANE_CHANGE_SETTLE_M = 0.3
 #: crossing at 2 m/s can take longer, and the pre-fix behaviour of turning it
 #: round at 3.5 s regardless is what left it stranded between lanes: measured
 #: peak offsets of 1.16 m, 2.21 m and 2.35 m against a 3.6 m lane, on episodes
-#: that never reached the lane they aimed at. 6.0 s is ~1.7x the nominal
+#: that never reached the lane they aimed at. Hitting it is a FAILED traverse
+#: -- the car goes home and `_decline` puts that lead on cooldown -- not a
+#: completed one.
+#:
+#: FINDING I-2. This paragraph used to read "6.0 s is ~1.7x the nominal
 #: traverse, matching `LANE_CHANGE_RETURN_MAX_S`'s headroom over its own
-#: measured worst. Hitting it is a FAILED traverse -- the car goes home and
-#: `_decline` puts that lead on cooldown -- not a completed one.
+#: measured worst" -- above a constant whose value is 4.5, which is 1.29x. A
+#: maintainer reconciling comment and value in the obvious direction would
+#: have raised it to 6.0, and at `16aba1e` that put Nob Hill's worst offset
+#: outside a label at 2.5689 m against the 2.0 m guard. The real reason for
+#: 4.5 lived only in a task report. It lives here now.
+#:
+#: FINDING I-3, and what R3-FIX did to it. The lower bound is measured and
+#: still holds: traverses that ARRIVE complete in 3.05-3.90 s across both
+#: scenes, so anything at or below 3.90 s starts cutting successful traverses
+#: short and turning them into declines. The upper bound has gone. At
+#: `16aba1e` this constant sat 0.5 s from a breach (5.0 s gave 2.0811 m
+#: against the 2.0 m guard) because Nob Hill's t=384.02 s manoeuvre stalled
+#: mid-traverse and ran to this backstop -- and R3-FIX refuses that manoeuvre,
+#: since it begins with 24.5 m of legal road and needs 21.0 m for the round
+#: trip. Re-measured after R3-FIX: 4.5 -> 5.0 -> 6.0 changes NOTHING on Nob
+#: Hill, all three giving a worst unlabelled offset of 1.4126 m, an
+#: adrift-from-a-legal-lane worst of 1.7890 m and a bit-identical replay; no
+#: grid-loop traverse reaches 4.5 s either (measured outbound phases 3.38,
+#: 3.83, 3.85 and 3.90 s).
+#:
+#: So: **nothing in the suite now constrains this constant upward.** Said
+#: plainly rather than left for the next reviewer to find, because it is a
+#: weakening that R3-FIX introduced. The usable window is [3.9, infinity) as
+#: measured, not the [3.9, 4.7] it was, and 4.5 is kept at the value the
+#: measurement that no longer exists chose for it. What still binds is the
+#: EXISTENCE of the backstop, in
+#: `tests/test_behavior.py::test_a_traverse_that_never_arrives_begins_a_
+#: labelled_return`, which imports this constant and so moves with it.
 LANE_CHANGE_OUTBOUND_MAX_S = 4.5
 
 #: Hard backstop on the passing phase: how long the car may sit in the target
@@ -228,11 +258,25 @@ LANE_CHANGE_OUTBOUND_MAX_S = 4.5
 #: Measured, a released ego closes on its lead at 4.9-7.5 m/s (Nob Hill
 #: t=373.4 s: gap 20.6 m to 13.1 m in one second once `lane_offset` released
 #: the lead from car-following), so a pass that is going to happen happens in
-#: 2-6 s. It is the ones that are NOT going to happen that this bounds --
-#: grid-loop at t=288 s accelerates out of a stop at 1.06 m/s behind a
-#: 4.43 m/s lead and can never gain. 8.0 s clears the measured 6 s worst by
-#: a third and keeps the whole manoeuvre bounded (see `MAX_LABELLED_RUN_S` in
-#: `tests/test_lane_changes.py`, which pins the total).
+#: 2-6 s. It is the ones that are NOT going to happen that this bounds.
+#:
+#: The old justification here was "8.0 s clears the measured 6 s worst by a
+#: third" -- above a constant whose value is 6.0, so it was I-2's mismatch a
+#: second time, AND circular: the measured 6 s worst IS this constant, since a
+#: pass that never gains runs exactly to the backstop. Neither half survives.
+#:
+#: What actually bounds it, both directions, measured after R3-FIX:
+#:
+#: * UPWARD by `MAX_LABELLED_RUN_S` and `MAX_LABELLED_SHARE` in
+#:   `tests/test_lane_changes.py`. 6.0 -> 10.0 takes grid-loop's worst labelled
+#:   run to 15.5833 s (over the 15.0 s ceiling) and its labelled share to
+#:   23.4 % (over the 16 % ceiling). At `16aba1e` the same mutation gave
+#:   14.4833 s and nothing failed.
+#: * DOWNWARD by `test_a_traverse_that_reaches_the_lane_holds_it`, which since
+#:   R3-FIX asks that a held pass actually CLOSES on its lead rather than only
+#:   that it lasted longer than `_HELD_MIN_S`. Measured, grid-loop's one
+#:   self-terminated episode gains 1.46 m in 5.97 s of holding; at 1.2 s it
+#:   gains 0.28 m and fails there.
 LANE_CHANGE_PASS_MAX_S = 6.0
 
 #: Daylight required BEYOND bumper-to-bumper before the lead counts as passed.
@@ -307,12 +351,26 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 #:
 #: What that costs, measured, and the margin on both sides. The legal road
 #: remaining at the seven initiations is 13.5, 24.5, 86.5, 112.0, 145.0, 148.0
-#: and 148.0 m. Any horizon in (24.5, 86.5] removes exactly the two manoeuvres
-#: that drive off the carriageway and keeps the other five; 60.0 sits 2.4x
-#: above the largest doomed case and 1.4x below the smallest surviving one.
-#: **The brief's suggested 25.0 m is inside that band by 0.5 m** -- it removes
-#: the Nob Hill episode with 24.5 m left only just, and a scene whose geometry
-#: moved that figure half a metre would silently stop removing it.
+#: and 148.0 m. Any horizon in (24.5, 86.5] refuses exactly the two manoeuvres
+#: that cannot afford the round trip and keeps the other five; 60.0 sits 2.4x
+#: above the larger of the two and 1.4x below the smallest surviving one.
+#: Driven end to end, 25.0 m and 60.0 m give BIT-IDENTICAL replays on both
+#: scenes -- same four grid-loop episodes, same one on Nob Hill, same worst
+#: distance-from-a-legal-lane to four decimal places.
+#:
+#: Only ONE of the two refused manoeuvres was a hazard, and the docstring
+#: should not imply otherwise. grid-loop's (13.5 m left) is the C-1 defect:
+#: 241 frames off the carriageway, worst 3.6094 m against the phase's 2.5 m
+#: bound. Nob Hill's (24.5 m left) stalls 0.475 m short of the target lane and
+#: never breaches anything -- driven at a 24.0 m horizon, which re-admits it,
+#: Nob Hill's worst is 1.7890 m with 0 frames over the bound, exactly as at
+#: 60.0 m. It is refused because it cannot afford the round trip, not because
+#: it was measured doing harm.
+#:
+#: **The brief's suggested 25.0 m is 0.5 m from re-admitting that Nob Hill
+#: manoeuvre** -- measured, a 24.0 m horizon does re-admit it. That is a coin
+#: toss rather than a margin, which is why this is sized from the out-and-back
+#: cost instead of from the threshold that happens to separate the fixtures.
 #:
 #: What this does NOT do, stated plainly because the docstring above reads
 #: stronger than the guarantee. It does not prove the lane lasts the whole
