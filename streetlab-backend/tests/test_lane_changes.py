@@ -277,6 +277,11 @@ _JUDGED_THROUGH_S = {"nob_hill": 398.18, "grid_loop": 293.35}
 #:   on `LANE_CHANGE_RETURN_MAX_S`, or under R4's junction abort, and nothing
 #:   here tells the three apart.
 #:
+#: Mutation-checked at 0.5: `LANE_CHANGE_SETTLE_M` 0.3 -> 1.15 now gives
+#: `3 failed, 18 passed`, with this bound firing on BOTH scenes -- 1 of 1
+#: Nob Hill runs at 1.139 m and 4 of 4 grid-loop runs at 1.117-1.146 m. At
+#: 1.2 the same mutation left this test entirely green.
+#:
 #: On that last point the brief for this wave asked for the backstop case to
 #: be "named and asserted separately, so settle-vs-backstop becomes testable
 #: rather than narrative". Measured, there is nothing left to name. The only
@@ -1109,6 +1114,16 @@ def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
 #: `LANE_CHANGE_PASS_MAX_S` to 1.2 s -- defect C2 in substance, the car turning
 #: round almost as soon as it arrives -- PASSED on both scenes, and only the
 #: Nob Hill pass test caught it, on an evidentiary base of one episode.
+#:
+#: RE-VERIFIED AT WAVE B, and the finding is closed: `LANE_CHANGE_PASS_MAX_S`
+#: 6.0 -> 1.2 now gives `2 failed, 19 passed` -- the grid-loop parametrisation
+#: of `test_a_traverse_that_reaches_the_lane_holds_it` fails on THIS bound (1
+#: of 2 judged episodes holds the lane for 1.15 s and LOSES 0.041 m), and
+#: `test_a_completed_overtake_actually_passes_the_lead` fails on Nob Hill. So
+#: C2 no longer rests on one Nob Hill episode: grid-loop kills the mutation on
+#: its own, which is exactly what I-5 was raised for. The duration half still
+#: does not fire (1.15 s > `_HELD_MIN_S`), so the gain assertion is carrying
+#: the whole grid-loop kill.
 #:
 #: Closing on the lead cannot be satisfied by a clock. Measured after R3-FIX,
 #: grid-loop's one self-terminated episode takes the gap from 13.59 m to

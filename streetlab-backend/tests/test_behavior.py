@@ -646,6 +646,15 @@ def test_a_committed_change_is_not_abandoned_when_the_reason_disappears(road):
 #: What it does NOT catch: an inflation from 4.5 to anything under 5.0. That
 #: band is unguarded and no measurement in this phase distinguishes values
 #: inside it -- the replays are bit-identical across it.
+#:
+#: Mutation-checked both ways. `LANE_CHANGE_OUTBOUND_MAX_S` 4.5 -> 6.0 gives
+#: `4 failed, 48 passed` here, every failure through this bound at
+#: `held=5.017 s` (three of the four are the other tests built on the helper
+#: below, which is the bound being load-bearing rather than decorative). With
+#: this constant set to 7.0 instead -- exactly what the old
+#: `LANE_CHANGE_OUTBOUND_MAX_S + 1.0` evaluates to at 6.0 -- the same mutation
+#: gives `52 passed`. That is the lockstep form being unable to see a 33 %
+#: inflation of the constant it was written over.
 _OUTBOUND_TURNS_ROUND_BY_S = 5.0
 
 
