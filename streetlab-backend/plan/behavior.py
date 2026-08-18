@@ -435,7 +435,7 @@ LANE_CHANGE_LEGAL_HOLD_M = 20.0
 #: 5.0 m is justified by measurement rather than by that argument: swept over
 #: every station of both scenes on a 0.5 m grid and in both directions, a
 #: stride of 5.0 m and a stride of 0.5 m return the same answer at every
-#: station, for both the 60.0 m and the 20.0 m horizon -- so on these two
+#: station, for both the 40.0 m and the 20.0 m horizon -- so on these two
 #: scenes nothing is being stepped over. Re-measure it on a new scene rather
 #: than assuming it; the honest fix is for `LaneSet` to answer over an
 #: INTERVAL, which is a change to R1's table this task did not open.
