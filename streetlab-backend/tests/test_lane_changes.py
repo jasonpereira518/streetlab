@@ -1175,3 +1175,53 @@ def test_all_seven_wire_maneuvers_are_now_reachable():
     seen = set(maneuvers_over(sim, 300.0))
     missing = set(get_args(Maneuver)) - seen - {"turn_left"}
     assert not missing, f"still unreachable: {sorted(missing)}"
+
+
+#: The gaps a change must find in the target lane, as `plan/behavior.py`'s
+#: `MIN_FRONT_GAP_M` and `MIN_REAR_GAP_M` state them.
+#:
+#: Literals, on the same reasoning `_CYCLE_WINDOW_S` gives: importing them
+#: would be the harmless direction only for a LARGER requirement. Shrink them
+#: towards zero -- the change that would actually let the car cut somebody up
+#: -- and an imported bound shrinks with them and nothing fails.
+_FRONT_GAP_M, _REAR_GAP_M = 18.0, 14.0
+
+
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+def test_no_lane_change_starts_into_an_occupied_gap(
+    scene_name, nob_hill_replay, grid_loop_replay
+):
+    """`_gap_is_acceptable` gets its first real occupants in Cycle 3 Phase 3.
+
+    It filters detections by `lane_offset == direction` and refuses a change
+    when one sits inside the gap window. Until Phase 3 no agent was ever in a
+    neighbour lane at all -- both scene sources put every one of them on the
+    ego route, and `ScriptedTraffic` had no way to leave it -- so the branch
+    was live code that nothing could reach with a vehicle to reject. MOBIL
+    puts agents there, and this is the claim finally becoming testable.
+
+    Judged on the run's FIRST frame, which is the one whose decision this was:
+    `Frame.dets` is the set `_plan()` cached on that tick and `ego_s` is the
+    pose it was computed from, and the two must be read together -- pairing
+    the previous tick's detections with this tick's pose reports a phantom
+    violation on grid-loop at t = 291.7 s, from an agent whose `lane_offset`
+    rounded over between the two frames.
+    """
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    route = scene.ego_route
+    judged, violations = 0, []
+    for a, _ in _runs(frames):
+        frame = frames[a]
+        direction = +1 if frame.maneuver == "lane_change_left" else -1
+        judged += 1
+        for d in frame.dets:
+            if d.lane_offset != direction:
+                continue
+            gap = route.signed_gap(frame.ego_s, route.project((d.pose.x, d.pose.y)))
+            if -_REAR_GAP_M < gap < _FRONT_GAP_M:
+                violations.append((round(a * DT, 1), direction, d.id, round(gap, 1)))
+    assert judged, "the replay started no lane change -- this proves nothing"
+    assert not violations, (
+        f"{len(violations)} of {judged} changes were started into an occupied "
+        f"gap (t, direction, vehicle, gap): {violations[:5]}"
+    )

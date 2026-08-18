@@ -6,6 +6,8 @@ gap rather than driving through it, and they yield to the ego rather than
 ignoring it. Both were unexpressible before `TrafficWorld`.
 """
 
+import math
+
 import pytest
 
 from map.scene_build import SyntheticGrid
@@ -42,12 +44,22 @@ def solo(scene, at_s):
     return traffic
 
 
-def world(scene, ego_s=0.0, speed=0.0):
-    """A `TrafficWorld` with the ego parked at arc length `ego_s` on its route."""
+def world(scene, ego_s=0.0, speed=0.0, lateral_m=0.0):
+    """A `TrafficWorld` with the ego at arc length `ego_s` on its route.
+
+    `lateral_m` displaces it off the centreline, + to the LEFT of travel, which
+    is how the ego sits mid-overtake once Phase 2's lane changes are driving.
+    """
     route = scene.ego_route
     x, y = route.point_at(ego_s)
+    heading = route.heading_at(ego_s)
     return TrafficWorld(
-        ego=VehicleState(x=x, y=y, heading=route.heading_at(ego_s), speed_mps=speed),
+        ego=VehicleState(
+            x=x - math.sin(heading) * lateral_m,
+            y=y + math.cos(heading) * lateral_m,
+            heading=heading,
+            speed_mps=speed,
+        ),
         ego_route=route,
         t=0.0,
     )
@@ -193,3 +205,25 @@ def test_a_speed_scale_of_zero_brings_traffic_to_a_halt(scene):
     for _ in range(180):
         traffic.step(DT, world(scene))
     assert all(a.state.speed_mps == 0.0 for a in traffic.agents)
+
+
+def test_an_agent_does_not_brake_for_an_ego_that_has_left_its_lane(scene):
+    """The Phase 2 seam: the ego can be in a lane that is not this one.
+
+    `_leader` projects the ego onto the agent's route to find the gap, and a
+    projection answers "how far ahead", never "in which lane" -- so an ego one
+    lane over projects exactly like an ego dead ahead. The whole point of
+    Phase 2's overtake is that pulling out FREES the lane behind; traffic that
+    goes on braking for a car that has left is the overtake not landing.
+    """
+    lanes = scene.lanes
+    beside, behind = solo(scene, at_s=20.0), solo(scene, at_s=20.0)
+    in_lane = world(scene, ego_s=35.0, speed=2.0)
+    overtaking = world(scene, ego_s=35.0, speed=2.0, lateral_m=lanes.neighbour(-1).offset_m)
+    for _ in range(120):
+        behind.step(DT, in_lane)
+        beside.step(DT, overtaking)
+
+    assert beside.agents[0].state.speed_mps > behind.agents[0].state.speed_mps, (
+        "the agent braked for an ego a full lane width away"
+    )

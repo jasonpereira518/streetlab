@@ -310,6 +310,25 @@ _IDM_MAX_BRAKE = 4.5
 #: taking ITSELF, a lap away, as its own leader.
 _IDM_HORIZON_M = 90.0
 
+#: How far off a lane's centreline the ego may be and still count as being IN
+#: that lane. Half a lane width.
+#:
+#: Without it, "where is the ego" is answered by `Route.project` alone, and a
+#: projection says how far AHEAD something is, never which lane it is in -- so
+#: an ego one lane over reads exactly like an ego dead ahead. That was
+#: harmless while the ego never left its lane; Cycle 3 Phase 2 gave it lane
+#: changes, and it stopped being harmless in two directions at once. Traffic
+#: went on braking for a car that had pulled out to overtake it (so the
+#: overtake never freed the lane behind), and MOBIL could not see an ego
+#: anywhere but the ego lane, so it dropped an agent into the kerbside lane
+#: 1.9 m from an ego overtaking in it -- inside both vehicles' half-lengths.
+#:
+#: Restated rather than imported from `map.lanes`, on the precedent
+#: `perception/service.py` already sets with its own `_LANE_W`: `sim` does not
+#: depend on `map`, and a traffic model that could not run without a map
+#: package would be a worse trade than one number in two places.
+_SAME_LANE_M = 1.8
+
 #: The ego's own length, for the bumper-to-bumper gap. Read off the model the
 #: simulation actually integrates the ego with, so the two cannot drift.
 #: `plan/behavior.py` restates the same number because `plan` may not import
@@ -437,21 +456,44 @@ class IdmTraffic(ScriptedTraffic):
                 # emergency vehicle, and getting past is the whole scenario.
                 self._consider_lane_change(agent, world, ego_s_by_route)
 
-    def _project_ego(self, world: TrafficWorld | None) -> dict[int, float]:
-        """This tick's ego arc length on each route traffic occupies.
+    def _project_ego(self, world: TrafficWorld | None) -> dict[int, tuple[float, float]]:
+        """This tick's ego `(arc length, lateral offset)` on each route traffic
+        occupies.
 
         Keyed by `id(route)` because `Route` is unhashable (mutable, slotted)
         and both sources hand every agent the SAME route object, so identity is
         exactly the equivalence the cache wants.
+
+        The lateral offset comes free once the projection is done -- `s` is the
+        expensive half -- and it is what makes "is the ego in this lane"
+        answerable at all (see `_SAME_LANE_M`).
         """
         if world is None:
             return {}
-        out: dict[int, float] = {}
+        out: dict[int, tuple[float, float]] = {}
         for agent in self._agents:
-            key = id(agent.route)
-            if key not in out:
-                out[key] = agent.route.project((world.ego.x, world.ego.y))
+            self._ego_on(agent.route, world, out)
         return out
+
+    @staticmethod
+    def _ego_on(
+        route: Route,
+        world: TrafficWorld,
+        cache: dict[int, tuple[float, float]],
+    ) -> tuple[float, float]:
+        """`(s, lateral)` of the ego on `route`, computed at most once a tick.
+
+        Lazily filled rather than precomputed for every lane: `_evaluate` asks
+        about a lane no agent is on, and that is the rare path -- it is reached
+        only when an agent both has a leader worth escaping and is off cooldown.
+        """
+        key = id(route)
+        hit = cache.get(key)
+        if hit is None:
+            position = (world.ego.x, world.ego.y)
+            s = route.project(position)
+            hit = cache[key] = (s, route.lateral_offset(position, s))
+        return hit
 
     def _desired_speed(self, agent: Agent) -> float:
         """Target speed, still capped by curvature as Cycle 1's agents were."""
@@ -465,7 +507,7 @@ class IdmTraffic(ScriptedTraffic):
         self,
         agent: Agent,
         world: TrafficWorld | None,
-        ego_s_by_route: dict[int, float],
+        ego_s_by_route: dict[int, tuple[float, float]],
     ) -> tuple[float, float]:
         """`(gap, leader_speed)` for the nearest vehicle ahead on this route.
 
@@ -473,6 +515,11 @@ class IdmTraffic(ScriptedTraffic):
         own front bumper is what `s` is measured to for this purpose -- and
         `math.inf` when nothing is inside `_IDM_HORIZON_M`, which is what tells
         `_idm_accel` to drop the interaction term entirely.
+
+        Other agents qualify by route identity; the ego qualifies by lateral
+        offset (`_SAME_LANE_M`), because it is not pinned to a lane route at
+        all -- it tracks a blended aim point between two of them while it
+        changes lane.
         """
         loop = agent.route.length_m
         best_gap, best_speed = math.inf, 0.0
@@ -483,8 +530,11 @@ class IdmTraffic(ScriptedTraffic):
             if 0 < gap < best_gap:
                 best_gap, best_speed = gap, other.state.speed_mps
         if world is not None:
-            ego_s = ego_s_by_route.get(id(agent.route))
-            if ego_s is not None:
+            ego_s, ego_lat = self._ego_on(agent.route, world, ego_s_by_route)
+            # Ahead is not enough: the ego has to be in THIS lane. Phase 2 gave
+            # it lane changes, and a car that has pulled out to overtake is no
+            # longer something to brake for.
+            if abs(ego_lat) <= _SAME_LANE_M:
                 gap = (ego_s - agent.s) % loop - _EGO_LENGTH_M / 2
                 if 0 < gap < best_gap:
                     best_gap, best_speed = gap, world.ego.speed_mps
@@ -498,7 +548,7 @@ class IdmTraffic(ScriptedTraffic):
         self,
         agent: Agent,
         world: TrafficWorld | None,
-        ego_s_by_route: dict[int, float],
+        ego_s_by_route: dict[int, tuple[float, float]],
     ) -> None:
         """Move `agent` one lane if MOBIL says it is both worth it and safe.
 
@@ -582,7 +632,7 @@ class IdmTraffic(ScriptedTraffic):
         agent: Agent,
         target: Lane,
         world: TrafficWorld | None,
-        ego_s_by_route: dict[int, float],
+        ego_s_by_route: dict[int, tuple[float, float]],
     ) -> tuple[float, bool]:
         """`(incentive, safe)` for moving `agent` into `target`.
 
@@ -605,9 +655,14 @@ class IdmTraffic(ScriptedTraffic):
             for other in self._agents
             if other is not agent and other.lane_id == target.id
         ]
-        if world is not None and target.id == EGO_LANE_ID:
-            ego_s = ego_s_by_route.get(id(target.route))
-            if ego_s is not None:
+        if world is not None:
+            # Whichever lane the ego is actually in, not whichever one it
+            # started the scene in. Asking `target.id == EGO_LANE_ID` was the
+            # same projection-is-not-a-lane mistake `_leader` made, and it
+            # blinded the safety criterion to an ego overtaking in the very
+            # lane an agent was about to move into.
+            ego_s, ego_lat = self._ego_on(target.route, world, ego_s_by_route)
+            if abs(ego_lat) <= _SAME_LANE_M:
                 occupants.append(
                     (ego_s, world.ego.speed_mps, _EGO_LENGTH_M, world.ego.speed_mps)
                 )

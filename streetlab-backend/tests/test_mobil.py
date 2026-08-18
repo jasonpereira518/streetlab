@@ -12,6 +12,8 @@ wrap) and nowhere else. That "and nowhere else" is half of what is tested here
 -- a lane that exists on 47 % of a loop is one an agent has to LEAVE again.
 """
 
+import math
+
 import pytest
 
 from map.scene_build import SyntheticGrid
@@ -243,3 +245,51 @@ def test_an_agent_does_not_pull_out_in_front_of_the_ego(scene):
     for _ in range(60 * 10):
         traffic.step(DT, right_behind)
     assert mover.lane_id != EGO_LANE_ID, "cut straight across the ego's bows"
+
+
+def test_an_agent_does_not_change_into_the_lane_the_ego_is_overtaking_in(scene):
+    """The other half of the Phase 2 seam.
+
+    `_evaluate` counted the ego as an occupant of the EGO lane and of nothing
+    else, so once Phase 2's lane changes put the ego in the kerbside lane it
+    became invisible to the safety criterion exactly where it mattered.
+    Measured before the fix: the mover dropped into `lane_right` 1.9 m from the
+    ego on the first tick, which is inside both vehicles' half-lengths.
+    """
+    kerb = scene.lanes.neighbour(-1)
+    traffic = make(scene)
+    mover, crawler = traffic.agents[0], traffic.agents[1]
+    for other in traffic.agents[2:]:
+        place(traffic, other, OUTSIDE_S)
+    place(traffic, mover, INSIDE_S, speed=6.0)
+    place(traffic, crawler, INSIDE_S + 18.0, speed=6.0)
+    crawler.target_speed_mps = 0.5
+
+    # The ego, mid-overtake, sitting in the kerbside lane right where the
+    # mover would land.
+    route = scene.ego_route
+    at = INSIDE_S + 2.0
+    x, y = route.point_at(at)
+    heading = route.heading_at(at)
+    alongside = TrafficWorld(
+        ego=VehicleState(
+            x=x - math.sin(heading) * kerb.offset_m,
+            y=y + math.cos(heading) * kerb.offset_m,
+            heading=heading,
+            speed_mps=6.0,
+        ),
+        ego_route=route,
+        t=0.0,
+    )
+    # Judged as a clearance, not as "never changes": once the mover is past
+    # the ego, moving over is correct, and a test that forbade it forever
+    # would pass just as well against an agent that could not change lane.
+    changed = False
+    for _ in range(60 * 10):
+        traffic.step(DT, alongside)
+        if mover.lane_id != kerb.id:
+            continue
+        changed = True
+        gap = abs(route.signed_gap(route.project((mover.state.x, mover.state.y)), at))
+        assert gap > 5.0, f"moved into the kerbside lane {gap:.1f} m from the ego"
+    assert changed, "never changed at all, so this measured nothing"
