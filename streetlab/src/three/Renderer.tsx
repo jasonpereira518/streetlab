@@ -526,10 +526,26 @@ function mount(
       applyFrame(frame, dt);
       cam.update(frame.ego.pose, frame.ego.speed_mps, cameraView, dt, buildings);
       lastSeq = frame.seq;
+    }
 
+    // The renderer has one render-target slot shared between the visible
+    // canvas and the detector camera's offscreen buffer. `capture()` switches
+    // it, renders, and restores it as early as it can — but the only thing
+    // that makes it *impossible* (not just unlikely) for this call to draw
+    // into the wrong place is checking `renderTargetBusy()` first, every
+    // tick, rather than trusting that a capture never outlives one frame. See
+    // detectorCamera.ts's `capture()` for the timing this is guarding.
+    if (!detectorCamera.renderTargetBusy()) {
+      renderer.render(scene, cam.camera);
+    }
+
+    if (frame) {
       // Detector capture: driven off the ego pose directly, never off `cam`
       // (the user's view camera) or `cameraView`, so this is unaffected by
-      // which view the user has selected.
+      // which view the user has selected. Triggered only after the main
+      // render above — issuing it first would let this same tick's own
+      // target switch race that render, which is exactly the bug this
+      // ordering (plus the renderTargetBusy() gate above) exists to prevent.
       sinceCaptureMs += dt * 1000;
       if (sinceCaptureMs >= DETECTOR_FRAME.intervalMs) {
         sinceCaptureMs -= DETECTOR_FRAME.intervalMs;
@@ -565,8 +581,6 @@ function mount(
           });
       }
     }
-
-    renderer.render(scene, cam.camera);
 
     fpsFrames++;
     fpsAccum += dt;

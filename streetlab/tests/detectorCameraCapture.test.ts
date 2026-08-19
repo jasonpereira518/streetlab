@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type * as THREE from 'three/webgpu';
 import { createDetectorCamera } from '../src/three/detectorCamera';
+import type { DetectorCamera } from '../src/three/detectorCamera';
 
 // `createDetectorCamera` unconditionally constructs an OffscreenCanvas. Neither
 // vitest's default `node` environment nor `jsdom` implement it, and the render
@@ -84,5 +85,80 @@ describe('capture() render target restore', () => {
     // touching the renderer at all. Reaching (and failing at) readback instead
     // proves `busy` was released.
     await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
+  });
+});
+
+describe('capture() renderTargetBusy timing', () => {
+  // These two tests exist because of a real bug: the render loop (Renderer.tsx)
+  // calls `renderer.render(scene, cam.camera)` once per display frame, and it
+  // shares a renderer with this offscreen capture. `renderTargetBusy()` is what
+  // that loop gates the main render call on, so its timing IS the correctness
+  // property — if it reads false while the target is still switched, or true
+  // after it's been restored, the main view can silently render into the
+  // detector's offscreen buffer (or the readback can silently capture the
+  // user's view). Neither of the existing tests above exercises the flag at
+  // all. What this does NOT (and cannot, without a live WebGPU context) prove
+  // is that Renderer.tsx's loop actually checks the flag every tick before
+  // calling render() — that half of the guarantee is a single `if` at the call
+  // site, verified by reading the code, not by this test.
+  it('is true only while the render target is actually switched away from the main view', async () => {
+    const originalTarget = { name: 'main-view-target' };
+    let detector!: DetectorCamera;
+    let busyDuringRenderPass = false;
+
+    const renderer = {
+      getRenderTarget: () => originalTarget,
+      setRenderTarget: () => {},
+      renderAsync: async () => {
+        // capture() switches the target synchronously before its first
+        // `await`, so by the time this runs, the flag the render loop reads
+        // must already be true.
+        busyDuringRenderPass = detector.renderTargetBusy();
+      },
+      readRenderTargetPixelsAsync: async () => {
+        throw new Error('simulated GPU readback failure');
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    detector = createDetectorCamera(scene, renderer);
+
+    expect(detector.renderTargetBusy()).toBe(false);
+    await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
+
+    expect(busyDuringRenderPass).toBe(true);
+    // Released even though capture() went on to fail at readback — a stuck
+    // `true` here would wedge the main render loop into skipping every frame
+    // for the rest of the session, not just the failed capture.
+    expect(detector.renderTargetBusy()).toBe(false);
+  });
+
+  it('is already false once GPU readback starts, not just once capture() finishes', async () => {
+    // This is the actual fix under test: restoring the render target right
+    // after the render pass, instead of in `finally` after readback and JPEG
+    // encoding, shrinks the window the render loop must treat as unsafe down
+    // to just the render pass. Before that change, this would read `true` —
+    // proving the render loop's gate would otherwise stay closed for the
+    // entire GPU round trip, not just the render.
+    const originalTarget = { name: 'main-view-target' };
+    let detector!: DetectorCamera;
+    const busyAtReadbackStart: boolean[] = [];
+
+    const renderer = {
+      getRenderTarget: () => originalTarget,
+      setRenderTarget: () => {},
+      renderAsync: async () => {},
+      readRenderTargetPixelsAsync: async () => {
+        busyAtReadbackStart.push(detector.renderTargetBusy());
+        throw new Error('simulated GPU readback failure');
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    detector = createDetectorCamera(scene, renderer);
+
+    await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
+
+    expect(busyAtReadbackStart).toEqual([false]);
   });
 });

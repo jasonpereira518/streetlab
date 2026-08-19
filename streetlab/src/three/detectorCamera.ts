@@ -76,6 +76,17 @@ export function encodeBase64(bytes: Uint8Array): string {
 export interface DetectorCamera {
   update(pose: { x: number; z: number; heading: number }): void;
   capture(): Promise<{ data: string; camera: CameraParams } | null>;
+  /**
+   * True only for the brief window where the shared renderer's render target
+   * is actually pointed at this detector's offscreen buffer. The caller's
+   * main-view render loop (Renderer.tsx) must not call `renderer.render()`
+   * while this is true — the renderer has one `_renderTarget` slot shared
+   * between the visible canvas and this offscreen capture, and `render()`
+   * always draws into whatever it currently holds, silently. False the rest
+   * of the time, including while a capture's GPU readback and JPEG encode
+   * are still in flight after the target has already been restored.
+   */
+  renderTargetBusy(): boolean;
   dispose(): void;
 }
 
@@ -92,6 +103,11 @@ export function createDetectorCamera(
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d');
   let busy = false;
+  // See `renderTargetBusy()` on the interface. A strict subset of `busy`'s
+  // window: `busy` spans the whole capture (so a second capture() call can't
+  // overlap this one), but a main-view render only needs to avoid the much
+  // shorter span where the render target is actually switched away.
+  let targetBusy = false;
   // Remembered from `update` rather than re-derived from the camera's matrix in
   // `capture`: the heading is known exactly here, and reading it back out of
   // matrixWorld columns is sign-error bait for no benefit.
@@ -121,11 +137,32 @@ export function createDetectorCamera(
       // value that was never actually obtained.
       let previous: ReturnType<typeof renderer.getRenderTarget> | null = null;
       let acquiredPrevious = false;
+      // Whether the early restore below already ran, so `finally` knows
+      // whether it still owes a restore or would just be repeating one.
+      let restoredEarly = false;
       try {
         previous = renderer.getRenderTarget();
         acquiredPrevious = true;
         renderer.setRenderTarget(target);
+        targetBusy = true;
         await renderer.renderAsync(scene, camera);
+
+        // Restore the instant the render pass finishes, not in `finally`
+        // after the GPU readback and JPEG encode below. readRenderTargetPixelsAsync
+        // takes `target` explicitly and does not depend on the renderer's
+        // *current* target, so nothing from here on needs the switch still in
+        // effect. This shrinks the caller's unsafe window from "the whole
+        // capture" down to just the render pass above — narrower, but on its
+        // own still only a *timing* argument, not a guarantee, since nothing
+        // stops a future renderAsync from genuinely spanning a display frame.
+        // `targetBusy`, gated on by the render loop, is what turns this from
+        // "usually fine" into "cannot happen": the loop simply never calls
+        // render() while it reads true, independent of how long that window
+        // actually is.
+        renderer.setRenderTarget(previous);
+        restoredEarly = true;
+        targetBusy = false;
+
         const pixels = await renderer.readRenderTargetPixelsAsync(
           target, 0, 0, width, height,
         );
@@ -143,13 +180,20 @@ export function createDetectorCamera(
           camera: cameraParamsFromThree(camera.position, heading),
         };
       } finally {
-        // Restore only what we actually captured; always release the busy
-        // guard regardless, so a transient failure here — e.g. getRenderTarget
-        // itself throwing — can't permanently wedge capture() into returning
-        // null for the rest of the session.
-        if (acquiredPrevious) renderer.setRenderTarget(previous);
+        // Fallback only: normally the early restore above already ran. This
+        // still matters for a failure between acquiring `previous` and that
+        // point — e.g. renderAsync itself rejecting — where the target would
+        // otherwise be left switched. Always release both guards regardless,
+        // so a transient failure here can't permanently wedge capture() (or
+        // the render loop, via targetBusy) for the rest of the session.
+        if (acquiredPrevious && !restoredEarly) renderer.setRenderTarget(previous);
+        targetBusy = false;
         busy = false;
       }
+    },
+
+    renderTargetBusy() {
+      return targetBusy;
     },
 
     dispose() {
