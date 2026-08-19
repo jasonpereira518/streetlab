@@ -40,7 +40,7 @@ describe('capture() render target restore', () => {
     } as unknown as THREE.WebGPURenderer;
 
     const scene = {} as THREE.Scene;
-    const detector = createDetectorCamera(scene, renderer);
+    const detector = createDetectorCamera(scene, renderer, 'webgpu');
 
     await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
 
@@ -74,7 +74,7 @@ describe('capture() render target restore', () => {
     } as unknown as THREE.WebGPURenderer;
 
     const scene = {} as THREE.Scene;
-    const detector = createDetectorCamera(scene, renderer);
+    const detector = createDetectorCamera(scene, renderer, 'webgpu');
 
     // First call: getRenderTarget throws before anything is captured to restore.
     await expect(detector.capture()).rejects.toThrow('simulated getRenderTarget failure');
@@ -121,7 +121,7 @@ describe('capture() renderTargetBusy timing', () => {
     } as unknown as THREE.WebGPURenderer;
 
     const scene = {} as THREE.Scene;
-    detector = createDetectorCamera(scene, renderer);
+    detector = createDetectorCamera(scene, renderer, 'webgpu');
 
     expect(detector.renderTargetBusy()).toBe(false);
     await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
@@ -155,7 +155,7 @@ describe('capture() renderTargetBusy timing', () => {
     } as unknown as THREE.WebGPURenderer;
 
     const scene = {} as THREE.Scene;
-    detector = createDetectorCamera(scene, renderer);
+    detector = createDetectorCamera(scene, renderer, 'webgpu');
 
     await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
 
@@ -198,7 +198,7 @@ describe('capture() renderTargetBusy timing', () => {
     } as unknown as THREE.WebGPURenderer;
 
     const scene = {} as THREE.Scene;
-    const detector = createDetectorCamera(scene, renderer);
+    const detector = createDetectorCamera(scene, renderer, 'webgpu');
 
     await expect(detector.capture()).rejects.toThrow('simulated device-lost on restore');
 

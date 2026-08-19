@@ -256,7 +256,14 @@ class PerceptionStats(Wire):
     mode: PerceptionMode
     # Null until Phase 2 lands a model.
     detector_ms: NonNeg | None
-    e2e_ms: NonNeg | None
+    # Socket arrival -> detections available, measured entirely on the
+    # backend (both ends time.perf_counter(), process-wide consistent). Named
+    # server_* deliberately: it excludes the offscreen render, GPU readback,
+    # row flip, JPEG encode, base64 and the websocket transfer, which on a
+    # stub-detector run are most of the actual latency. A true end-to-end
+    # figure needs a frontend performance.now() stamp plus a clock-offset
+    # estimate (browser and Python clocks share no epoch) -- Phase 3 work.
+    server_e2e_ms: NonNeg | None
     frames_received: Annotated[int, Field(ge=0)]
     frames_dropped: Annotated[int, Field(ge=0)]
     # Quality fields stay null until scoring lands in Phase 3.
@@ -414,8 +421,14 @@ class StateUpdate(Wire):
     telemetry: Telemetry
     signals: list[SignalState]
     events: list[SimEvent]
-    # Null when no ML perception is running — distinct from "measured, and zero".
-    perception: PerceptionStats | None = None
+    # Null when no ML perception is running — distinct from "measured, and
+    # zero". No default: every other nullable field in this class requires the
+    # caller to say so explicitly (transcription hazard #2 above), and a
+    # default here would let `StateUpdate.model_validate(...)` accept a
+    # payload missing `perception` where zod would reject it. There is exactly
+    # one construction site (sim/loop.py's assemble_state_update), and it
+    # already passes this explicitly.
+    perception: PerceptionStats | None
 
 
 # --------------------------------------------------------------------------- #

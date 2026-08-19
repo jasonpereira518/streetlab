@@ -137,6 +137,20 @@ def test_scene_description_requires_attribution():
         SceneDescription.model_validate(missing)
 
 
+def test_state_update_requires_perception_even_though_it_is_nullable():
+    """`.nullable()` in zod means "present, possibly null" — never "may be
+    absent" (transcription hazard #2, schema.py's module docstring). A default
+    of `None` on `perception` would let pydantic accept a payload missing the
+    key entirely, which zod would reject — exactly the blind spot a future
+    refactor that silently stops emitting the field could hide behind."""
+    raw = load_fixture("state_update_initial")
+    assert "perception" in raw
+    missing = dict(raw)
+    del missing["perception"]
+    with pytest.raises(ValueError):
+        StateUpdate.model_validate(missing)
+
+
 COMMANDS = [
     {"id": "c1", "cmd": "set_paused", "paused": True},
     {"id": "c2", "cmd": "step", "frames": 4},
@@ -270,7 +284,7 @@ def test_state_update_perception_defaults_to_null_and_survives_serialisation():
     stats = PerceptionStats(
         mode="ground-truth",
         detector_ms=None,
-        e2e_ms=12.5,
+        server_e2e_ms=12.5,
         frames_received=3,
         frames_dropped=1,
         precision=None,

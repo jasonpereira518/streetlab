@@ -70,7 +70,7 @@ def test_latest_is_none_before_any_frame():
         assert pipeline.latest() is None
         stats = pipeline.stats(mode="ml")
         assert stats.frames_received == 0
-        assert stats.e2e_ms is None
+        assert stats.server_e2e_ms is None
     finally:
         pipeline.shutdown()
 

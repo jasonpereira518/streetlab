@@ -32,12 +32,13 @@ import { ChaseCamera } from './chaseCam';
 import { PathRibbon } from './pathRibbon';
 import { HazardOverlay } from './hazardOverlay';
 import { createDetectorCamera, DETECTOR_FRAME } from './detectorCamera';
+import type { Backend } from './detectorCamera';
 
 const SKY_RADIUS = 900;
 const GROUND_SIZE = 3000;
 const SHADOW_EXTENT = 80;
 
-export type Backend = 'webgpu' | 'webgl2';
+export type { Backend };
 
 interface RenderStats {
   backend: Backend;
@@ -346,7 +347,7 @@ function mount(
   // Deliberately a separate camera from `cam`: switching the user's view
   // between chase/overhead/cockpit/free must never change what perception
   // sees, nor the rate frames are emitted at.
-  const detectorCamera = createDetectorCamera(scene, renderer);
+  const detectorCamera = createDetectorCamera(scene, renderer, backend);
   const ego = new EgoVehicle({ length: 4.9, width: 1.96, height: 1.44 });
   const fleet = new TrafficFleet();
   const ribbon = new PathRibbon();
@@ -539,7 +540,14 @@ function mount(
       renderer.render(scene, cam.camera);
     }
 
-    if (frame) {
+    // Gated on `perception !== null`, not just `frame`: that field is null
+    // for exactly one reason — no ML perception pipeline exists on the
+    // backend (plain `streetlab serve`, the default). Without this gate every
+    // such user still pays for an extra offscreen render, GPU readback, flip,
+    // JPEG encode and ~0.5 MB/s over the socket, all of which `_ingest_frame`
+    // (ws_server.py) discards the instant it arrives because there is no
+    // pipeline to hand it to.
+    if (frame && useSimStore.getState().perception !== null) {
       // Detector capture: driven off the ego pose directly, never off `cam`
       // (the user's view camera) or `cameraView`, so this is unaffected by
       // which view the user has selected. Triggered only after the main

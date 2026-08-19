@@ -237,8 +237,16 @@ export const PerceptionStatsSchema = z.object({
   mode: PerceptionModeSchema,
   /** Model inference time. Null until Phase 2 lands a model. */
   detector_ms: z.number().nonnegative().nullable(),
-  /** Frame render -> detections available. */
-  e2e_ms: z.number().nonnegative().nullable(),
+  /**
+   * Socket arrival -> detections available, measured entirely on the
+   * backend (both ends `time.perf_counter()`, process-wide consistent). Named
+   * `server_*` deliberately: it excludes the offscreen render, GPU readback,
+   * row flip, JPEG encode, base64 and the websocket transfer, which on a
+   * stub-detector run are most of the actual latency. A true end-to-end figure
+   * needs a frontend `performance.now()` stamp plus a clock-offset estimate
+   * (browser and Python clocks share no epoch) — Phase 3 work.
+   */
+  server_e2e_ms: z.number().nonnegative().nullable(),
   frames_received: z.number().int().nonnegative(),
   frames_dropped: z.number().int().nonnegative(),
   /** Quality fields stay null until scoring lands in Phase 3. */

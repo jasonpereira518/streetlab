@@ -15,7 +15,7 @@ describe('PerceptionPanel', () => {
     render(
       <PerceptionPanel
         stats={{
-          mode: 'ground-truth', detector_ms: 4.5, e2e_ms: 31.2,
+          mode: 'ground-truth', detector_ms: 4.5, server_e2e_ms: 31.2,
           frames_received: 120, frames_dropped: 3,
           precision: null, recall: null, mean_pos_err_m: null,
         }}

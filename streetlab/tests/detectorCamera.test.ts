@@ -3,6 +3,7 @@ import {
   cameraParamsFromThree,
   encodeBase64,
   flipRowsInPlace,
+  shouldFlipRows,
 } from '../src/three/detectorCamera';
 
 describe('cameraParamsFromThree', () => {
@@ -43,6 +44,16 @@ describe('flipRowsInPlace', () => {
       0, 255, 0, 255,
       255, 0, 0, 255,
     ]);
+  });
+});
+
+describe('shouldFlipRows', () => {
+  it('flips for WebGL2, whose gl.readPixels origin is bottom-left', () => {
+    expect(shouldFlipRows('webgl2')).toBe(true);
+  });
+
+  it('does not flip for WebGPU, whose readback origin is already top-left', () => {
+    expect(shouldFlipRows('webgpu')).toBe(false);
   });
 });
 

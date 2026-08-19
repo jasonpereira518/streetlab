@@ -650,7 +650,7 @@ describe('RightPanel', () => {
       perception: {
         mode: 'ml',
         detector_ms: 4.5,
-        e2e_ms: 31.2,
+        server_e2e_ms: 31.2,
         frames_received: 120,
         frames_dropped: 3,
         precision: null,

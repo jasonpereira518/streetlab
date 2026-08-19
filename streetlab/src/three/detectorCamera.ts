@@ -12,6 +12,13 @@
 import * as THREE from 'three/webgpu';
 import type { CameraParams } from '../schema';
 
+/**
+ * Which of the two renderer backends `createRenderer` (Renderer.tsx) settled
+ * on. Owned here rather than in Renderer.tsx because the flip decision below
+ * is what actually depends on it — Renderer.tsx just threads the value through.
+ */
+export type Backend = 'webgpu' | 'webgl2';
+
 export const DETECTOR_FRAME = {
   width: 640,
   height: 384,
@@ -48,8 +55,13 @@ export function cameraParamsFromThree(
 }
 
 /**
- * GPU readback returns rows bottom-up; images are top-down. Without this the
- * detector sees an upside-down world and every projection is wrong.
+ * Reverses row order in place: row 0 becomes the last row and vice versa.
+ *
+ * This does NOT universally "fix" a GPU readback — whether the readback needs
+ * it depends on which backend produced it. See `shouldFlipRows`, the only
+ * caller that decides whether to invoke this. Called unconditionally, this
+ * function is dumb on purpose: it flips, it does not know or care which way
+ * is correct.
  */
 export function flipRowsInPlace(rgba: Uint8Array, width: number, height: number): void {
   const stride = width * 4;
@@ -73,6 +85,30 @@ export function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/**
+ * Whether a readback from `backend` needs `flipRowsInPlace` to end up
+ * top-down.
+ *
+ * The two backends hand back rows in opposite order:
+ *
+ *  - WebGL2 reads back via `gl.readPixels`, whose origin is bottom-left, so
+ *    row 0 of the buffer is the bottom of the image. It needs the flip.
+ *  - WebGPU reads back via `copyTextureToBuffer` from `origin = (0, 0)` with
+ *    no flip anywhere in the path, and WebGPU's framebuffer origin is
+ *    top-left — so row 0 of the buffer is already the top of the image.
+ *    Flipping it would turn a correct image upside down. (three.js's own
+ *    `NodeBuilder.isFlipY()` returns `true` for GLSL and `false` for WGSL,
+ *    for exactly this reason — `TextureNode` applies it only for
+ *    `isRenderTargetTexture` on the GLSL path.)
+ *
+ * WebGPU is the primary path here (`createRenderer` in Renderer.tsx only
+ * falls back to WebGL2 when WebGPU init fails), so getting this backwards
+ * ships upside-down frames on the common case, not the rare one.
+ */
+export function shouldFlipRows(backend: Backend): boolean {
+  return backend === 'webgl2';
+}
+
 export interface DetectorCamera {
   update(pose: { x: number; z: number; heading: number }): void;
   capture(): Promise<{ data: string; camera: CameraParams } | null>;
@@ -93,8 +129,13 @@ export interface DetectorCamera {
 export function createDetectorCamera(
   scene: THREE.Scene,
   renderer: THREE.WebGPURenderer,
+  backend: Backend,
 ): DetectorCamera {
   const { width, height, fovYDeg, quality } = DETECTOR_FRAME;
+  // Decided once, from the backend that won at renderer creation — it never
+  // changes for the renderer's lifetime, so there is nothing to recompute
+  // per capture.
+  const flip = shouldFlipRows(backend);
   const camera = new THREE.PerspectiveCamera(fovYDeg, width / height, 0.1, 400);
   // Defaults to UnsignedByteType. `capture()` reinterprets the readback's raw
   // bytes as a Uint8Array directly (no per-channel conversion) — switching this
@@ -170,7 +211,7 @@ export function createDetectorCamera(
         const rgba = new Uint8Array(
           pixels.buffer, pixels.byteOffset, pixels.byteLength,
         );
-        flipRowsInPlace(rgba, width, height);
+        if (flip) flipRowsInPlace(rgba, width, height);
         ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
         const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality });
         const buffer = new Uint8Array(await blob.arrayBuffer());

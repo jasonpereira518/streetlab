@@ -2,6 +2,10 @@
  * Reports what the ML perception path is doing. Null fields render as an em
  * dash, never as a zero: "not measured" and "measured, and zero" are different
  * claims, and only one of them is true before Phase 3 lands scoring.
+ *
+ * The latency figure shown is `server_e2e_ms` (socket arrival -> detections
+ * available), not a true frame-render-to-detection end-to-end number — see
+ * the field's doc comment in schema.ts.
  */
 
 import type { PerceptionStats } from '../schema';
@@ -33,8 +37,13 @@ export function PerceptionPanel({ stats }: { stats: PerceptionStats | null }) {
         <span data-testid="detector-ms">{num(stats.detector_ms, 1, ' ms')}</span>
       </div>
       <div>
-        <span>end to end</span>
-        <span data-testid="e2e-ms">{num(stats.e2e_ms, 1, ' ms')}</span>
+        {/* Deliberately not "end to end": this excludes the render, GPU
+            readback, flip, JPEG encode, base64 and socket transfer — see
+            PerceptionStats.server_e2e_ms in schema.ts. A true end-to-end
+            figure needs a frontend timestamp plus a clock-offset estimate
+            (Phase 3). */}
+        <span>server (socket → detections)</span>
+        <span data-testid="server-e2e-ms">{num(stats.server_e2e_ms, 1, ' ms')}</span>
       </div>
       <div>
         <span>precision</span>

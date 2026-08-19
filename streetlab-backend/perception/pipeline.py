@@ -64,7 +64,9 @@ class PipelineResult:
     frame_seq: int
     frame_t: float
     detector_ms: float
-    e2e_ms: float
+    # See PerceptionStats.server_e2e_ms in schema.py: this is socket arrival
+    # to detections-available, not a true frame-render-to-detection figure.
+    server_e2e_ms: float
 
 
 class PerceptionPipeline:
@@ -118,7 +120,7 @@ class PerceptionPipeline:
                 frame_seq=frame.seq,
                 frame_t=frame.t,
                 detector_ms=(now - start) * 1000.0,
-                e2e_ms=now * 1000.0 - frame.received_ms,
+                server_e2e_ms=now * 1000.0 - frame.received_ms,
             )
             with self._lock:
                 self._latest = result
@@ -140,7 +142,7 @@ class PerceptionPipeline:
         return PerceptionStats(
             mode=mode,
             detector_ms=None if latest is None else latest.detector_ms,
-            e2e_ms=None if latest is None else latest.e2e_ms,
+            server_e2e_ms=None if latest is None else latest.server_e2e_ms,
             frames_received=self._frames.received,
             frames_dropped=self._frames.dropped,
             # Phase 3. A zero here would claim a measurement nobody made.
