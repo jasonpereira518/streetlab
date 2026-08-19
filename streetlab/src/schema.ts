@@ -236,15 +236,15 @@ export const CameraParamsSchema = z.object({
 export const PerceptionStatsSchema = z.object({
   mode: PerceptionModeSchema,
   /** Model inference time. Null until Phase 2 lands a model. */
-  detector_ms: z.number().nullable(),
+  detector_ms: z.number().nonnegative().nullable(),
   /** Frame render -> detections available. */
-  e2e_ms: z.number().nullable(),
+  e2e_ms: z.number().nonnegative().nullable(),
   frames_received: z.number().int().nonnegative(),
   frames_dropped: z.number().int().nonnegative(),
   /** Quality fields stay null until scoring lands in Phase 3. */
   precision: z.number().min(0).max(1).nullable(),
   recall: z.number().min(0).max(1).nullable(),
-  mean_pos_err_m: z.number().nullable(),
+  mean_pos_err_m: z.number().nonnegative().nullable(),
 });
 
 export const RadarPointSchema = z.object({

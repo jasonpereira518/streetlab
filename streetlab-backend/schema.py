@@ -255,14 +255,14 @@ class CameraParams(Wire):
 class PerceptionStats(Wire):
     mode: PerceptionMode
     # Null until Phase 2 lands a model.
-    detector_ms: Num | None
-    e2e_ms: Num | None
+    detector_ms: NonNeg | None
+    e2e_ms: NonNeg | None
     frames_received: Annotated[int, Field(ge=0)]
     frames_dropped: Annotated[int, Field(ge=0)]
     # Quality fields stay null until scoring lands in Phase 3.
     precision: Unit | None
     recall: Unit | None
-    mean_pos_err_m: Num | None
+    mean_pos_err_m: NonNeg | None
 
 
 class RadarPoint(Wire):

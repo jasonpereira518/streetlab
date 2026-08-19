@@ -32,6 +32,7 @@ from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource, default_source
 from map.overpass import HttpxFetcher, OverpassClient, OverpassError
 from map.scene_build import SceneSource, SyntheticGrid
+from perception.pipeline import PerceptionPipeline, StubDetector
 from schema import PROTOCOL_VERSION
 from sim.loop import DEFAULT_DT, SimLoop, Simulation
 
@@ -77,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--sim-hz", type=float, default=1 / DEFAULT_DT)
     serve.add_argument("--tick-hz", type=float, default=60.0)
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
+    serve.add_argument(
+        "--perception",
+        choices=("ground-truth", "ml"),
+        default="ground-truth",
+        help="ground-truth drives on perfect sensing; ml additionally runs the "
+        "detector pipeline and reports it (shadow mode)",
+    )
 
     run_ = sub.add_parser("run", help="drive a scenario headlessly and log the reactions")
     run_.add_argument("--scenario", default=None)
@@ -91,6 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="simulated seconds at which to inject the hazard; omit to skip",
+    )
+    run_.add_argument(
+        "--perception",
+        choices=("ground-truth", "ml"),
+        default="ground-truth",
+        help="ground-truth drives on perfect sensing; ml additionally runs the "
+        "detector pipeline and reports it (shadow mode)",
     )
 
     sub.add_parser("scenarios", help="list the scenario catalog")
@@ -225,9 +240,19 @@ def _serve(args) -> int:
     # The human-readable lines below go to stderr so that stdout carries
     # exactly one line — STREETLAB_READY — for the parent process to parse.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    pipeline = None
+    if args.perception == "ml":
+        # Phase 1: the transport is real, the detector is a stub.
+        pipeline = PerceptionPipeline(StubDetector())
+
     try:
         sim = Simulation(
-            scene_source_for(args.source), args.scenario, seed=args.seed, dt=1 / args.sim_hz
+            scene_source_for(args.source),
+            args.scenario,
+            seed=args.seed,
+            dt=1 / args.sim_hz,
+            perception_pipeline=pipeline,
         )
     except _SOURCE_ERRORS as exc:
         print(f"error: {exc}")
@@ -257,7 +282,13 @@ def _serve(args) -> int:
     }
     print(f"STREETLAB_READY {json.dumps(ready)}", flush=True)
 
-    uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
+    try:
+        uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
+    finally:
+        # Same lifecycle spot `loop.stop()` uses inside `create_app`'s
+        # lifespan: process teardown, not a per-request concern.
+        if pipeline is not None:
+            pipeline.shutdown()
     return 0
 
 
@@ -274,14 +305,34 @@ class _Trace:
 
 
 def _run(args) -> int:
+    pipeline = None
+    if args.perception == "ml":
+        # Phase 1: the transport is real, the detector is a stub.
+        pipeline = PerceptionPipeline(StubDetector())
+
     try:
         sim = Simulation(
-            scene_source_for(args.source), args.scenario, seed=args.seed, dt=1 / args.hz
+            scene_source_for(args.source),
+            args.scenario,
+            seed=args.seed,
+            dt=1 / args.hz,
+            perception_pipeline=pipeline,
         )
     except _SOURCE_ERRORS as exc:
         print(f"error: {exc}")
         return 1
 
+    try:
+        return _run_loop(args, sim)
+    finally:
+        # Same shutdown the sim thread itself never has to do: `run` is a
+        # single process with no server lifespan to hook, so the pipeline's
+        # worker thread is torn down explicitly here instead.
+        if pipeline is not None:
+            pipeline.shutdown()
+
+
+def _run_loop(args, sim: Simulation) -> int:
     scene = sim.scene.description
     print(f"scenario {scene.scenario_id}  seed {args.seed}  {args.duration:g}s @ {args.hz:g} Hz")
     print(f"route {sim.scene.ego_route.length_m:.0f} m, limit {sim.scene.speed_limit_mps * MPS_TO_MPH:.0f} mph")
