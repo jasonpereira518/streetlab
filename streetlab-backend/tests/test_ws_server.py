@@ -404,3 +404,111 @@ async def test_a_client_never_sees_a_frame_for_a_scene_it_has_not_received(serve
                 if msg.scenario_id == "grid-signals":
                     return
         raise AssertionError("never converged to the swapped scenario")
+
+
+# -- camera frames ------------------------------------------------------------ #
+#
+# Frames bypass `submit()`/`_apply` entirely, so these are driven directly
+# against `_Connection._handle` rather than through the shared `server`
+# fixture above — see `ws_session_factory` in conftest.py.
+
+
+def test_camera_frame_reaches_the_pipeline_and_is_not_acked(ws_session_factory):
+    """A frame is a data push. Acking at 10 Hz would double the traffic to say
+    nothing the `perception` stats block does not already say."""
+    import base64
+
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        session, sent = ws_session_factory(perception_pipeline=pipeline)
+        payload = {
+            "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+            "width": 640, "height": 384, "format": "jpeg",
+            "data": base64.b64encode(b"\xff\xd8jpegbytes").decode(),
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+        asyncio.run(session._handle(json.dumps(payload)))
+        pipeline.drain()
+
+        assert pipeline.latest() is not None
+        assert not any(m.get("type") == "ack" for m in sent)
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_malformed_camera_frame_is_dropped_without_acking(ws_session_factory):
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        session, sent = ws_session_factory(perception_pipeline=pipeline)
+        # `data` is not valid base64.
+        payload = {
+            "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+            "width": 640, "height": 384, "format": "jpeg", "data": "!!!not base64!!!",
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+        asyncio.run(session._handle(json.dumps(payload)))
+        assert pipeline.latest() is None
+        assert sent == []
+    finally:
+        pipeline.shutdown()
+
+
+def test_ordinary_commands_still_ack(ws_session_factory):
+    session, sent = ws_session_factory()
+    asyncio.run(session._handle(json.dumps({"id": "a1", "cmd": "set_paused", "paused": True})))
+    assert any(m.get("type") == "ack" for m in sent)
+
+
+def test_a_reconnecting_clients_frames_are_not_read_as_stale(ws_session_factory):
+    """`reset()`'s only caller is `_Connection.__init__` — one call per new
+    connection. A client that reconnects restarts its `seq` at 0; without the
+    reset, the frame slot's sequence gate would compare that 0 against the
+    previous connection's high-water mark and drop it as stale.
+    """
+    import base64
+
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    def frame_payload(seq: int) -> dict:
+        return {
+            "id": f"f{seq}", "cmd": "camera_frame", "seq": seq, "t": float(seq),
+            "width": 640, "height": 384, "format": "jpeg",
+            "data": base64.b64encode(b"\xff\xd8jpegbytes").decode(),
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        # First connection sends frames up to seq 9.
+        first, _ = ws_session_factory(perception_pipeline=pipeline)
+        asyncio.run(first._handle(json.dumps(frame_payload(9))))
+        pipeline.drain()
+        assert pipeline.latest() is not None
+        assert pipeline.latest().frame_seq == 9
+
+        # A second connection over the same pipeline — the reconnect — starts
+        # counting from 0 again. Constructing it is what triggers the reset.
+        second, sent = ws_session_factory(perception_pipeline=pipeline)
+        asyncio.run(second._handle(json.dumps(frame_payload(0))))
+        pipeline.drain()
+
+        result = pipeline.latest()
+        assert result is not None and result.frame_seq == 0, (
+            "the reconnecting client's seq-0 frame was dropped as stale"
+        )
+        assert sent == []
+    finally:
+        pipeline.shutdown()

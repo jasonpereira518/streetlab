@@ -14,17 +14,22 @@ disconnects are all logged and answered, never propagated.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import resource
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 
-from schema import PROTOCOL_VERSION, SceneDescription, StateUpdate
+from perception.frames import CameraFrame
+from schema import PROTOCOL_VERSION, CameraFrameCmd, SceneDescription, StateUpdate, format_issues
 from sim.loop import CommandOutcome, SimLoop, make_ack
 
 log = logging.getLogger("streetlab.server")
@@ -119,6 +124,12 @@ class _Connection:
         # the swap land in that same gap and be missed entirely, since the
         # epoch would already read as "seen" for content the client never got.
         self._sent_epoch = loop.scene_epoch
+        # A reconnecting client's frame `seq` restarts at 0. Without this, the
+        # frame slot's sequence gate would still hold the previous connection's
+        # high-water mark and reject every frame of the new one as stale.
+        pipeline = loop.sim.perception_pipeline
+        if pipeline is not None:
+            pipeline.reset()
 
     async def send_model(self, message: SceneDescription | StateUpdate | Any) -> None:
         async with self._send_lock:
@@ -185,6 +196,13 @@ class _Connection:
             log.warning("dropping non-object command: %r", type(raw).__name__)
             return
 
+        # Camera frames bypass the sim-thread command queue entirely: they are a
+        # data push at ~10 Hz, and routing them through `submit()` would put
+        # base64 decode on the sim thread and ack every one of them.
+        if raw.get("cmd") == "camera_frame":
+            self._ingest_frame(raw)
+            return
+
         command_id = raw.get("id")
         command_name = raw.get("cmd")
         outcome = await self._apply(raw)
@@ -209,6 +227,40 @@ class _Connection:
         except asyncio.TimeoutError:
             log.error("simulation did not answer command in time: %r", raw)
             return CommandOutcome(ok=False, message="simulation busy")
+
+    def _ingest_frame(self, raw: dict) -> None:
+        """Validate, decode and hand off one camera frame. Never acks, never raises.
+
+        The frontend learns about drops from the `perception` stats block in
+        `StateUpdate` (`frames_received`/`frames_dropped`), not from a reply to
+        this message — so failure here is a log line, never an exception that
+        would take down the socket.
+        """
+        pipeline = self.loop.sim.perception_pipeline
+        if pipeline is None:
+            return
+        try:
+            cmd = CameraFrameCmd.model_validate(raw)
+        except ValidationError as exc:
+            log.warning("dropping malformed camera frame: %s", format_issues(exc))
+            return
+        try:
+            jpeg = base64.b64decode(cmd.data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            log.warning("dropping camera frame with bad base64: %s", exc)
+            return
+
+        pipeline.submit_frame(
+            CameraFrame(
+                seq=cmd.seq,
+                t=cmd.t,
+                width=cmd.width,
+                height=cmd.height,
+                jpeg=jpeg,
+                camera=cmd.camera,
+                received_ms=time.perf_counter() * 1000.0,
+            )
+        )
 
 
 async def _serve(ws: WebSocket, loop: SimLoop, tick_hz: float, clients: dict[str, int]) -> None:
