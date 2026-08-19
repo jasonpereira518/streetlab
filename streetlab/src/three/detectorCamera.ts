@@ -115,10 +115,15 @@ export function createDetectorCamera(
       // would interleave GPU work for frames nobody is waiting for.
       if (busy || !ctx) return null;
       busy = true;
-      // Captured before the try so it is always available to restore, even if
-      // setRenderTarget(target) itself is what throws.
-      const previous = renderer.getRenderTarget();
+      // `previous` is read inside the try: if getRenderTarget() itself throws,
+      // there is nothing captured to restore, and `acquiredPrevious` staying
+      // false is what tells the `finally` not to call setRenderTarget with a
+      // value that was never actually obtained.
+      let previous: ReturnType<typeof renderer.getRenderTarget> | null = null;
+      let acquiredPrevious = false;
       try {
+        previous = renderer.getRenderTarget();
+        acquiredPrevious = true;
         renderer.setRenderTarget(target);
         await renderer.renderAsync(scene, camera);
         const pixels = await renderer.readRenderTargetPixelsAsync(
@@ -138,10 +143,11 @@ export function createDetectorCamera(
           camera: cameraParamsFromThree(camera.position, heading),
         };
       } finally {
-        // Always reapply, success or failure: the renderer is shared with the
-        // main view, and a perception hiccup must never leave it pointed at
-        // the detector's offscreen target instead of the visible canvas.
-        renderer.setRenderTarget(previous);
+        // Restore only what we actually captured; always release the busy
+        // guard regardless, so a transient failure here — e.g. getRenderTarget
+        // itself throwing — can't permanently wedge capture() into returning
+        // null for the rest of the session.
+        if (acquiredPrevious) renderer.setRenderTarget(previous);
         busy = false;
       }
     },

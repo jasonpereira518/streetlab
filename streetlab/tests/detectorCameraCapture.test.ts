@@ -48,4 +48,41 @@ describe('capture() render target restore', () => {
     expect(setCalls[0]).not.toBe(originalTarget);
     expect(setCalls[1]).toBe(originalTarget);
   });
+
+  it('does not permanently wedge capture() when getRenderTarget itself throws', async () => {
+    // getRenderTarget is called outside of anything that would have produced a
+    // value to restore. If that failure leaves `busy` stuck true, every later
+    // call is silently dead for the rest of the session — frame capture just
+    // stops, with nothing to see in the logs.
+    let getRenderTargetCalls = 0;
+    const originalTarget = { name: 'main-view-target' };
+
+    const renderer = {
+      getRenderTarget: () => {
+        getRenderTargetCalls += 1;
+        if (getRenderTargetCalls === 1) {
+          throw new Error('simulated getRenderTarget failure');
+        }
+        return originalTarget;
+      },
+      setRenderTarget: () => {},
+      renderAsync: async () => {},
+      readRenderTargetPixelsAsync: async () => {
+        throw new Error('simulated GPU readback failure');
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    const detector = createDetectorCamera(scene, renderer);
+
+    // First call: getRenderTarget throws before anything is captured to restore.
+    await expect(detector.capture()).rejects.toThrow('simulated getRenderTarget failure');
+
+    // The property that matters is not the first call's failure — it's that a
+    // SECOND call isn't permanently blocked by a stuck `busy` guard. A stuck
+    // guard makes every later call resolve to `null` immediately without
+    // touching the renderer at all. Reaching (and failing at) readback instead
+    // proves `busy` was released.
+    await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
+  });
 });
