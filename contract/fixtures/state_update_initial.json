@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 2,
+  "protocol": 3,
   "seq": 0,
   "t": 0.0,
   "sim_rate_hz": 60.0,
@@ -625,5 +625,6 @@
       "time_to_change_s": 16.0
     }
   ],
-  "events": []
+  "events": [],
+  "perception": null
 }

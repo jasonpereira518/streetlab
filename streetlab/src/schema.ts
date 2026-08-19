@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -212,6 +212,41 @@ export const DetectionSchema = z.object({
   lane_offset: z.number().int().nullable(),
 });
 
+export const PerceptionModeSchema = z.enum(['ground-truth', 'ml']);
+
+/**
+ * The camera that produced one frame, in WIRE world coordinates:
+ * `+x` east, `+y` north, `+z` up, ground plane at `z = 0`.
+ * The frontend converts out of Three.js's Y-up frame before sending, so the
+ * backend never learns that a renderer convention exists.
+ */
+export const CameraParamsSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  /** radians, 0 = +x (east), CCW positive — same convention as Pose.heading */
+  yaw: z.number(),
+  pitch: z.number(),
+  roll: z.number(),
+  fov_y_deg: z.number().positive(),
+  aspect: z.number().positive(),
+});
+
+/** Transport and quality numbers for the ML perception path. */
+export const PerceptionStatsSchema = z.object({
+  mode: PerceptionModeSchema,
+  /** Model inference time. Null until Phase 2 lands a model. */
+  detector_ms: z.number().nullable(),
+  /** Frame render -> detections available. */
+  e2e_ms: z.number().nullable(),
+  frames_received: z.number().int().nonnegative(),
+  frames_dropped: z.number().int().nonnegative(),
+  /** Quality fields stay null until scoring lands in Phase 3. */
+  precision: z.number().min(0).max(1).nullable(),
+  recall: z.number().min(0).max(1).nullable(),
+  mean_pos_err_m: z.number().nullable(),
+});
+
 export const RadarPointSchema = z.object({
   id: z.string().nullable(),
   /** Ego-frame bearing, radians. 0 = dead ahead, + = left. */
@@ -362,6 +397,8 @@ export const StateUpdateSchema = z.object({
   telemetry: TelemetrySchema,
   signals: z.array(SignalStateSchema),
   events: z.array(SimEventSchema),
+  /** Null when no ML perception is running — distinct from "measured, and zero". */
+  perception: PerceptionStatsSchema.nullable(),
 });
 
 /* ------------------------------------------------------------------ */
@@ -414,6 +451,20 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   }),
   cmd({ cmd: z.literal('set_camera'), view: CameraViewSchema }),
   cmd({ cmd: z.literal('inject_hazard'), kind: z.string() }),
+  cmd({ cmd: z.literal('set_perception'), mode: PerceptionModeSchema }),
+  cmd({
+    cmd: z.literal('camera_frame'),
+    /** Monotonic per connection; the backend drops anything out of order. */
+    seq: z.number().int().nonnegative(),
+    /** Sim seconds the frame depicts. */
+    t: z.number(),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    format: z.literal('jpeg'),
+    /** base64. Capped: an uncapped field here is an OOM waiting for a bad client. */
+    data: z.string().max(524288),
+    camera: CameraParamsSchema,
+  }),
 ]);
 
 /* ------------------------------------------------------------------ */
@@ -461,6 +512,9 @@ export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
 
 export type DetectionClass = z.infer<typeof DetectionClassSchema>;
 export type Detection = z.infer<typeof DetectionSchema>;
+export type PerceptionMode = z.infer<typeof PerceptionModeSchema>;
+export type CameraParams = z.infer<typeof CameraParamsSchema>;
+export type PerceptionStats = z.infer<typeof PerceptionStatsSchema>;
 export type RadarPoint = z.infer<typeof RadarPointSchema>;
 export type LaneNeighbor = z.infer<typeof LaneNeighborSchema>;
 export type LaneState = z.infer<typeof LaneStateSchema>;

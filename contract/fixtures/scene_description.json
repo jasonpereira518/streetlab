@@ -1,6 +1,6 @@
 {
   "type": "scene_description",
-  "protocol": 2,
+  "protocol": 3,
   "scene_id": "synthetic-grid:grid-merge",
   "scenario_id": "grid-merge",
   "name": "Hyde Street Merge",

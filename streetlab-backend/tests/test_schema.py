@@ -72,15 +72,15 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 2
+    assert dumped["protocol"] == PROTOCOL_VERSION == 3
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_two():
+def test_protocol_is_three():
     from schema import PROTOCOL_VERSION
 
-    assert PROTOCOL_VERSION == 2
+    assert PROTOCOL_VERSION == 3
 
 
 def test_load_location_parses_with_and_without_radius():
@@ -212,3 +212,73 @@ def test_confidence_bounds_are_enforced():
 def test_server_message_union_accepts_all_three_types():
     assert ServerMessage is not None
     assert Command is not None
+
+
+def test_camera_frame_command_round_trips():
+    from schema import PROTOCOL_VERSION, parse_command
+
+    assert PROTOCOL_VERSION == 3
+
+    raw = {
+        "id": "f1",
+        "cmd": "camera_frame",
+        "seq": 7,
+        "t": 1.5,
+        "width": 640,
+        "height": 384,
+        "format": "jpeg",
+        "data": "AAAA",
+        "camera": {
+            "x": 1.0, "y": 2.0, "z": 1.33,
+            "yaw": 0.5, "pitch": 0.0, "roll": 0.0,
+            "fov_y_deg": 50.0, "aspect": 640 / 384,
+        },
+    }
+    parsed = parse_command(raw)
+    assert parsed.ok, parsed.error
+    assert parsed.value.seq == 7
+    assert parsed.value.camera.fov_y_deg == 50.0
+
+
+def test_camera_frame_rejects_oversized_payload():
+    from schema import parse_command
+
+    raw = {
+        "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+        "width": 640, "height": 384, "format": "jpeg",
+        "data": "A" * 524_289,
+        "camera": {
+            "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+            "roll": 0.0, "fov_y_deg": 50.0, "aspect": 1.67,
+        },
+    }
+    assert not parse_command(raw).ok
+
+
+def test_set_perception_command_round_trips():
+    from schema import parse_command
+
+    parsed = parse_command({"id": "p1", "cmd": "set_perception", "mode": "ml"})
+    assert parsed.ok, parsed.error
+    assert parsed.value.mode == "ml"
+    assert not parse_command({"id": "p2", "cmd": "set_perception", "mode": "psychic"}).ok
+
+
+def test_state_update_perception_defaults_to_null_and_survives_serialisation():
+    from schema import PerceptionStats, StateUpdate
+
+    stats = PerceptionStats(
+        mode="ground-truth",
+        detector_ms=None,
+        e2e_ms=12.5,
+        frames_received=3,
+        frames_dropped=1,
+        precision=None,
+        recall=None,
+        mean_pos_err_m=None,
+    )
+    dumped = stats.model_dump(mode="json")
+    # `.nullable()` means present-and-null, never absent.
+    assert dumped["precision"] is None
+    assert "precision" in dumped
+    assert set(StateUpdate.model_fields) >= {"perception"}

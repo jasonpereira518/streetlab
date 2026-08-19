@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 2,
+  "protocol": 3,
   "seq": 180,
   "t": 2.9999999999999942,
   "sim_rate_hz": 60.0,
@@ -9,21 +9,21 @@
   "scenario_id": "grid-merge",
   "ego": {
     "pose": {
-      "x": 2.517472986680788,
-      "y": 5.10189291746398,
-      "heading": 2.0793870880859036
+      "x": 2.5174729866807906,
+      "y": 5.101892917463978,
+      "heading": 2.079387088085904
     },
-    "speed_mps": 3.1622554940778764,
-    "accel_mps2": 0.3191795715114509,
-    "steering_angle": -0.4138804824474947,
-    "yaw_rate": -0.4789754383997089,
-    "throttle": 0.14508162341429584,
+    "speed_mps": 3.162255494077876,
+    "accel_mps2": 0.31917957151144927,
+    "steering_angle": -0.4138804824474944,
+    "yaw_rate": -0.4789754383997085,
+    "throttle": 0.14508162341429512,
     "brake": 0.0,
     "gear": "D",
     "speed_limit_mps": 11.176,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 3.511579802898742
+      "set_speed_mps": 3.5115798028987397
     },
     "size": {
       "length": 4.7,
@@ -156,12 +156,12 @@
   "plan": {
     "polyline": [
       [
-        2.5066321612633287,
-        5.036351885239082
+        2.5066321612633296,
+        5.036351885239079
       ],
       [
         1.7999999999999998,
-        7.917442076529437
+        7.9174420765294355
       ],
       [
         1.7999999999999998,
@@ -220,7 +220,7 @@
         49.91744207652943
       ]
     ],
-    "target_speed_mps": 3.511579802898742,
+    "target_speed_mps": 3.5115798028987397,
     "maneuver": "turn_right",
     "confidence": 1.0
   },
@@ -319,8 +319,8 @@
       "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
-      "offset_m": -0.04045658317776968,
-      "heading_error": 0.0177169091676026,
+      "offset_m": -0.04045658317777167,
+      "heading_error": 0.017716909167603045,
       "left_marking": "double_yellow",
       "right_marking": "dashed_white",
       "neighbors": [
@@ -1068,5 +1068,6 @@
       "time_to_change_s": 13.02
     }
   ],
-  "events": []
+  "events": [],
+  "perception": null
 }

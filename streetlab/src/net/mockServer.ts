@@ -742,6 +742,9 @@ export class MockSim {
       },
       signals: this.signalStates(),
       events,
+      // The mock server has no ML perception path; ground-truth detections
+      // above are all it ever produces.
+      perception: null,
     };
 
     return frame;

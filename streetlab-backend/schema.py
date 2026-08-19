@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -232,6 +232,39 @@ class Detection(Wire):
     lane_offset: int | None
 
 
+PerceptionMode = Literal["ground-truth", "ml"]
+
+
+class CameraParams(Wire):
+    """The camera that produced one frame, in wire world coordinates:
+    +x east, +y north, +z up, ground plane at z = 0. The frontend converts out
+    of Three.js's Y-up frame before sending.
+    """
+
+    x: Num
+    y: Num
+    z: Num
+    # radians, 0 = +x (east), CCW positive — same convention as Pose.heading.
+    yaw: Num
+    pitch: Num
+    roll: Num
+    fov_y_deg: Pos
+    aspect: Pos
+
+
+class PerceptionStats(Wire):
+    mode: PerceptionMode
+    # Null until Phase 2 lands a model.
+    detector_ms: Num | None
+    e2e_ms: Num | None
+    frames_received: Annotated[int, Field(ge=0)]
+    frames_dropped: Annotated[int, Field(ge=0)]
+    # Quality fields stay null until scoring lands in Phase 3.
+    precision: Unit | None
+    recall: Unit | None
+    mean_pos_err_m: Num | None
+
+
 class RadarPoint(Wire):
     id: str | None
     # Ego-frame bearing, radians. 0 = dead ahead, + = left.
@@ -381,6 +414,8 @@ class StateUpdate(Wire):
     telemetry: Telemetry
     signals: list[SignalState]
     events: list[SimEvent]
+    # Null when no ML perception is running — distinct from "measured, and zero".
+    perception: PerceptionStats | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -463,6 +498,24 @@ class InjectHazard(_Cmd):
     kind: str
 
 
+class SetPerception(_Cmd):
+    cmd: Literal["set_perception"] = "set_perception"
+    mode: PerceptionMode
+
+
+class CameraFrameCmd(_Cmd):
+    cmd: Literal["camera_frame"] = "camera_frame"
+    # Monotonic per connection; the backend drops anything out of order.
+    seq: Annotated[int, Field(ge=0)]
+    t: Num
+    width: Annotated[int, Field(gt=0)]
+    height: Annotated[int, Field(gt=0)]
+    format: Literal["jpeg"]
+    # base64. Capped: an uncapped field here is an OOM waiting for a bad client.
+    data: Annotated[str, Field(max_length=524288)]
+    camera: CameraParams
+
+
 Command = Annotated[
     Union[
         SetPaused,
@@ -474,6 +527,8 @@ Command = Annotated[
         ToggleLayer,
         SetCamera,
         InjectHazard,
+        SetPerception,
+        CameraFrameCmd,
     ],
     Field(discriminator="cmd"),
 ]
