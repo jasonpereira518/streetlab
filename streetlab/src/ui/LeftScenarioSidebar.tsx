@@ -173,8 +173,13 @@ function ScenarioThumb({
     const parent = canvas?.parentElement;
     if (!canvas || !parent) return;
     const measure = () => {
+      // Content box over border box — see the note in useTelemetryCanvas; the
+      // thumb's 1px frame would otherwise crop a pixel off the mini-map.
       const r = parent.getBoundingClientRect();
-      setSize({ w: Math.round(r.width), h: Math.round(r.height) });
+      setSize({
+        w: Math.round(parent.clientWidth || r.width),
+        h: Math.round(parent.clientHeight || r.height),
+      });
     };
     measure();
     const ro = new ResizeObserver(measure);

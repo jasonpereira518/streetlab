@@ -152,6 +152,24 @@ export const ChevronDownIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const ChevronUpIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m6 15 6-6 6 6" />
+  </Svg>
+);
+
+export const ChevronLeftIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m15 6-6 6 6 6" />
+  </Svg>
+);
+
+export const ChevronRightIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m9 6 6 6-6 6" />
+  </Svg>
+);
+
 /** App mark: a stylised road vanishing to a horizon. */
 export function BrandMark({ size = 26 }: { size?: number }) {
   return (

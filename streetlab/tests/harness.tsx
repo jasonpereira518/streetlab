@@ -34,6 +34,7 @@ const INITIAL = {
   hasFrames: false,
   cameraView: 'chase' as const,
   rightTab: 'parameters' as const,
+  collapsed: { scenarios: false, inspector: false, telemetry: false },
   events: [],
   lastAck: null,
   invalidCount: 0,

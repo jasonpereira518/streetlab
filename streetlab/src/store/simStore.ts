@@ -209,6 +209,13 @@ const DEFAULT_LAYERS = Object.fromEntries(
  */
 export type RightTab = 'parameters' | 'map' | 'layers' | 'events';
 
+/**
+ * The three shell surfaces the user can fold away to give the viewport more
+ * room. Keyed rather than three booleans so `togglePanel` stays one action and
+ * a new surface cannot be added without the reducer seeing it.
+ */
+export type PanelId = 'scenarios' | 'inspector' | 'telemetry';
+
 export interface SimStoreState {
   /* connection */
   status: ConnectionStatus;
@@ -242,6 +249,8 @@ export interface SimStoreState {
   params: Record<string, ParamValue>;
   cameraView: CameraView;
   rightTab: RightTab;
+  /** Purely local chrome state — collapsing a panel sends no command. */
+  collapsed: Record<PanelId, boolean>;
   perfOverlayVisible: boolean;
 
   /* diagnostics */
@@ -262,6 +271,7 @@ export interface SimStoreState {
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
   setRightTab(tab: RightTab): void;
+  togglePanel(panel: PanelId): void;
   togglePerfOverlay(): void;
   resetSim(): void;
   injectHazard(): void;
@@ -290,6 +300,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   params: { ...DEFAULT_PARAMS },
   cameraView: 'chase',
   rightTab: 'parameters',
+  collapsed: { scenarios: false, inspector: false, telemetry: false },
   perfOverlayVisible: false,
 
   events: [],
@@ -393,6 +404,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
 
   setRightTab(tab) {
     set({ rightTab: tab });
+  },
+
+  togglePanel(panel) {
+    set((s) => ({ collapsed: { ...s.collapsed, [panel]: !s.collapsed[panel] } }));
   },
 
   togglePerfOverlay() {
