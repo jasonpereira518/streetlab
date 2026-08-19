@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
 from map.scene_build import LANE_W, BuiltScene, SceneSource
+from perception.pipeline import PerceptionPipeline
 from perception.service import GroundTruthPerception, PerceptionSource
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
@@ -38,6 +39,7 @@ from schema import (
     Ego,
     LaneNeighbor,
     LaneState,
+    PerceptionMode,
     Plan,
     Pose,
     RadarPoint,
@@ -164,6 +166,7 @@ class Simulation:
         dt: float = DEFAULT_DT,
         perception: PerceptionSource | None = None,
         planner: Planner | None = None,
+        perception_pipeline: PerceptionPipeline | None = None,
     ) -> None:
         self._source = source
         self._seed = seed
@@ -172,6 +175,10 @@ class Simulation:
         self._planner = planner or CenterlineFollower()
         self._model = BicycleModel()
         self.world = WorldState()
+        self.perception_pipeline = perception_pipeline
+        # Shadow is the default: the ML path runs and is measured, but ground
+        # truth is what the planner drives on until someone asks otherwise.
+        self.perception_mode: PerceptionMode = "ground-truth"
         # How `load_location` reaches the executor without a back-reference
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
         # itself in.
@@ -398,6 +405,8 @@ class Simulation:
             # posts and the speed the car is actually holding to cannot drift
             # apart on a street where they differ.
             posted_limit_mps=self.posted_limit(),
+            perception_pipeline=self.perception_pipeline,
+            perception_mode=self.perception_mode,
         )
         self.world.events = []
         return frame
@@ -472,6 +481,15 @@ class Simulation:
         if command.key == "traffic_speed_scale":
             self._traffic.set_speed_scale(float(command.value))
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
+
+    def _cmd_set_perception(self, command) -> CommandOutcome:
+        if self.perception_pipeline is None:
+            return CommandOutcome(
+                ok=False, message="no perception pipeline: start with --perception"
+            )
+        self.perception_mode = command.mode
+        self._emit("perception_mode", f"perception: {command.mode}")
+        return CommandOutcome(ok=True, message=f"perception: {command.mode}")
 
     def _cmd_inject_hazard(self, command) -> CommandOutcome:
         """Stage one of `sim/events.py`'s scenarios.
@@ -626,6 +644,8 @@ def assemble_state_update(
     signals: Sequence[SignalState],
     sim_rate_hz: float,
     posted_limit_mps: float | None = None,
+    perception_pipeline: PerceptionPipeline | None = None,
+    perception_mode: PerceptionMode = "ground-truth",
 ) -> StateUpdate:
     """Build the one message the frontend consumes at frame rate.
 
@@ -704,6 +724,13 @@ def assemble_state_update(
         ),
         signals=list(signals),
         events=list(world.events),
+        # Null distinguishes "no ML perception running" from "measured, and
+        # zero" -- there is no pipeline unless `--perception ml` started one.
+        perception=(
+            None
+            if perception_pipeline is None
+            else perception_pipeline.stats(perception_mode)
+        ),
     )
 
 

@@ -48,6 +48,7 @@ describe('App startup states', () => {
       connect: vi.fn(),
       send: vi.fn(),
       close: vi.fn(),
+      pendingCount: vi.fn(() => 0),
     });
 
     await waitFor(() =>
@@ -103,6 +104,9 @@ describe('Collapsible shell surfaces', () => {
       connect: vi.fn(),
       send: vi.fn(),
       close: vi.fn(),
+      // Widened by Cycle 4: camera frames are dropped rather than queued when
+      // disconnected, and the queue depth is observable so a test can prove it.
+      pendingCount: vi.fn(() => 0),
     });
     render(<App />);
     await waitFor(() =>

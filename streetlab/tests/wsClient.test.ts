@@ -311,3 +311,25 @@ describe('WebSocket transport', () => {
     expect(c.messages[0]).toMatchObject({ type: 'ack', id: 'a', ok: true });
   });
 });
+
+describe('camera frames while disconnected', () => {
+  it('are dropped rather than queued', () => {
+    // The offline queue holds 32 commands. At ~60 KB a frame, queueing them
+    // would hold ~2 MB of imagery that is stale by the time it flushes.
+    const transport = createWebSocketTransport({ url: 'ws://localhost:1' });
+    for (let i = 0; i < 50; i++) {
+      transport.send({
+        id: `f${i}`, cmd: 'camera_frame', seq: i, t: i, width: 640, height: 384,
+        format: 'jpeg', data: 'AAAA',
+        camera: { x: 0, y: 0, z: 1.33, yaw: 0, pitch: 0, roll: 0, fov_y_deg: 50, aspect: 1.67 },
+      });
+    }
+    expect(transport.pendingCount()).toBe(0);
+  });
+
+  it('still queues ordinary commands', () => {
+    const transport = createWebSocketTransport({ url: 'ws://localhost:1' });
+    transport.send({ id: 'a1', cmd: 'set_paused', paused: true });
+    expect(transport.pendingCount()).toBe(1);
+  });
+});

@@ -32,6 +32,7 @@ const INITIAL = {
   paused: false,
   assistActive: false,
   hasFrames: false,
+  perception: null,
   cameraView: 'chase' as const,
   rightTab: 'parameters' as const,
   collapsed: { scenarios: false, inspector: false, telemetry: false },
@@ -71,7 +72,10 @@ export function createHarness(scenarioId?: string): Harness {
     send(command) {
       sent.push(command);
       // Mirror the real mock: commands actually drive the simulator, so a test
-      // that pauses sees `paused: true` on the next frame.
+      // that pauses sees `paused: true` on the next frame. `camera_frame` is
+      // the one exception — like the real backend (ws_server.py `_handle`)
+      // and createMockTransport, it bypasses the command/ack path entirely.
+      if (command.cmd === 'camera_frame') return;
       const res = sim.apply(command);
       handlers?.onMessage({
         type: 'ack',
@@ -86,6 +90,9 @@ export function createHarness(scenarioId?: string): Harness {
     },
     close() {
       handlers = null;
+    },
+    pendingCount() {
+      return 0;
     },
   };
 

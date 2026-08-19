@@ -12,6 +12,7 @@ import type { ParamDef, RightTab } from '../store/simStore';
 import { EventLog } from './EventLog';
 import { ActivityIcon, LayersIcon, MapIcon, SlidersIcon } from './Icons';
 import { ColorPicker, Field, Select, Slider, Toggle } from './controls';
+import { PerceptionPanel } from './PerceptionPanel';
 import { alpha, classColor, color } from './theme';
 
 type Tab = RightTab;
@@ -98,6 +99,7 @@ function ParametersTab() {
   const setParam = useSimStore((s) => s.setParam);
   const injectHazard = useSimStore((s) => s.injectHazard);
   const lastAck = useSimStore((s) => s.lastAck);
+  const perception = useSimStore((s) => s.perception);
 
   const groups = (['planner', 'traffic', 'render'] as const).map((g) => ({
     key: g,
@@ -129,6 +131,13 @@ function ParametersTab() {
             <span>{lastAck.message ?? (lastAck.ok ? 'ok' : 'failed')}</span>
           </p>
         )}
+      </Field>
+
+      {/* Quiet by default: with no ML perception running (the ordinary
+       * ground-truth configuration) this renders as a single "not running"
+       * line via PerceptionPanel's own null branch, not an empty box. */}
+      <Field title="Perception">
+        <PerceptionPanel stats={perception} />
       </Field>
     </>
   );

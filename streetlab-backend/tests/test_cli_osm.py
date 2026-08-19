@@ -187,6 +187,70 @@ def test_serve_reports_a_clean_error_when_the_source_cannot_build(monkeypatch, c
     assert out.strip().startswith("error:")
 
 
+def _spy_on_pipeline_shutdown(monkeypatch) -> list:
+    """Wrap `PerceptionPipeline.shutdown` to record calls while still
+    running the real teardown, so a spied-on run leaves no live thread
+    behind for the rest of the suite.
+    """
+    from perception.pipeline import PerceptionPipeline
+
+    calls: list = []
+    original = PerceptionPipeline.shutdown
+
+    def spy(self):
+        calls.append(self)
+        original(self)
+
+    monkeypatch.setattr(PerceptionPipeline, "shutdown", spy)
+    return calls
+
+
+def test_run_shuts_down_the_perception_pipeline_when_the_source_cannot_build(
+    monkeypatch, capsys
+):
+    """`--perception ml` allocates a `PerceptionPipeline` -- with its live
+    `ThreadPoolExecutor` -- before `Simulation(...)` is ever attempted. If
+    that construction then fails, the pipeline must still be torn down on
+    this early-return path, not only on the happy path's `finally`.
+    """
+
+    class BrokenSource:
+        def scenarios(self):
+            raise OverpassError("simulated Overpass outage")
+
+    monkeypatch.setattr(cli, "scene_source_for", lambda source: BrokenSource())
+    shutdown_calls = _spy_on_pipeline_shutdown(monkeypatch)
+
+    code = cli.main(
+        ["run", "--source", "osm", "--duration", "1", "--perception", "ml"]
+    )
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert out.strip().startswith("error:")
+    assert len(shutdown_calls) == 1
+
+
+def test_serve_shuts_down_the_perception_pipeline_when_the_source_cannot_build(
+    monkeypatch, capsys
+):
+    """Same leak, through `_serve`."""
+
+    class BrokenSource:
+        def scenarios(self):
+            raise GeocodeError("simulated geocode failure")
+
+    monkeypatch.setattr(cli, "scene_source_for", lambda source: BrokenSource())
+    shutdown_calls = _spy_on_pipeline_shutdown(monkeypatch)
+
+    code = cli.main(["serve", "--source", "osm", "--port", "0", "--perception", "ml"])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert out.strip().startswith("error:")
+    assert len(shutdown_calls) == 1
+
+
 def test_simulation_drives_a_real_osm_scene(tmp_path):
     """The real proof: the untouched Simulation runs on OSM geometry."""
     payload = json.loads(FIXTURE.read_text())

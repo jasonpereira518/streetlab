@@ -146,6 +146,9 @@ export function createWebSocketTransport(
         socket.send(JSON.stringify(res.value));
         return;
       }
+      // Camera frames are worthless once stale, and 32 queued frames is ~2 MB
+      // of imagery describing a world that has already moved on. Drop them.
+      if (res.value.cmd === 'camera_frame') return;
       queue.push(res.value);
       while (queue.length > queueLimit) queue.shift();
     },
@@ -156,6 +159,9 @@ export function createWebSocketTransport(
       socket = null;
       handlers?.onStatus('closed');
       handlers = null;
+    },
+    pendingCount() {
+      return queue.length;
     },
   };
 }

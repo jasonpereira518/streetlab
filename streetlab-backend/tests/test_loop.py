@@ -1575,3 +1575,55 @@ def test_the_ego_never_leaves_its_lane_on_the_real_route():
     offsets = _drive_and_measure(_osm_sim(), 3600)
     out_of_lane = [o for o in offsets if o > 1.8]
     assert not out_of_lane, f"{len(out_of_lane)} frames outside the lane, worst {max(offsets):.2f} m"
+
+
+def test_state_update_perception_is_null_without_a_pipeline():
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    assert sim.state_update().perception is None
+
+
+def test_state_update_reports_perception_stats_when_a_pipeline_exists():
+    from map.scene_build import SyntheticGrid
+    from perception.pipeline import PerceptionPipeline, StubDetector
+    from sim.loop import Simulation
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline
+        )
+        stats = sim.state_update().perception
+        assert stats is not None
+        assert stats.mode == "ground-truth"
+        assert stats.frames_received == 0
+    finally:
+        pipeline.shutdown()
+
+
+def test_set_perception_switches_mode_and_acks():
+    from map.scene_build import SyntheticGrid
+    from perception.pipeline import PerceptionPipeline, StubDetector
+    from sim.loop import Simulation
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline
+        )
+        outcome = sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"})
+        assert outcome.ok
+        assert sim.state_update().perception.mode == "ml"
+    finally:
+        pipeline.shutdown()
+
+
+def test_set_perception_is_refused_without_a_pipeline():
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    outcome = sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"})
+    assert not outcome.ok
