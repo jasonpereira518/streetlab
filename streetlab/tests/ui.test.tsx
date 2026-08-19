@@ -319,6 +319,7 @@ describe('Location search box', () => {
       },
       send: vi.fn(),
       close: vi.fn(),
+      pendingCount: vi.fn(() => 0),
     };
     resetStore();
     const detach = useSimStore.getState().attach(transport);

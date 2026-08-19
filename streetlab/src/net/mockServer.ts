@@ -826,7 +826,16 @@ export class MockSim {
 
   /* ---------------- commands ---------------- */
 
-  apply(command: Command): { ok: boolean; message: string | null; scene?: SceneDescription } {
+  // `camera_frame` is deliberately excluded from this parameter type: the
+  // real backend intercepts it at the socket, before the command queue
+  // (`ws_server.py` `_handle` -> `_ingest_frame`, never through `submit()`/
+  // `_apply()`), so `apply()` — the mock's equivalent of the sim-thread
+  // command executor — should never see one either. `createMockTransport`'s
+  // `send()` below is the mock's equivalent of `_handle` and does the
+  // intercepting.
+  apply(
+    command: Exclude<Command, { cmd: 'camera_frame' }>,
+  ): { ok: boolean; message: string | null; scene?: SceneDescription } {
     switch (command.cmd) {
       case 'set_paused':
         this.paused = command.paused;
@@ -867,6 +876,11 @@ export class MockSim {
         return { ok: true, message: `${command.layer}=${command.visible}` };
       case 'set_camera':
         return { ok: true, message: command.view };
+      case 'set_perception':
+        // The mock never builds a perception pipeline, so this always
+        // refuses — mirroring `sim/loop.py`'s `_cmd_set_perception`, which
+        // refuses the same way when `self.perception_pipeline is None`.
+        return { ok: false, message: 'no perception pipeline: start with --perception' };
       case 'inject_hazard':
         this.nextCutinAt = this.t;
         this.cutinPhase = 'idle';
@@ -1015,6 +1029,12 @@ export function createMockTransport(
     },
     send(command) {
       if (!running) return;
+      // Mirrors `ws_server.py` `_handle`'s early-out for `camera_frame`: real
+      // frames bypass the command queue entirely and are never acked. The
+      // mock has nowhere to route a frame either — `StubDetector`/the
+      // perception pipeline don't exist client-side — so the faithful
+      // behaviour is the same early return, not a fabricated ack.
+      if (command.cmd === 'camera_frame') return;
       const res = sim.apply(command);
       const ack: Ack = {
         type: 'ack',
@@ -1057,6 +1077,11 @@ export function createMockTransport(
       }
       handlers?.onStatus('closed');
       handlers = null;
+    },
+    pendingCount() {
+      // The mock never buffers commands while disconnected — `send()` above
+      // simply no-ops when `!running`.
+      return 0;
     },
   };
 }

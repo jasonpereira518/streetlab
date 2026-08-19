@@ -24,6 +24,7 @@ import type {
   CommandInput,
   LayerKey,
   ParamValue,
+  PerceptionStats,
   SceneDescription,
   ScenarioSummary,
   ServerMessage,
@@ -236,6 +237,10 @@ export interface SimStoreState {
   paused: boolean;
   assistActive: boolean;
   hasFrames: boolean;
+  /** Null when no ML perception is running — distinct from "measured, and
+   * zero"; see PerceptionPanel. Updated on every frame, unlike the fields
+   * above, since its counters are expected to change every tick. */
+  perception: PerceptionStats | null;
 
   /* UI state */
   layers: Record<LayerKey, boolean>;
@@ -285,6 +290,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   paused: false,
   assistActive: false,
   hasFrames: false,
+  perception: null,
 
   layers: { ...DEFAULT_LAYERS },
   params: { ...DEFAULT_PARAMS },
@@ -450,6 +456,10 @@ function applyServerMessage(
       perfMetrics.reportTick(performance.now());
       const s = get();
       const patch: Partial<SimStoreState> = {};
+      // Unlike the other mirrored fields, perception is not gated on change:
+      // its counters (frames_received, frames_dropped) are expected to move
+      // on essentially every tick while ML perception is running.
+      patch.perception = msg.perception;
       if (s.paused !== msg.paused) patch.paused = msg.paused;
       if (s.assistActive !== msg.assist_active) {
         patch.assistActive = msg.assist_active;

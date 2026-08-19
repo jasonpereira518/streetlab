@@ -31,6 +31,7 @@ import { TrafficFleet } from './agents';
 import { ChaseCamera } from './chaseCam';
 import { PathRibbon } from './pathRibbon';
 import { HazardOverlay } from './hazardOverlay';
+import { createDetectorCamera, DETECTOR_FRAME } from './detectorCamera';
 
 const SKY_RADIUS = 900;
 const GROUND_SIZE = 3000;
@@ -342,6 +343,10 @@ function mount(
   scene.add(hemi, sun, sunTarget);
 
   const cam = new ChaseCamera(host.clientWidth / Math.max(1, host.clientHeight));
+  // Deliberately a separate camera from `cam`: switching the user's view
+  // between chase/overhead/cockpit/free must never change what perception
+  // sees, nor the rate frames are emitted at.
+  const detectorCamera = createDetectorCamera(scene, renderer);
   const ego = new EgoVehicle({ length: 4.9, width: 1.96, height: 1.44 });
   const fleet = new TrafficFleet();
   const ribbon = new PathRibbon();
@@ -485,6 +490,13 @@ function mount(
   let lastStatsAt = lastTime;
   let lastSeq = -1;
 
+  // Detector-camera throttle. Accumulated (not reset to zero) so a slow or
+  // variable display frame time doesn't drift the emitted rate away from the
+  // fixed ~10 Hz — the same accumulator pattern MockSim uses for its own
+  // fixed-rate loop, just against wall-clock dt instead of a fixed DT.
+  let sinceCaptureMs = 0;
+  let captureSeq = 0;
+
   const applyFrame = (frame: StateUpdate, dt: number) => {
     ego.setPose(frame.ego.pose);
     ego.setAttitude(frame.ego.steering_angle, frame.ego.accel_mps2);
@@ -514,6 +526,44 @@ function mount(
       applyFrame(frame, dt);
       cam.update(frame.ego.pose, frame.ego.speed_mps, cameraView, dt, buildings);
       lastSeq = frame.seq;
+
+      // Detector capture: driven off the ego pose directly, never off `cam`
+      // (the user's view camera) or `cameraView`, so this is unaffected by
+      // which view the user has selected.
+      sinceCaptureMs += dt * 1000;
+      if (sinceCaptureMs >= DETECTOR_FRAME.intervalMs) {
+        sinceCaptureMs -= DETECTOR_FRAME.intervalMs;
+        detectorCamera.update({
+          x: frame.ego.pose.x,
+          // Three.js is Y-up with +z south; the wire pose is +y north. See
+          // detectorCamera.ts's own conversion, and the identical z = -y used
+          // for the sun target above.
+          z: -frame.ego.pose.y,
+          heading: frame.ego.pose.heading,
+        });
+        const capturedAtT = frame.t;
+        const seq = captureSeq++;
+        void detectorCamera
+          .capture()
+          .then((captured) => {
+            if (!captured) return;
+            useSimStore.getState().send({
+              cmd: 'camera_frame',
+              seq,
+              t: capturedAtT,
+              width: DETECTOR_FRAME.width,
+              height: DETECTOR_FRAME.height,
+              format: 'jpeg',
+              data: captured.data,
+              camera: captured.camera,
+            });
+          })
+          .catch((err) => {
+            // GPU readback can fail transiently (e.g. context loss); never let
+            // that become an unhandled rejection that takes down the loop.
+            console.warn('[streetlab] detector camera capture failed', err);
+          });
+      }
     }
 
     renderer.render(scene, cam.camera);
@@ -554,6 +604,7 @@ function mount(
     sky.dispose();
     ground.dispose();
     radar.dispose();
+    detectorCamera.dispose();
     renderer.dispose();
     canvas.remove();
   };

@@ -48,6 +48,7 @@ describe('App startup states', () => {
       connect: vi.fn(),
       send: vi.fn(),
       close: vi.fn(),
+      pendingCount: vi.fn(() => 0),
     });
 
     await waitFor(() =>
