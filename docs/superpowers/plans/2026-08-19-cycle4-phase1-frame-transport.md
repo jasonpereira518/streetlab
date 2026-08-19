@@ -333,7 +333,7 @@ git commit -m "Protocol 3: camera frames, perception mode, perception stats"
 
 **Interfaces:**
 - Consumes: `CameraParams` from Task 1.
-- Produces: `CameraFrame(seq: int, t: float, width: int, height: int, jpeg: bytes, camera: CameraParams, received_ms: float)`; `FrameSlot` with `offer(frame: CameraFrame) -> bool`, `take() -> CameraFrame | None`, and attributes `received: int`, `dropped: int`.
+- Produces: `CameraFrame(seq: int, t: float, width: int, height: int, jpeg: bytes, camera: CameraParams, received_ms: float)`; `FrameSlot` with `offer(frame: CameraFrame) -> bool`, `take() -> CameraFrame | None`, `pending() -> bool`, `reset() -> None`, and attributes `received: int`, `dropped: int`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -395,6 +395,15 @@ def test_equal_seq_is_also_rejected():
     slot.offer(frame(3))
     slot.take()
     assert slot.offer(frame(3)) is False
+
+
+def test_pending_reports_whether_a_frame_is_waiting():
+    slot = FrameSlot()
+    assert slot.pending() is False
+    slot.offer(frame(0))
+    assert slot.pending() is True
+    slot.take()
+    assert slot.pending() is False
 
 
 def test_reset_clears_the_slot_and_the_sequence_gate():
@@ -479,6 +488,15 @@ class FrameSlot:
             frame, self._frame = self._frame, None
             return frame
 
+    def pending(self) -> bool:
+        """True if a frame is waiting to be taken.
+
+        The pipeline worker checks this before exiting, so a frame offered just
+        as the worker was giving up is not stranded until the next submit.
+        """
+        with self._lock:
+            return self._frame is not None
+
     def reset(self) -> None:
         """Forget everything, including the sequence gate.
 
@@ -493,7 +511,7 @@ class FrameSlot:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd streetlab-backend && uv run pytest tests/test_frames.py -q`
-Expected: PASS (5 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -511,7 +529,7 @@ git commit -m "Latest-win camera frame slot"
 - Test: `streetlab-backend/tests/test_pipeline.py`
 
 **Interfaces:**
-- Consumes: `CameraFrame`, `FrameSlot` from Task 2; `PerceptionStats`, `PerceptionMode`, `DetectionClass` from Task 1.
+- Consumes: `CameraFrame`, `FrameSlot` (including `pending()`) from Task 2; `PerceptionStats`, `PerceptionMode`, `DetectionClass` from Task 1.
 - Produces: `Box2D(x0, y0, x1, y1, cls, confidence)`; `Detector` protocol with `detect(frame: CameraFrame) -> list[Box2D]`; `StubDetector`; `PerceptionPipeline` with `submit_frame(frame)`, `latest() -> PipelineResult | None`, `stats(mode) -> PerceptionStats`, `shutdown()`. Phase 2 replaces `StubDetector` with `OnnxDetector` and consumes `Box2D` in `geometry.py`.
 
 - [ ] **Step 1: Write the failing test**
@@ -523,6 +541,8 @@ Create `streetlab-backend/tests/test_pipeline.py`:
 result. Phase 1 proves the plumbing with a stub detector and no model."""
 
 from __future__ import annotations
+
+import threading
 
 from perception.frames import CameraFrame
 from perception.pipeline import Box2D, PerceptionPipeline, StubDetector
@@ -590,6 +610,35 @@ def test_latest_is_none_before_any_frame():
         stats = pipeline.stats(mode="ml")
         assert stats.frames_received == 0
         assert stats.e2e_ms is None
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_frame_offered_while_the_worker_runs_is_not_stranded():
+    """Regression: the worker must not exit while a frame is pending, or that
+    frame waits for whatever submit happens to start the next worker."""
+    started = threading.Event()
+    release = threading.Event()
+
+    class Slow:
+        def __init__(self) -> None:
+            self.seen: list[int] = []
+
+        def detect(self, frame):
+            self.seen.append(frame.seq)
+            started.set()
+            release.wait(timeout=5)
+            return []
+
+    detector = Slow()
+    pipeline = PerceptionPipeline(detector)
+    try:
+        pipeline.submit_frame(frame(0))
+        assert started.wait(timeout=5)
+        pipeline.submit_frame(frame(1))
+        release.set()
+        pipeline.drain()
+        assert detector.seen == [0, 1]
     finally:
         pipeline.shutdown()
 
@@ -708,7 +757,7 @@ class PerceptionPipeline:
         if not self._frames.offer(frame):
             return False
         with self._lock:
-            if self._inflight is None or self._inflight.done():
+            if self._inflight is None:
                 self._inflight = self._executor.submit(self._work)
         return True
 
@@ -716,7 +765,15 @@ class PerceptionPipeline:
         while True:
             frame = self._frames.take()
             if frame is None:
-                return
+                # Give up only under the same lock `submit_frame` uses, after
+                # re-checking. Without this, a frame offered between the `take`
+                # above and here is stranded: the worker exits, and the offer
+                # saw an in-flight future so it queued no replacement.
+                with self._lock:
+                    if self._frames.pending():
+                        continue
+                    self._inflight = None
+                    return
             start = time.perf_counter()
             try:
                 boxes = self._detector.detect(frame)
@@ -775,7 +832,7 @@ class PerceptionPipeline:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd streetlab-backend && uv run pytest tests/test_pipeline.py -q`
-Expected: PASS (5 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1111,7 +1168,7 @@ git commit -m "Ingest camera frames at the socket, bypassing the command queue"
 
 **Files:**
 - Create: `streetlab/src/three/detectorCamera.ts`
-- Test: `streetlab/src/three/detectorCamera.test.ts`
+- Test: `streetlab/tests/detectorCamera.test.ts` (vitest only collects `tests/**`, never `src/**`)
 
 **Interfaces:**
 - Consumes: `CameraParams` type from Task 1.
@@ -1119,7 +1176,7 @@ git commit -m "Ingest camera frames at the socket, bypassing the command queue"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `streetlab/src/three/detectorCamera.test.ts`:
+Create `streetlab/tests/detectorCamera.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -1127,7 +1184,7 @@ import {
   cameraParamsFromThree,
   encodeBase64,
   flipRowsInPlace,
-} from './detectorCamera';
+} from '../src/three/detectorCamera';
 
 describe('cameraParamsFromThree', () => {
   it('converts Three.js Y-up into wire world coordinates', () => {
@@ -1179,7 +1236,7 @@ describe('encodeBase64', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd streetlab && npx vitest run src/three/detectorCamera.test.ts`
+Run: `cd streetlab && npx vitest run tests/detectorCamera.test.ts`
 Expected: FAIL — cannot resolve `./detectorCamera`.
 
 - [ ] **Step 3: Write the implementation**
@@ -1336,7 +1393,7 @@ export function createDetectorCamera(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd streetlab && npx vitest run src/three/detectorCamera.test.ts`
+Run: `cd streetlab && npx vitest run tests/detectorCamera.test.ts`
 Expected: PASS (6 tests)
 
 - [ ] **Step 5: Note what these tests do and do not cover**
@@ -1354,7 +1411,7 @@ Expected: clean.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add streetlab/src/three/detectorCamera.ts streetlab/src/three/detectorCamera.test.ts
+git add streetlab/src/three/detectorCamera.ts streetlab/tests/detectorCamera.test.ts
 git commit -m "Detector camera: offscreen forward view, wire-frame conversion"
 ```
 
@@ -1367,7 +1424,7 @@ git commit -m "Detector camera: offscreen forward view, wire-frame conversion"
 - Modify: `streetlab/src/net/wsClient.ts`
 - Modify: `streetlab/src/store/simStore.ts`
 - Create: `streetlab/src/ui/PerceptionPanel.tsx`
-- Test: `streetlab/src/net/wsClient.test.ts`, `streetlab/src/ui/PerceptionPanel.test.tsx`
+- Test: `streetlab/tests/wsClient.test.ts` (append to the existing file), `streetlab/tests/perceptionPanel.test.tsx` (new)
 
 **Interfaces:**
 - Consumes: `createDetectorCamera`, `DETECTOR_FRAME` (Task 6); `PerceptionStats` (Task 1).
@@ -1375,17 +1432,17 @@ git commit -m "Detector camera: offscreen forward view, wire-frame conversion"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `streetlab/src/net/wsClient.test.ts` (or append if it exists):
+**Append** this block to the existing `streetlab/tests/wsClient.test.ts`. Do not
+create a new file and do not touch its existing `FakeWebSocket` harness — these
+cases never connect, so they need none of it. The exported factory is
+`createWebSocketTransport` (already imported at the top of that file).
 
 ```ts
-import { describe, expect, it } from 'vitest';
-import { createWsTransport } from './wsClient';
-
 describe('camera frames while disconnected', () => {
   it('are dropped rather than queued', () => {
     // The offline queue holds 32 commands. At ~60 KB a frame, queueing them
     // would hold ~2 MB of imagery that is stale by the time it flushes.
-    const transport = createWsTransport({ url: 'ws://localhost:1' });
+    const transport = createWebSocketTransport({ url: 'ws://localhost:1' });
     for (let i = 0; i < 50; i++) {
       transport.send({
         id: `f${i}`, cmd: 'camera_frame', seq: i, t: i, width: 640, height: 384,
@@ -1397,24 +1454,31 @@ describe('camera frames while disconnected', () => {
   });
 
   it('still queues ordinary commands', () => {
-    const transport = createWsTransport({ url: 'ws://localhost:1' });
+    const transport = createWebSocketTransport({ url: 'ws://localhost:1' });
     transport.send({ id: 'a1', cmd: 'set_paused', paused: true });
     expect(transport.pendingCount()).toBe(1);
   });
 });
 ```
 
-Create `streetlab/src/ui/PerceptionPanel.test.tsx`:
+Create `streetlab/tests/perceptionPanel.test.tsx`. Note the two conventions this
+repo already uses and this file must match: the `@vitest-environment jsdom`
+docblock (the suite default is `node`), and plain `.textContent` assertions —
+`@testing-library/jest-dom` is **not** a dependency, so `toBeInTheDocument` and
+`toHaveTextContent` do not exist here.
 
 ```tsx
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { PerceptionPanel } from './PerceptionPanel';
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { PerceptionPanel } from '../src/ui/PerceptionPanel';
+
+afterEach(cleanup);
 
 describe('PerceptionPanel', () => {
   it('says nothing is measured when perception is null', () => {
     render(<PerceptionPanel stats={null} />);
-    expect(screen.getByText(/not running/i)).toBeInTheDocument();
+    expect(screen.getByText(/not running/i).textContent).toContain('not running');
   });
 
   it('shows transport numbers and marks quality as pending', () => {
@@ -1427,19 +1491,19 @@ describe('PerceptionPanel', () => {
         }}
       />,
     );
-    expect(screen.getByText(/120/)).toBeInTheDocument();
-    expect(screen.getByText(/3/)).toBeInTheDocument();
-    // A null must never render as 0 — that would claim a measurement.
-    expect(screen.getByTestId('precision')).toHaveTextContent('—');
-    expect(screen.queryByTestId('precision')).not.toHaveTextContent('0');
+    expect(screen.getByTestId('frames').textContent).toBe('120 received / 3 dropped');
+    expect(screen.getByTestId('detector-ms').textContent).toBe('4.5 ms');
+    // A null must never render as 0 — that would claim a measurement nobody made.
+    expect(screen.getByTestId('precision').textContent).toBe('—');
+    expect(screen.getByTestId('recall').textContent).toBe('—');
   });
 });
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd streetlab && npx vitest run src/net/wsClient.test.ts src/ui/PerceptionPanel.test.tsx`
-Expected: FAIL — `pendingCount` does not exist; `PerceptionPanel` does not exist.
+Run: `cd streetlab && npx vitest run tests/wsClient.test.ts tests/perceptionPanel.test.tsx`
+Expected: FAIL — `pendingCount` is not on the transport; `PerceptionPanel` does not exist.
 
 - [ ] **Step 3: Drop camera frames instead of queueing them, in `wsClient.ts`**
 
@@ -1581,7 +1645,7 @@ Confirm in the running app:
 - [ ] **Step 9: Commit**
 
 ```bash
-git add streetlab/src/three/Renderer.tsx streetlab/src/net/wsClient.ts streetlab/src/net/transport.ts streetlab/src/net/mockServer.ts streetlab/src/store/simStore.ts streetlab/src/ui/PerceptionPanel.tsx streetlab/src/ui/PerceptionPanel.test.tsx streetlab/src/net/wsClient.test.ts
+git add streetlab/src/three/Renderer.tsx streetlab/src/net/wsClient.ts streetlab/src/net/transport.ts streetlab/src/net/mockServer.ts streetlab/src/store/simStore.ts streetlab/src/ui/PerceptionPanel.tsx streetlab/tests/perceptionPanel.test.tsx streetlab/tests/wsClient.test.ts
 git commit -m "Emit detector frames from the render loop and report perception stats"
 ```
 
