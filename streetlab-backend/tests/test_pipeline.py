@@ -75,9 +75,11 @@ def test_latest_is_none_before_any_frame():
         pipeline.shutdown()
 
 
-def test_a_frame_offered_while_the_worker_runs_is_not_stranded():
-    """Regression: the worker must not exit while a frame is pending, or that
-    frame waits for whatever submit happens to start the next worker."""
+def test_a_frame_offered_while_the_detector_runs_is_processed():
+    """A frame submitted while the worker is mid-detect is not dropped: the
+    worker's outer loop picks it up on its own once it finishes. This does
+    not exercise the take()-returns-None exit race; see the test below for
+    that."""
     started = threading.Event()
     release = threading.Event()
 
@@ -100,6 +102,42 @@ def test_a_frame_offered_while_the_worker_runs_is_not_stranded():
         release.set()
         pipeline.drain()
         assert detector.seen == [0, 1]
+    finally:
+        pipeline.shutdown()
+
+
+def test_the_worker_does_not_exit_while_a_frame_is_pending():
+    """The window this guards: `take()` returns None, and a frame arrives
+    before the worker decides to stop. Without the re-check under the lock,
+    `submit_frame` sees an unfinished future, queues no replacement worker,
+    and that frame is stranded until some later submit happens to start one.
+    """
+    pipeline = PerceptionPipeline(StubDetector())
+    real = pipeline._frames
+    planted = False
+
+    class PlantsAFrameWhenEmpty:
+        """Delegates to the real slot, but the first time it reports empty it
+        offers a frame first — reproducing the exact interleaving."""
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def take(self):
+            nonlocal planted
+            taken = real.take()
+            if taken is None and not planted:
+                planted = True
+                real.offer(frame(1))
+            return taken
+
+    pipeline._frames = PlantsAFrameWhenEmpty()
+    try:
+        pipeline.submit_frame(frame(0))
+        pipeline.drain()
+        result = pipeline.latest()
+        assert result is not None
+        assert result.frame_seq == 1, "frame offered as the worker gave up was stranded"
     finally:
         pipeline.shutdown()
 
