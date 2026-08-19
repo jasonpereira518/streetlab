@@ -150,10 +150,15 @@ export function useTelemetryCanvas(
     const parent = canvas.parentElement ?? canvas;
 
     const resize = () => {
+      // The content box, not the border box: `inset: 0` lays the canvas out
+      // inside its frame's border, so measuring with getBoundingClientRect
+      // oversizes the backing store by the border and the overflow clip eats
+      // the last pixel of the drawing. jsdom reports 0 here, hence the rect
+      // fallback — that path is what the unit tests measure through.
       const rect = parent.getBoundingClientRect();
       const dpr = Math.min(3, window.devicePixelRatio || 1);
-      const w = Math.max(1, Math.round(rect.width));
-      const h = Math.max(1, Math.round(rect.height));
+      const w = Math.max(1, Math.round(parent.clientWidth || rect.width));
+      const h = Math.max(1, Math.round(parent.clientHeight || rect.height));
       if (
         sizeRef.current.w === w &&
         sizeRef.current.h === h &&

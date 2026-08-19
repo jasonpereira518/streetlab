@@ -16,8 +16,17 @@ import { alpha, classColor, color } from './theme';
 
 type Tab = RightTab;
 
-const TABS: Array<{ id: Tab; label: string; icon: typeof MapIcon }> = [
-  { id: 'parameters', label: 'Parameters', icon: SlidersIcon },
+const TABS: Array<{
+  id: Tab;
+  label: string;
+  /** Spoken/hover name; defaults to `label` where the two agree. */
+  name?: string;
+  icon: typeof MapIcon;
+}> = [
+  // "Parameters" spelled out cannot share a quarter of the tab strip with an
+  // icon at any panel width the shell offers; the full word lives on `name`,
+  // which becomes the tab's title and accessible name.
+  { id: 'parameters', label: 'Params', name: 'Parameters', icon: SlidersIcon },
   { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'layers', label: 'Layers', icon: LayersIcon },
   { id: 'events', label: 'Events', icon: ActivityIcon },
@@ -53,16 +62,20 @@ export function RightPanel() {
   return (
     <aside className="panel" aria-label="Inspector">
       <div className="panel-tabs" role="tablist">
-        {TABS.map(({ id, label, icon: Icon }) => (
+        {TABS.map(({ id, label, name = label, icon: Icon }) => (
           <button
             key={id}
             type="button"
             role="tab"
             aria-selected={tab === id}
+            // Narrow windows drop the label to icons only (see styles.css), so
+            // the name has to live somewhere the CSS cannot take away.
+            aria-label={name}
+            title={name}
             className={`panel-tab${tab === id ? ' is-active' : ''}`}
             onClick={() => setTab(id)}
           >
-            <Icon size={15} />
+            <Icon size={14} />
             <span>{label}</span>
           </button>
         ))}
