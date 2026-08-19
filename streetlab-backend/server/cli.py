@@ -255,6 +255,11 @@ def _serve(args) -> int:
             perception_pipeline=pipeline,
         )
     except _SOURCE_ERRORS as exc:
+        # The pipeline's worker thread already exists by this point -- if
+        # construction fails there is no later `finally` to reach, so it is
+        # torn down here instead of leaking a live `ThreadPoolExecutor`.
+        if pipeline is not None:
+            pipeline.shutdown()
         print(f"error: {exc}")
         return 1
 
@@ -319,6 +324,10 @@ def _run(args) -> int:
             perception_pipeline=pipeline,
         )
     except _SOURCE_ERRORS as exc:
+        # Same leak as `_serve`'s: the pipeline's worker thread already
+        # exists, and this early return skips the `finally` below entirely.
+        if pipeline is not None:
+            pipeline.shutdown()
         print(f"error: {exc}")
         return 1
 
