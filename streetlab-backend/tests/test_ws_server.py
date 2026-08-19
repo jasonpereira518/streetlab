@@ -463,6 +463,53 @@ def test_a_malformed_camera_frame_is_dropped_without_acking(ws_session_factory):
         pipeline.shutdown()
 
 
+def test_a_camera_frame_is_dropped_silently_when_no_pipeline_exists(ws_session_factory):
+    """Without `--perception ml` there is no pipeline for a frame to reach.
+    `_ingest_frame` must drop it — no ack, no exception — rather than treat a
+    perfectly well-formed frame as an error just because nothing is listening.
+    """
+    import base64
+
+    session, sent = ws_session_factory()  # no perception_pipeline
+    payload = {
+        "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+        "width": 640, "height": 384, "format": "jpeg",
+        "data": base64.b64encode(b"\xff\xd8jpegbytes").decode(),
+        "camera": {
+            "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+            "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+        },
+    }
+    asyncio.run(session._handle(json.dumps(payload)))  # must not raise
+    assert sent == []
+
+
+def test_an_oversized_camera_frame_is_rejected_without_raising(ws_session_factory):
+    """`CameraFrameCmd.data` caps at 524288 chars; this pins that the cap is
+    enforced at `_ingest_frame`'s own call site — not only provable in
+    isolation against the schema — and that an oversized frame is dropped
+    rather than raising past `_ingest_frame`."""
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        session, sent = ws_session_factory(perception_pipeline=pipeline)
+        payload = {
+            "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+            "width": 640, "height": 384, "format": "jpeg",
+            "data": "A" * 524289,  # one char over the schema's cap
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+        asyncio.run(session._handle(json.dumps(payload)))  # must not raise
+        assert pipeline.latest() is None
+        assert sent == []
+    finally:
+        pipeline.shutdown()
+
+
 def test_ordinary_commands_still_ack(ws_session_factory):
     session, sent = ws_session_factory()
     asyncio.run(session._handle(json.dumps({"id": "a1", "cmd": "set_paused", "paused": True})))

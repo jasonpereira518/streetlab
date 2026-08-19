@@ -75,7 +75,13 @@ class FrameSlot:
 
         A reconnecting client starts its sequence at 0 again; without this the
         gate would reject every frame of the new connection as stale.
+
+        A frame still sitting here, unread, is genuinely dropped — the module
+        docstring's promise that a drop is always counted applies here too, not
+        just in `offer()`.
         """
         with self._lock:
+            if self._frame is not None:
+                self.dropped += 1
             self._frame = None
             self._last_seq = -1

@@ -71,3 +71,23 @@ def test_reset_clears_the_slot_and_the_sequence_gate():
     assert slot.take() is None
     # After a reconnect the client starts at 0 again, which must not be stale.
     assert slot.offer(frame(0)) is True
+
+
+def test_reset_counts_a_still_pending_frame_as_dropped():
+    """The module docstring's promise — a drop is always counted, never
+    silent — applies to a frame `reset()` discards unread, not just to the
+    ones `offer()` displaces."""
+    slot = FrameSlot()
+    slot.offer(frame(9))
+    slot.reset()
+    assert slot.dropped == 1
+
+
+def test_reset_after_a_frame_was_already_taken_counts_no_drop():
+    """Nothing was discarded here — the frame was already consumed — so
+    `reset()` must not invent a drop that didn't happen."""
+    slot = FrameSlot()
+    slot.offer(frame(9))
+    slot.take()
+    slot.reset()
+    assert slot.dropped == 0
