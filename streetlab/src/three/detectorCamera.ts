@@ -85,6 +85,9 @@ export function createDetectorCamera(
 ): DetectorCamera {
   const { width, height, fovYDeg, quality } = DETECTOR_FRAME;
   const camera = new THREE.PerspectiveCamera(fovYDeg, width / height, 0.1, 400);
+  // Defaults to UnsignedByteType. `capture()` reinterprets the readback's raw
+  // bytes as a Uint8Array directly (no per-channel conversion) — switching this
+  // to FloatType/HalfFloatType would make that reinterpretation silent garbage.
   const target = new THREE.RenderTarget(width, height);
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d');
@@ -112,14 +115,15 @@ export function createDetectorCamera(
       // would interleave GPU work for frames nobody is waiting for.
       if (busy || !ctx) return null;
       busy = true;
+      // Captured before the try so it is always available to restore, even if
+      // setRenderTarget(target) itself is what throws.
+      const previous = renderer.getRenderTarget();
       try {
-        const previous = renderer.getRenderTarget();
         renderer.setRenderTarget(target);
         await renderer.renderAsync(scene, camera);
         const pixels = await renderer.readRenderTargetPixelsAsync(
           target, 0, 0, width, height,
         );
-        renderer.setRenderTarget(previous);
 
         const rgba = new Uint8Array(
           pixels.buffer, pixels.byteOffset, pixels.byteLength,
@@ -134,6 +138,10 @@ export function createDetectorCamera(
           camera: cameraParamsFromThree(camera.position, heading),
         };
       } finally {
+        // Always reapply, success or failure: the renderer is shared with the
+        // main view, and a perception hiccup must never leave it pointed at
+        // the detector's offscreen target instead of the visible canvas.
+        renderer.setRenderTarget(previous);
         busy = false;
       }
     },

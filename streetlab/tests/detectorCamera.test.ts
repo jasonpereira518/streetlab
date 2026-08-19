@@ -30,10 +30,19 @@ describe('flipRowsInPlace', () => {
     expect(Array.from(rgba)).toEqual([0, 0, 255, 255, 255, 0, 0, 255]);
   });
 
-  it('is a no-op for a single row', () => {
-    const rgba = new Uint8Array([1, 2, 3, 4]);
-    flipRowsInPlace(rgba, 1, 1);
-    expect(Array.from(rgba)).toEqual([1, 2, 3, 4]);
+  it('flips an odd height, leaving the middle row untouched', () => {
+    // 1x3 image, one pixel per row: row0 red, row1 green (middle), row2 blue.
+    const rgba = new Uint8Array([
+      255, 0, 0, 255,
+      0, 255, 0, 255,
+      0, 0, 255, 255,
+    ]);
+    flipRowsInPlace(rgba, 1, 3);
+    expect(Array.from(rgba)).toEqual([
+      0, 0, 255, 255,
+      0, 255, 0, 255,
+      255, 0, 0, 255,
+    ]);
   });
 });
 
