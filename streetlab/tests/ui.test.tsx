@@ -624,6 +624,47 @@ describe('RightPanel', () => {
     act(() => {});
     expect(screen.getByText('traffic_speed_scale=0.5')).toBeTruthy();
   });
+
+  it('stays quiet about perception in the default ground-truth configuration', () => {
+    // The mock never runs ML perception, so every frame's `perception` field
+    // is null — this is the ordinary, default state, not an edge case.
+    harness = createHarness();
+    render(<RightPanel />);
+    harness.emitScene();
+    harness.emitFrame();
+    expect(screen.getByText('ML perception not running')).toBeTruthy();
+  });
+
+  it('surfaces a live perception payload through the real component tree', () => {
+    // Unlike tests/perceptionPanel.test.tsx (which renders PerceptionPanel in
+    // isolation with a hand-built prop), this drives the actual message path:
+    // a state_update with `perception` set reaches the store, and RightPanel
+    // reads it from there into the mounted panel.
+    harness = createHarness();
+    render(<RightPanel />);
+    harness.emitScene();
+
+    harness.sim.step();
+    const frame: StateUpdate = {
+      ...harness.sim.frame(),
+      perception: {
+        mode: 'ml',
+        detector_ms: 4.5,
+        e2e_ms: 31.2,
+        frames_received: 120,
+        frames_dropped: 3,
+        precision: null,
+        recall: null,
+        mean_pos_err_m: null,
+      },
+    };
+    harness.emit(frame);
+
+    expect(useSimStore.getState().perception?.frames_received).toBe(120);
+    expect(screen.getByTestId('frames').textContent).toBe('120 received / 3 dropped');
+    // Quality fields stay unmeasured (Phase 3 territory) — an em dash, not 0.
+    expect(screen.getByTestId('precision').textContent).toBe('—');
+  });
 });
 
 describe('Telemetry row', () => {
