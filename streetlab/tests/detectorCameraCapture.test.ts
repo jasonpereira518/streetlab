@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as THREE from 'three/webgpu';
 import { createDetectorCamera } from '../src/three/detectorCamera';
 import type { DetectorCamera } from '../src/three/detectorCamera';
@@ -160,5 +160,59 @@ describe('capture() renderTargetBusy timing', () => {
     await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
 
     expect(busyAtReadbackStart).toEqual([false]);
+  });
+
+  it('releases both guards even when the restore itself throws (e.g. a lost GPU device)', async () => {
+    // The double-fault this guards against: the early restore throws, so
+    // `restoredEarly` never gets set, and `finally`'s fallback retries the
+    // identical setRenderTarget(previous) call — which, on a genuinely lost
+    // device, throws again. If that second throw were allowed to escape
+    // `finally` before the resets below it ran, `targetBusy` would stay
+    // `true` forever, and since the render loop gates the visible canvas on
+    // that flag, the canvas would freeze for the rest of the session — a far
+    // worse outcome than the one frame that might draw into the wrong target
+    // while the GPU is already failing.
+    const originalTarget = { name: 'main-view-target' };
+    let setRenderTargetCalls = 0;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const renderer = {
+      getRenderTarget: () => originalTarget,
+      setRenderTarget: () => {
+        setRenderTargetCalls += 1;
+        // The first call switches to the detector's own target and succeeds.
+        // Every call after that is a restore attempt (early, then finally's
+        // fallback if reached) — all fail, simulating a lost device.
+        if (setRenderTargetCalls > 1) {
+          throw new Error('simulated device-lost on restore');
+        }
+      },
+      renderAsync: async () => {},
+      // Distinct from the restore failure on purpose: if some future change
+      // ever let capture() reach readback despite the restore throwing, this
+      // would surface as an assertion failure below (wrong error message)
+      // rather than an accidentally-passing test.
+      readRenderTargetPixelsAsync: async () => {
+        throw new Error('should not be reached — restore fails first');
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    const detector = createDetectorCamera(scene, renderer);
+
+    await expect(detector.capture()).rejects.toThrow('simulated device-lost on restore');
+
+    // The property that matters: neither guard is left stuck true.
+    expect(detector.renderTargetBusy()).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+
+    // `busy` released too — a second call must reach the renderer again
+    // (and fail the same way) rather than short-circuiting to `null`, which
+    // is what a stuck `busy` guard would do instead.
+    setRenderTargetCalls = 0;
+    await expect(detector.capture()).rejects.toThrow('simulated device-lost on restore');
+    expect(detector.renderTargetBusy()).toBe(false);
+
+    warnSpy.mockRestore();
   });
 });

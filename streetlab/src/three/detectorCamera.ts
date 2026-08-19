@@ -183,10 +183,30 @@ export function createDetectorCamera(
         // Fallback only: normally the early restore above already ran. This
         // still matters for a failure between acquiring `previous` and that
         // point — e.g. renderAsync itself rejecting — where the target would
-        // otherwise be left switched. Always release both guards regardless,
-        // so a transient failure here can't permanently wedge capture() (or
-        // the render loop, via targetBusy) for the rest of the session.
-        if (acquiredPrevious && !restoredEarly) renderer.setRenderTarget(previous);
+        // otherwise be left switched.
+        //
+        // The restore call itself is wrapped so a failure here (e.g. a lost
+        // GPU device) cannot skip the two resets below. `targetBusy` stuck
+        // `true` is worse than `busy` stuck true: the render loop gates the
+        // *visible* canvas on it, so a wedged guard here would freeze the
+        // canvas for the rest of the session, not just stop captures. Given a
+        // choice between a frame that might draw into the wrong target while
+        // the GPU is already failing, and a canvas that never updates again,
+        // the corrupted frame is the lesser harm — it self-corrects if the
+        // renderer recovers; a permanent freeze does not. So both guards
+        // release unconditionally, and the restore failure is logged, not
+        // swallowed.
+        if (acquiredPrevious && !restoredEarly) {
+          try {
+            renderer.setRenderTarget(previous);
+          } catch (err) {
+            console.warn(
+              '[streetlab] detector camera: failed to restore render target; ' +
+                'a subsequent main-view render may draw into the wrong target',
+              err,
+            );
+          }
+        }
         targetBusy = false;
         busy = false;
       }
