@@ -56,10 +56,21 @@ def generate() -> dict[str, dict]:
         sim.step()
     out["state_update_moving"] = sim.state_update().model_dump(mode="json")
 
-    # Capture while the ego is still closing on the braking lead: once it has
+    # Capture while the ego is still closing on the merging car: once it has
     # matched speed the closing rate is zero and TTC is legitimately null,
     # which would make this fixture prove nothing about the nullable fields.
-    sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "sudden_brake"})
+    #
+    # `cut_in` rather than `sudden_brake`, and the choice is load-bearing now
+    # that the two are different events. `sim/events.py` defines a cut-in in
+    # TIME -- it lands 1.5 s of the ego's own travel ahead at half its speed --
+    # so it raises a hazard flag by construction, whatever speed the ego is
+    # doing three seconds into grid-merge. `sudden_brake` stops whichever
+    # vehicle happens to lead the ego's lane, and with reactive traffic that
+    # can be 100 m away: measured on this scene, it never produces a frame
+    # inside `plan.ttc.HAZARD_TTC_S` at all, the best TTC in 300 s being 4.03 s
+    # against a 4.0 s threshold. A fixture named for `cutin`/`cutin_label`
+    # asking for a cut-in is also simply the honest version.
+    sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
     hazard = sim.state_update()
     for _ in range(60 * 30):
         sim.step()

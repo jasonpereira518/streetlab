@@ -53,7 +53,7 @@ from schema import (
     VehicleStatus,
     parse_command,
 )
-from sim.agents import ScriptedTraffic, TrafficModel
+from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
 from sim.vehicle import BicycleModel, VehicleState
 
 log = logging.getLogger("streetlab.sim")
@@ -65,9 +65,6 @@ DEFAULT_DT = 1 / 60
 # groups are never green together even for one frame.
 GREEN_S, YELLOW_S, ALL_RED_S = 12.0, 3.0, 1.0
 _CYCLE_S = 2 * (GREEN_S + YELLOW_S + ALL_RED_S)
-
-# How long an injected hazard holds the offending vehicle before it recovers.
-HAZARD_HOLD_S = 8.0
 
 # Trajectory graph: how far forward it predicts and how much history it keeps.
 _TRAJECTORY_HORIZON_S = 4.0
@@ -189,11 +186,12 @@ class Simulation:
     def adopt_scene(self, scene: BuiltScene) -> None:
         """Install an already-built scene. The only mutation point for `scene`."""
         self.scene: BuiltScene = scene
-        self._traffic: TrafficModel = ScriptedTraffic(
+        self._traffic: TrafficModel = IdmTraffic(
             routes=self.scene.agent_routes,
             speed_limit_mps=self.scene.speed_limit_mps,
             seed=self._seed,
             speed_scale=float(self.world.params["traffic_speed_scale"]),
+            lanes=self.scene.lanes,
         )
         self._signals = SignalController(self.scene.signal_groups)
         self._reset_dynamics()
@@ -246,7 +244,12 @@ class Simulation:
                 return
             self.world.pending_steps -= 1
 
-        self._traffic.step(dt)
+        self._traffic.step(
+            dt,
+            TrafficWorld(
+                ego=self.world.ego, ego_route=self.scene.ego_route, t=self.world.t
+            ),
+        )
 
         self._guard_world()
         result = self._plan(dt)
@@ -471,43 +474,32 @@ class Simulation:
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
 
     def _cmd_inject_hazard(self, command) -> CommandOutcome:
-        """Cycle 1: the nearest lead vehicle brakes hard.
+        """Stage one of `sim/events.py`'s scenarios.
 
-        Cycle 3 replaces this with `sim/events.py` and its full scenario set
-        (cut_in, jaywalker, emergency_vehicle, obstacle, sudden_brake).
+        This method used to BE the hazard set: one branch, and whatever `kind`
+        arrived, the lead vehicle braked hard under that name. `kind` is a free
+        string on the wire, so the registry needed no protocol change -- and an
+        unknown kind still acks rather than raising, because a newer frontend
+        must not be able to crash an older backend.
+
+        Imported inside the method: `sim.events` stages against a `Simulation`
+        and imports this module for the type, so a module-level import here
+        would close the cycle.
         """
-        agents = self._traffic.agents
-        if not agents:
-            return CommandOutcome(ok=False, message="no traffic to disturb")
+        from sim import events
 
-        victim = self._lead_agent() or min(
-            agents,
-            key=lambda a: math.dist(
-                (a.state.x, a.state.y), (self.world.ego.x, self.world.ego.y)
-            ),
-        )
-        self._traffic.slow(victim, to_mps=0.0, for_s=HAZARD_HOLD_S)
-        self._emit(command.kind, f"{command.kind}: {victim.id} braking hard", "warn")
-        return CommandOutcome(ok=True, message=f"injected {command.kind}, {victim.id} braking")
-
-    def _lead_agent(self):
-        """The closest agent ahead of ego in the ego's own lane, if any.
-
-        Braking a car behind ego, or one in the next lane over, acks fine and
-        changes nothing the driver can see — the whole point of the injection is
-        to provoke a reaction.
-        """
-        route = self.scene.ego_route
-        ego_s = route.project((self.world.ego.x, self.world.ego.y))
-        loop = route.length_m
-        best, best_gap = None, math.inf
-        for agent in self._traffic.agents:
-            if agent.route is not route:
-                continue
-            gap = (agent.s - ego_s) % loop
-            if 0 < gap < best_gap:
-                best, best_gap = agent, gap
-        return best
+        scenario = events.resolve(command.kind)
+        if scenario is None:
+            return CommandOutcome(
+                ok=False, message=f"unknown hazard kind: {command.kind}"
+            )
+        message = scenario.stage(self)
+        if message is None:
+            return CommandOutcome(
+                ok=False, message=f"{command.kind}: nothing here to disturb"
+            )
+        self._emit(scenario.code, f"{scenario.code}: {message}", scenario.level)
+        return CommandOutcome(ok=True, message=f"injected {scenario.code}: {message}")
 
     def _emit(self, code: str, message: str, level: str = "info") -> None:
         self.world.events.append(

@@ -7,10 +7,11 @@ Python simulator over a validated WebSocket contract.
 ## What this walks through
 
 Launch it, load a scenario, and inject a hazard — watch the planner react.
-This is what's actually built today: Cycle 1's synthetic 3×3 grid, scripted
-traffic, ground-truth perception, and centerline-following planner, plus
-Cycle 2's real OpenStreetMap data — either behind `--source osm` at startup
-or typed into the running app's address box. See the root
+This is what's actually built today: Cycle 1's synthetic 3×3 grid,
+ground-truth perception and centerline tracker; Cycle 2's real OpenStreetMap
+data — either behind `--source osm` at startup or typed into the running app's
+address box; and Cycle 3's junction compliance, lane changes, reactive
+IDM/MOBIL traffic and five distinct hazard scenarios. See the root
 [`README.md`](README.md#roadmap) for what's deliberately not built yet.
 
 Two ways to run it — pick one:
@@ -134,15 +135,27 @@ completely fresh install.
 ## Inject a hazard
 
 Open the right panel's **Parameters** tab and click **Inject cut-in hazard**.
-The backend's Cycle 1 hazard model brakes the nearest lead vehicle hard; the
-ack log shows `injected cutin, veh_NN braking`. Watch the TTC readout in the
-toolbar drop and the planner respond — the orange hazard overlay renders
-around the flagged vehicle in the 3D view, and the trajectory graph's cut-in
-curve shows the predicted path.
+A neighbouring vehicle slides into the ego's lane 1.5 seconds of travel ahead
+at half the ego's speed, and the ack log shows `injected cut_in: veh_NN
+cutting in N m ahead`. Watch the TTC readout in the toolbar drop and the
+planner respond — the orange hazard overlay renders around the flagged vehicle
+in the 3D view, and the trajectory graph's cut-in curve shows the predicted
+path.
 
-(Cycle 3 adds true cut-in/jaywalker/emergency-vehicle scenario variants; today
-every `inject_hazard` call produces the same generic hard-brake response,
-regardless of the `kind` requested from the UI.)
+The button sends one of five scenarios (`streetlab-backend/sim/events.py`),
+and the wire's `kind` is a free string, so the other four are reachable from
+any client that speaks the protocol:
+
+| `kind` | What it stages |
+|---|---|
+| `cut_in` | A neighbour merges into the ego's lane, close and slower |
+| `sudden_brake` | The vehicle leading the ego's lane stops dead for 8 s |
+| `jaywalker` | A pedestrian crosses the ego's path 30 m ahead, then leaves |
+| `obstacle` | Something stationary and unclassifiable sits in the lane 40 m ahead |
+| `emergency_vehicle` | A vehicle behind runs at 1.6× the limit and works its way past |
+
+An unknown `kind` acks false rather than raising, so a newer client cannot
+break an older backend.
 
 ## See it survive a dropped connection
 
