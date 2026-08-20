@@ -1009,6 +1009,32 @@ canvas {
 
 .ctl-value--mono { color: var(--c-text-muted, #5f6e80); }
 
+/* Perception readout (Cycle 4). Label/value rows, same shape as `.ctl-row`.
+   Values are tabular so a counter ticking at 10 Hz doesn't jitter the column,
+   and an em dash (a null field, never a measured zero) sits where a number
+   would. */
+.perception-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--c-text-muted, #5f6e80);
+}
+
+.perception-panel > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.perception-panel > div > span:last-child {
+  font: 600 11.5px/1 var(--font-mono, monospace);
+  color: var(--c-text, #141d28);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .ctl--toggle {
   display: flex;
   align-items: center;
