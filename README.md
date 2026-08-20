@@ -187,3 +187,10 @@ Nothing in this repository ships model weights this cycle. When Cycle 4 adds
 a detector, the position is: no AGPL/GPL or non-commercial-trained weights in
 the packaged `.app`; research-only datasets are benchmarking-figure sources,
 never training inputs.
+
+The shipped detector is RT-DETRv2 (`PekingU/rtdetr_v2_r18vd`, Apache-2.0,
+COCO-pretrained). Weights are fetched at runtime into a local cache, not
+bundled in the repo or the packaged `.app`. `scripts/export_detector.py`
+regenerates the ONNX file from the source checkpoint; it's a dev-only tool
+(needs `torch` + `transformers`, neither a project dependency) run by hand,
+not part of any build or test step.
