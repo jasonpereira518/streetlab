@@ -14,6 +14,7 @@ probing, just tensor math.
 
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 from typing import Callable
 
@@ -23,6 +24,8 @@ from PIL import Image
 from perception.frames import CameraFrame
 from perception.pipeline import Box2D
 from schema import DetectionClass
+
+log = logging.getLogger("streetlab.perception")
 
 MODEL_INPUT = (640, 640)  # width, height, from preprocessor_config.json
 
@@ -169,6 +172,16 @@ class OnnxDetector:
             # provider that isn't available silently falls back inside
             # onnxruntime, and get_providers()[0] is the only honest source.
             self.provider = self._session.get_providers()[0]
+            # And say so. Recording it without surfacing it leaves the whole
+            # `PROVIDER_ORDER` decision unauditable in the field: that order
+            # is CPU-first because CoreML measured 4x slower on int8, and an
+            # operator who cannot see what bound cannot tell a machine that
+            # honoured it from one that silently fell back. Logged once per
+            # detector, at the moment the session is actually built -- which
+            # is also the first frame, so it doubles as "the model loaded".
+            # Deliberately not a wire field: what the wire reports about the
+            # detector is Phase 3's call, not this one's.
+            log.info("detector session bound to %s", self.provider)
         return self._session
 
     def detect(self, frame: CameraFrame) -> list[Box2D]:

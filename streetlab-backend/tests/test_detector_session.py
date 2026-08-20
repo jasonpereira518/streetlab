@@ -89,6 +89,26 @@ def test_the_bound_provider_is_recorded_not_assumed():
     assert det.provider == "CoreMLExecutionProvider"
 
 
+def test_the_bound_provider_is_surfaced_not_merely_recorded(caplog):
+    """`PROVIDER_ORDER` is CPU-first on measured evidence (CoreML was 4x
+    slower on int8). An operator who cannot see what actually bound cannot
+    tell a machine that honoured that order from one that silently fell back
+    inside onnxruntime -- so recording it on the instance is not enough, it
+    has to reach the log.
+    """
+    det = OnnxDetector(session_factory=lambda: FakeSession("CoreMLExecutionProvider"),
+                       score_threshold=0.3)
+    with caplog.at_level("INFO", logger="streetlab.perception"):
+        det.detect(frame(0))
+        det.detect(frame(1))
+
+    lines = [r.getMessage() for r in caplog.records
+             if r.name == "streetlab.perception"]
+    bound = [m for m in lines if "CoreMLExecutionProvider" in m]
+    # Once, when the session is built -- not once per frame at ~10 Hz.
+    assert len(bound) == 1, lines
+
+
 def test_a_corrupt_jpeg_raises_so_the_pipeline_can_count_it():
     det = OnnxDetector(session_factory=lambda: FakeSession(), score_threshold=0.3)
     bad = CameraFrame(seq=0, t=0.0, width=640, height=384,

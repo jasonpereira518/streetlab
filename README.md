@@ -78,9 +78,11 @@ perception and a centerline tracker; Cycle 2 added real OSM scenes and
 in-app address entry; Cycle 3 added junction compliance (the ego stops for
 red lights and stop signs), lane-level overtaking, traffic that reacts to
 the ego instead of driving through it (IDM car-following, MOBIL lane
-changes), and five distinct `inject_hazard` scenarios. Still open, and
-deliberately: ground-truth perception stands in for a trained detector
-(Cycle 4), and nothing here is trained on anything (Cycle 5). The
+changes), and five distinct `inject_hazard` scenarios. Cycle 4 is under way:
+a real RT-DETR ONNX detector now runs on rendered camera frames, but it runs
+in shadow and ground-truth perception still drives the car — scoring the two
+against each other is the phase that finishes the cycle. Still open, and
+deliberately: nothing here is trained on anything (Cycle 5). The
 [design doc](docs/superpowers/specs/2026-08-12-streetlab-backend-design.md)
 covers the full cycle breakdown; the short version is in
 [Roadmap](#roadmap) below.
@@ -146,7 +148,7 @@ process — not fixed targets. Sim step time and RSS come from the backend's
 | `.app` bundle size | `scripts/build_app.sh` | **28 MB** (measured, includes the sidecar) |
 | Backend RSS | Backend `/health` | **~59 MB** synthetic / **~94 MB** on a real OSM scene, measured at startup; live in the overlay |
 | Frontend RSS | `ps` on the running `.app` | **~58–72 MB** measured at startup |
-| Detector inference ms | — | Not measurable this cycle — no model runs |
+| Detector inference ms | Backend `PerceptionStats` | Live in the perception panel (Cycle 4 Phase 2 onward — a real ONNX detector now runs) |
 | Model disk budget | — | **Target for Cycle 4**: ~172 MB detector |
 | Map cache budget | `map/cache.py` | 99 MB LRU ceiling; one Nob Hill extract is **3.2 MB** |
 
@@ -178,7 +180,7 @@ in behind an existing seam (`SceneSource`, `PerceptionSource`, `Planner`,
 | 1 | Synthetic grid, scripted traffic, ground-truth perception, centerline planner, real-time WS server, native sidecar integration | **Built** |
 | 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | **Built** — OSM ingest behind the SceneSource seam (Phase 1), plus in-app address entry, an off-thread build executor, and offline bundled extracts (Phase 2) |
 | 3 | Junction compliance (red lights, stop signs), lane-level overtaking, reactive traffic (IDM/MOBIL) and the full hazard scenario set | **Built** — signals and stop signs behind a behaviour FSM (Phase 1), carriageway-checked lane changes with a labelled return (Phase 2), and IDM car-following, MOBIL lane changes and five distinct hazards (Phase 3) |
-| 4 | ML perception (RT-DETRv2 on MPS) replacing ground truth | Not started |
+| 4 | ML perception (RT-DETRv2 on MPS) replacing ground truth | **In progress** — two of three phases landed: a camera-frame transport from the renderer to the backend (Phase 1), and a real RT-DETR ONNX detector behind it whose 2D boxes become tracked world-frame detections (Phase 2). It runs in shadow; ground truth still drives. Phase 3 scores one against the other and flips this row. |
 | 5 | Sim-generated training dataset, fine-tuning, evaluation | Not started |
 
 ## Licenses

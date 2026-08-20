@@ -5,9 +5,12 @@ simulation with no noise and no model. It exists so the rest of the pipeline can
 be proved correct before a detector is introduced, and it stays afterwards as
 the reference every noisier mode is compared against.
 
-Cycle 4 adds `NoisyGroundTruth` (jitter, dropout, false positives) and then a
-real RT-DETRv2 detector behind this same protocol -- `perception/ml_source.py`,
-which shares `EgoFrame` below rather than reimplementing it.
+Cycle 4 adds a real detector behind this same protocol --
+`perception/ml_source.py`, which shares `EgoFrame` below rather than
+reimplementing it. An earlier design also named a `NoisyGroundTruth` (jitter,
+dropout, false positives); with a real detector measured against ground truth
+that would be a third fidelity mode nobody consumes, so it was removed from
+scope rather than built.
 
 A note on scope: `ttc_s` and `hazard` are inference rather than sensing, and
 they live in `plan/ttc.py`. They are computed here because the wire's

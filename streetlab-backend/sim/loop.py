@@ -322,8 +322,31 @@ class Simulation:
         and the car accelerates to the speed limit exactly as perception
         changes hands. It also gives Phase 3 two sources that have been
         answering the same question continuously, which is what a comparison
-        needs. The cost is one projection and one tracker update per step
-        over a handful of boxes.
+        needs.
+
+        The cost is one projection and one tracker update per *frame* -- not
+        per step. `MlPerception.observe` guards both on a `_processed`
+        identity check against the pipeline result it last consumed, so at
+        60 Hz stepping and ~10 Hz frames the tracker advances roughly one
+        step in six. That guard is load-bearing, not an optimisation:
+        re-running the tracker on a frame it has already consumed would
+        inflate hit streaks and, since every unmatched track takes a miss per
+        call, age live tracks to death inside a single frame interval.
+        Ground truth's own projection genuinely is per step.
+
+        A deliberate documented deviation from the plan's first global
+        constraint. That constraint ("nothing may run on the sim thread
+        except the sim") names decode, inference, projection AND tracking as
+        the executor's work; only decode and inference actually run there.
+        Projection and tracking run here, on the sim thread, and the plan has
+        been amended to record the exception rather than the code left
+        quietly disagreeing with it. The reasons, in full, are in
+        `docs/superpowers/plans/2026-08-20-cycle4-phase2-detector.md` under
+        Global Constraints; in short: the cost is bounded (no I/O, a handful
+        of boxes, ~10 Hz thanks to the `_processed` guard), and the
+        `EgoFrame` half of `observe()` has to stay on the sim thread anyway,
+        so moving the rest would split one seam across two threads. Do not
+        read this as an accepted cost mentioned in passing -- it is a ruling.
 
         Which result is *consumed* is chosen per step, never captured at
         construction: `set_perception` flips `perception_mode` at runtime,

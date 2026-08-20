@@ -12,7 +12,11 @@
 
 ## Global Constraints
 
-- **Nothing may run on the sim thread except the sim.** Decode, inference, projection and tracking all run on the existing `PerceptionPipeline` executor.
+- **Nothing may run on the sim thread except the sim.** Decode and inference run on the existing `PerceptionPipeline` executor. **Amended at merge time — projection and tracking are an explicit, reviewed exception and run on the sim thread** (`MlPerception.observe`, called from `SimLoop._observe`). Reasons, recorded here so the code and the plan do not silently disagree:
+  - The cost is bounded and small: no I/O, no model, a handful of boxes per frame, and — because `MlPerception` guards on a `_processed` identity check against the pipeline result it last consumed — it runs at the ~10 Hz frame rate, not the 60 Hz step rate. Roughly one step in six does any work at all.
+  - Moving it would split one seam across two threads for no gain. The `EgoFrame` half of `observe()` is a question about the ego *of now*, so it must stay on the sim thread regardless; relocating projection and tracking would leave `observe()` straddling the executor boundary.
+  - Doing it at merge time is a real architectural change to `PerceptionPipeline._work`, needing its own review cycle, to buy that bounded cost. Not worth it now.
+  - If Phase 3's scoring work makes this measurably expensive, revisit it there with a measurement, not here on principle.
 - **Frames are never queued.** Latest-win, both slots. A detector slower than the frame rate produces fewer detections, never a slower sim.
 - **A detector failure must degrade perception, never stop the car.** Exceptions are caught, counted, swallowed — as `PerceptionPipeline` already does.
 - **`torch` must never appear in `[project.dependencies]`.** Export-only, dev-only.
