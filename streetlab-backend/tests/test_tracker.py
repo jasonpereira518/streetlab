@@ -52,7 +52,15 @@ def test_a_class_change_does_not_steal_an_existing_track():
     tr = Tracker(gate_m=5.0, birth_hits=1, max_misses=2)
     car = tr.update([obs(10.0, 0.0, cls="car")], t=0.0)[0]
     out = tr.update([obs(10.2, 0.0, cls="pedestrian")], t=0.1)
-    assert all(t.id != car.id for t in out if t.cls == "pedestrian")
+    # The car track is untouched -- same id, still classed "car" -- rather
+    # than relabelled by the nearby pedestrian observation.
+    still_car = [t for t in out if t.id == car.id]
+    assert len(still_car) == 1
+    assert still_car[0].cls == "car"
+    # A distinct track was born for the pedestrian observation.
+    pedestrians = [t for t in out if t.cls == "pedestrian"]
+    assert len(pedestrians) == 1
+    assert pedestrians[0].id != car.id
 
 
 def test_a_track_survives_a_brief_miss_then_dies():

@@ -45,6 +45,9 @@ class Track:
     y: float
     vx: float
     vy: float
+    # Current *consecutive* streak, not a lifetime count: `hits` resets to 0
+    # on any miss, `misses` resets to 0 on any hit. A track that has missed
+    # once after ten hits reports `hits=0`, not `hits=10`.
     hits: int
     misses: int
     confidence: float
