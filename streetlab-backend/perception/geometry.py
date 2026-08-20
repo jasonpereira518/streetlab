@@ -19,11 +19,21 @@ the rotation math below is built from.
 
 `pitch` rotates the ray about the camera's local right axis; positive pitch
 tilts the view upward (forward's world-z component becomes positive), the
-same "more positive = more up/counter-clockwise" spirit as `yaw`. Nothing
-in Phase 2 sends a non-zero pitch, but it travels on the wire, so it is
-honoured here rather than assumed away. `roll` is not applied: nothing in
-this task's brief calls for rotating the image plane about the optical
-axis, and no camera on the wire today sends a non-zero roll.
+same "more positive = more up/counter-clockwise" spirit as `yaw`.
+
+The detector camera does send a non-zero pitch, and always has: it is
+rigidly mounted at the ego windshield looking slightly down (see
+`MOUNT_PITCH_RAD` in `streetlab/src/three/detectorCamera.ts`, about
+-0.0045 rad), so that ground contact points stay in frame at close range.
+That downtilt is small and its effect is not: honouring a pitch of 0 when
+the true mount is 0.0045 rad down puts a 30 m object at 33.4 m and an 80 m
+object at 110 m, because the error is in the *ray angle*, which the ground
+intersection divides by. Treating pitch as "always zero in practice" is
+therefore never safe here, whatever the current mount happens to be.
+
+`roll` is not applied: nothing in this task's brief calls for rotating the
+image plane about the optical axis, and no camera on the wire today sends
+a non-zero roll.
 """
 
 from __future__ import annotations

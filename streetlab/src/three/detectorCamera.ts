@@ -41,22 +41,65 @@ export const DETECTOR_FRAME = {
 /** Mount height and forward offset, matching the cockpit view. */
 const MOUNT_HEIGHT = 1.33;
 const MOUNT_FORWARD = 0.15;
+/**
+ * Where the mount aims, measured along the ego heading *from the ego origin*
+ * — not from the camera, which already sits `MOUNT_FORWARD` ahead of it.
+ * Same aim point as the cockpit view (`chaseCam.ts`).
+ */
+const MOUNT_LOOK_DISTANCE = 40;
+/**
+ * How far below the mount that aim point sits: the cockpit looks at 1.15 from
+ * a 1.33 mount. This is what gives the detector camera its slight downtilt,
+ * and it is deliberate — it keeps the ground contact points the backend
+ * projects from (`perception/geometry.py`) inside the frame at close range.
+ */
+const MOUNT_LOOK_DROP = 0.18;
+
+/**
+ * The mount's pitch, in radians, on the wire's convention.
+ *
+ * DERIVED, never written down: `update()` below builds its `lookAt` from
+ * exactly these constants, so the pitch the backend is told and the pitch the
+ * camera actually has cannot drift. Move the mount, change the aim point, and
+ * this follows automatically.
+ *
+ * The camera sits at height `MOUNT_HEIGHT`, `MOUNT_FORWARD` ahead of the ego
+ * origin, and looks at a point `MOUNT_LOOK_DISTANCE` ahead of that *origin*
+ * and `MOUNT_LOOK_DROP` lower — so the horizontal run is
+ * `MOUNT_LOOK_DISTANCE - MOUNT_FORWARD` and the drop is `MOUNT_LOOK_DROP`.
+ *
+ * Negative on purpose. `schema.ts` defines `pitch` as "positive tilts the view
+ * upward (nose up)", and this mount tilts *down*. Reporting `+atan2(...)` here
+ * would not merely fail to fix the projection — it would double the error, by
+ * telling the backend to raise a ray that is already too shallow.
+ */
+export const MOUNT_PITCH_RAD = -Math.atan2(
+  MOUNT_LOOK_DROP,
+  MOUNT_LOOK_DISTANCE - MOUNT_FORWARD,
+);
 
 /**
  * Three.js is Y-up with `+x` east and `+z` south. The wire is `+x` east,
  * `+y` north, `+z` up. Converting here means the backend never learns that a
  * renderer convention exists.
+ *
+ * `pitchRad` is passed rather than assumed: a position and a heading do not
+ * determine where a camera is looking vertically, and hardcoding a zero here
+ * is precisely the bug this parameter exists to make impossible. Callers pass
+ * the pitch their camera actually has — for the detector mount, the derived
+ * `MOUNT_PITCH_RAD`.
  */
 export function cameraParamsFromThree(
   position: { x: number; y: number; z: number },
   headingRad: number,
+  pitchRad: number,
 ): CameraParams {
   return {
     x: position.x,
     y: -position.z,
     z: position.y,
     yaw: headingRad,
-    pitch: 0,
+    pitch: pitchRad,
     roll: 0,
     fov_y_deg: DETECTOR_FRAME.fovYDeg,
     aspect: DETECTOR_FRAME.width / DETECTOR_FRAME.height,
@@ -211,7 +254,15 @@ export function createDetectorCamera(
         MOUNT_HEIGHT,
         pose.z + fz * MOUNT_FORWARD,
       );
-      camera.lookAt(pose.x + fx * 40, MOUNT_HEIGHT - 0.18, pose.z + fz * 40);
+      // Built from the same constants `MOUNT_PITCH_RAD` is derived from, so
+      // the downtilt the backend is told about is the downtilt the camera
+      // actually has. Inlining `40` or `1.15` here again would silently
+      // reintroduce the drift the derivation exists to prevent.
+      camera.lookAt(
+        pose.x + fx * MOUNT_LOOK_DISTANCE,
+        MOUNT_HEIGHT - MOUNT_LOOK_DROP,
+        pose.z + fz * MOUNT_LOOK_DISTANCE,
+      );
     },
 
     async capture() {
@@ -288,7 +339,10 @@ export function createDetectorCamera(
 
         return {
           data: encodeBase64(buffer),
-          camera: cameraParamsFromThree(camera.position, heading),
+          // Pitch is the mount's, not the camera object's: it is fixed by
+          // construction (see `MOUNT_PITCH_RAD`) and, like `heading` above,
+          // known exactly here rather than dug back out of matrixWorld.
+          camera: cameraParamsFromThree(camera.position, heading, MOUNT_PITCH_RAD),
         };
       } finally {
         // Fallback only: normally the early restore above already ran. This
