@@ -29,8 +29,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
 from map.scene_build import LANE_W, BuiltScene, SceneSource
+from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
 from perception.service import GroundTruthPerception, PerceptionSource
+from perception.tracker import Tracker
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
     Ack,
@@ -167,6 +169,7 @@ class Simulation:
         perception: PerceptionSource | None = None,
         planner: Planner | None = None,
         perception_pipeline: PerceptionPipeline | None = None,
+        ml_perception: PerceptionSource | None = None,
     ) -> None:
         self._source = source
         self._seed = seed
@@ -176,6 +179,15 @@ class Simulation:
         self._model = BicycleModel()
         self.world = WorldState()
         self.perception_pipeline = perception_pipeline
+        # Built here, from the pipeline, so that every caller who asks for a
+        # pipeline gets the source that consumes it -- `set_perception ml`
+        # against a pipeline with nothing reading it would ack and change
+        # nothing. Injectable all the same, for tests and for Phase 3.
+        self._ml_perception = ml_perception or (
+            None
+            if perception_pipeline is None
+            else MlPerception(perception_pipeline, Tracker())
+        )
         # Shadow is the default: the ML path runs and is measured, but ground
         # truth is what the planner drives on until someone asks otherwise.
         self.perception_mode: PerceptionMode = "ground-truth"
@@ -290,6 +302,24 @@ class Simulation:
         else:
             self.world.last_good_ego = repaired
 
+    def _perception_source(self) -> PerceptionSource:
+        """Which source drives the car this step.
+
+        Chosen per step, never captured at construction: `set_perception`
+        flips `perception_mode` at runtime, and a source bound once would
+        leave that command looking like it worked -- field set, event
+        emitted -- while the car went on driving on the other one.
+
+        Ground truth remains the default, and remains the answer whenever no
+        ML source exists. The detector runs in shadow either way: the
+        pipeline is fed and measured regardless of which source is consumed
+        here, which is what `--perception ml` buys before Phase 3 scores the
+        two against each other.
+        """
+        if self.perception_mode == "ml" and self._ml_perception is not None:
+            return self._ml_perception
+        return self._perception
+
     def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
 
@@ -307,7 +337,7 @@ class Simulation:
         actually advancing on rather than silently reverting to `self.dt`.
         """
         dt = self.dt if dt is None else dt
-        detections = self._perception.observe(
+        detections = self._perception_source().observe(
             self.world.ego, self._traffic.agents, self.scene.ego_route
         )
         signals = self._signals.state(self.world.t)
@@ -719,7 +749,7 @@ def assemble_state_update(
             radar=_radar(ego, detections),
             lane=_lane_state(scene, route, ego_s, offset, heading_error, detections),
             ttc_s=ttc,
-            vehicle=_vehicle_status(world),
+            vehicle=_vehicle_status(world, perception_mode),
             trajectory=_trajectory(world, offset, detections),
         ),
         signals=list(signals),
@@ -833,7 +863,7 @@ def _radar(ego: VehicleState, detections: Sequence[Detection]) -> list[RadarPoin
     return points
 
 
-def _vehicle_status(world: WorldState) -> VehicleStatus:
+def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
     # Battery drains slowly with distance so the readout is not frozen.
     battery = max(4.0, 92.0 - world.t * 0.02)
     return VehicleStatus(
@@ -842,7 +872,15 @@ def _vehicle_status(world: WorldState) -> VehicleStatus:
         motor_temp_c=round(38.0 + min(world.t, 600) * 0.02, 1),
         tire_pressure_kpa=(248.0, 247.0, 245.0, 246.0),
         subsystems=[
-            Subsystem(key="perception", label="Perception", status="ok", detail="ground truth"),
+            # The detail names what the planner is actually driving on. It
+            # used to say "ground truth" unconditionally, which was true only
+            # while `set_perception` could not change the answer.
+            Subsystem(
+                key="perception",
+                label="Perception",
+                status="ok",
+                detail="ground truth" if mode == "ground-truth" else "ml detector",
+            ),
             Subsystem(key="planner", label="Planner", status="ok", detail="centerline"),
             Subsystem(key="control", label="Control", status="ok", detail=None),
             Subsystem(key="battery", label="Battery", status="ok", detail=None),

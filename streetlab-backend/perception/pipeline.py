@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from perception.frames import CameraFrame, FrameSlot
-from schema import DetectionClass, PerceptionMode, PerceptionStats
+from schema import CameraParams, DetectionClass, PerceptionMode, PerceptionStats
 
 log = logging.getLogger("streetlab.perception")
 
@@ -67,6 +67,13 @@ class PipelineResult:
     # See PerceptionStats.server_e2e_ms in schema.py: this is socket arrival
     # to detections-available, not a true frame-render-to-detection figure.
     server_e2e_ms: float
+    # The camera and frame size these boxes were produced from, carried with
+    # the result rather than looked up when it is consumed: projecting a box
+    # to the ground needs the pose the camera had when the shutter fired, and
+    # by the time anything reads this the ego has moved on.
+    camera: CameraParams
+    frame_w: int
+    frame_h: int
 
 
 class PerceptionPipeline:
@@ -121,6 +128,9 @@ class PerceptionPipeline:
                 frame_t=frame.t,
                 detector_ms=(now - start) * 1000.0,
                 server_e2e_ms=now * 1000.0 - frame.received_ms,
+                camera=frame.camera,
+                frame_w=frame.width,
+                frame_h=frame.height,
             )
             with self._lock:
                 self._latest = result

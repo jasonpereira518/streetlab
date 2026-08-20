@@ -1627,3 +1627,70 @@ def test_set_perception_is_refused_without_a_pipeline():
     sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
     outcome = sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"})
     assert not outcome.ok
+
+
+class _MarkerPerception:
+    """A perception source that records being asked, and sees nothing."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def observe(self, ego, agents, route):
+        self.calls += 1
+        return []
+
+
+def test_the_perception_source_is_chosen_per_step_not_at_construction():
+    """`set_perception` flips the mode while the sim is running. A source
+    captured in `__init__` would leave that command acking, emitting its
+    event, and changing nothing about what the car actually drives on.
+    """
+    from map.scene_build import SyntheticGrid
+    from perception.pipeline import PerceptionPipeline, StubDetector
+    from sim.loop import Simulation
+
+    ml = _MarkerPerception()
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4,
+            perception_pipeline=pipeline, ml_perception=ml,
+        )
+        sim.step()
+        assert ml.calls == 0, "ground truth drives until the mode says otherwise"
+
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        assert ml.calls == 1, "the mode switch must reach the planner, not just the wire"
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_pipeline_brings_the_ml_source_that_consumes_it():
+    """No caller has to wire the two together: asking for a pipeline is asking
+    for the source that reads it. A pipeline that has seen no frame has
+    nothing to report -- ground truth, on the same tick, has plenty, so a
+    detection surviving the switch would mean the switch was cosmetic.
+    """
+    from map.scene_build import SyntheticGrid
+    from perception.pipeline import PerceptionPipeline, StubDetector
+    from sim.loop import Simulation
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline
+        )
+        sim.step()
+        assert sim.state_update().detections, "ground truth should see the traffic"
+
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        frame = sim.state_update()
+        assert frame.detections == []
+        # The HUD's subsystem line names what the car is driving on, so it
+        # has to follow the switch rather than assert ground truth forever.
+        detail = {s.key: s.detail for s in frame.telemetry.vehicle.subsystems}["perception"]
+        assert detail == "ml detector"
+    finally:
+        pipeline.shutdown()
