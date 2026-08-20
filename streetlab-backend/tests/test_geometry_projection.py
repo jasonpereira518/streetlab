@@ -100,3 +100,84 @@ def test_a_camera_below_the_ground_plane_is_rejected():
     # return None rather than a point behind the camera.
     cam = camera(z=-1.0)
     assert project_to_ground(box(W / 2, H * 0.9), cam, W, H) is None
+
+
+def test_a_known_pixel_lands_at_a_computed_metric_range():
+    """The scale test the rest of this file cannot perform.
+
+    Every other assertion here is a sign, an ordering, or a translation
+    difference -- and all of them survive a wrong field-of-view scale.
+    Scaling `tan_half_v` by k scales `ray_z` by k and `t` by 1/k, so lateral
+    position is exactly invariant and longitudinal position is uniformly
+    rescaled: monotonic and sign assertions cannot see it. That blind spot
+    is how a camera pitch of 0 reached HEAD reporting ranges 10 % long.
+
+    Derivation, by hand, for the bottom-centre-ish pixel below:
+
+      tan_half_v = tan(50 deg / 2)                 = 0.4663076582
+      ndc_y      = (1 - 2*(0.9H)/H) * tan_half_v   = -0.8 * tan_half_v
+                                                   = -0.3730461265
+      ray        = (1, 0, ndc_y)   [yaw 0, pitch 0, centred in x]
+      t          = z / -ray_z = 1.5 / 0.3730461265 = 4.0209504760
+      world_x    = t * 1                           = 4.0209504760 m
+
+    And for a pixel a quarter of the way across the frame, which pins the
+    aspect scaling of the horizontal half-angle too:
+
+      tan_half_h = tan_half_v * (640/384)          = 0.7771794303
+      ndc_x      = (2*0.25 - 1) * tan_half_h       = -0.3885897151
+      local_y    = -ndc_x                          = +0.3885897151
+      world_y    = t * local_y                     = 1.5625 m exactly
+    """
+    cam = camera(z=1.5)
+
+    centred = project_to_ground(box(W / 2, H * 0.9), cam, W, H)
+    assert centred is not None
+    assert math.isclose(centred[0], 4.0209504760, rel_tol=1e-9)
+    assert math.isclose(centred[1], 0.0, abs_tol=1e-9)
+
+    quarter = project_to_ground(box(W * 0.25, H * 0.9), cam, W, H)
+    assert quarter is not None
+    assert math.isclose(quarter[0], 4.0209504760, rel_tol=1e-9)
+    assert math.isclose(quarter[1], 1.5625, rel_tol=1e-9)
+
+
+def test_pitch_changes_the_range_by_the_angle_it_names():
+    """A non-zero pitch, which no other test in this file exercises.
+
+    `camera()` has taken a `pitch` argument since it was written and nothing
+    ever passed one -- so the whole pitch branch of `project_to_ground` was
+    unexecuted, in a phase whose critical bug was a camera reporting the
+    wrong pitch.
+
+    The magnitude is pinned on the simplest possible ray: the optical axis
+    itself. A box whose bottom edge sits exactly at the vertical centre of
+    the frame has ndc_y = 0, so the ray IS the camera's forward axis and
+    involves no field-of-view maths at all. Rotated down by p, it meets the
+    ground at exactly z / tan(p):
+
+      1.5 / tan(0.1) = 14.9499666349 m
+    """
+    centre_row = box(W / 2, H / 2)
+
+    # Level: the optical axis is parallel to the ground and never meets it.
+    assert project_to_ground(centre_row, camera(z=1.5, pitch=0.0), W, H) is None
+    # Nose up: further from the ground still, so still no contact.
+    assert project_to_ground(centre_row, camera(z=1.5, pitch=0.1), W, H) is None
+
+    # Nose down by 0.1 rad: contact at a range the angle alone determines.
+    down = project_to_ground(centre_row, camera(z=1.5, pitch=-0.1), W, H)
+    assert down is not None
+    assert math.isclose(down[0], 14.9499666349, rel_tol=1e-9)
+    assert math.isclose(down[1], 0.0, abs_tol=1e-9)
+
+    # And the ordering, on a ray that does reach the ground at every pitch:
+    # tilting the camera down shortens the reported range, tilting it up
+    # lengthens it. Getting this backwards is what doubles a pitch error
+    # instead of removing it.
+    below = box(W / 2, H * 0.9)
+    nose_down = project_to_ground(below, camera(z=1.5, pitch=-0.05), W, H)
+    level = project_to_ground(below, camera(z=1.5, pitch=0.0), W, H)
+    nose_up = project_to_ground(below, camera(z=1.5, pitch=0.05), W, H)
+    assert nose_down is not None and level is not None and nose_up is not None
+    assert nose_down[0] < level[0] < nose_up[0]
