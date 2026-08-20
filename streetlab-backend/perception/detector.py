@@ -1,18 +1,26 @@
-"""RT-DETR pre/postprocessing, pure functions only.
+"""RT-DETR pre/postprocessing, plus the ONNX session that drives them.
 
-No `onnxruntime`, no model file, no torch. Every decoding decision that
-could silently ruin detection quality lives here where a test can pin it
-without weights: sigmoid (not softmax) scores, normalised `cxcywh` boxes,
-and a class map keyed by integer id (not by this checkpoint's VOC-style
-label strings). A later task adds the ONNX session that supplies `logits`
-and `pred_boxes` to `postprocess` and calls `preprocess` on frames; nothing
-in this file needs it to be tested.
+The pure functions (`preprocess`, `postprocess`, the class map) need no
+model file and no `onnxruntime` import, so tests can pin their decoding
+decisions without weights: sigmoid (not softmax) scores, normalised
+`cxcywh` boxes, and a class map keyed by integer id (not by this
+checkpoint's VOC-style label strings).
+
+`OnnxDetector` is the only place a model appears. `onnxruntime` is imported
+inside `build_session`, not at module scope, so importing this module for
+the pure functions stays cheap and test-safe -- no session, no provider
+probing, just tensor math.
 """
 
 from __future__ import annotations
 
-import numpy as np
+from io import BytesIO
+from typing import Callable
 
+import numpy as np
+from PIL import Image
+
+from perception.frames import CameraFrame
 from perception.pipeline import Box2D
 from schema import DetectionClass
 
@@ -31,17 +39,18 @@ COCO_ID_TO_CLASS: dict[int, DetectionClass] = {
 
 
 def _resize_stretch(rgb: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    """Nearest-neighbour resize to `size` (width, height), no letterboxing.
+    """Bilinear resize to `size` (width, height), no letterboxing.
 
     `do_pad` is false for this model, so the whole frame is stretched to fill
     `MODEL_INPUT` directly -- no aspect-ratio padding, no offset to undo when
-    boxes are decoded back to frame pixels later.
+    boxes are decoded back to frame pixels later. Bilinear matches Hugging
+    Face's RT-DETR image processor default; nearest-neighbour was only used
+    before this module could depend on Pillow.
     """
     target_w, target_h = size
-    src_h, src_w = rgb.shape[:2]
-    row_idx = (np.arange(target_h) * src_h // target_h).clip(0, src_h - 1)
-    col_idx = (np.arange(target_w) * src_w // target_w).clip(0, src_w - 1)
-    return rgb[row_idx][:, col_idx]
+    image = Image.fromarray(rgb)
+    resized = image.resize((target_w, target_h), resample=Image.BILINEAR)
+    return np.asarray(resized)
 
 
 def preprocess(rgb: np.ndarray) -> np.ndarray:
@@ -97,3 +106,76 @@ def postprocess(
         boxes.append(Box2D(x0=x0, y0=y0, x1=x1, y1=y1, cls=cls, confidence=conf))
 
     return boxes
+
+
+def decode_jpeg(data: bytes) -> np.ndarray:
+    """JPEG bytes -> `H×W×3` uint8 RGB.
+
+    A corrupt payload raises out of here rather than becoming a black image:
+    `PerceptionPipeline` already catches, counts and swallows detector
+    exceptions, so letting Pillow's error propagate is what turns a bad
+    frame into a counted failure instead of a silent wrong answer.
+    """
+    image = Image.open(BytesIO(data))
+    image.load()  # force decode now, while we're still inside this function
+    return np.asarray(image.convert("RGB"), dtype=np.uint8)
+
+
+# CPU first, CoreML opt-in only. Measured on this machine, 640x640, five runs
+# median: int8 quantized model, 63 ms on CPUExecutionProvider vs 270 ms on
+# CoreMLExecutionProvider (4x slower); fp16 model, 90 ms CPU vs 84 ms CoreML
+# (roughly break-even). CoreML is not a free win here -- defaulting to it
+# would make the pipeline slower while sounding like the "accelerated" choice.
+# Don't "fix" this back to CoreML-first without re-measuring.
+PROVIDER_ORDER: tuple[str, ...] = ("CPUExecutionProvider",)
+
+
+def build_session(path: str, providers: tuple[str, ...] = PROVIDER_ORDER):
+    """Construct an `onnxruntime.InferenceSession` for the model at `path`.
+
+    `onnxruntime` is imported here, not at module scope, so importing this
+    module for the pure functions above stays cheap and doesn't require the
+    runtime to be installed correctly (or probe execution providers) just to
+    run offline tests.
+    """
+    import onnxruntime
+
+    return onnxruntime.InferenceSession(path, providers=list(providers))
+
+
+class OnnxDetector:
+    """The `Detector` the pipeline actually runs in Phase 2.
+
+    The session is expensive to build (provider probing, graph loading) and
+    cheap to reuse, so it is built lazily on the first `detect()` call and
+    kept for the detector's lifetime -- a session per frame would dominate
+    the latency budget this whole pipeline exists to protect.
+    """
+
+    def __init__(
+        self,
+        session_factory: Callable[[], object],
+        score_threshold: float,
+    ) -> None:
+        self._session_factory = session_factory
+        self.score_threshold = score_threshold
+        self._session = None
+        self.provider: str | None = None
+
+    def _session_ready(self):
+        if self._session is None:
+            self._session = self._session_factory()
+            # Record what actually bound, never assume it: a requested
+            # provider that isn't available silently falls back inside
+            # onnxruntime, and get_providers()[0] is the only honest source.
+            self.provider = self._session.get_providers()[0]
+        return self._session
+
+    def detect(self, frame: CameraFrame) -> list[Box2D]:
+        session = self._session_ready()
+        rgb = decode_jpeg(frame.jpeg)
+        pixel_values = preprocess(rgb)
+        logits, pred_boxes = session.run(None, {"pixel_values": pixel_values})
+        return postprocess(
+            logits, pred_boxes, frame.width, frame.height, self.score_threshold
+        )
