@@ -74,11 +74,25 @@ def test_a_track_survives_a_brief_miss_then_dies():
 
 def test_a_flickering_detection_never_reaches_publication():
     """The domain gap will produce exactly this: one-frame blips. Birth
-    thresholds are the defence, so prove they hold."""
-    tr = Tracker(gate_m=3.0, birth_hits=3, max_misses=0)
+    thresholds are the defence, so prove they hold.
+
+    `max_misses=2`, not 0. With `max_misses=0` every track dies on its first
+    miss, so nothing ever survives to accumulate hits and the test passes for
+    a reason that has nothing to do with the property named in its title --
+    in particular it passed unchanged with `apply_miss`'s `hit_streak = 0`
+    reset deleted, which is the exact semantic this test exists to protect.
+    Letting the track live across the gaps is what puts that reset on trial:
+    without it the alternating hits accumulate to `birth_hits` and the blip
+    publishes on frame 4.
+    """
+    tr = Tracker(gate_m=3.0, birth_hits=3, max_misses=2)
     for i in range(10):
         published = tr.update([obs(10.0, 0.0)] if i % 2 == 0 else [], t=i * 0.1)
-        assert published == []
+        assert published == [], f"a one-frame blip published on frame {i}"
+
+    # And the defence is specifically the streak reset, not the track dying:
+    # the track is still alive after all that flickering, just never trusted.
+    assert len(tr._tracks) == 1
 
 
 def test_reset_forgets_every_track_without_reusing_its_ids():

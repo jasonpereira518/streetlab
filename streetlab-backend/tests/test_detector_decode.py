@@ -116,3 +116,79 @@ def test_postprocess_takes_the_best_class_per_query():
     logits[0, 0, 7] = 5.0   # truck, higher
     out = postprocess(logits, boxes, FRAME_W, FRAME_H, score_threshold=0.3)
     assert [b.cls for b in out] == ["truck"]
+
+
+def _marker_frame(x0, y0, x1, y1):
+    """A black frame with one white rectangle at known frame pixels."""
+    rgb = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8)
+    rgb[y0:y1, x0:x1] = 255
+    return rgb
+
+
+def _hot_extent(plane, threshold=0.5):
+    """(min, max) index along each axis of `plane`'s above-threshold pixels."""
+    rows, cols = np.nonzero(plane > threshold)
+    assert rows.size, "the marker vanished in preprocessing"
+    return (rows.min(), rows.max()), (cols.min(), cols.max())
+
+
+def test_a_marker_survives_preprocess_and_postprocess_at_the_same_place():
+    """The `preprocess`/`postprocess` coupling, which nothing else pins.
+
+    `postprocess` maps normalised model coordinates straight to frame pixels
+    with no offset to undo, and it is allowed to do that *only because*
+    `_resize_stretch` stretches the whole frame to `MODEL_INPUT`. Swap that
+    for a letterbox and `test_preprocess_produces_the_models_input_shape`
+    still passes -- the shape is identical -- while every decoded box is
+    silently offset, because the normalised coordinates now include black
+    bars that `postprocess` knows nothing about.
+
+    So: put a marker at a known place in the frame, find where preprocessing
+    actually put it in the model's input, hand those normalised coordinates
+    to `postprocess` exactly as a model would, and require the box to come
+    back where the marker started. That closes the loop through both halves
+    at once; neither half can move without the other.
+    """
+    x0, y0, x1, y1 = 148, 84, 172, 108  # centre (160, 96) = (0.25W, 0.25H)
+    x = preprocess(_marker_frame(x0, y0, x1, y1))
+
+    # Where the marker landed in the model's own input, as the model sees it.
+    (r0, r1), (c0, c1) = _hot_extent(x[0, 0])
+    in_h, in_w = MODEL_INPUT[1], MODEL_INPUT[0]
+    cx = ((c0 + c1 + 1) / 2.0) / in_w
+    cy = ((r0 + r1 + 1) / 2.0) / in_h
+    w = (c1 + 1 - c0) / in_w
+    h = (r1 + 1 - r0) / in_h
+
+    # One query, class 2 (car), a confident logit. Everything else off.
+    logits = np.full((1, 1, 80), -20.0, dtype=np.float32)
+    logits[0, 0, 2] = 8.0
+    pred_boxes = np.array([[[cx, cy, w, h]]], dtype=np.float32)
+
+    boxes = postprocess(logits, pred_boxes, FRAME_W, FRAME_H, score_threshold=0.3)
+    assert len(boxes) == 1
+    got = boxes[0]
+    assert got.cls == "car"
+
+    # Back where it started. The tolerance covers bilinear smearing of a hard
+    # edge across a 1.67x vertical rescale, nothing more -- a letterbox would
+    # be out by tens of pixels vertically, not by two.
+    assert abs((got.x0 + got.x1) / 2.0 - (x0 + x1) / 2.0) <= 2.0
+    assert abs((got.y0 + got.y1) / 2.0 - (y0 + y1) / 2.0) <= 2.0
+    assert abs((got.x1 - got.x0) - (x1 - x0)) <= 3.0
+    assert abs((got.y1 - got.y0) - (y1 - y0)) <= 3.0
+
+
+def test_preprocess_stretches_rather_than_letterboxes():
+    """The premise `postprocess` rests on, asserted directly.
+
+    `do_pad` is false for this model. A letterbox would leave the top and
+    bottom rows of the model input black for a frame that is white
+    everywhere -- and would still produce the right tensor shape.
+    """
+    white = np.full((FRAME_H, FRAME_W, 3), 255, dtype=np.uint8)
+    x = preprocess(white)
+    plane = x[0, 0]
+    assert np.isclose(plane[0].max(), 1.0), "top row padded: this is a letterbox"
+    assert np.isclose(plane[-1].max(), 1.0), "bottom row padded: this is a letterbox"
+    assert np.isclose(plane.min(), 1.0), "no pixel of a white frame may be dark"

@@ -226,11 +226,15 @@ describe('capture() readback timeout', () => {
     const originalTarget = { name: 'main-view-target' };
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
+    let readbackCalls = 0;
     const renderer = {
       getRenderTarget: () => originalTarget,
       setRenderTarget: () => {},
       renderAsync: async () => {},
-      readRenderTargetPixelsAsync: () => new Promise<never>(() => {}),
+      readRenderTargetPixelsAsync: () => {
+        readbackCalls += 1;
+        return new Promise<never>(() => {});
+      },
     } as unknown as THREE.WebGPURenderer;
 
     const scene = {} as THREE.Scene;
@@ -242,14 +246,23 @@ describe('capture() readback timeout', () => {
       await vi.advanceTimersByTimeAsync(DETECTOR_FRAME.captureTimeoutMs);
       await expect(result).resolves.toBeNull();
       expect(detector.renderTargetBusy()).toBe(false);
+      expect(readbackCalls).toBe(1);
 
       // The guard must be free for the next tick, or perception is dead for
       // good. The stub's readback still never settles, so this also times
       // out — the point is that it is reached at all, rather than being
       // short-circuited by a `busy` guard the first call never released.
+      //
+      // `resolves.toBeNull()`, not `toBeDefined()`: the capture resolves
+      // `null` and `expect(null).toBeDefined()` PASSES, so the old assertion
+      // held equally well in the world it was written to rule out. A stuck
+      // `busy` guard also returns `null`, immediately — which is exactly why
+      // the readback count below, not the resolved value, is what
+      // distinguishes "reached the GPU again" from "short-circuited".
       const second = detector.capture();
       await vi.advanceTimersByTimeAsync(DETECTOR_FRAME.captureTimeoutMs);
-      await expect(second).resolves.toBeDefined();
+      await expect(second).resolves.toBeNull();
+      expect(readbackCalls).toBe(2);
       expect(detector.renderTargetBusy()).toBe(false);
 
       // One warning for the whole session, not one per timeout.
