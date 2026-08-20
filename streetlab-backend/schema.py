@@ -246,7 +246,12 @@ class CameraParams(Wire):
     z: Num
     # radians, 0 = +x (east), CCW positive — same convention as Pose.heading.
     yaw: Num
+    # radians, positive tilts the view upward (nose up), rotation about the
+    # camera's local right axis — see perception/geometry.py.
     pitch: Num
+    # radians, rotation about the camera's forward (optical) axis. Not
+    # applied by ground-plane projection today; no camera on the wire sends
+    # non-zero roll yet.
     roll: Num
     fov_y_deg: Pos
     aspect: Pos

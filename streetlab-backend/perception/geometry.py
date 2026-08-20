@@ -100,6 +100,11 @@ def project_to_ground(
         return None  # at or above the horizon -- never reaches z = 0
 
     t = camera.z / -ray_z
+    if t <= 0:
+        # camera.z isn't schema-bounded to be positive. A camera at or below
+        # the ground plane would otherwise produce a point behind the
+        # camera rather than the "no ground contact" None it really is.
+        return None
     world_x = camera.x + t * ray_x
     world_y = camera.y + t * ray_y
     return world_x, world_y

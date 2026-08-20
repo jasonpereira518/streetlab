@@ -90,3 +90,13 @@ def test_class_sizes_cover_every_mapped_class():
         assert cls in CLASS_SIZE
         s = CLASS_SIZE[cls]
         assert s.length > 0 and s.width > 0 and s.height > 0
+
+
+def test_a_camera_below_the_ground_plane_is_rejected():
+    # `CameraParams.z` has no schema-level lower bound. A camera below the
+    # ground plane, paired with a ray that still points downward, makes the
+    # ground-plane intersection fall *behind* the camera (t <= 0) rather
+    # than ahead of it -- that's not a real ground contact either, and must
+    # return None rather than a point behind the camera.
+    cam = camera(z=-1.0)
+    assert project_to_ground(box(W / 2, H * 0.9), cam, W, H) is None
