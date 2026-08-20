@@ -6,20 +6,20 @@ numbers here are safety claims.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
-[![Status: Cycles 1–3 built](https://img.shields.io/badge/status-Cycles%201–3%20built-brightgreen.svg)](#roadmap)
-[![Backend tests](https://img.shields.io/badge/backend%20tests-719%20passing-success.svg)](#testing)
-[![Frontend tests](https://img.shields.io/badge/frontend%20tests-151%20vitest%20%2B%2012%20e2e-success.svg)](#testing)
+[![Status: Cycles 1–3 built, 4 in progress](https://img.shields.io/badge/status-Cycles%201–3%20built%2C%204%20in%20progress-brightgreen.svg)](#roadmap)
+[![Backend tests](https://img.shields.io/badge/backend%20tests-819%20passing-success.svg)](#testing)
+[![Frontend tests](https://img.shields.io/badge/frontend%20tests-187%20vitest%20%2B%2012%20e2e-success.svg)](#testing)
 
 ![StreetLab driving live OpenStreetMap-derived streets, with all six telemetry widgets active](docs/screenshots/hero.png)
 
 Two packages, developed and tested independently, now wired together:
 
 - **`streetlab/`** — Tauri 2 + React/TypeScript UI and a Three.js WebGPU
-  viewport, driven entirely by a message stream. 151 vitest unit tests + 12
+  viewport, driven entirely by a message stream. 187 vitest unit tests + 12
   Playwright E2E tests.
 - **`streetlab-backend/`** — the Python simulator: a deterministic kinematic
   world, reactive IDM/MOBIL traffic, ground-truth perception, and a behaviour
-  FSM over a centerline tracker, served over WebSocket. 719 pytest tests.
+  FSM over a centerline tracker, served over WebSocket. 819 pytest tests.
 - **`contract/`** — the wire contract shared by both: fixtures generated from
   the real simulation, validated by the real `schema.ts` (zod) and the real
   `schema.py` (pydantic) on every change.
@@ -164,8 +164,8 @@ See [`DEMO.md`](DEMO.md).
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q         # 719 + 3 contract tests
-cd streetlab && npx vitest run                    # 151 tests, includes ../contract
+cd streetlab-backend && uv run pytest -q         # 819 passing, 1 skipped
+cd streetlab && npx vitest run                    # 187 tests, includes ../contract
 cd streetlab && npm run test:e2e                  # 12 Playwright specs
 ```
 
