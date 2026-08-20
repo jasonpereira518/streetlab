@@ -27,6 +27,15 @@ export const DETECTOR_FRAME = {
   intervalMs: 100,
   /** JPEG quality: the wire cost is roughly linear in this. */
   quality: 0.6,
+  /**
+   * Upper bound on the GPU readback inside `capture()`. Five capture
+   * intervals (100ms each) — generous enough that an ordinarily slow frame
+   * still completes, but short enough that a readback that never settles at
+   * all (the failure mode this constant exists for — see the comment above
+   * `capture()`) cannot wedge perception silently for the rest of the
+   * session.
+   */
+  captureTimeoutMs: 500,
 } as const;
 
 /** Mount height and forward offset, matching the cockpit view. */
@@ -109,6 +118,40 @@ export function shouldFlipRows(backend: Backend): boolean {
   return backend === 'webgl2';
 }
 
+/**
+ * Sentinel distinguishing "the timeout elapsed" from any real value `promise`
+ * could resolve to (including `undefined`) — a plain `undefined` return from
+ * `raceWithTimeout` would be ambiguous between the two.
+ */
+const CAPTURE_TIMED_OUT = Symbol('detector capture timed out');
+
+/**
+ * Races `promise` against `ms`. If `promise` wins, its settlement (value or
+ * rejection) passes through unchanged. If the timer wins, resolves
+ * `CAPTURE_TIMED_OUT` — the timer never rejects, so a hang never becomes an
+ * unhandled rejection.
+ *
+ * `promise` itself is deliberately left running when the timer wins: nothing
+ * here cancels a GPU readback. Whoever calls this is responsible for treating
+ * a late settlement of the loser as a no-op — see the comment at the
+ * `CAPTURE_TIMED_OUT` check in `capture()`.
+ */
+function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof CAPTURE_TIMED_OUT> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(CAPTURE_TIMED_OUT), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 export interface DetectorCamera {
   update(pose: { x: number; z: number; heading: number }): void;
   capture(): Promise<{ data: string; camera: CameraParams } | null>;
@@ -153,6 +196,10 @@ export function createDetectorCamera(
   // `capture`: the heading is known exactly here, and reading it back out of
   // matrixWorld columns is sign-error bait for no benefit.
   let heading = 0;
+  // Set once a readback timeout has ever fired, so a stuck GPU that times out
+  // on every subsequent capture (one per DETECTOR_FRAME.intervalMs) logs a
+  // single warning instead of spamming the console at ~10 Hz.
+  let hasWarnedTimeout = false;
 
   return {
     update(pose) {
@@ -204,9 +251,32 @@ export function createDetectorCamera(
         restoredEarly = true;
         targetBusy = false;
 
-        const pixels = await renderer.readRenderTargetPixelsAsync(
-          target, 0, 0, width, height,
+        const pixels = await raceWithTimeout(
+          renderer.readRenderTargetPixelsAsync(target, 0, 0, width, height),
+          DETECTOR_FRAME.captureTimeoutMs,
         );
+
+        if (pixels === CAPTURE_TIMED_OUT) {
+          // The render target was already restored above, before this await —
+          // `targetBusy` is not implicated here. The readback promise itself
+          // is abandoned, not cancelled: if it settles later, there is no
+          // `.then()` left on it beyond `raceWithTimeout`'s own (which only
+          // clears a timer that has already fired), so a late value or
+          // rejection touches nothing in this closure — no stale `target`
+          // restore, no stale frame reaching the caller, no guard release
+          // that a subsequent capture() call now owns. `finally` below still
+          // runs and releases `busy` for this call, exactly as any other
+          // return from this try block would.
+          if (!hasWarnedTimeout) {
+            hasWarnedTimeout = true;
+            console.warn(
+              `[streetlab] detector camera: GPU readback exceeded ` +
+                `${DETECTOR_FRAME.captureTimeoutMs}ms; dropping this frame ` +
+                `(further timeouts this session will not be logged again)`,
+            );
+          }
+          return null;
+        }
 
         const rgba = new Uint8Array(
           pixels.buffer, pixels.byteOffset, pixels.byteLength,
