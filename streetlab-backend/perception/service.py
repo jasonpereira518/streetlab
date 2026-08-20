@@ -40,6 +40,10 @@ _LANE_W = 3.6
 #: the planner objects no sensor could resolve; `MlPerception` is capped to
 #: the same figure, because a projected box a pixel below the horizon lands
 #: kilometres away and Phase 3 scores both sources over the same volume.
+#:
+#: "The same volume" is a claim about the *predicate*, not just the number:
+#: see `EgoFrame.range_to`, which both sources call so that the origin and
+#: the instant cannot drift apart either.
 MAX_RANGE_M = 90.0
 
 
@@ -81,6 +85,10 @@ class EgoFrame:
     #: Ego's signed lateral offset from the route centreline, + = left.
     lateral_m: float
     speed_mps: float
+    #: Ego's world position at the step being observed. Carried so that
+    #: `range_to` has one origin to answer from -- see its docstring.
+    x: float
+    y: float
 
     @classmethod
     def of(cls, ego: VehicleState, route: Route) -> EgoFrame:
@@ -91,7 +99,31 @@ class EgoFrame:
             s=s,
             lateral_m=route.lateral_offset((ego.x, ego.y), s),
             speed_mps=ego.speed_mps,
+            x=ego.x,
+            y=ego.y,
         )
+
+    def range_to(self, x: float, y: float) -> float:
+        """Straight-line distance from ego to `(x, y)`, for the range gate.
+
+        The same argument as `lane_offset` and `threat`, applied to the
+        sensor horizon. A range gate is three decisions, not one -- how far,
+        measured from where, and measured when -- and each of the latter two
+        was answered differently by the two sources before this existed:
+
+          - `GroundTruthPerception` measured from the ego origin;
+            `MlPerception` measured from the camera mount, which sits
+            `MOUNT_FORWARD` (0.15 m) ahead of it.
+          - Ground truth measured at the current step; the ML source
+            measured at frame time, one inference-latency stale, by which
+            point ego has moved metres.
+
+        Neither difference is perception. Phase 3 scores the two sources
+        object for object, so a gate that disagreed on origin or instant
+        would show up as detector error that no detector made. Both now ask
+        this, about the ego of *now*.
+        """
+        return math.hypot(x - self.x, y - self.y)
 
     def gap_to(self, x: float, y: float) -> float:
         """Signed distance from ego to `(x, y)` along the route, ahead positive."""
@@ -129,7 +161,7 @@ class GroundTruthPerception:
         out: list[Detection] = []
         for agent in agents:
             ax, ay = agent.state.x, agent.state.y
-            if math.hypot(ax - ego.x, ay - ego.y) > self.max_range_m:
+            if frame.range_to(ax, ay) > self.max_range_m:
                 continue
 
             # An agent on a different route shares no arc-length with ego, so

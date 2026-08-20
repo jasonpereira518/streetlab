@@ -15,7 +15,7 @@ from map.scene_build import SyntheticGrid
 from perception.geometry import project_to_ground
 from perception.ml_source import MIN_HEADING_SPEED_MPS, MlPerception
 from perception.pipeline import Box2D, PipelineResult
-from perception.service import MAX_RANGE_M, PerceptionSource
+from perception.service import MAX_RANGE_M, EgoFrame, PerceptionSource
 from perception.tracker import Tracker
 from schema import CameraParams
 from sim.agents import ScriptedTraffic
@@ -198,3 +198,80 @@ def test_a_box_grazing_the_horizon_is_out_of_range_rather_than_kilometres_away(
 
     src = MlPerception(CannedPipeline([far]), Tracker(birth_hits=1))
     assert src.observe(ego, traffic.agents, built.ego_route) == []
+
+
+class CannedTracker:
+    """Returns fixed tracks, whatever it is fed.
+
+    The range gate under test is `MlPerception`'s, not the tracker's, and a
+    real tracker would make the test about association and birth thresholds
+    instead. This isolates the one decision.
+    """
+
+    def __init__(self, tracks):
+        self._tracks = tracks
+
+    def update(self, observations, t):
+        return list(self._tracks)
+
+    def reset(self):
+        self._tracks = []
+
+
+def a_track(x, y, cls="car"):
+    from perception.tracker import Track
+
+    return Track(id="trk-1", cls=cls, x=x, y=y, vx=0.0, vy=0.0,
+                 hits=3, misses=0, confidence=0.8)
+
+
+def test_a_track_beyond_range_is_not_published(ego, traffic, built):
+    """The gate has to apply to what leaves this source.
+
+    A track with no observation this frame does not stand still --
+    `apply_miss` coasts it on its own velocity for up to `max_misses` frames.
+    Gating only the observations that feed the tracker lets a track that was
+    admitted in range extrapolate out past the horizon and keep being
+    published from beyond it, which ground truth cannot do because it
+    re-checks every agent every step.
+    """
+    near = a_track(ego.x + 40.0, ego.y)
+    far = a_track(ego.x + MAX_RANGE_M + 30.0, ego.y)
+
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()]),
+                       CannedTracker([near, far]))
+    out = src.observe(ego, traffic.agents, built.ego_route)
+
+    assert len(out) == 1
+    assert math.isclose(out[0].pose.x, near.x)
+
+
+def test_range_is_measured_from_ego_now_exactly_as_ground_truth_measures_it(
+    ego, traffic, built
+):
+    """Same origin, same instant, or Phase 3 scores our own arithmetic.
+
+    The camera sits ahead of the ego origin and the frame is one inference
+    latency old, so a gate answered from the camera at shutter time and a
+    gate answered from the ego origin now are different volumes. Both
+    sources ask `EgoFrame.range_to`, so this is a comparison of the two
+    implementations against each other, not against a hand-copied number.
+    """
+    just_outside = a_track(ego.x + MAX_RANGE_M + 1.0, ego.y)
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()]),
+                       CannedTracker([just_outside]))
+    assert src.observe(ego, traffic.agents, built.ego_route) == []
+
+    # Ego drives 10 m towards it and the very same track becomes publishable:
+    # the gate is answered about the ego of now, not the ego of the shutter.
+    moved = VehicleState(x=ego.x + 10.0, y=ego.y, heading=ego.heading,
+                         speed_mps=ego.speed_mps)
+    assert len(src.observe(moved, traffic.agents, built.ego_route)) == 1
+
+    # And ground truth agrees about the same point, from the same origin --
+    # the two gates are one predicate now.
+    gt_frame = EgoFrame.of(ego, built.ego_route)
+    assert gt_frame.range_to(just_outside.x, just_outside.y) > MAX_RANGE_M
+    assert EgoFrame.of(moved, built.ego_route).range_to(
+        just_outside.x, just_outside.y
+    ) <= MAX_RANGE_M

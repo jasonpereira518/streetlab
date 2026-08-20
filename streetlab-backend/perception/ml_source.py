@@ -98,6 +98,12 @@ class MlPerception:
         if result is None:
             return []
 
+        # Computed before the tracker runs, because the range gate below
+        # needs it too: both this source and `GroundTruthPerception` answer
+        # "is that within range" through `EgoFrame.range_to`, from the ego
+        # origin, as of this step. See its docstring.
+        frame = EgoFrame.of(ego, route)
+
         # The sim steps at 60 Hz and frames arrive at about 10, so the same
         # result is read several times over. The tracker must advance once per
         # frame, not once per step: re-running it on a frame it has already
@@ -105,38 +111,62 @@ class MlPerception:
         # track takes a miss each call -- kill live tracks within a single
         # frame interval.
         if result is not self._processed:
-            observations = _observations(result, self.max_range_m)
+            observations = _observations(result, frame, self.max_range_m)
             self._tracks = self._tracker.update(observations, result.frame_t)
             self._processed = result
 
+        # The gate that actually decides what leaves this source, applied to
+        # the tracks being published rather than to the observations that fed
+        # them. A track with no observation this frame does not stand still:
+        # `apply_miss` coasts it on its own velocity for up to `max_misses`
+        # frames, so a track gated only on the way in can extrapolate past
+        # the horizon and keep being published from beyond it. Ground truth
+        # cannot do that -- it re-checks every agent every step -- so gating
+        # only the input would have handed Phase 3 a systematic ML-only
+        # excess at long range that is an artefact of this code.
+        #
+        # Tracks themselves are kept, not dropped: an object that leaves
+        # range and comes back should keep its id rather than be reborn.
+        # Only publication is gated.
+        #
         # Recomputed every step even so: the tracks are as of the last frame,
         # but where they sit relative to ego is a question about the ego of
         # now, which has moved since the shutter fired.
-        frame = EgoFrame.of(ego, route)
-        return [_detection(track, frame, ego) for track in self._tracks]
+        return [
+            _detection(track, frame, ego)
+            for track in self._tracks
+            if frame.range_to(track.x, track.y) <= self.max_range_m
+        ]
 
 
-def _observations(result: PipelineResult, max_range_m: float) -> list[Observation]:
+def _observations(
+    result: PipelineResult, frame: EgoFrame, max_range_m: float
+) -> list[Observation]:
     """Ground-plane positions for the boxes of one frame, within range.
 
-    Projected with the camera that frame carried, never the camera as of now,
-    and measured from that same camera -- the ego has moved since.
+    Projected with the camera that frame carried, never the camera as of now
+    -- the ego has moved since, and the ray belongs to the shutter.
 
-    The range cap is not redundant with the horizon test. `project_to_ground`
+    The range cull is not redundant with the horizon test. `project_to_ground`
     rejects only rays flatter than its epsilon, so a box whose bottom edge
     sits one pixel below the horizon still intersects the ground -- about a
-    thousand kilometres out. Left in, every horizon-grazing box would become
-    a track, and Phase 3 would score it as a false positive at a range no
-    sensor claims to reach.
+    thousand kilometres out. Left in, every such box would spawn a track that
+    can never be matched again, burning a fresh id per frame.
+
+    It is a cull, not the contract: what this source *publishes* is gated in
+    `observe` against the same `EgoFrame`, because a track can coast beyond
+    the horizon after it was admitted. Both use `frame.range_to` and the same
+    cap, so the two cannot answer differently -- which is the whole point.
+    The ray is cast from the camera; the range is measured from ego, exactly
+    as ground truth measures it.
     """
-    camera = result.camera
     out: list[Observation] = []
     for box in result.boxes:
-        ground = project_to_ground(box, camera, result.frame_w, result.frame_h)
+        ground = project_to_ground(box, result.camera, result.frame_w, result.frame_h)
         if ground is None:
             continue  # at or above the horizon: no ground contact to place
         x, y = ground
-        if math.hypot(x - camera.x, y - camera.y) > max_range_m:
+        if frame.range_to(x, y) > max_range_m:
             continue
         out.append((box.cls, x, y, box.confidence))
     return out
