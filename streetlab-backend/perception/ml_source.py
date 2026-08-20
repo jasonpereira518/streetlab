@@ -24,7 +24,7 @@ from typing import Protocol, Sequence
 
 from perception.geometry import CLASS_SIZE, project_to_ground
 from perception.pipeline import PipelineResult
-from perception.service import EgoFrame
+from perception.service import MAX_RANGE_M, EgoFrame
 from perception.tracker import Observation, Track, Tracker
 from schema import Detection, Pose
 from sim.agents import Agent
@@ -60,11 +60,36 @@ class MlPerception:
     because `GroundTruthPerception` is entitled to.
     """
 
-    def __init__(self, pipeline: LatestResult, tracker: Tracker) -> None:
+    def __init__(
+        self,
+        pipeline: LatestResult,
+        tracker: Tracker,
+        max_range_m: float = MAX_RANGE_M,
+    ) -> None:
         self._pipeline = pipeline
         self._tracker = tracker
+        self.max_range_m = max_range_m
         self._processed: PipelineResult | None = None
         self._tracks: list[Track] = []
+
+    def reset(self) -> None:
+        """Forget everything. Called on a scene swap, which invalidates it all.
+
+        Not merely tidiness. A track is a world coordinate, and after a reset
+        onto the same scene those coordinates still lie on the ego route: the
+        planner would pick a ghost as its lead -- `plan.control._closest_lead`
+        selects on along-route distance and `lane_offset == 0`, neither of
+        which can tell a stale track from a real one -- and brake for traffic
+        that no longer exists. Nor does it decay on its own: this source only
+        advances the tracker while it is being observed, so tracks left behind
+        by a swap can sit frozen indefinitely and be served whole later.
+
+        Distinct from `PerceptionPipeline.reset()`, which answers a client
+        reconnect. Two lifecycle events, each clearing its own state.
+        """
+        self._processed = None
+        self._tracks = []
+        self._tracker.reset()
 
     def observe(
         self, ego: VehicleState, agents: Sequence[Agent], route: Route
@@ -80,7 +105,8 @@ class MlPerception:
         # track takes a miss each call -- kill live tracks within a single
         # frame interval.
         if result is not self._processed:
-            self._tracks = self._tracker.update(_observations(result), result.frame_t)
+            observations = _observations(result, self.max_range_m)
+            self._tracks = self._tracker.update(observations, result.frame_t)
             self._processed = result
 
         # Recomputed every step even so: the tracks are as of the last frame,
@@ -90,17 +116,28 @@ class MlPerception:
         return [_detection(track, frame, ego) for track in self._tracks]
 
 
-def _observations(result: PipelineResult) -> list[Observation]:
-    """Ground-plane positions for the boxes of one frame.
+def _observations(result: PipelineResult, max_range_m: float) -> list[Observation]:
+    """Ground-plane positions for the boxes of one frame, within range.
 
-    Projected with the camera that frame carried, never the camera as of now.
+    Projected with the camera that frame carried, never the camera as of now,
+    and measured from that same camera -- the ego has moved since.
+
+    The range cap is not redundant with the horizon test. `project_to_ground`
+    rejects only rays flatter than its epsilon, so a box whose bottom edge
+    sits one pixel below the horizon still intersects the ground -- about a
+    thousand kilometres out. Left in, every horizon-grazing box would become
+    a track, and Phase 3 would score it as a false positive at a range no
+    sensor claims to reach.
     """
+    camera = result.camera
     out: list[Observation] = []
     for box in result.boxes:
-        ground = project_to_ground(box, result.camera, result.frame_w, result.frame_h)
+        ground = project_to_ground(box, camera, result.frame_w, result.frame_h)
         if ground is None:
             continue  # at or above the horizon: no ground contact to place
         x, y = ground
+        if math.hypot(x - camera.x, y - camera.y) > max_range_m:
+            continue
         out.append((box.cls, x, y, box.confidence))
     return out
 
@@ -114,6 +151,11 @@ def _detection(track: Track, frame: EgoFrame, ego: VehicleState) -> Detection:
         else ego.heading
     )
     lane_offset = frame.lane_offset(track.x, track.y)
+    # The one place the two sources feed `EgoFrame` differently: ground truth
+    # passes None for an agent on another route, because it knows which route
+    # each agent is on. A detector knows no such thing -- a track is a
+    # position, so the gap is always measured along ego's own route, and
+    # `lane_offset` is what keeps an off-route object out of the lead search.
     threat = frame.threat(frame.gap_to(track.x, track.y), lane_offset, track.cls, speed)
 
     return Detection(

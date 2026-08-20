@@ -33,6 +33,12 @@ from sim.vehicle import VehicleState
 # Width of one lane, used to bucket agents into lanes relative to ego.
 _LANE_W = 3.6
 
+#: How far a source claims to see. Ground truth is capped so it cannot hand
+#: the planner objects no sensor could resolve; `MlPerception` is capped to
+#: the same figure, because a projected box a pixel below the horizon lands
+#: kilometres away and Phase 3 scores both sources over the same volume.
+MAX_RANGE_M = 90.0
+
 
 @runtime_checkable
 class PerceptionSource(Protocol):
@@ -107,7 +113,7 @@ class EgoFrame:
 class GroundTruthPerception:
     """Perfect sensing out to `max_range_m`. No noise, no dropout, no error."""
 
-    max_range_m: float = 90.0
+    max_range_m: float = MAX_RANGE_M
 
     def observe(
         self, ego: VehicleState, agents: Sequence[Agent], route: Route

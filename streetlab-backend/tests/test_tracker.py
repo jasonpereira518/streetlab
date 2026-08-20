@@ -79,3 +79,18 @@ def test_a_flickering_detection_never_reaches_publication():
     for i in range(10):
         published = tr.update([obs(10.0, 0.0)] if i % 2 == 0 else [], t=i * 0.1)
         assert published == []
+
+
+def test_reset_forgets_every_track_without_reusing_its_ids():
+    """A scene swap invalidates every track. Ids must not come back around
+    with it -- a frontend still holding `trk-1` would silently adopt an
+    unrelated object in the new world.
+    """
+    tr = Tracker(gate_m=3.0, birth_hits=1, max_misses=2)
+    first = tr.update([obs(10.0, 0.0)], t=0.0)[0]
+
+    tr.reset()
+
+    reborn = tr.update([obs(10.0, 0.0)], t=0.1)[0]
+    assert reborn.id != first.id
+    assert reborn.vx == 0.0 and reborn.vy == 0.0, "no velocity carried over"

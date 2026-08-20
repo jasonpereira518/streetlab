@@ -144,6 +144,15 @@ class Tracker:
         self._tracks: list[_TrackState] = []
         self._next_id = itertools.count(1)
 
+    def reset(self) -> None:
+        """Forget every track. For a scene swap, which invalidates all of them.
+
+        The id counter deliberately keeps running: ids must never repeat
+        across scenes, or a frontend holding `trk-1` from the old world would
+        quietly adopt an unrelated object in the new one.
+        """
+        self._tracks = []
+
     def update(self, observations: list[Observation], t: float) -> list[Track]:
         predicted = [tr.predict(t) for tr in self._tracks]
 

@@ -12,9 +12,10 @@ import math
 import pytest
 
 from map.scene_build import SyntheticGrid
+from perception.geometry import project_to_ground
 from perception.ml_source import MIN_HEADING_SPEED_MPS, MlPerception
 from perception.pipeline import Box2D, PipelineResult
-from perception.service import PerceptionSource
+from perception.service import MAX_RANGE_M, PerceptionSource
 from perception.tracker import Tracker
 from schema import CameraParams
 from sim.agents import ScriptedTraffic
@@ -161,3 +162,39 @@ def test_a_moving_track_takes_the_heading_of_its_velocity(ego, traffic, built):
 
     assert d.speed_mps > MIN_HEADING_SPEED_MPS
     assert d.pose.heading == pytest.approx(math.atan2(d.velocity[1], d.velocity[0]))
+
+
+def test_a_reset_forgets_the_tracks_a_scene_swap_invalidated(ego, traffic, built):
+    """The tracks survive nothing: not the published list, not the
+    already-consumed frame, not the tracker's own state. Left behind, their
+    world coordinates still land on the new ego route -- and the planner
+    would brake for a car that no longer exists.
+    """
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1))
+    first = src.observe(ego, traffic.agents, built.ego_route)[0]
+
+    src.reset()
+
+    # The same pipeline result is still the latest one. It must be consumed
+    # afresh rather than served from the cleared cache, and the object it
+    # describes must be a new track rather than the old one resurrected.
+    reborn = src.observe(ego, traffic.agents, built.ego_route)
+    assert len(reborn) == 1
+    assert reborn[0].id != first.id
+
+
+def test_a_box_grazing_the_horizon_is_out_of_range_rather_than_kilometres_away(
+    ego, traffic, built
+):
+    """`project_to_ground` rejects only rays flatter than its epsilon, so a
+    box a pixel below the horizon still meets the ground -- about a thousand
+    kilometres out. Both sources answer for the same volume or Phase 3 scores
+    a fantasy.
+    """
+    far = Box2D(x0=300.0, y0=150.0, x1=340.0, y1=193.0, cls="car", confidence=0.9)
+    projected = project_to_ground(far, CAM, 640, 384)
+    assert projected is not None, "this box does reach the ground, just absurdly far"
+    assert math.hypot(*projected) > MAX_RANGE_M
+
+    src = MlPerception(CannedPipeline([far]), Tracker(birth_hits=1))
+    assert src.observe(ego, traffic.agents, built.ego_route) == []

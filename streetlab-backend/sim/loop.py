@@ -236,6 +236,15 @@ class Simulation:
         reset = getattr(self._planner, "reset", None)
         if reset is not None:
             reset()
+        # Same duck-typing, same reason, for perception. A tracked object is a
+        # world coordinate, and a swap onto the same scene leaves those
+        # coordinates sitting on the new ego route -- close enough to be
+        # picked as the lead and braked for. `GroundTruthPerception` has no
+        # state and so no `reset`; `MlPerception` has both.
+        for source in (self._perception, self._ml_perception):
+            reset = getattr(source, "reset", None)
+            if reset is not None:
+                reset()
 
     # -- convenience accessors --------------------------------------------- #
 
@@ -302,23 +311,33 @@ class Simulation:
         else:
             self.world.last_good_ego = repaired
 
-    def _perception_source(self) -> PerceptionSource:
-        """Which source drives the car this step.
+    def _observe(self) -> list[Detection]:
+        """Run every perception source that exists; return the one that drives.
 
-        Chosen per step, never captured at construction: `set_perception`
-        flips `perception_mode` at runtime, and a source bound once would
-        leave that command looking like it worked -- field set, event
-        emitted -- while the car went on driving on the other one.
+        Both run, every step, whichever is driving -- that is what shadow
+        mode means, and it is the default configuration. Running only the
+        selected source would leave the ML path never executed until the
+        moment a user switches to it, with a cold tracker: `birth_hits`
+        frames during which it publishes nothing, the planner finds no lead,
+        and the car accelerates to the speed limit exactly as perception
+        changes hands. It also gives Phase 3 two sources that have been
+        answering the same question continuously, which is what a comparison
+        needs. The cost is one projection and one tracker update per step
+        over a handful of boxes.
 
-        Ground truth remains the default, and remains the answer whenever no
-        ML source exists. The detector runs in shadow either way: the
-        pipeline is fed and measured regardless of which source is consumed
-        here, which is what `--perception ml` buys before Phase 3 scores the
-        two against each other.
+        Which result is *consumed* is chosen per step, never captured at
+        construction: `set_perception` flips `perception_mode` at runtime,
+        and a source bound once would leave that command looking like it
+        worked -- field set, event emitted -- while the car went on driving
+        on the other one. Ground truth stays the default, and stays the
+        answer whenever no ML source exists.
         """
-        if self.perception_mode == "ml" and self._ml_perception is not None:
-            return self._ml_perception
-        return self._perception
+        ego, agents, route = self.world.ego, self._traffic.agents, self.scene.ego_route
+        ground_truth = self._perception.observe(ego, agents, route)
+        if self._ml_perception is None:
+            return ground_truth
+        ml = self._ml_perception.observe(ego, agents, route)
+        return ml if self.perception_mode == "ml" else ground_truth
 
     def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
@@ -337,9 +356,7 @@ class Simulation:
         actually advancing on rather than silently reverting to `self.dt`.
         """
         dt = self.dt if dt is None else dt
-        detections = self._perception_source().observe(
-            self.world.ego, self._traffic.agents, self.scene.ego_route
-        )
+        detections = self._observe()
         signals = self._signals.state(self.world.t)
         context = PlanContext(
             t=self.world.t,

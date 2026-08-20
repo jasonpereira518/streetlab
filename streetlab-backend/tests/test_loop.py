@@ -23,7 +23,7 @@ from map.lanes import NoDrivableRoad, nearest_road_along
 from map.osm_source import LocationSpec, OsmSceneSource
 from map.overpass import BBox, OverpassClient
 from map.scene_build import LANE_W, SyntheticGrid
-from schema import Road, StateUpdate, parse_server_message
+from schema import Detection, Pose, Road, Size, StateUpdate, parse_server_message
 from sim.loop import SimLoop, Simulation, _lane_state
 from sim.route import Route
 
@@ -1630,14 +1630,69 @@ def test_set_perception_is_refused_without_a_pipeline():
 
 
 class _MarkerPerception:
-    """A perception source that records being asked, and sees nothing."""
+    """A perception source whose one detection is unmistakably its own.
+
+    Counts observations and resets so a test can tell not just *what* the
+    planner consumed but *whether this source ran at all* -- the difference
+    between shadow mode being real and being a label.
+    """
 
     def __init__(self) -> None:
         self.calls = 0
+        self.resets = 0
 
     def observe(self, ego, agents, route):
         self.calls += 1
-        return []
+        return [
+            Detection(
+                id="marker",
+                cls="car",
+                pose=Pose(x=ego.x + 40.0, y=ego.y, heading=ego.heading),
+                size=Size(length=4.5, width=1.8, height=1.5),
+                velocity=(0.0, 0.0),
+                speed_mps=0.0,
+                confidence=0.9,
+                hazard=False,
+                hazard_label=None,
+                ttc_s=None,
+                lane_offset=7,  # never the lead: this source is not driving
+            )
+        ]
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+def _ml_sim(ml):
+    """A sim with a real pipeline and `ml` as the source that consumes it."""
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    sim = Simulation(
+        SyntheticGrid(), "grid-merge", seed=4,
+        perception_pipeline=pipeline, ml_perception=ml,
+    )
+    return sim, pipeline
+
+
+def test_the_ml_source_runs_in_shadow_while_ground_truth_drives():
+    """Shadow mode has to mean the ML source actually runs, not just that the
+    pipeline is fed. Observed only when it drives, its tracker is cold at the
+    switch -- no published tracks for `birth_hits` frames, no lead for the
+    planner, and the car accelerates to the limit exactly as perception
+    changes hands.
+    """
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        sim.step()
+        sim.step()
+        assert ml.calls == 2, "the ML source must run every step, not only when it drives"
+        # ...while ground truth is still what reaches the wire.
+        ids = {d.id for d in sim.state_update().detections}
+        assert ids and "marker" not in ids
+    finally:
+        pipeline.shutdown()
 
 
 def test_the_perception_source_is_chosen_per_step_not_at_construction():
@@ -1645,23 +1700,37 @@ def test_the_perception_source_is_chosen_per_step_not_at_construction():
     captured in `__init__` would leave that command acking, emitting its
     event, and changing nothing about what the car actually drives on.
     """
-    from map.scene_build import SyntheticGrid
-    from perception.pipeline import PerceptionPipeline, StubDetector
-    from sim.loop import Simulation
-
     ml = _MarkerPerception()
-    pipeline = PerceptionPipeline(StubDetector())
+    sim, pipeline = _ml_sim(ml)
     try:
-        sim = Simulation(
-            SyntheticGrid(), "grid-merge", seed=4,
-            perception_pipeline=pipeline, ml_perception=ml,
-        )
         sim.step()
-        assert ml.calls == 0, "ground truth drives until the mode says otherwise"
+        before = {d.id for d in sim.state_update().detections}
+        assert before and "marker" not in before, "ground truth drives until told otherwise"
 
         assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
         sim.step()
-        assert ml.calls == 1, "the mode switch must reach the planner, not just the wire"
+        assert {d.id for d in sim.state_update().detections} == {"marker"}, (
+            "the mode switch must reach the planner, not just the wire"
+        )
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_scene_swap_resets_the_ml_source():
+    """A tracked object is a world coordinate. Reset onto the same scene and
+    the old ones still sit on the ego route, close enough to be picked as the
+    lead and braked for -- `plan.control._closest_lead` ranks on along-route
+    distance and `lane_offset == 0`, neither of which can tell a ghost from a
+    car.
+    """
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        sim.step()
+        # Construction runs `_reset_dynamics` too, so count from there.
+        before = ml.resets
+        assert sim.apply_dict({"id": "r1", "cmd": "reset"}).ok
+        assert ml.resets == before + 1
     finally:
         pipeline.shutdown()
 
