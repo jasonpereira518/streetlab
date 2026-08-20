@@ -27,27 +27,79 @@ export const DETECTOR_FRAME = {
   intervalMs: 100,
   /** JPEG quality: the wire cost is roughly linear in this. */
   quality: 0.6,
+  /**
+   * Upper bound on the GPU readback inside `capture()`. Five capture
+   * intervals (100ms each) — generous enough that an ordinarily slow frame
+   * still completes, but short enough that a readback that never settles at
+   * all (the failure mode this constant exists for — see the comment above
+   * `capture()`) cannot wedge perception silently for the rest of the
+   * session.
+   */
+  captureTimeoutMs: 500,
 } as const;
 
 /** Mount height and forward offset, matching the cockpit view. */
 const MOUNT_HEIGHT = 1.33;
 const MOUNT_FORWARD = 0.15;
+/**
+ * Where the mount aims, measured along the ego heading *from the ego origin*
+ * — not from the camera, which already sits `MOUNT_FORWARD` ahead of it.
+ * Same aim point as the cockpit view (`chaseCam.ts`).
+ */
+const MOUNT_LOOK_DISTANCE = 40;
+/**
+ * How far below the mount that aim point sits: the cockpit looks at 1.15 from
+ * a 1.33 mount. This is what gives the detector camera its slight downtilt,
+ * and it is deliberate — it keeps the ground contact points the backend
+ * projects from (`perception/geometry.py`) inside the frame at close range.
+ */
+const MOUNT_LOOK_DROP = 0.18;
+
+/**
+ * The mount's pitch, in radians, on the wire's convention.
+ *
+ * DERIVED, never written down: `update()` below builds its `lookAt` from
+ * exactly these constants, so the pitch the backend is told and the pitch the
+ * camera actually has cannot drift. Move the mount, change the aim point, and
+ * this follows automatically.
+ *
+ * The camera sits at height `MOUNT_HEIGHT`, `MOUNT_FORWARD` ahead of the ego
+ * origin, and looks at a point `MOUNT_LOOK_DISTANCE` ahead of that *origin*
+ * and `MOUNT_LOOK_DROP` lower — so the horizontal run is
+ * `MOUNT_LOOK_DISTANCE - MOUNT_FORWARD` and the drop is `MOUNT_LOOK_DROP`.
+ *
+ * Negative on purpose. `schema.ts` defines `pitch` as "positive tilts the view
+ * upward (nose up)", and this mount tilts *down*. Reporting `+atan2(...)` here
+ * would not merely fail to fix the projection — it would double the error, by
+ * telling the backend to raise a ray that is already too shallow.
+ */
+export const MOUNT_PITCH_RAD = -Math.atan2(
+  MOUNT_LOOK_DROP,
+  MOUNT_LOOK_DISTANCE - MOUNT_FORWARD,
+);
 
 /**
  * Three.js is Y-up with `+x` east and `+z` south. The wire is `+x` east,
  * `+y` north, `+z` up. Converting here means the backend never learns that a
  * renderer convention exists.
+ *
+ * `pitchRad` is passed rather than assumed: a position and a heading do not
+ * determine where a camera is looking vertically, and hardcoding a zero here
+ * is precisely the bug this parameter exists to make impossible. Callers pass
+ * the pitch their camera actually has — for the detector mount, the derived
+ * `MOUNT_PITCH_RAD`.
  */
 export function cameraParamsFromThree(
   position: { x: number; y: number; z: number },
   headingRad: number,
+  pitchRad: number,
 ): CameraParams {
   return {
     x: position.x,
     y: -position.z,
     z: position.y,
     yaw: headingRad,
-    pitch: 0,
+    pitch: pitchRad,
     roll: 0,
     fov_y_deg: DETECTOR_FRAME.fovYDeg,
     aspect: DETECTOR_FRAME.width / DETECTOR_FRAME.height,
@@ -109,6 +161,40 @@ export function shouldFlipRows(backend: Backend): boolean {
   return backend === 'webgl2';
 }
 
+/**
+ * Sentinel distinguishing "the timeout elapsed" from any real value `promise`
+ * could resolve to (including `undefined`) — a plain `undefined` return from
+ * `raceWithTimeout` would be ambiguous between the two.
+ */
+const CAPTURE_TIMED_OUT = Symbol('detector capture timed out');
+
+/**
+ * Races `promise` against `ms`. If `promise` wins, its settlement (value or
+ * rejection) passes through unchanged. If the timer wins, resolves
+ * `CAPTURE_TIMED_OUT` — the timer never rejects, so a hang never becomes an
+ * unhandled rejection.
+ *
+ * `promise` itself is deliberately left running when the timer wins: nothing
+ * here cancels a GPU readback. Whoever calls this is responsible for treating
+ * a late settlement of the loser as a no-op — see the comment at the
+ * `CAPTURE_TIMED_OUT` check in `capture()`.
+ */
+function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof CAPTURE_TIMED_OUT> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(CAPTURE_TIMED_OUT), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 export interface DetectorCamera {
   update(pose: { x: number; z: number; heading: number }): void;
   capture(): Promise<{ data: string; camera: CameraParams } | null>;
@@ -153,6 +239,10 @@ export function createDetectorCamera(
   // `capture`: the heading is known exactly here, and reading it back out of
   // matrixWorld columns is sign-error bait for no benefit.
   let heading = 0;
+  // Set once a readback timeout has ever fired, so a stuck GPU that times out
+  // on every subsequent capture (one per DETECTOR_FRAME.intervalMs) logs a
+  // single warning instead of spamming the console at ~10 Hz.
+  let hasWarnedTimeout = false;
 
   return {
     update(pose) {
@@ -164,7 +254,15 @@ export function createDetectorCamera(
         MOUNT_HEIGHT,
         pose.z + fz * MOUNT_FORWARD,
       );
-      camera.lookAt(pose.x + fx * 40, MOUNT_HEIGHT - 0.18, pose.z + fz * 40);
+      // Built from the same constants `MOUNT_PITCH_RAD` is derived from, so
+      // the downtilt the backend is told about is the downtilt the camera
+      // actually has. Inlining `40` or `1.15` here again would silently
+      // reintroduce the drift the derivation exists to prevent.
+      camera.lookAt(
+        pose.x + fx * MOUNT_LOOK_DISTANCE,
+        MOUNT_HEIGHT - MOUNT_LOOK_DROP,
+        pose.z + fz * MOUNT_LOOK_DISTANCE,
+      );
     },
 
     async capture() {
@@ -204,9 +302,32 @@ export function createDetectorCamera(
         restoredEarly = true;
         targetBusy = false;
 
-        const pixels = await renderer.readRenderTargetPixelsAsync(
-          target, 0, 0, width, height,
+        const pixels = await raceWithTimeout(
+          renderer.readRenderTargetPixelsAsync(target, 0, 0, width, height),
+          DETECTOR_FRAME.captureTimeoutMs,
         );
+
+        if (pixels === CAPTURE_TIMED_OUT) {
+          // The render target was already restored above, before this await —
+          // `targetBusy` is not implicated here. The readback promise itself
+          // is abandoned, not cancelled: if it settles later, there is no
+          // `.then()` left on it beyond `raceWithTimeout`'s own (which only
+          // clears a timer that has already fired), so a late value or
+          // rejection touches nothing in this closure — no stale `target`
+          // restore, no stale frame reaching the caller, no guard release
+          // that a subsequent capture() call now owns. `finally` below still
+          // runs and releases `busy` for this call, exactly as any other
+          // return from this try block would.
+          if (!hasWarnedTimeout) {
+            hasWarnedTimeout = true;
+            console.warn(
+              `[streetlab] detector camera: GPU readback exceeded ` +
+                `${DETECTOR_FRAME.captureTimeoutMs}ms; dropping this frame ` +
+                `(further timeouts this session will not be logged again)`,
+            );
+          }
+          return null;
+        }
 
         const rgba = new Uint8Array(
           pixels.buffer, pixels.byteOffset, pixels.byteLength,
@@ -218,7 +339,10 @@ export function createDetectorCamera(
 
         return {
           data: encodeBase64(buffer),
-          camera: cameraParamsFromThree(camera.position, heading),
+          // Pitch is the mount's, not the camera object's: it is fixed by
+          // construction (see `MOUNT_PITCH_RAD`) and, like `heading` above,
+          // known exactly here rather than dug back out of matrixWorld.
+          camera: cameraParamsFromThree(camera.position, heading, MOUNT_PITCH_RAD),
         };
       } finally {
         // Fallback only: normally the early restore above already ran. This

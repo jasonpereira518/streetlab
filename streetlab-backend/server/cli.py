@@ -25,6 +25,7 @@ import socket
 import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from map.cache import DiskCache, default_cache_dir
 from map.geocode import GeocodeError, NominatimGeocoder
@@ -32,9 +33,13 @@ from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource, default_source
 from map.overpass import HttpxFetcher, OverpassClient, OverpassError
 from map.scene_build import SceneSource, SyntheticGrid
-from perception.pipeline import PerceptionPipeline, StubDetector
+from perception.detector import OnnxDetector, build_session
+from perception.model_cache import DEFAULT_MODEL, ModelCache
+from perception.pipeline import Detector, PerceptionPipeline, StubDetector
 from schema import PROTOCOL_VERSION
 from sim.loop import DEFAULT_DT, SimLoop, Simulation
+
+log = logging.getLogger("streetlab.cli")
 
 # Every failure mode a real-network SceneSource build can raise, on top of the
 # KeyError an unknown scenario id already produced when the source was always
@@ -54,9 +59,100 @@ DEFERRED = {
 }
 
 
+_DETECTOR_MODEL_HELP = (
+    "path to a local .onnx detector; omit to resolve the shipped model "
+    "through the weights cache, downloading it once"
+)
+
+# Enough for a handful of model variants side by side (the shipped one is
+# ~21 MB), so switching between an exported build and the default does not
+# mean re-downloading each time.
+MODEL_CACHE_BUDGET_BYTES = 128 * 1024 * 1024
+
+# Low enough to see traffic at a distance, high enough to keep the tracker
+# out of a fog of spurious boxes. Phase 2 makes the number real; tuning it
+# for quality is Phase 3's job, once there is a score to tune against.
+DETECTOR_SCORE_THRESHOLD = 0.5
+
+
 def scene_source_for(source: str) -> SceneSource:
     """Pick a world. The seam that makes real map data a one-flag change."""
     return default_source() if source == "osm" else SyntheticGrid()
+
+
+def model_cache_dir() -> Path:
+    """Where downloaded weights live: beside the map extracts, not among them.
+
+    Same platform root `map.cache.default_cache_dir` picks, one directory
+    over, so there is a single place that knows what a cache directory is on
+    this OS and both caches evict independently.
+    """
+    return default_cache_dir().parent / "models"
+
+
+def fetch_weights(url: str, dest: Path) -> None:
+    """Stream a weights file to `dest`. The one place perception downloads.
+
+    Injected into `ModelCache.ensure` rather than imported by it, which is
+    what keeps the backend tests offline. Streamed rather than read whole:
+    the file is tens of megabytes and there is no reason for all of it to be
+    resident at once.
+    """
+    import httpx
+
+    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
+        response.raise_for_status()
+        with dest.open("wb") as out:
+            for chunk in response.iter_bytes(1024 * 1024):
+                out.write(chunk)
+
+
+def build_detector(model_path: str | None) -> Detector:
+    """Resolve weights once, at startup, and wrap them in a detector.
+
+    Once, never per frame: `ModelCache.ensure` re-hashes the whole file on
+    every call, which is exactly right for integrity and ruinous in a hot
+    path. The ONNX session itself is built lazily on the executor, inside
+    `OnnxDetector`, so a slow first load costs a frame rather than the boot.
+
+    Any failure to resolve weights degrades to `StubDetector`, loudly. A
+    backend that will not start because a download failed is worse than one
+    that starts with perception reporting nothing: the sim, the map and the
+    planner all still work, and the missing piece is named in the log.
+    """
+    try:
+        if model_path is not None:
+            path = Path(model_path)
+            if not path.is_file():
+                raise FileNotFoundError(f"no detector model at {path}")
+        else:
+            cache = ModelCache(model_cache_dir(), MODEL_CACHE_BUDGET_BYTES)
+            path = cache.ensure(DEFAULT_MODEL, fetch_weights)
+            cache.evict_to_budget()
+    except Exception as exc:
+        log.warning(
+            "detector weights unavailable (%s); perception will report nothing "
+            "until they can be resolved",
+            exc,
+        )
+        return StubDetector()
+
+    log.info("detector weights: %s", path)
+    return OnnxDetector(
+        lambda: build_session(str(path)), score_threshold=DETECTOR_SCORE_THRESHOLD
+    )
+
+
+def perception_pipeline_for(args) -> PerceptionPipeline | None:
+    """The pipeline `--perception ml` asks for, or None for ground truth.
+
+    `serve` and `run` both build it from here rather than each rolling their
+    own: Phase 1 shipped a resource leak precisely because a fix landed on
+    one of those two paths and not the other.
+    """
+    if args.perception != "ml":
+        return None
+    return PerceptionPipeline(build_detector(args.detector_model))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="ground-truth drives on perfect sensing; ml additionally runs the "
         "detector pipeline and reports it (shadow mode)",
     )
+    serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
 
     run_ = sub.add_parser("run", help="drive a scenario headlessly and log the reactions")
     run_.add_argument("--scenario", default=None)
@@ -107,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="ground-truth drives on perfect sensing; ml additionally runs the "
         "detector pipeline and reports it (shadow mode)",
     )
+    run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
 
     sub.add_parser("scenarios", help="list the scenario catalog")
 
@@ -241,10 +339,7 @@ def _serve(args) -> int:
     # exactly one line — STREETLAB_READY — for the parent process to parse.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-    pipeline = None
-    if args.perception == "ml":
-        # Phase 1: the transport is real, the detector is a stub.
-        pipeline = PerceptionPipeline(StubDetector())
+    pipeline = perception_pipeline_for(args)
 
     try:
         sim = Simulation(
@@ -310,10 +405,7 @@ class _Trace:
 
 
 def _run(args) -> int:
-    pipeline = None
-    if args.perception == "ml":
-        # Phase 1: the transport is real, the detector is a stub.
-        pipeline = PerceptionPipeline(StubDetector())
+    pipeline = perception_pipeline_for(args)
 
     try:
         sim = Simulation(

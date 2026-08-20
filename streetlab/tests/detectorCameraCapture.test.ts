@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as THREE from 'three/webgpu';
-import { createDetectorCamera } from '../src/three/detectorCamera';
+import { createDetectorCamera, DETECTOR_FRAME } from '../src/three/detectorCamera';
 import type { DetectorCamera } from '../src/three/detectorCamera';
 
 // `createDetectorCamera` unconditionally constructs an OffscreenCanvas. Neither
@@ -214,5 +214,135 @@ describe('capture() renderTargetBusy timing', () => {
     expect(detector.renderTargetBusy()).toBe(false);
 
     warnSpy.mockRestore();
+  });
+});
+
+describe('capture() readback timeout', () => {
+  it('releases its guards when the readback never settles', async () => {
+    // The observed failure, not a rejection: renderAsync and the render
+    // target restore both succeed normally, but the GPU readback itself
+    // never calls back. Without a timeout, `busy` would stay stuck forever
+    // and perception would silently die for the rest of the session.
+    const originalTarget = { name: 'main-view-target' };
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    let readbackCalls = 0;
+    const renderer = {
+      getRenderTarget: () => originalTarget,
+      setRenderTarget: () => {},
+      renderAsync: async () => {},
+      readRenderTargetPixelsAsync: () => {
+        readbackCalls += 1;
+        return new Promise<never>(() => {});
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    const detector = createDetectorCamera(scene, renderer, 'webgpu');
+
+    vi.useFakeTimers();
+    try {
+      const result = detector.capture();
+      await vi.advanceTimersByTimeAsync(DETECTOR_FRAME.captureTimeoutMs);
+      await expect(result).resolves.toBeNull();
+      expect(detector.renderTargetBusy()).toBe(false);
+      expect(readbackCalls).toBe(1);
+
+      // The guard must be free for the next tick, or perception is dead for
+      // good. The stub's readback still never settles, so this also times
+      // out — the point is that it is reached at all, rather than being
+      // short-circuited by a `busy` guard the first call never released.
+      //
+      // `resolves.toBeNull()`, not `toBeDefined()`: the capture resolves
+      // `null` and `expect(null).toBeDefined()` PASSES, so the old assertion
+      // held equally well in the world it was written to rule out. A stuck
+      // `busy` guard also returns `null`, immediately — which is exactly why
+      // the readback count below, not the resolved value, is what
+      // distinguishes "reached the GPU again" from "short-circuited".
+      const second = detector.capture();
+      await vi.advanceTimersByTimeAsync(DETECTOR_FRAME.captureTimeoutMs);
+      await expect(second).resolves.toBeNull();
+      expect(readbackCalls).toBe(2);
+      expect(detector.renderTargetBusy()).toBe(false);
+
+      // One warning for the whole session, not one per timeout.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not let a late-settling readback corrupt a later capture', async () => {
+    // The hard part of this fix: the abandoned readback promise from a timed
+    // out capture can still resolve afterwards. If that resolution reached
+    // into shared state, it could restore a stale render target, release a
+    // guard a newer capture now owns, or otherwise disturb work already in
+    // progress. This proves none of that happens: the first capture's
+    // readback resolves *after* a second capture has already run to
+    // completion, and the second capture's outcome is unaffected.
+    //
+    // The second capture is made to fail at readback too (rather than
+    // succeed) because this suite's OffscreenCanvas stand-in (see the
+    // `beforeAll` above) has no real 2D context — only the timeout and
+    // rejection paths are exercisable here, not a full successful encode.
+    const originalTarget = { name: 'main-view-target' };
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const setRenderTargetCalls: unknown[] = [];
+    let releaseFirstReadback: (pixels: Uint8Array) => void = () => {
+      throw new Error('readRenderTargetPixelsAsync was never called for the first capture');
+    };
+    let readbackCallCount = 0;
+
+    const renderer = {
+      getRenderTarget: () => originalTarget,
+      setRenderTarget: (t: unknown) => {
+        setRenderTargetCalls.push(t);
+      },
+      renderAsync: async () => {},
+      readRenderTargetPixelsAsync: () => {
+        readbackCallCount += 1;
+        if (readbackCallCount === 1) {
+          // Never resolves within this test's timeout window, but is kept
+          // alive so it can be resolved *after* the second capture finishes.
+          return new Promise<Uint8Array>((resolve) => {
+            releaseFirstReadback = resolve;
+          });
+        }
+        return Promise.reject(new Error('simulated GPU readback failure for second capture'));
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    const detector = createDetectorCamera(scene, renderer, 'webgpu');
+
+    vi.useFakeTimers();
+    try {
+      const first = detector.capture();
+      await vi.advanceTimersByTimeAsync(DETECTOR_FRAME.captureTimeoutMs);
+      await expect(first).resolves.toBeNull();
+
+      const second = detector.capture();
+      await expect(second).rejects.toThrow('simulated GPU readback failure for second capture');
+      expect(detector.renderTargetBusy()).toBe(false);
+      const setRenderTargetCallsAfterSecond = setRenderTargetCalls.length;
+
+      // Now let the first capture's long-abandoned readback finally settle —
+      // well after the second capture has already run to completion.
+      expect(readbackCallCount).toBeGreaterThanOrEqual(1);
+      releaseFirstReadback(new Uint8Array(4));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Nothing changed as a result: no extra render-target switches beyond
+      // what the second capture itself already made, and the guard is still
+      // free for a third capture.
+      expect(setRenderTargetCalls.length).toBe(setRenderTargetCallsAfterSecond);
+      expect(detector.renderTargetBusy()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+    }
   });
 });

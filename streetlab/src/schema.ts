@@ -226,7 +226,12 @@ export const CameraParamsSchema = z.object({
   z: z.number(),
   /** radians, 0 = +x (east), CCW positive — same convention as Pose.heading */
   yaw: z.number(),
+  /** radians, positive tilts the view upward (nose up), rotation about the
+   * camera's local right axis — see perception/geometry.py */
   pitch: z.number(),
+  /** radians, rotation about the camera's forward (optical) axis. Not
+   * applied by ground-plane projection today; no camera on the wire sends
+   * non-zero roll yet. */
   roll: z.number(),
   fov_y_deg: z.number().positive(),
   aspect: z.number().positive(),
