@@ -6,20 +6,21 @@ numbers here are safety claims.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
-[![Status: Cycles 1–3 built, 4 in progress](https://img.shields.io/badge/status-Cycles%201–3%20built%2C%204%20in%20progress-brightgreen.svg)](#roadmap)
-[![Backend tests](https://img.shields.io/badge/backend%20tests-819%20passing-success.svg)](#testing)
-[![Frontend tests](https://img.shields.io/badge/frontend%20tests-187%20vitest%20%2B%2012%20e2e-success.svg)](#testing)
+[![Status: Cycles 1–4 built](https://img.shields.io/badge/status-Cycles%201–4%20built-brightgreen.svg)](#roadmap)
+[![Backend tests](https://img.shields.io/badge/backend%20tests-852%20passing-success.svg)](#testing)
+[![Frontend tests](https://img.shields.io/badge/frontend%20tests-203%20vitest%20%2B%2012%20e2e-success.svg)](#testing)
 
 ![StreetLab driving live OpenStreetMap-derived streets, with all six telemetry widgets active](docs/screenshots/hero.png)
 
 Two packages, developed and tested independently, now wired together:
 
 - **`streetlab/`** — Tauri 2 + React/TypeScript UI and a Three.js WebGPU
-  viewport, driven entirely by a message stream. 187 vitest unit tests + 12
+  viewport, driven entirely by a message stream. 203 vitest unit tests + 12
   Playwright E2E tests.
 - **`streetlab-backend/`** — the Python simulator: a deterministic kinematic
-  world, reactive IDM/MOBIL traffic, ground-truth perception, and a behaviour
-  FSM over a centerline tracker, served over WebSocket. 819 pytest tests.
+  world, reactive IDM/MOBIL traffic, a real RT-DETR ONNX detector alongside
+  ground-truth perception, and a behaviour FSM over a centerline tracker,
+  served over WebSocket. 852 pytest tests.
 - **`contract/`** — the wire contract shared by both: fixtures generated from
   the real simulation, validated by the real `schema.ts` (zod) and the real
   `schema.py` (pydantic) on every change.
@@ -73,16 +74,23 @@ backend's own `/health` endpoint — not fixture data.
 
 ## Status
 
-Cycles 1–3 are built. Cycle 1 gave the synthetic grid, ground-truth
+Cycles 1–4 are built. Cycle 1 gave the synthetic grid, ground-truth
 perception and a centerline tracker; Cycle 2 added real OSM scenes and
 in-app address entry; Cycle 3 added junction compliance (the ego stops for
 red lights and stop signs), lane-level overtaking, traffic that reacts to
 the ego instead of driving through it (IDM car-following, MOBIL lane
-changes), and five distinct `inject_hazard` scenarios. Cycle 4 is under way:
-a real RT-DETR ONNX detector now runs on rendered camera frames, but it runs
-in shadow and ground-truth perception still drives the car — scoring the two
-against each other is the phase that finishes the cycle. Still open, and
-deliberately: nothing here is trained on anything (Cycle 5). The
+changes), and five distinct `inject_hazard` scenarios. Cycle 4 built a real
+RT-DETR ONNX detector end to end — camera-frame transport, ONNX inference,
+2D-to-world tracking, scoring against exact ground truth, and a toolbar
+toggle that hands driving to it — and measured what it found: **zero vehicle
+detections** scored against ground truth on the frames tested. COCO-pretrained
+weights do not transfer to this renderer's geometry, a domain gap the design
+anticipated and named as Cycle 5's motivation. ML perception ships and is
+switchable, but it cannot drive the car today; ground-truth perception
+remains the default, and the ML toolbar mode stays labelled experimental.
+See the [performance table](#performance) below for the full measurement and
+[`DEMO.md`](DEMO.md) for the walkthrough. Nothing here is trained on
+anything yet (Cycle 5). The
 [design doc](docs/superpowers/specs/2026-08-12-streetlab-backend-design.md)
 covers the full cycle breakdown; the short version is in
 [Roadmap](#roadmap) below.
@@ -148,14 +156,32 @@ process — not fixed targets. Sim step time and RSS come from the backend's
 | `.app` bundle size | `scripts/build_app.sh` | **52 MB** (measured, includes the sidecar) |
 | Backend RSS | Backend `/health` | **~59 MB** synthetic / **~94 MB** on a real OSM scene, measured at startup; live in the overlay |
 | Frontend RSS | `ps` on the running `.app` | **~58–72 MB** measured at startup |
-| Detector inference ms | Backend `PerceptionStats` | Live in the perception panel (Cycle 4 Phase 2 onward — a real ONNX detector now runs) |
+| Detector model inference (isolated) | `docs/measurements/2026-08-20-detector-comparison.md` | **58.9 ms** median, v1 int8 on `CPUExecutionProvider` (per-frame 64.7, 59.1, 58.5, 58.7, 58.7, 58.9, 58.9, 58.9 ms) — `session.run()` only, on byte-identical preprocessed tensors; excludes JPEG decode and resize |
+| Detection quality | `docs/measurements/2026-08-20-detector-comparison.md` | **0 / 8** frames scored a vehicle detection above the 0.50 threshold — v1 and v2 tied. Both models are confident about *something* in every frame, just never a vehicle: low-poly trees read as umbrellas and vases, buildings as TV monitors. v2 detects stop signs (a real StreetLab class) in 4 of 8 frames at up to 0.645 — a diagnosis worth noting, not a benchmark: 8 frames, one synthetic scene |
+| Closed-loop server round trip | `PerceptionStats.detector_ms` / `server_e2e_ms` — measured live through the real `PerceptionPipeline` + cached v1 weights, driven on a synthetic frame (throwaway script, not committed — same practice as the comparison doc above) | **~71 ms** median (per-frame 80.7, 68.2, 68.0, 69.2, 70.6, 72.6, 71.5, 70.9 ms; excludes a one-time ~410 ms first-frame session build). This is what the wire and the perception panel actually report — JPEG decode + resize + inference + postprocess, socket-arrival-to-detections-available. It still excludes render, GPU readback, JPEG *encode* and the websocket transfer, so true glass-to-decision latency runs higher |
 | Detector disk cost | `du -h` on the sidecar and the cached weights file | **onnxruntime + Pillow bundled in the sidecar** (part of the 48 MB above, not separately broken out); **weights fetched at runtime**, not bundled — the cached `.onnx` file is **21 MB** (`~/Library/Caches/StreetLab/models/`) |
 | Map cache budget | `map/cache.py` | 99 MB LRU ceiling; one Nob Hill extract is **3.2 MB** |
 
-GPU/ANE utilisation isn't reported: with no model running there's nothing to
-report, and a zero would be misleading. Measured figures are one run on an
-Apple Silicon Mac, not a benchmark suite — treat them as a ballpark, not a
-guarantee.
+**Detection quality is scored** by greedy class-gated matching at a 3 m gate,
+against exact ground truth as of the frame's timestamp — that excludes
+transport latency, which `server_e2e_ms` reports separately, so a slow round
+trip cannot read as a bad detector. On that method, the result is zero: no
+run of the shipped detector (or the alternative exported and measured
+alongside it) produced a single scored vehicle detection. That is not
+"promising" and it is not "a foundation" — read plainly, **ML perception
+cannot drive the car today.** The closed-loop round trip above describes how
+stale a detection would be if the pipeline produced one; at zero detections
+that number has nothing to attach to, so the toolbar's ML mode keeps its
+**experimental** label, now because of a measured absence of signal rather
+than an unmeasured guess about staleness.
+
+GPU/ANE utilisation isn't reported: the detector runs on
+`CPUExecutionProvider`, not CoreML, so there is no ANE/GPU inference for the
+OS to attribute. CPU was chosen because it measured **4× faster than CoreML**
+on this model (63 ms vs 270 ms, int8) — see
+`docs/superpowers/specs/2026-08-19-streetlab-cycle4-design.md`'s amended
+definition-of-done item 4. Measured figures are one run on an Apple Silicon
+Mac, not a benchmark suite — treat them as a ballpark, not a guarantee.
 
 ## Running it
 
@@ -164,14 +190,14 @@ See [`DEMO.md`](DEMO.md).
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q         # 819 passing, 1 skipped
-cd streetlab && npx vitest run                    # 187 tests, includes ../contract
+cd streetlab-backend && uv run pytest -q         # 852 passing (848 + 4 contract), 1 skipped
+cd streetlab && npx vitest run                    # 203 tests, includes ../contract
 cd streetlab && npm run test:e2e                  # 12 Playwright specs
 ```
 
 ## Roadmap
 
-Deliberately split into cycles; Cycles 1–3 are built. Each later cycle drops
+Deliberately split into cycles; Cycles 1–4 are built. Each later cycle drops
 in behind an existing seam (`SceneSource`, `PerceptionSource`, `Planner`,
 `TrafficModel`) without touching the cycles before it.
 
@@ -180,20 +206,30 @@ in behind an existing seam (`SceneSource`, `PerceptionSource`, `Planner`,
 | 1 | Synthetic grid, scripted traffic, ground-truth perception, centerline planner, real-time WS server, native sidecar integration | **Built** |
 | 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | **Built** — OSM ingest behind the SceneSource seam (Phase 1), plus in-app address entry, an off-thread build executor, and offline bundled extracts (Phase 2) |
 | 3 | Junction compliance (red lights, stop signs), lane-level overtaking, reactive traffic (IDM/MOBIL) and the full hazard scenario set | **Built** — signals and stop signs behind a behaviour FSM (Phase 1), carriageway-checked lane changes with a labelled return (Phase 2), and IDM car-following, MOBIL lane changes and five distinct hazards (Phase 3) |
-| 4 | ML perception (RT-DETRv2 on MPS) replacing ground truth | **In progress** — two of three phases landed: a camera-frame transport from the renderer to the backend (Phase 1), and a real RT-DETR ONNX detector behind it whose 2D boxes become tracked world-frame detections (Phase 2). It runs in shadow; ground truth still drives. Phase 3 scores one against the other and flips this row. |
+| 4 | ML perception (a real ONNX detector) alongside ground truth | **Built** — camera-frame transport off the render thread (Phase 1); a real RT-DETR ONNX detector whose 2D boxes become tracked world-frame detections (Phase 2); scoring against exact ground truth, a toolbar toggle to drive on ML detections, and shadow-mode box overlays (Phase 3). Measured result: **zero vehicle detections** on the frames tested — see [Performance](#performance) — so ground truth stays the default and ML mode stays labelled experimental. |
 | 5 | Sim-generated training dataset, fine-tuning, evaluation | Not started |
 
 ## Licenses
 
-Nothing in this repository ships model weights this cycle. When Cycle 4 adds
-a detector, the position is: no AGPL/GPL or non-commercial-trained weights in
+The repository's position: no AGPL/GPL or non-commercial-trained weights in
 the packaged `.app`; research-only datasets are benchmarking-figure sources,
 never training inputs.
 
-The detector currently shipped is RT-DETR v1 (`onnx-community/rtdetr_r18vd`,
-Apache-2.0, int8-quantized), fetched at runtime into a local cache rather
-than bundled in the repo or the packaged `.app`. `scripts/export_detector.py`
-exports the v2 checkpoint (`PekingU/rtdetr_v2_r18vd`, also Apache-2.0,
-COCO-pretrained) that will replace it once registered as a `ModelSpec`; it's
-a dev-only tool (needs `torch` + `transformers`, neither a project
-dependency) run by hand, not part of any build or test step.
+The detector that ships is RT-DETR v1 (`onnx-community/rtdetr_r18vd`,
+**Apache-2.0**, int8-quantized), pretrained on **COCO** (Common Objects in
+Context) — used here only as pretrained weights and a benchmarking-figure
+source, never redistributed and never a training input. Its weights are
+**fetched at runtime into a content-addressed cache**
+(`~/Library/Caches/StreetLab/models/`, verified by sha256 on every load),
+not bundled in the repo or the packaged `.app`; the sidecar bundles the
+`onnxruntime` runtime that runs them, not the weights themselves. No repo
+file or shipped `.app` contains model weights.
+
+`scripts/export_detector.py` also exports RT-DETRv2
+(`PekingU/rtdetr_v2_r18vd`, also Apache-2.0, also COCO-pretrained). It was
+exported and measured against v1 on 2026-08-20
+(`docs/measurements/2026-08-20-detector-comparison.md`) and did **not**
+replace it: both scored zero vehicle detections on the frames tested, and
+v1 is faster and 3.7× smaller. The script remains a dev-only tool (needs
+`torch` + `transformers`, neither a project dependency) run by hand, not
+part of any build or test step.
