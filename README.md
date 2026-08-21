@@ -7,7 +7,7 @@ numbers here are safety claims.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![Status: Cycles 1–4 built](https://img.shields.io/badge/status-Cycles%201–4%20built-brightgreen.svg)](#roadmap)
-[![Backend tests](https://img.shields.io/badge/backend%20tests-852%20passing-success.svg)](#testing)
+[![Backend tests](https://img.shields.io/badge/backend%20tests-853%20passing-success.svg)](#testing)
 [![Frontend tests](https://img.shields.io/badge/frontend%20tests-203%20vitest%20%2B%2012%20e2e-success.svg)](#testing)
 
 ![StreetLab driving live OpenStreetMap-derived streets, with all six telemetry widgets active](docs/screenshots/hero.png)
@@ -21,7 +21,7 @@ Two packages, developed and tested independently, now wired together:
   world, reactive IDM/MOBIL traffic, a real RT-DETR ONNX detector (measured:
   zero vehicle detections — see [Status](#status)) alongside ground-truth
   perception, and a behaviour FSM over a centerline tracker, served over
-  WebSocket. 852 pytest tests.
+  WebSocket. 853 pytest tests.
 - **`contract/`** — the wire contract shared by both: fixtures generated from
   the real simulation, validated by the real `schema.ts` (zod) and the real
   `schema.py` (pydantic) on every change.
@@ -167,8 +167,14 @@ process — not fixed targets. Sim step time and RSS come from the backend's
 **Detection quality is scored** by greedy class-gated matching at a 3 m gate,
 against exact ground truth as of the frame's timestamp — that excludes
 transport latency, which `server_e2e_ms` reports separately, so a slow round
-trip cannot read as a bad detector. On that method: **recall is 0.00** — zero
-of the truth objects in range were matched. **Precision and mean position
+trip cannot read as a bad detector. On that method: **recall is 0.00** —
+*derived, not measured.* Every other figure above carries the command that
+produced it; this one cannot, because the comparison doc is an offline run
+over 8 intercepted JPEGs that never calls `score()`, `PoseHistory` or a
+`Simulation` at all. It follows from zero predicted boxes: nothing can match,
+so every truth object in range is a false negative and the ratio is 0/N —
+conditional on there being truth in range, since with none `score()` returns
+`recall=None`, not `0.0`. **Precision and mean position
 error are undefined** (0/0: with no predicted boxes at all, neither ratio has
 a denominator), which the panel renders as `—`, never a fabricated `0.0` — an
 undefined metric is not a softer claim than a zero one. No run of the shipped
@@ -198,7 +204,7 @@ See [`DEMO.md`](DEMO.md).
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q         # 852 passing (848 + 4 contract), 1 skipped
+cd streetlab-backend && uv run pytest -q         # 853 passing (849 + 4 contract), 1 skipped
 cd streetlab && npx vitest run                    # 203 tests, includes ../contract
 cd streetlab && npm run test:e2e                  # 12 Playwright specs
 ```
