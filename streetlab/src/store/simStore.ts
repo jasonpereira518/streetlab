@@ -24,6 +24,7 @@ import type {
   CommandInput,
   LayerKey,
   ParamValue,
+  PerceptionMode,
   PerceptionStats,
   SceneDescription,
   ScenarioSummary,
@@ -275,6 +276,7 @@ export interface SimStoreState {
   setParam(key: string, value: ParamValue): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
+  setPerceptionMode(mode: PerceptionMode): void;
   setRightTab(tab: RightTab): void;
   togglePanel(panel: PanelId): void;
   togglePerfOverlay(): void;
@@ -413,6 +415,16 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   setCameraView(view) {
     set({ cameraView: view });
     get().send({ cmd: 'set_camera', view });
+  },
+
+  setPerceptionMode(mode) {
+    // Optimistic local update, same shape as setCameraView above: the
+    // backend's next frame carries the confirmed `perception.mode`, so a
+    // refused switch (no pipeline running) corrects itself on the next
+    // tick. There's nothing to update locally if no pipeline exists yet —
+    // the control is disabled in that case, so this branch is defensive.
+    set((s) => (s.perception ? { perception: { ...s.perception, mode } } : {}));
+    get().send({ cmd: 'set_perception', mode });
   },
 
   setRightTab(tab) {

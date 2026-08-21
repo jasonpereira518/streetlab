@@ -5,7 +5,7 @@
  * frame stream at ~10 Hz and only re-renders when the displayed value changes.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CameraView } from '../schema';
+import type { CameraView, PerceptionMode } from '../schema';
 import { useFrameValue } from '../store/hooks';
 import { useSimStore } from '../store/simStore';
 import { formatTtc, toMph } from '../units';
@@ -14,6 +14,7 @@ import {
   BrandMark,
   CameraIcon,
   ChevronDownIcon,
+  EyeIcon,
   FileIcon,
   PauseIcon,
   PlayIcon,
@@ -29,6 +30,13 @@ const CAMERA_LABELS: Record<CameraView, string> = {
   overhead: 'Overhead',
   cockpit: 'Cockpit',
   free: 'Free orbit',
+};
+
+// 'Ground truth' names the default (safe) state plainly; the ML state is
+// additionally flagged experimental at the point of use — see PerceptionMenu.
+const PERCEPTION_LABELS: Record<PerceptionMode, string> = {
+  'ground-truth': 'Ground truth',
+  ml: 'ML',
 };
 
 const CRUISE_LABELS: Record<string, string> = {
@@ -54,12 +62,14 @@ export function TopToolbar() {
   const status = useSimStore((s) => s.status);
   const sourceLabel = useSimStore((s) => s.sourceLabel);
   const cameraView = useSimStore((s) => s.cameraView);
+  const perception = useSimStore((s) => s.perception);
   const scenarioName = useSimStore(
     (s) => s.catalog.find((c) => c.id === s.activeScenarioId)?.name ?? s.scene?.name ?? '—',
   );
   const togglePaused = useSimStore((s) => s.togglePaused);
   const resetSim = useSimStore((s) => s.resetSim);
   const setCameraView = useSimStore((s) => s.setCameraView);
+  const setPerceptionMode = useSimStore((s) => s.setPerceptionMode);
   const setRightTab = useSimStore((s) => s.setRightTab);
   const perfOverlayVisible = useSimStore((s) => s.perfOverlayVisible);
   const togglePerfOverlay = useSimStore((s) => s.togglePerfOverlay);
@@ -151,6 +161,11 @@ export function TopToolbar() {
           <ActivityIcon />
         </IconButton>
         <CameraMenu view={cameraView} onSelect={setCameraView} />
+        <PerceptionMenu
+          mode={perception?.mode ?? 'ground-truth'}
+          disabled={perception === null}
+          onSelect={setPerceptionMode}
+        />
         <IconButton label="Settings" onClick={() => setRightTab('parameters')}>
           <SettingsIcon />
         </IconButton>
@@ -216,6 +231,90 @@ function CameraMenu({
               }}
             >
               {CAMERA_LABELS[v]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * This control *is* closed loop: switching to 'ml' hands driving to the real
+ * detector's perception instead of ground truth. A frame round trip plus
+ * inference (100-200 ms) means the planner acts on a stale world, so the ML
+ * state carries an "Experimental" badge here in the control itself — not
+ * only in documentation — both on the trigger (visible without opening the
+ * menu) and on the menu item.
+ *
+ * Disabled when no perception pipeline is running (`perception` is null on
+ * the wire): the backend refuses `set_perception` in that case, so a live
+ * control here would silently do nothing.
+ */
+function PerceptionMenu({
+  mode,
+  disabled,
+  onSelect,
+}: {
+  mode: PerceptionMode;
+  disabled: boolean;
+  onSelect: (m: PerceptionMode) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const title = disabled
+    ? 'No perception pipeline running — start with --perception'
+    : 'Perception source';
+
+  return (
+    <div className="menu" ref={ref}>
+      <button
+        type="button"
+        className={`menu-trigger${open ? ' is-open' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        title={title}
+      >
+        <EyeIcon />
+        <span>{PERCEPTION_LABELS[mode]}</span>
+        {mode === 'ml' && <span className="tbadge tbadge--warn"> Experimental</span>}
+        <ChevronDownIcon size={14} />
+      </button>
+      {open && (
+        <div className="menu-list" role="menu">
+          {(Object.keys(PERCEPTION_LABELS) as PerceptionMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="menuitemradio"
+              aria-checked={m === mode}
+              className={`menu-item${m === mode ? ' is-active' : ''}`}
+              onClick={() => {
+                onSelect(m);
+                setOpen(false);
+              }}
+            >
+              {PERCEPTION_LABELS[m]}
+              {m === 'ml' && <span className="tbadge tbadge--warn"> Experimental</span>}
             </button>
           ))}
         </div>

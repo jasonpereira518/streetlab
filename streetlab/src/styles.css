@@ -566,10 +566,15 @@ canvas {
   font-weight: 500;
 }
 
-.menu-trigger:hover,
+.menu-trigger:hover:not(:disabled),
 .menu-trigger.is-open {
   background: var(--c-surface-sunken, #edf1f6);
   color: var(--c-text, #141d28);
+}
+
+.menu-trigger:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .menu-list {
