@@ -210,6 +210,20 @@ def main(argv: list[str] | None = None) -> int:
         output_names=list(OUTPUT_NAMES),
         opset_version=OPSET_VERSION,
         dynamic_axes=None,  # static shape, deliberately -- see module docstring
+        # As of torch 2.9, torch.onnx.export defaults to the torch.export/
+        # dynamo-based exporter. That path cannot translate this model: RT-
+        # DETRv2's decoder does a data-dependent bbox-format check (`if
+        # reference_points.shape[-1] == 4`) that lowers to
+        # `aten._is_all_true`, which has no ONNX decomposition in the dynamo
+        # exporter as of this writing (fails with `DispatchError: No ONNX
+        # function found for aten._is_all_true`). The legacy TorchScript-
+        # based tracer this repo was written against handles it fine and
+        # produces the exact signature `verify_signature` checks below --
+        # confirmed by running both paths against this checkpoint. Pinning
+        # `dynamo=False` here is what makes that reproducible rather than
+        # dependent on whatever torch happens to default to on a given
+        # machine.
+        dynamo=False,
     )
 
     print("verifying the exported graph's signature ...")
