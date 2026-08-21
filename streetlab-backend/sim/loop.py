@@ -33,7 +33,7 @@ from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
-from perception.service import GroundTruthPerception, PerceptionSource
+from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
@@ -516,12 +516,35 @@ class Simulation:
         scoring reads this after the fact, and a frame's `t` cannot be known
         in advance, so nothing short of recording continuously keeps the
         instant it eventually asks for in the buffer.
+
+        Gated to `MAX_RANGE_M` from ego, the same constant and the same
+        straight-line measure both perception sources publish within
+        (`perception/service.py`, `perception/ml_source.py`). `ScriptedTraffic`
+        spreads agents around the whole scene so ego meets them at intervals
+        -- recording every agent regardless of distance would count every
+        far-away one as a false negative every step, and `recall` would
+        measure how large the scene is rather than how the detector
+        performs. Ungated precision and `mean_pos_err_m` are unaffected --
+        `GATE_M` in `perception/scoring.py` already keeps a distant truth
+        from ever stealing a nearby prediction -- so only this cared.
+
+        One residual gap, deliberately left rather than chased here: this
+        gates truth against the ego *as of the instant being recorded* --
+        the correct "frame time" ego for whichever future frame lands on
+        this `t`. `MlPerception.observe` instead gates its publication
+        against the ego of *now*, applied to a track computed from a frame
+        captured one inference-latency earlier (see `EgoFrame.range_to`'s
+        docstring, and `observe`'s own "Recomputed every step even so"
+        note). The two egos are metres apart, not the scene-spanning miss
+        this method fixes.
         """
+        ex, ey = self.world.ego.x, self.world.ego.y
         self.pose_history.record(
             self.world.t,
             [
                 TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y)
                 for a in self._traffic.agents
+                if math.hypot(a.state.x - ex, a.state.y - ey) <= MAX_RANGE_M
             ],
         )
 

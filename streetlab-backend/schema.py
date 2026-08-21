@@ -271,7 +271,10 @@ class PerceptionStats(Wire):
     server_e2e_ms: NonNeg | None
     frames_received: Annotated[int, Field(ge=0)]
     frames_dropped: Annotated[int, Field(ge=0)]
-    # Quality fields stay null until scoring lands in Phase 3.
+    # Null means the question had no answer this cycle -- no score computed
+    # yet, or `score()` itself found a ratio undefined (no predictions, or
+    # no ground truth). `0.0` means measured, and zero; never substitute one
+    # for the other on the way to the wire.
     precision: Unit | None
     recall: Unit | None
     mean_pos_err_m: NonNeg | None
