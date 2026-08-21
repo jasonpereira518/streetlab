@@ -28,7 +28,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
-from map.scene_build import LANE_W, BuiltScene, SceneSource, SyntheticGrid
+from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
@@ -163,7 +163,7 @@ class Simulation:
 
     def __init__(
         self,
-        source: SceneSource | None = None,
+        source: SceneSource,
         scenario_id: str | None = None,
         *,
         seed: int = 0,
@@ -173,11 +173,7 @@ class Simulation:
         perception_pipeline: PerceptionPipeline | None = None,
         ml_perception: PerceptionSource | None = None,
     ) -> None:
-        # `SyntheticGrid` is deterministic and offline -- the same default a
-        # caller who only wants a scene, any scene, would reach for by hand.
-        # Every existing caller passes its own source explicitly, so this
-        # only ever fires for a test that has no opinion on the scene.
-        self._source = source or SyntheticGrid()
+        self._source = source
         self._seed = seed
         self.dt = dt
         self._perception = perception or GroundTruthPerception()
@@ -211,7 +207,7 @@ class Simulation:
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
         # itself in.
         self._build_sink: Callable[[Callable[[], BuiltScene]], None] | None = None
-        self._load(scenario_id or self._source.scenarios()[0].id)
+        self._load(scenario_id or source.scenarios()[0].id)
 
     # -- lifecycle --------------------------------------------------------- #
 

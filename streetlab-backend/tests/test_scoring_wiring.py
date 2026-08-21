@@ -47,9 +47,10 @@ def test_an_undefined_score_still_reaches_the_wire_as_null():
 
 def test_the_history_is_recorded_every_step():
     """The loop records truth per step, so a frame's instant is recoverable."""
+    from map.scene_build import SyntheticGrid
     from sim.loop import Simulation
 
-    sim = Simulation(perception_pipeline=PerceptionPipeline(StubDetector()))
+    sim = Simulation(SyntheticGrid(), perception_pipeline=PerceptionPipeline(StubDetector()))
     t0 = sim.world.t
     sim.step()
     # The instant the sim just left is recoverable, exactly.
