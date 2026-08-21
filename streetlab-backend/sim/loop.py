@@ -547,10 +547,15 @@ class Simulation:
         `pose_history.at(frame_t)` will later be asked for, and the snapshot
         under it is the world the shutter actually saw.
 
-        Every step, regardless of perception mode: Phase 3 scoring reads this
-        after the fact, and a frame's `t` cannot be known in advance, so
-        nothing short of recording continuously keeps the instant it
-        eventually asks for in the buffer.
+        Every step once an ML source exists, regardless of perception mode:
+        Phase 3 scoring reads this after the fact, and a frame's `t` cannot be
+        known in advance, so nothing short of recording continuously keeps the
+        instant it eventually asks for in the buffer. With no ML source there
+        is no consumer at all -- the shipped `.app` is ground-truth only -- so
+        the early return below skips the work rather than allocating a
+        snapshot and a hypot per agent for nobody. That is what keeps this as
+        wide as the documented exception to "nothing runs on the sim thread
+        except the sim", which covers projection and tracking, not this.
 
         Gated to `MAX_RANGE_M` from ego, the same constant and the same
         straight-line measure both perception sources publish within
@@ -573,6 +578,8 @@ class Simulation:
         note). The two egos are metres apart, not the scene-spanning miss
         this method fixes.
         """
+        if self._ml_perception is None:
+            return
         ex, ey = self.world.ego.x, self.world.ego.y
         self.pose_history.record(
             self.world.t,
