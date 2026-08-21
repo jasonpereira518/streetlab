@@ -7,7 +7,7 @@
  * and it must pool its meshes rather than allocate one per detection per
  * frame (see hazardOverlay.ts / agents.ts for the established pattern).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three/webgpu';
 import { createShadowBoxes } from '../src/three/shadowBoxes';
 import type { Detection } from '../src/schema';
@@ -120,15 +120,58 @@ describe('createShadowBoxes', () => {
     shadowBoxes.dispose();
   });
 
-  it('dispose releases what it made', () => {
+  it('draws an unfilled outline, not hazardOverlay-style filled/pulsing boxes', () => {
+    // Pins the visual intent this task exists for: the shadow source must
+    // read as a bare wireframe (opacity purely a function of distance-to-edge
+    // via `smoothstep`), never a translucent fill with a base-opacity term or
+    // a breathing pulse layered on top the way hazardOverlay.ts's hazard box
+    // is. A `edge.mul(0.92).add(float(0.1))`-style regression (a plausible
+    // copy-paste from hazardOverlay.ts) changes the node graph's shape, which
+    // this test inspects directly rather than trusting a comment.
     const scene = new THREE.Scene();
     const shadowBoxes = createShadowBoxes(scene);
+    shadowBoxes.update([detection('a')]);
 
+    const box = drawables(scene.getObjectByName('shadow-detections')!)[0] as THREE.Mesh;
+    const mat = box.material as THREE.MeshBasicNodeMaterial;
+
+    expect(mat.transparent).toBe(true);
+
+    // `opacityNode` must be exactly the smoothstep edge term -- no further
+    // `.add()`/`.mul()` composition. Every TSL expression node is wrapped in
+    // a `VarNode`; unwrap one level and the underlying node must still be the
+    // `MathNode` smoothstep produces. `.add()`/`.mul()` on top of it (a fill
+    // term or a pulse) would instead surface as an `OperatorNode` here.
+    const inner = (mat.opacityNode as unknown as { node?: unknown }).node as
+      | { constructor: { name: string }; method?: string }
+      | undefined;
+    expect(inner?.constructor.name).toBe('MathNode');
+    expect(inner?.method).toBe('smoothstep');
+
+    shadowBoxes.dispose();
+  });
+
+  it('dispose releases the GPU geometry and material it created', () => {
+    // The brief's named failure mode is leaking GPU resources over a
+    // session; asserting only that the group leaves the scene (as a prior
+    // version of this test did) would pass even if `boxGeo.dispose()` and
+    // `boxMat.dispose()` were deleted. Spy on the actual GPU-release calls.
+    const scene = new THREE.Scene();
+    const geoDisposeSpy = vi.spyOn(THREE.BoxGeometry.prototype, 'dispose');
+    const matDisposeSpy = vi.spyOn(THREE.MeshBasicNodeMaterial.prototype, 'dispose');
+
+    const shadowBoxes = createShadowBoxes(scene);
     shadowBoxes.update([detection('a'), detection('b')]);
     const group = scene.getObjectByName('shadow-detections');
     expect(group).toBeTruthy();
 
     expect(() => shadowBoxes.dispose()).not.toThrow();
+
     expect(scene.getObjectByName('shadow-detections')).toBeUndefined();
+    expect(geoDisposeSpy).toHaveBeenCalledTimes(1);
+    expect(matDisposeSpy).toHaveBeenCalledTimes(1);
+
+    geoDisposeSpy.mockRestore();
+    matDisposeSpy.mockRestore();
   });
 });
