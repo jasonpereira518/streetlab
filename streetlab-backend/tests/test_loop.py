@@ -1735,6 +1735,51 @@ def test_a_scene_swap_resets_the_ml_source():
         pipeline.shutdown()
 
 
+def test_detections_shadow_is_null_without_a_second_source():
+    """No pipeline, no ML source -- there is nothing to shadow, so the field
+    must be `None`, not `[]`. `[]` would claim a second source ran and saw
+    nothing, which would be false."""
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    sim.step()
+    assert sim.state_update().detections_shadow is None
+
+
+def test_detections_shadow_carries_the_non_driving_source_while_ground_truth_drives():
+    """Shadow mode (the default): ground truth drives `detections`, and the
+    ML source's own output -- not an empty list, not ground truth again --
+    reaches `detections_shadow`."""
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        sim.step()
+        frame = sim.state_update()
+        assert "marker" not in {d.id for d in frame.detections}
+        assert frame.detections_shadow is not None
+        assert {d.id for d in frame.detections_shadow} == {"marker"}
+    finally:
+        pipeline.shutdown()
+
+
+def test_detections_shadow_carries_ground_truth_once_ml_drives():
+    """Flip `set_perception` to `ml` and the shadow relationship inverts:
+    `detections` becomes the ML source's output, and ground truth -- which
+    keeps running every step regardless -- becomes the shadow."""
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        frame = sim.state_update()
+        assert {d.id for d in frame.detections} == {"marker"}
+        assert frame.detections_shadow is not None
+        assert "marker" not in {d.id for d in frame.detections_shadow}
+    finally:
+        pipeline.shutdown()
+
+
 def test_a_pipeline_brings_the_ml_source_that_consumes_it():
     """No caller has to wire the two together: asking for a pipeline is asking
     for the source that reads it. A pipeline that has seen no frame has

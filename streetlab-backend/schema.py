@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -425,6 +425,15 @@ class StateUpdate(Wire):
     scenario_id: str
     ego: Ego
     detections: list[Detection]
+    # The perception source that is NOT driving, when both are running.
+    # `None` when there is no second source at all (no ML pipeline running)
+    # -- distinct from `[]`, which means the other source ran and saw
+    # nothing. Collapsing the two would make "no ML running" indistinguishable
+    # from "ML saw an empty road" (same distinction `PoseHistory.at` draws in
+    # perception/history.py, which scoring.py depends on). No default, for
+    # the same reason `perception` below has none: a missing key here must
+    # fail validation, not silently default to null.
+    detections_shadow: list[Detection] | None
     plan: Plan
     telemetry: Telemetry
     signals: list[SignalState]

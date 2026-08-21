@@ -72,15 +72,15 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 3
+    assert dumped["protocol"] == PROTOCOL_VERSION == 4
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_three():
+def test_protocol_is_four():
     from schema import PROTOCOL_VERSION
 
-    assert PROTOCOL_VERSION == 3
+    assert PROTOCOL_VERSION == 4
 
 
 def test_load_location_parses_with_and_without_radius():
@@ -149,6 +149,39 @@ def test_state_update_requires_perception_even_though_it_is_nullable():
     del missing["perception"]
     with pytest.raises(ValueError):
         StateUpdate.model_validate(missing)
+
+
+def test_state_update_requires_detections_shadow_even_though_it_is_nullable():
+    """Same transcription hazard as `perception` above: `detections_shadow`
+    is `list[Detection] | None` with no default, so a payload missing the
+    key entirely must fail exactly as it would against zod's `.nullable()`
+    -- an `.optional()`-shaped field here would silently accept a backend
+    that stopped emitting the key."""
+    raw = load_fixture("state_update_initial")
+    assert "detections_shadow" in raw
+    missing = dict(raw)
+    del missing["detections_shadow"]
+    with pytest.raises(ValueError):
+        StateUpdate.model_validate(missing)
+
+
+def test_detections_shadow_round_trips_none_and_a_populated_list():
+    """`None` and `[]` are different claims (see `perception/history.py`'s
+    `PoseHistory.at` docstring for the same distinction) -- both must survive
+    the round trip, and `None` must not be dropped by serialisation (no
+    `exclude_none=True` anywhere on this path)."""
+    raw = load_fixture("state_update_initial")
+
+    none_case = dict(raw)
+    none_case["detections_shadow"] = None
+    dumped = StateUpdate.model_validate(none_case).model_dump(mode="json")
+    assert "detections_shadow" in dumped
+    assert dumped["detections_shadow"] is None
+
+    populated = dict(raw)
+    populated["detections_shadow"] = raw["detections"]
+    dumped2 = StateUpdate.model_validate(populated).model_dump(mode="json")
+    assert dumped2["detections_shadow"] == raw["detections"]
 
 
 COMMANDS = [
@@ -231,7 +264,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 3
+    assert PROTOCOL_VERSION == 4
 
     raw = {
         "id": "f1",

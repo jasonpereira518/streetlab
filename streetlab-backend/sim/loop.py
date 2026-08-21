@@ -125,6 +125,11 @@ class WorldState:
     # and `step()` returns early while paused without refreshing either.
     plan_result: PlanResult | None = None
     detections: list[Detection] = field(default_factory=list)
+    # The non-driving source's detections for this tick, mirroring
+    # `detections`. `None` when there is no second source at all (no ML
+    # pipeline); a real, possibly empty, list when both sources ran -- see
+    # `_observe`'s docstring for why `[]` and `None` must stay distinct here.
+    detections_shadow: list[Detection] | None = None
     # This tick's signal phases, computed once in `_plan()` and reused by the
     # wire so the phase the car obeyed and the phase the HUD shows cannot drift.
     signals: list[SignalState] = field(default_factory=list)
@@ -242,6 +247,7 @@ class Simulation:
         self.world.pending_steps = 0
         self.world.plan_result = None
         self.world.detections = []
+        self.world.detections_shadow = None
         self.world.signals = []
         # A scene swap invalidates every recorded instant -- the truth a
         # stale `t` pointed to no longer exists, and world.t restarts at 0.0
@@ -337,8 +343,17 @@ class Simulation:
         else:
             self.world.last_good_ego = repaired
 
-    def _observe(self) -> list[Detection]:
-        """Run every perception source that exists; return the one that drives.
+    def _observe(self) -> tuple[list[Detection], list[Detection] | None]:
+        """Run every perception source that exists; return (driving, shadow).
+
+        `shadow` is the source NOT driving -- `None` when there is no second
+        source at all (`self._ml_perception is None`), a real list (possibly
+        empty) whenever both ran. `None` and `[]` are different claims here
+        for the same reason `PoseHistory.at` (perception/history.py) keeps
+        them apart: `None` means "no second source ran", `[]` means "it ran
+        and saw nothing" -- a real, if uneventful, measurement. Collapsing
+        them on the wire (`StateUpdate.detections_shadow`) would make "no ML
+        running" indistinguishable from "ML saw an empty road".
 
         Both run, every step, whichever is driving -- that is what shadow
         mode means, and it is the default configuration. Running only the
@@ -384,10 +399,12 @@ class Simulation:
         ego, agents, route = self.world.ego, self._traffic.agents, self.scene.ego_route
         ground_truth = self._perception.observe(ego, agents, route)
         if self._ml_perception is None:
-            return ground_truth
+            return ground_truth, None
         ml = self._ml_perception.observe(ego, agents, route)
         self._score_ml(ml)
-        return ml if self.perception_mode == "ml" else ground_truth
+        if self.perception_mode == "ml":
+            return ml, ground_truth
+        return ground_truth, ml
 
     def _score_ml(self, ml_detections: Sequence[Detection]) -> None:
         """Score the ML source's latest published frame against the truth
@@ -445,7 +462,7 @@ class Simulation:
         actually advancing on rather than silently reverting to `self.dt`.
         """
         dt = self.dt if dt is None else dt
-        detections = self._observe()
+        detections, detections_shadow = self._observe()
         signals = self._signals.state(self.world.t)
         context = PlanContext(
             t=self.world.t,
@@ -468,6 +485,7 @@ class Simulation:
             context,
         )
         self.world.detections = detections
+        self.world.detections_shadow = detections_shadow
         self.world.signals = signals
         self.world.plan_result = result
         return result
@@ -567,6 +585,7 @@ class Simulation:
             world=self.world,
             scene=self.scene,
             detections=detections,
+            detections_shadow=self.world.detections_shadow,
             plan=plan.plan,
             # Reused from `_plan()` rather than recomputed, for the same
             # reason as `posted_limit_mps` below: the phase the car obeyed and
@@ -815,6 +834,7 @@ def assemble_state_update(
     world: WorldState,
     scene: BuiltScene,
     detections: Sequence[Detection],
+    detections_shadow: Sequence[Detection] | None,
     plan: Plan,
     signals: Sequence[SignalState],
     sim_rate_hz: float,
@@ -890,6 +910,12 @@ def assemble_state_update(
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
         detections=list(detections),
+        # Null when there is no second source at all; a real (possibly
+        # empty) list whenever both sources ran -- see `_observe`'s
+        # docstring. Never collapse `None` into `[]` here.
+        detections_shadow=(
+            None if detections_shadow is None else list(detections_shadow)
+        ),
         plan=plan,
         telemetry=Telemetry(
             radar=_radar(ego, detections),

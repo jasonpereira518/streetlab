@@ -11,8 +11,8 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
-it('is protocol 3', () => {
-  expect(PROTOCOL_VERSION).toBe(3);
+it('is protocol 4', () => {
+  expect(PROTOCOL_VERSION).toBe(4);
 });
 
 it('accepts load_location with and without a radius', () => {
@@ -154,6 +154,7 @@ const sample: StateUpdate = {
     { t: 0.7, level: 'warn', code: 'CUTIN_DETECTED', message: 'Vehicle cutting in' },
   ],
   perception: null,
+  detections_shadow: null,
 };
 
 describe('StateUpdate', () => {
@@ -189,6 +190,23 @@ describe('StateUpdate', () => {
     const forward = { ...sample, some_future_field: 123 };
     const parsed = StateUpdateSchema.parse(forward);
     expect('some_future_field' in parsed).toBe(false);
+  });
+
+  it('accepts detections_shadow as null or a populated array', () => {
+    const withNull = StateUpdateSchema.parse({ ...sample, detections_shadow: null });
+    expect(withNull.detections_shadow).toBeNull();
+
+    const withList = StateUpdateSchema.parse({
+      ...sample,
+      detections_shadow: sample.detections,
+    });
+    expect(withList.detections_shadow).toEqual(sample.detections);
+  });
+
+  it('rejects a frame missing detections_shadow — nullable means present, possibly null', () => {
+    const missing = { ...sample } as Record<string, unknown>;
+    delete missing.detections_shadow;
+    expect(StateUpdateSchema.safeParse(missing).success).toBe(false);
   });
 });
 

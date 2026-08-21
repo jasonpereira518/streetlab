@@ -181,3 +181,33 @@ def test_pitch_changes_the_range_by_the_angle_it_names():
     nose_up = project_to_ground(below, camera(z=1.5, pitch=0.05), W, H)
     assert nose_down is not None and level is not None and nose_up is not None
     assert nose_down[0] < level[0] < nose_up[0]
+
+
+def test_the_detector_mount_pitch_sign_agrees_with_the_frontend():
+    """Pins the actual mount pitch -- not an arbitrary test value -- against
+    the sign convention `test_pitch_changes_the_range_by_the_angle_it_names`
+    established above.
+
+    The literal below is transcribed by hand from `MOUNT_PITCH_RAD` in
+    `streetlab/src/three/detectorCamera.ts`, pinned there by
+    `streetlab/tests/detectorCamera.test.ts`'s 'is negative' and 'has the
+    magnitude the lookAt geometry actually implies' cases. This is
+    inspection-level agreement, not cross-language enforcement: nothing
+    fails on this side of the boundary if a future edit changes
+    `MOUNT_PITCH_RAD` without updating the constant here. It exists so a
+    divergence in the *sign convention* -- the mistake that shipped in
+    Phase 2, where the wire reported pitch: 0 for a real downtilt and every
+    ML range came out long (+3.4 m at 30 m, +29.9 m at 80 m) -- has at least
+    one test on each side asserting the same physical fact, rather than
+    only one side ever having exercised the pitch branch at all.
+    """
+    # -atan2(0.18, 40 - 0.15) -- see detectorCamera.test.ts's EXPECTED.
+    mount_pitch_rad = -0.0045169078
+
+    assert mount_pitch_rad < 0, "the mount tilts down; wire pitch is nose-up positive"
+
+    below = box(W / 2, H * 0.9)
+    tilted = project_to_ground(below, camera(z=1.33, pitch=mount_pitch_rad), W, H)
+    level = project_to_ground(below, camera(z=1.33, pitch=0.0), W, H)
+    assert tilted is not None and level is not None
+    assert tilted[0] < level[0], "a negative (nose-down) pitch must shorten the range"

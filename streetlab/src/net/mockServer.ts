@@ -701,6 +701,9 @@ export class MockSim {
         size: EGO_SIZE,
       },
       detections,
+      // The mock server has no ML perception path, so there is never a
+      // second source to shadow -- null, not [], per the wire contract.
+      detections_shadow: null,
       plan: {
         polyline: plan,
         target_speed_mps: Math.min(
