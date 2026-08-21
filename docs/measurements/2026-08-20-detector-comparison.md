@@ -88,7 +88,19 @@ better one, and it costs 59 MB and 8 ms more.
 3. **Stop signs are already detectable.** Widening `COCO_ID_TO_CLASS` beyond vehicles is a
    cheap experiment with a real signal behind it.
 
-## Reproducing
+## What is not reproducible from this document
+
+**The eight source frames are not committed**, and neither is the throwaway benchmark
+script. This result is point-in-time: re-running the command below reproduces the *export*,
+not the comparison. Regenerating an equivalent measurement means recapturing frames from a
+live run — same scene (`grid-loop`), same default daylight, ego driving its normal route —
+and the specific frames will differ, so the per-frame numbers will too.
+
+What should survive recapture is the shape of the result: zero vehicle detections, top
+scores landing on unmapped classes, and the two models within ~10 ms of each other. If a
+recapture contradicts *that*, the discrepancy is worth chasing.
+
+## Reproducing the export
 
 ```bash
 uv run --with torch --with 'transformers>=4.47' --with onnx \
