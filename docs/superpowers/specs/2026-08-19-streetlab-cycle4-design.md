@@ -358,6 +358,14 @@ together, or both suites fail — which is the mechanism working.
     measured `.app` size, detector latency and detection quality, and the
     licence section records RT-DETRv2 Apache-2.0 / COCO provenance.
 
+    > **Amended 2026-08-21.** "RT-DETRv2" here should be read per item 4's
+    > amendment above, not on its own: v1 ships, and the licence section
+    > records v1's Apache-2.0/COCO provenance as what actually ships, plus
+    > v2's identical licence/provenance as the alternative that was exported
+    > and measured alongside it but did not replace v1. Not re-amending item
+    > 10's own wording, to keep the correction in one place (item 4) rather
+    > than duplicated.
+
 ## Deferred
 
 - **Fine-tuning on sim-generated data** — Cycle 5. This cycle's measured domain

@@ -198,35 +198,41 @@ scenario load, not from the moment you switch anything.
 Open the right panel's **Parameters** tab and find the **Perception** field
 at the bottom. `frames` and `detector` (ms) tick up in real time — the
 pipeline is genuinely decoding JPEGs and running the model at ~10 Hz. Watch
-`precision`, `recall`, and `mean position error` instead: they sit at
-`0.00` or `—`, and stay there. That's not a UI bug — it's the detector
+`precision`, `recall`, and `mean position error` instead: in every frame
+measured they read `0.00` or `—`. That's not a UI bug — it's the detector
 scoring zero matched vehicles against exact ground truth, frame after frame.
 
 Now look at the 3D view. The right panel's **Layers** tab has a
-**Detections** toggle (on by default) that draws the shadow source's boxes
-as unfilled purple outlines around whatever it thinks it sees. Every traffic
-vehicle on screen is solid and undeniably there; not one of them gets a
-purple outline. That absence *is* the visual read on the gap the panel's
-numbers report — the detector isn't drawing boxes around the wrong things,
-it's drawing none around cars at all, because its highest-confidence
-guesses per frame land on unmapped COCO classes (umbrella, vase, tvmonitor —
-even a genuine stop sign StreetLab does have, just not a class this
-pipeline maps; see `docs/measurements/2026-08-20-detector-comparison.md`
-for the full diagnosis).
+**Detections** toggle (on by default) that gates three things together: the
+solid traffic meshes, the hazard overlay, and the shadow source's purple
+wireframe outlines (`detections_shadow` — whichever source is *not*
+currently driving, drawn unfilled so the two readings stay visually
+distinct). Ground truth is still driving right now, so traffic renders
+solid and normal. In every frame measured, not one of those solid vehicles
+gets a purple outline: that absence is the visual read on the gap the
+panel's numbers report — the detector isn't drawing boxes around the wrong
+things, it's drawing none around cars at all, because its highest-confidence
+guesses per frame land on unmapped COCO classes (umbrella, vase, stop sign —
+a class StreetLab genuinely has; see
+`docs/measurements/2026-08-20-detector-comparison.md` for the full
+diagnosis).
 
 Switch driving to it from the toolbar: click the eye-icon **Perception**
 menu and select **ML** (it carries an **Experimental** badge, both on the
 trigger and in the menu — that label is earned, not decorative). Ground
-truth and the ML source trade places — ground truth now runs in shadow, and
-the purple outlines snap onto every vehicle exactly, because ground truth
-is perfect by construction. That contrast is the point: the outlines work
-fine when there's a real signal behind them. With ML actually driving, the
-car has nothing — no braking for the vehicle ahead, no reaction to an
-injected hazard, because the planner sees no detections to react to. Switch
-back to **Ground truth** before continuing the demo. This is why Cycle 4's
-roadmap entry reads "Built" and not "working": the pipeline is real end to
-end, and it was measured honestly enough to say plainly that it can't drive
-the car yet.
+truth and the ML source trade places, and the traffic on screen changes
+with them: the solid meshes and the hazard overlay are drawn from the wire's
+`detections` field, the one the *driving* source publishes — and with ML
+now driving and detecting nothing, that field is empty. **The road empties
+out.** All that's left are the purple ground-truth outlines, still drawn in
+shadow, now marking cars the car itself can no longer see. That's the
+strongest single piece of visual evidence in this demo, and it's an honest
+one: it isn't a rendering glitch, it's exactly what zero detections looks
+like once something is actually driving on them. Switch back to
+**Ground truth** before continuing the demo. This is why Cycle 4's roadmap
+entry reads "Built" and not "working": the pipeline is real end to end, and
+it was measured honestly enough to say plainly that it can't drive the car
+yet.
 
 ## What this demo does not show
 

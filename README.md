@@ -18,9 +18,10 @@ Two packages, developed and tested independently, now wired together:
   viewport, driven entirely by a message stream. 203 vitest unit tests + 12
   Playwright E2E tests.
 - **`streetlab-backend/`** — the Python simulator: a deterministic kinematic
-  world, reactive IDM/MOBIL traffic, a real RT-DETR ONNX detector alongside
-  ground-truth perception, and a behaviour FSM over a centerline tracker,
-  served over WebSocket. 852 pytest tests.
+  world, reactive IDM/MOBIL traffic, a real RT-DETR ONNX detector (measured:
+  zero vehicle detections — see [Status](#status)) alongside ground-truth
+  perception, and a behaviour FSM over a centerline tracker, served over
+  WebSocket. 852 pytest tests.
 - **`contract/`** — the wire contract shared by both: fixtures generated from
   the real simulation, validated by the real `schema.ts` (zod) and the real
   `schema.py` (pydantic) on every change.
@@ -154,31 +155,38 @@ process — not fixed targets. Sim step time and RSS come from the backend's
 | Sim step p50/p95 | Backend `/health` | Live in the overlay (~1 ms / ~2 ms on an M-series Mac) |
 | Sidecar binary size | `scripts/build_app.sh` | **48 MB** (measured, `aarch64-apple-darwin`; includes onnxruntime + Pillow, shapely and the bundled extract) |
 | `.app` bundle size | `scripts/build_app.sh` | **52 MB** (measured, includes the sidecar) |
+| Cold start (process start → `STREETLAB_READY`) | Task 8's cold-start benchmark, 3 runs each side, same machine and session | **2.415 s** median bundled with onnxruntime (2.481, 2.415, 2.299) vs **2.118 s** median without it (2.412, 2.118, 2.117) — the unbundled side is a throwaway `--exclude-module onnxruntime` comparison build, not part of the shipped artifact. ~0.3 s delta; judged not material, so `--onefile` is kept |
 | Backend RSS | Backend `/health` | **~59 MB** synthetic / **~94 MB** on a real OSM scene, measured at startup; live in the overlay |
 | Frontend RSS | `ps` on the running `.app` | **~58–72 MB** measured at startup |
 | Detector model inference (isolated) | `docs/measurements/2026-08-20-detector-comparison.md` | **58.9 ms** median, v1 int8 on `CPUExecutionProvider` (per-frame 64.7, 59.1, 58.5, 58.7, 58.7, 58.9, 58.9, 58.9 ms) — `session.run()` only, on byte-identical preprocessed tensors; excludes JPEG decode and resize |
 | Detection quality | `docs/measurements/2026-08-20-detector-comparison.md` | **0 / 8** frames scored a vehicle detection above the 0.50 threshold — v1 and v2 tied. Both models are confident about *something* in every frame, just never a vehicle: low-poly trees read as umbrellas and vases, buildings as TV monitors. v2 detects stop signs (a real StreetLab class) in 4 of 8 frames at up to 0.645 — a diagnosis worth noting, not a benchmark: 8 frames, one synthetic scene |
-| Closed-loop server round trip | `PerceptionStats.detector_ms` / `server_e2e_ms` — measured live through the real `PerceptionPipeline` + cached v1 weights, driven on a synthetic frame (throwaway script, not committed — same practice as the comparison doc above) | **~71 ms** median (per-frame 80.7, 68.2, 68.0, 69.2, 70.6, 72.6, 71.5, 70.9 ms; excludes a one-time ~410 ms first-frame session build). This is what the wire and the perception panel actually report — JPEG decode + resize + inference + postprocess, socket-arrival-to-detections-available. It still excludes render, GPU readback, JPEG *encode* and the websocket transfer, so true glass-to-decision latency runs higher |
+| Closed-loop server round trip | `PerceptionStats.detector_ms` / `server_e2e_ms` — measured for this README, through the real `PerceptionPipeline` + cached v1 weights, driven on a **synthetic** frame (throwaway script, not committed; unlike the comparison doc above, whose 8 frames were real intercepted `camera_frame` JPEGs) | **~71 ms** median (per-frame 80.7, 68.2, 68.0, 69.2, 70.6, 72.6, 71.5, 70.9 ms; excludes a one-time ~410 ms first-frame session build). This is what the wire and the perception panel actually report — JPEG decode + resize + inference + postprocess, socket-arrival-to-detections-available. It still excludes render, GPU readback, JPEG *encode* and the websocket transfer, so true glass-to-decision latency runs higher |
 | Detector disk cost | `du -h` on the sidecar and the cached weights file | **onnxruntime + Pillow bundled in the sidecar** (part of the 48 MB above, not separately broken out); **weights fetched at runtime**, not bundled — the cached `.onnx` file is **21 MB** (`~/Library/Caches/StreetLab/models/`) |
 | Map cache budget | `map/cache.py` | 99 MB LRU ceiling; one Nob Hill extract is **3.2 MB** |
 
 **Detection quality is scored** by greedy class-gated matching at a 3 m gate,
 against exact ground truth as of the frame's timestamp — that excludes
 transport latency, which `server_e2e_ms` reports separately, so a slow round
-trip cannot read as a bad detector. On that method, the result is zero: no
-run of the shipped detector (or the alternative exported and measured
-alongside it) produced a single scored vehicle detection. That is not
-"promising" and it is not "a foundation" — read plainly, **ML perception
-cannot drive the car today.** The closed-loop round trip above describes how
-stale a detection would be if the pipeline produced one; at zero detections
-that number has nothing to attach to, so the toolbar's ML mode keeps its
-**experimental** label, now because of a measured absence of signal rather
-than an unmeasured guess about staleness.
+trip cannot read as a bad detector. On that method: **recall is 0.00** — zero
+of the truth objects in range were matched. **Precision and mean position
+error are undefined** (0/0: with no predicted boxes at all, neither ratio has
+a denominator), which the panel renders as `—`, never a fabricated `0.0` — an
+undefined metric is not a softer claim than a zero one. No run of the shipped
+detector (or the alternative exported and measured alongside it) produced a
+single scored vehicle detection. That is not "promising" and it is not "a
+foundation" — read plainly, **ML perception cannot drive the car today.** The
+closed-loop round trip above describes how stale a detection would be if the
+pipeline produced one; at zero detections that number has nothing to attach
+to, so the toolbar's ML mode keeps its **experimental** label, now because of
+a measured absence of signal rather than an unmeasured guess about
+staleness.
 
 GPU/ANE utilisation isn't reported: the detector runs on
 `CPUExecutionProvider`, not CoreML, so there is no ANE/GPU inference for the
 OS to attribute. CPU was chosen because it measured **4× faster than CoreML**
-on this model (63 ms vs 270 ms, int8) — see
+on this model (63 ms vs 270 ms, int8, a separate Phase 2 five-run session —
+not the 58.9 ms Task 7 comparison-doc figure earlier in this table, a
+different measurement of the same model and provider) — see
 `docs/superpowers/specs/2026-08-19-streetlab-cycle4-design.md`'s amended
 definition-of-done item 4. Measured figures are one run on an Apple Silicon
 Mac, not a benchmark suite — treat them as a ballpark, not a guarantee.
