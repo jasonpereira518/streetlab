@@ -162,3 +162,57 @@ def test_the_hazard_fixture_exercises_non_null_optionals(generated):
     assert any(d.hazard and d.hazard_label is not None for d in frame.detections)
     assert frame.telemetry.trajectory.cutin, "cutin is null — nullable path untested"
     assert frame.telemetry.trajectory.cutin_label is not None
+
+
+def test_hand_authored_shadow_fixture_round_trips():
+    """``state_update_shadow_populated.json`` is hand-authored, not generated.
+
+    Every fixture ``generate()`` produces comes from a ``Simulation`` built
+    with no ``perception_pipeline`` (see ``generate()`` above), so
+    ``detections_shadow`` is ``None`` on every one of them by construction --
+    there is no ML source running, so there is nothing to shadow. That
+    correctly exercises the "no second source" case, but it means the wire
+    contract's actual purpose here -- two hand-written schema files agreeing
+    on a *populated* ``detections_shadow`` -- is never exercised end to end
+    by the generated set.
+
+    Forcing a running pipeline into ``generate()`` just to produce one
+    populated frame would be a much bigger change than this gap warrants
+    (a real detector/tracker on the sim thread, threaded through every other
+    fixture's generation). Instead this one fixture is built by hand from
+    ``state_update_moving.json``'s own ground truth, edited to depict the two
+    shapes ``detections_shadow`` exists to carry: a false positive
+    (``ml_track_12``, no ground-truth counterpart in ``detections`` at all)
+    and a miss (``veh_01``, ``veh_03``, ``veh_04``, ``veh_05`` have no shadow
+    counterpart), plus one matched-but-noisy detection (``ml_track_7``, near
+    but not equal to ``veh_00``'s position). It is not part of ``VALID_NAMES``
+    and is therefore untouched by ``--update-fixtures`` and by
+    ``test_committed_fixtures_match_the_live_simulation`` -- this test is
+    what keeps it honest against schema drift instead.
+
+    ``contract/validate_ts.test.ts`` needs no matching addition: it globs
+    every ``*.json`` directly under ``contract/fixtures/`` and validates each
+    one against ``parseServerMessage``, so this file is already covered
+    there automatically.
+    """
+    raw = json.loads((FIXTURES / "state_update_shadow_populated.json").read_text())
+    frame = StateUpdate.model_validate(raw)
+
+    assert frame.detections_shadow is not None
+    assert len(frame.detections_shadow) > 0
+    shadow_ids = {d.id for d in frame.detections_shadow}
+    truth_ids = {d.id for d in frame.detections}
+    assert shadow_ids.isdisjoint(truth_ids), (
+        "shadow ids must live in the ML source's own namespace, never reuse "
+        "a ground-truth id"
+    )
+    assert "ml_track_12" in shadow_ids, "the false-positive case must survive"
+    # Fewer shadow detections than ground-truth ones -- with ids in disjoint
+    # namespaces, that necessarily leaves at least one ground-truth object
+    # (veh_01/03/04/05, here) with no shadow counterpart at all: the miss
+    # case this fixture is also built to carry.
+    assert len(frame.detections_shadow) < len(frame.detections), "the miss case must survive"
+
+    # Round-trips without loss, the same guarantee the generated set gets
+    # from tests/test_schema.py's parametrized round-trip tests.
+    assert frame.model_dump(mode="json") == raw

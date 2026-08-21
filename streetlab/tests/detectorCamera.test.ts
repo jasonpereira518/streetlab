@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   cameraParamsFromThree,
@@ -6,6 +9,17 @@ import {
   MOUNT_PITCH_RAD,
   shouldFlipRows,
 } from '../src/three/detectorCamera';
+
+// Cross-language pin, shared with test_geometry_projection.py's
+// test_the_detector_mount_pitch_sign_agrees_with_the_frontend. Not part of
+// contract/fixtures/ (that set is wire *messages*, generated from a live
+// Simulation) -- a small standalone data fixture instead, so both suites
+// assert against the same committed number rather than two independently
+// hand-transcribed literals.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MOUNT_PITCH_FIXTURE = JSON.parse(
+  readFileSync(join(HERE, '..', '..', 'contract', 'mount_pitch_rad.json'), 'utf8'),
+) as { mount_pitch_rad: number };
 
 describe('cameraParamsFromThree', () => {
   it('converts Three.js Y-up into wire world coordinates', () => {
@@ -59,6 +73,19 @@ describe('MOUNT_PITCH_RAD', () => {
     const p = cameraParamsFromThree({ x: 0, y: 1.33, z: 0 }, 0, MOUNT_PITCH_RAD);
     expect(p.pitch).toBe(MOUNT_PITCH_RAD);
     expect(p.pitch).not.toBe(0);
+  });
+
+  it('matches the committed cross-language pitch fixture exactly', () => {
+    // `EXPECTED` above is this same file's own recomputation and would pass
+    // even if MOUNT_PITCH_RAD had drifted from what the fixture (and
+    // test_geometry_projection.py, on the Python side) were pinned to —
+    // it's the constant checking itself. This is the one assertion in the
+    // suite that ties the *shipped* value to the number Python's test reads
+    // from contract/mount_pitch_rad.json: re-parsing that JSON literal in
+    // JS reproduces the exact bit pattern MOUNT_PITCH_RAD already is (both
+    // are IEEE-754 doubles and decimal<->binary round-tripping is exactly
+    // specified), so this is `===`, not `toBeCloseTo`.
+    expect(MOUNT_PITCH_RAD).toBe(MOUNT_PITCH_FIXTURE.mount_pitch_rad);
   });
 });
 
