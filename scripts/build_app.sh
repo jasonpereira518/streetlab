@@ -31,9 +31,16 @@ rm -f streetlab-server.spec
 # assumed: the packaged sidecar was run standalone with `--perception ml`
 # against a local model path and logged `detector session bound to
 # CPUExecutionProvider` -- proof a real session bound, not that the process
-# merely started. Re-check this the next time onnxruntime, Pillow, or the
-# pyinstaller-hooks-contrib version changes; don't add flags back
-# speculatively without a failure that calls for them.
+# merely started. No `--collect-all` is needed specifically because this
+# hook ships it -- which is exactly why `pyinstaller-hooks-contrib` is
+# declared and pinned directly in `pyproject.toml`'s dev group (it is
+# otherwise only a transitive dependency of `pyinstaller`): an unpinned
+# transitive package could silently move or drop the hook on a routine
+# `uv lock --upgrade`, and nothing would catch it until perception quietly
+# started failing every frame in the field. Re-run the bound-provider check
+# above after any dependency-lock update that touches onnxruntime, Pillow,
+# or pyinstaller-hooks-contrib; don't add flags back speculatively without a
+# failure that calls for them.
 uv run pyinstaller --onefile --name streetlab-server \
   --add-data "bundled:bundled" \
   server/cli.py
