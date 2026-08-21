@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from perception.frames import CameraFrame, FrameSlot
+from perception.scoring import ScoreResult
 from schema import CameraParams, DetectionClass, PerceptionMode, PerceptionStats
 
 log = logging.getLogger("streetlab.perception")
@@ -146,7 +147,9 @@ class PerceptionPipeline:
         with self._lock:
             return self._latest
 
-    def stats(self, mode: PerceptionMode) -> PerceptionStats:
+    def stats(
+        self, mode: PerceptionMode, quality: ScoreResult | None = None
+    ) -> PerceptionStats:
         with self._lock:
             latest = self._latest
         return PerceptionStats(
@@ -155,10 +158,14 @@ class PerceptionPipeline:
             server_e2e_ms=None if latest is None else latest.server_e2e_ms,
             frames_received=self._frames.received,
             frames_dropped=self._frames.dropped,
-            # Phase 3. A zero here would claim a measurement nobody made.
-            precision=None,
-            recall=None,
-            mean_pos_err_m=None,
+            # A zero here would claim a measurement nobody made: `quality` is
+            # `None` whenever there is nothing to report (no score computed
+            # yet, or `score()` itself found a ratio undefined), and each
+            # field stays `None` in exactly that case rather than becoming a
+            # fabricated 0.0 on the way to the wire.
+            precision=None if quality is None else quality.precision,
+            recall=None if quality is None else quality.recall,
+            mean_pos_err_m=None if quality is None else quality.mean_pos_err_m,
         )
 
     def reset(self) -> None:

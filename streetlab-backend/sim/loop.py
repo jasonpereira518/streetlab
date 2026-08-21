@@ -28,9 +28,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
-from map.scene_build import LANE_W, BuiltScene, SceneSource
+from map.scene_build import LANE_W, BuiltScene, SceneSource, SyntheticGrid
+from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
+from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
@@ -161,7 +163,7 @@ class Simulation:
 
     def __init__(
         self,
-        source: SceneSource,
+        source: SceneSource | None = None,
         scenario_id: str | None = None,
         *,
         seed: int = 0,
@@ -171,7 +173,11 @@ class Simulation:
         perception_pipeline: PerceptionPipeline | None = None,
         ml_perception: PerceptionSource | None = None,
     ) -> None:
-        self._source = source
+        # `SyntheticGrid` is deterministic and offline -- the same default a
+        # caller who only wants a scene, any scene, would reach for by hand.
+        # Every existing caller passes its own source explicitly, so this
+        # only ever fires for a test that has no opinion on the scene.
+        self._source = source or SyntheticGrid()
         self._seed = seed
         self.dt = dt
         self._perception = perception or GroundTruthPerception()
@@ -191,11 +197,21 @@ class Simulation:
         # Shadow is the default: the ML path runs and is measured, but ground
         # truth is what the planner drives on until someone asks otherwise.
         self.perception_mode: PerceptionMode = "ground-truth"
+        # What was actually true, by sim time -- so a detection can be scored
+        # against the instant its frame was captured, not against whatever
+        # the world has become by the time the detector answers. See
+        # `perception/history.py`.
+        self.pose_history = PoseHistory()
+        self.perception_score: ScoreResult | None = None
+        # The frame_t last folded into `perception_score`, so `_observe` scores
+        # a frame once -- at 60 Hz stepping and ~10 Hz frames the same
+        # `last_frame_t` is seen roughly six times in a row.
+        self._scored_frame_t: float | None = None
         # How `load_location` reaches the executor without a back-reference
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
         # itself in.
         self._build_sink: Callable[[Callable[[], BuiltScene]], None] | None = None
-        self._load(scenario_id or source.scenarios()[0].id)
+        self._load(scenario_id or self._source.scenarios()[0].id)
 
     # -- lifecycle --------------------------------------------------------- #
 
@@ -231,6 +247,13 @@ class Simulation:
         self.world.plan_result = None
         self.world.detections = []
         self.world.signals = []
+        # A scene swap invalidates every recorded instant -- the truth a
+        # stale `t` pointed to no longer exists, and world.t restarts at 0.0
+        # right above, so a stale entry could otherwise collide with a
+        # genuinely new one.
+        self.pose_history.clear()
+        self.perception_score = None
+        self._scored_frame_t = None
         # `runtime_checkable` cannot enforce `reset`, and a user-supplied
         # planner predating it must not crash a scene swap.
         reset = getattr(self._planner, "reset", None)
@@ -289,6 +312,13 @@ class Simulation:
         )
         self._guard_world()
 
+        # Recorded against the instant the sim is about to leave, not the one
+        # it is about to enter -- `world.t` is still that instant's value
+        # here, and `self._traffic.agents` already holds this tick's final
+        # positions (`self._traffic.step` above is the only thing that moves
+        # them). This is what makes a later `pose_history.at(frame_t)` answer
+        # "what was true when the shutter fired" instead of "what is true now".
+        self._record_truth()
         self.world.t += dt
         self.world.seq += 1
         self._record_history()
@@ -360,7 +390,47 @@ class Simulation:
         if self._ml_perception is None:
             return ground_truth
         ml = self._ml_perception.observe(ego, agents, route)
+        self._score_ml(ml)
         return ml if self.perception_mode == "ml" else ground_truth
+
+    def _score_ml(self, ml_detections: Sequence[Detection]) -> None:
+        """Score the ML source's latest published frame against the truth
+        recorded for that same instant, and cache the result on
+        `perception_score` for `state_update` to thread onto the wire.
+
+        Scored once per *frame*, mirroring the `_processed` guard in
+        `MlPerception.observe`: `last_frame_t` is a plain read of the
+        source's own state (never the world's -- see that property's
+        docstring), so comparing it against the last-scored value is enough
+        to tell whether this step's publish is the same frame already
+        scored or a new one.
+
+        Not every test double passed as `ml_perception` implements
+        `last_frame_t` (only `MlPerception` does), so the read is duck-typed
+        the same way `reset` is above -- a source with nothing to report
+        here simply never gets scored.
+
+        Ground truth for the ML detections' own frame comes from
+        `pose_history`, not from `agents` above: `agents` is this step's
+        positions, but the detections being scored describe a frame from
+        several steps back. Scoring them against `agents` would fold
+        perception's own transport latency into position error -- exactly
+        what `pose_history` exists to keep separate (see its docstring).
+        When the lookup misses -- the frame has aged out of the buffer, or a
+        scene swap cleared it -- `perception_score` is left as it was rather
+        than scored against the wrong world.
+        """
+        frame_t = getattr(self._ml_perception, "last_frame_t", None)
+        if frame_t is None or frame_t == self._scored_frame_t:
+            return
+        self._scored_frame_t = frame_t
+        truth = self.pose_history.at(frame_t)
+        if truth is None:
+            return
+        predictions = [
+            Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in ml_detections
+        ]
+        self.perception_score = score(predictions, truth)
 
     def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
@@ -444,6 +514,21 @@ class Simulation:
         cutoff = self.world.t - _TRAJECTORY_HISTORY_S
         self.world.history = [h for h in self.world.history if h[0] >= cutoff]
 
+    def _record_truth(self) -> None:
+        """Snapshot where every agent actually is, keyed by the instant `step`
+        is about to leave. Every step, regardless of perception mode: Phase 3
+        scoring reads this after the fact, and a frame's `t` cannot be known
+        in advance, so nothing short of recording continuously keeps the
+        instant it eventually asks for in the buffer.
+        """
+        self.pose_history.record(
+            self.world.t,
+            [
+                TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y)
+                for a in self._traffic.agents
+            ],
+        )
+
     # -- frame assembly ---------------------------------------------------- #
 
     def state_update(self) -> StateUpdate:
@@ -477,6 +562,7 @@ class Simulation:
             posted_limit_mps=self.posted_limit(),
             perception_pipeline=self.perception_pipeline,
             perception_mode=self.perception_mode,
+            perception_quality=self.perception_score,
         )
         self.world.events = []
         return frame
@@ -716,6 +802,7 @@ def assemble_state_update(
     posted_limit_mps: float | None = None,
     perception_pipeline: PerceptionPipeline | None = None,
     perception_mode: PerceptionMode = "ground-truth",
+    perception_quality: ScoreResult | None = None,
 ) -> StateUpdate:
     """Build the one message the frontend consumes at frame rate.
 
@@ -799,7 +886,7 @@ def assemble_state_update(
         perception=(
             None
             if perception_pipeline is None
-            else perception_pipeline.stats(perception_mode)
+            else perception_pipeline.stats(perception_mode, quality=perception_quality)
         ),
     )
 

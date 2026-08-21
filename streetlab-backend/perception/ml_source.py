@@ -91,6 +91,16 @@ class MlPerception:
         self._tracks = []
         self._tracker.reset()
 
+    @property
+    def last_frame_t(self) -> float | None:
+        """Sim time of the frame whose detections are currently published.
+
+        The source's own state, not the world's -- see this class's docstring on
+        why `observe` must not read the simulation's truth. The loop uses it to
+        ask `PoseHistory` what was actually there when the shutter fired.
+        """
+        return None if self._processed is None else self._processed.frame_t
+
     def observe(
         self, ego: VehicleState, agents: Sequence[Agent], route: Route
     ) -> list[Detection]:
