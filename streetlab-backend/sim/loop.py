@@ -254,6 +254,14 @@ class Simulation:
         # right above, so a stale entry could otherwise collide with a
         # genuinely new one.
         self.pose_history.clear()
+        # Seeded at t = 0.0 right after the clear, because `state_update()` is
+        # legitimately callable before any `step()` -- and because `world.t`
+        # restarts at 0.0 above on every reset and scene swap, not just at
+        # startup. Without this the first frame of each scene would carry a
+        # `t` no snapshot answers to, and a detection stamped with it would be
+        # silently unscoreable rather than scored. What it records is the
+        # world as it stands now, which is exactly what that first frame shows.
+        self._record_truth()
         self.perception_score = None
         self._scored_frame_t = None
         # `runtime_checkable` cannot enforce `reset`, and a user-supplied
@@ -314,15 +322,18 @@ class Simulation:
         )
         self._guard_world()
 
-        # Recorded against the instant the sim is about to leave, not the one
-        # it is about to enter -- `world.t` is still that instant's value
-        # here, and `self._traffic.agents` already holds this tick's final
-        # positions (`self._traffic.step` above is the only thing that moves
-        # them). This is what makes a later `pose_history.at(frame_t)` answer
-        # "what was true when the shutter fired" instead of "what is true now".
-        self._record_truth()
         self.world.t += dt
         self.world.seq += 1
+        # Recorded *after* the increment, so the snapshot is keyed by the
+        # instant it actually describes. `_traffic.step` and `_model.step`
+        # above have both advanced the world to `t + dt`, and `world.t` only
+        # becomes that value on the line above -- recording before it keyed a
+        # snapshot of `t + dt` under `t`, so `pose_history.at(frame_t)`
+        # returned the world one full step ahead of what the shutter saw and
+        # folded 1/60 s of relative motion into `mean_pos_err_m`: precisely
+        # the error this history exists to keep out. `_record_history` below
+        # has always had this order right; the two now agree.
+        self._record_truth()
         self._record_history()
 
     def _guard_world(self) -> None:
@@ -529,11 +540,17 @@ class Simulation:
         self.world.history = [h for h in self.world.history if h[0] >= cutoff]
 
     def _record_truth(self) -> None:
-        """Snapshot where every agent actually is, keyed by the instant `step`
-        is about to leave. Every step, regardless of perception mode: Phase 3
-        scoring reads this after the fact, and a frame's `t` cannot be known
-        in advance, so nothing short of recording continuously keeps the
-        instant it eventually asks for in the buffer.
+        """Snapshot where every agent actually is, keyed by the instant those
+        positions describe -- `world.t` *after* `step` has incremented it,
+        which is the same `t` the `StateUpdate` assembled from this tick
+        carries. A frame echoes that `t` back verbatim, so this is the key
+        `pose_history.at(frame_t)` will later be asked for, and the snapshot
+        under it is the world the shutter actually saw.
+
+        Every step, regardless of perception mode: Phase 3 scoring reads this
+        after the fact, and a frame's `t` cannot be known in advance, so
+        nothing short of recording continuously keeps the instant it
+        eventually asks for in the buffer.
 
         Gated to `MAX_RANGE_M` from ego, the same constant and the same
         straight-line measure both perception sources publish within

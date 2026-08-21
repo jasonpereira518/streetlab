@@ -3,6 +3,8 @@ is nothing to measure."""
 
 from __future__ import annotations
 
+import math
+
 from perception.history import PoseHistory
 from perception.pipeline import PerceptionPipeline, StubDetector
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
@@ -44,16 +46,58 @@ def test_an_undefined_score_still_reaches_the_wire_as_null():
     assert s.mean_pos_err_m is None
 
 
-def test_the_history_is_recorded_every_step():
-    """The loop records truth per step, so a frame's instant is recoverable."""
+def test_the_history_is_keyed_by_the_instant_the_frame_reports():
+    """The invariant the whole design rests on, stated end to end: the truth
+    recorded under a frame's own `t` is the world *that frame* shows.
+
+    Asserting merely that some entry exists after a step is not that, and the
+    earlier version of this test did exactly that -- against the *pre*-step
+    `t`, which pinned a snapshot keyed one full step early as correct. A
+    `pose_history.at(frame_t)` lookup then still resolved in production (the
+    entry exists by the time a 100-200 ms-old frame is scored) while pointing
+    at the world one step ahead of the shutter, folding 1/60 s of relative
+    motion into `mean_pos_err_m`.
+
+    So the expected positions come from the `StateUpdate` itself: a
+    ground-truth `Detection` carries the agent's own world coordinates and its
+    agent id (`perception/service.py`), computed without consulting
+    `pose_history` at all. A keying offset therefore cannot cancel out of both
+    sides of the comparison the way it can when the expectation is read back
+    out of the same lookup under test.
+    """
     from map.scene_build import SyntheticGrid
     from sim.loop import Simulation
 
-    sim = Simulation(SyntheticGrid(), perception_pipeline=PerceptionPipeline(StubDetector()))
-    t0 = sim.world.t
-    sim.step()
-    # The instant the sim just left is recoverable, exactly.
-    assert sim.pose_history.at(t0) is not None
+    pipeline = PerceptionPipeline(StubDetector())
+    sim = Simulation(
+        SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline
+    )
+    try:
+        sim.step()
+        frame = sim.state_update()
+
+        truth = sim.pose_history.at(frame.t)
+        assert truth is not None, "the frame's own instant must be recoverable"
+
+        recorded = {o.id: (o.x, o.y) for o in truth}
+        shared = [d for d in frame.detections if d.id in recorded]
+        assert shared, "grid-merge must place at least one agent within range"
+        for d in shared:
+            assert recorded[d.id] == (d.pose.x, d.pose.y), (
+                f"truth under t={frame.t} disagrees with the frame's own "
+                f"position for {d.id}"
+            )
+
+        # And a frame is scoreable from the very first one: `state_update()`
+        # is callable before any `step()`, and `world.t` restarts at 0.0 after
+        # every reset and scene swap, so the seeded snapshot has to be there
+        # each time -- not only at construction.
+        sim.apply_dict({"id": "r1", "cmd": "reset"})
+        first = sim.state_update()
+        assert first.t == 0.0
+        assert sim.pose_history.at(first.t) is not None
+    finally:
+        pipeline.shutdown()
 
 
 def test_scoring_uses_truth_from_the_frame_not_from_now():
@@ -142,30 +186,57 @@ def test_the_loop_scores_the_frame_its_ml_source_reports_not_the_present():
     fixed detection to wherever traffic put it right now, not to the
     instant actually being asked about -- the opposite of both assertions
     below.
+
+    The expected position is taken from the `StateUpdate` the old frame
+    came from, never from `pose_history.at(old_t)`. Reading it back out of
+    the lookup under test -- as this test originally did -- makes it
+    symmetric about the very property it claims to pin: any keying offset
+    would be applied to the expectation and to the answer alike and cancel
+    perfectly, which is how a snapshot keyed one step early survived nine
+    reviews.
     """
     ml = _FixedFrameMl()
     sim, pipeline = _ml_sim(ml)
     try:
-        old_t = sim.world.t
         sim.step()
-        old_truth = sim.pose_history.at(old_t)
-        assert old_truth, "grid-merge must place at least one agent within range"
-        target = old_truth[0]
+        frame = sim.state_update()
+        old_t = frame.t
+        assert frame.detections, "grid-merge must place at least one agent in range"
+        # Nearest to ego, so the choice cannot land on an agent sitting at
+        # the range gate where the truth snapshot (gated against the
+        # post-step ego) and the frame (gated one integration earlier) can
+        # legitimately disagree about membership.
+        ex, ey = frame.ego.pose.x, frame.ego.pose.y
+        target = min(
+            frame.detections, key=lambda d: math.hypot(d.pose.x - ex, d.pose.y - ey)
+        )
 
         # Advance well past that instant -- real IDM traffic moving for
         # 1.5 s covers metres, not the 3 m matching gate.
-        recorded_t = old_t
         for _ in range(90):
-            recorded_t = sim.world.t
             sim.step()
+        recorded_t = sim.world.t
 
         # A detection frozen at the OLD position, scored against the OLD
         # frame: this is what the ML source actually reported then.
-        ml.at(target.x, target.y, target.cls)
+        ml.at(target.pose.x, target.pose.y, target.cls)
         ml.last_frame_t = old_t
         sim.step()
         assert sim.perception_score is not None
         assert sim.perception_score.true_positives == 1
+        # The assertion that a keying offset cannot survive. `true_positives`
+        # alone cannot see one: a single step moves an agent ~0.1-0.2 m, an
+        # order of magnitude inside the 3 m gate, so the match still lands and
+        # the count still reads 1. Position error is where it shows -- the
+        # prediction here IS the frame's own reported position, so scored
+        # against the truth for the frame's own `t` the error is exactly
+        # zero. Anything else means the lookup answered with a different
+        # instant's world, which is the one thing `mean_pos_err_m` must never
+        # absorb.
+        err = sim.perception_score.mean_pos_err_m
+        assert err is not None and err < 1e-9, (
+            f"exact-instant truth must score as an exact match; got {err} m"
+        )
         # The task's stated purpose: the quality fields finally carry a
         # value on the wire, not just on the loop's own attribute.
         assert sim.state_update().perception is not None
@@ -173,7 +244,12 @@ def test_the_loop_scores_the_frame_its_ml_source_reports_not_the_present():
 
         # The same fixed detection, now pointed at a later recorded
         # instant instead -- "the present" relative to the old one. The
-        # agent has moved on; this must not match.
+        # agent has moved on; this must not match. Asserted to be a real
+        # recorded instant first: `true_positives == 0` would hold just as
+        # well on a missing snapshot, where `_score_ml` returns early and
+        # leaves whatever was there before.
+        later_truth = sim.pose_history.at(recorded_t)
+        assert later_truth, "the later instant must itself be recorded"
         ml.last_frame_t = recorded_t
         sim.step()
         assert sim.perception_score.true_positives == 0
@@ -192,8 +268,8 @@ def test_scoring_is_skipped_when_the_frame_has_not_changed():
     ml = _FixedFrameMl()
     sim, pipeline = _ml_sim(ml)
     try:
-        old_t = sim.world.t
         sim.step()
+        old_t = sim.world.t
         truth = sim.pose_history.at(old_t)
         assert truth
         target = truth[0]
@@ -215,12 +291,19 @@ def test_a_scene_swap_clears_the_recorded_score_and_history():
     from the old scene must not survive to be reported against the new
     one, and `world.t` restarting at 0.0 means a stale history entry could
     otherwise collide with a genuinely new one at the same t.
+
+    The one instant that exists on both sides of the swap is 0.0, which
+    `_reset_dynamics` re-seeds immediately so the new scene's first frame is
+    scoreable at all. That is not a survivor: it is taken *after* the clear,
+    from the freshly placed agents of the new scene. Every stepped instant is
+    gone, which is what this checks with a non-zero `old_t`.
     """
     ml = _FixedFrameMl()
     sim, pipeline = _ml_sim(ml)
     try:
-        old_t = sim.world.t
         sim.step()
+        old_t = sim.world.t
+        assert old_t > 0.0
         truth = sim.pose_history.at(old_t)
         assert truth
         target = truth[0]
@@ -233,5 +316,8 @@ def test_a_scene_swap_clears_the_recorded_score_and_history():
 
         assert sim.perception_score is None
         assert sim.pose_history.at(old_t) is None
+        # ...and the re-seed is present, so the new scene is scoreable from
+        # its own first frame rather than starting with an unanswerable `t`.
+        assert sim.pose_history.at(0.0) is not None
     finally:
         pipeline.shutdown()
