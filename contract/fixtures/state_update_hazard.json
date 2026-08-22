@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 3,
+  "protocol": 4,
   "seq": 288,
   "t": 4.799999999999988,
   "sim_rate_hz": 60.0,
@@ -153,6 +153,7 @@
       "lane_offset": 0
     }
   ],
+  "detections_shadow": null,
   "plan": {
     "polyline": [
       [

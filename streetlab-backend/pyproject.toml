@@ -21,6 +21,14 @@ streetlab = "server.cli:main"
 [dependency-groups]
 dev = [
     "pyinstaller>=6.22.0",
+    # Transitive via pyinstaller, but declared explicitly and pinned: the
+    # packaged build's onnxruntime support depends on its hook-onnxruntime.py
+    # (collect_dynamic_libs), so a future `uv lock --upgrade` moving this
+    # silently is exactly the failure mode that must show up as a diff line
+    # instead. Re-run the packaged-sidecar bound-provider check (`--perception
+    # ml` against a local model path, confirm "detector session bound to
+    # <provider>" in the log) after bumping this.
+    "pyinstaller-hooks-contrib==2026.6",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
 ]

@@ -94,6 +94,75 @@ describe('TopToolbar', () => {
       expect.objectContaining({ cmd: 'set_camera', view: 'overhead' }),
     );
   });
+
+  it('disables the perception control when no perception pipeline is running', () => {
+    // The mock never runs ML perception, so `perception` stays null on every
+    // frame — the ordinary default. A rejected/no-op command here would be
+    // worse than an unavailable control, so it must be disabled with a title
+    // explaining why.
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    harness.emitFrame(1);
+
+    const trigger = screen.getByTitle(/no perception pipeline running/i);
+    expect(trigger.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('labels the ML perception mode experimental in the control itself', () => {
+    // spec:296-298 requires closed loop be "explicitly labelled experimental
+    // until measured" — and that must be visible from the toolbar, not only
+    // in documentation, so a later restyle can't quietly drop it.
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    harness.sim.step();
+    harness.emit({
+      ...harness.sim.frame(),
+      perception: {
+        mode: 'ground-truth',
+        detector_ms: null,
+        server_e2e_ms: null,
+        frames_received: 0,
+        frames_dropped: 0,
+        precision: null,
+        recall: null,
+        mean_pos_err_m: null,
+      },
+    });
+
+    fireEvent.click(screen.getByTitle('Perception source'));
+    expect(screen.getByRole('menuitemradio', { name: /ML/ }).textContent).toMatch(
+      /experimental/i,
+    );
+  });
+
+  it('switching the perception control sends set_perception', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    harness.sim.step();
+    harness.emit({
+      ...harness.sim.frame(),
+      perception: {
+        mode: 'ground-truth',
+        detector_ms: null,
+        server_e2e_ms: null,
+        frames_received: 0,
+        frames_dropped: 0,
+        precision: null,
+        recall: null,
+        mean_pos_err_m: null,
+      },
+    });
+
+    fireEvent.click(screen.getByTitle('Perception source'));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /ML/ }));
+
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'set_perception', mode: 'ml' }),
+    );
+  });
 });
 
 describe('LeftScenarioSidebar', () => {

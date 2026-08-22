@@ -29,9 +29,11 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
 from map.scene_build import LANE_W, BuiltScene, SceneSource
+from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
-from perception.service import GroundTruthPerception, PerceptionSource
+from perception.scoring import Prediction, ScoreResult, TruthObject, score
+from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
@@ -123,6 +125,11 @@ class WorldState:
     # and `step()` returns early while paused without refreshing either.
     plan_result: PlanResult | None = None
     detections: list[Detection] = field(default_factory=list)
+    # The non-driving source's detections for this tick, mirroring
+    # `detections`. `None` when there is no second source at all (no ML
+    # pipeline); a real, possibly empty, list when both sources ran -- see
+    # `_observe`'s docstring for why `[]` and `None` must stay distinct here.
+    detections_shadow: list[Detection] | None = None
     # This tick's signal phases, computed once in `_plan()` and reused by the
     # wire so the phase the car obeyed and the phase the HUD shows cannot drift.
     signals: list[SignalState] = field(default_factory=list)
@@ -191,6 +198,16 @@ class Simulation:
         # Shadow is the default: the ML path runs and is measured, but ground
         # truth is what the planner drives on until someone asks otherwise.
         self.perception_mode: PerceptionMode = "ground-truth"
+        # What was actually true, by sim time -- so a detection can be scored
+        # against the instant its frame was captured, not against whatever
+        # the world has become by the time the detector answers. See
+        # `perception/history.py`.
+        self.pose_history = PoseHistory()
+        self.perception_score: ScoreResult | None = None
+        # The frame_t last folded into `perception_score`, so `_observe` scores
+        # a frame once -- at 60 Hz stepping and ~10 Hz frames the same
+        # `last_frame_t` is seen roughly six times in a row.
+        self._scored_frame_t: float | None = None
         # How `load_location` reaches the executor without a back-reference
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
         # itself in.
@@ -230,7 +247,23 @@ class Simulation:
         self.world.pending_steps = 0
         self.world.plan_result = None
         self.world.detections = []
+        self.world.detections_shadow = None
         self.world.signals = []
+        # A scene swap invalidates every recorded instant -- the truth a
+        # stale `t` pointed to no longer exists, and world.t restarts at 0.0
+        # right above, so a stale entry could otherwise collide with a
+        # genuinely new one.
+        self.pose_history.clear()
+        # Seeded at t = 0.0 right after the clear, because `state_update()` is
+        # legitimately callable before any `step()` -- and because `world.t`
+        # restarts at 0.0 above on every reset and scene swap, not just at
+        # startup. Without this the first frame of each scene would carry a
+        # `t` no snapshot answers to, and a detection stamped with it would be
+        # silently unscoreable rather than scored. What it records is the
+        # world as it stands now, which is exactly what that first frame shows.
+        self._record_truth()
+        self.perception_score = None
+        self._scored_frame_t = None
         # `runtime_checkable` cannot enforce `reset`, and a user-supplied
         # planner predating it must not crash a scene swap.
         reset = getattr(self._planner, "reset", None)
@@ -291,6 +324,16 @@ class Simulation:
 
         self.world.t += dt
         self.world.seq += 1
+        # Recorded *after* the increment, so the snapshot is keyed by the
+        # instant it actually describes. `_traffic.step` and `_model.step`
+        # above have both advanced the world to `t + dt`, and `world.t` only
+        # becomes that value on the line above -- recording before it keyed a
+        # snapshot of `t + dt` under `t`, so `pose_history.at(frame_t)`
+        # returned the world one full step ahead of what the shutter saw and
+        # folded 1/60 s of relative motion into `mean_pos_err_m`: precisely
+        # the error this history exists to keep out. `_record_history` below
+        # has always had this order right; the two now agree.
+        self._record_truth()
         self._record_history()
 
     def _guard_world(self) -> None:
@@ -311,8 +354,17 @@ class Simulation:
         else:
             self.world.last_good_ego = repaired
 
-    def _observe(self) -> list[Detection]:
-        """Run every perception source that exists; return the one that drives.
+    def _observe(self) -> tuple[list[Detection], list[Detection] | None]:
+        """Run every perception source that exists; return (driving, shadow).
+
+        `shadow` is the source NOT driving -- `None` when there is no second
+        source at all (`self._ml_perception is None`), a real list (possibly
+        empty) whenever both ran. `None` and `[]` are different claims here
+        for the same reason `PoseHistory.at` (perception/history.py) keeps
+        them apart: `None` means "no second source ran", `[]` means "it ran
+        and saw nothing" -- a real, if uneventful, measurement. Collapsing
+        them on the wire (`StateUpdate.detections_shadow`) would make "no ML
+        running" indistinguishable from "ML saw an empty road".
 
         Both run, every step, whichever is driving -- that is what shadow
         mode means, and it is the default configuration. Running only the
@@ -358,9 +410,51 @@ class Simulation:
         ego, agents, route = self.world.ego, self._traffic.agents, self.scene.ego_route
         ground_truth = self._perception.observe(ego, agents, route)
         if self._ml_perception is None:
-            return ground_truth
+            return ground_truth, None
         ml = self._ml_perception.observe(ego, agents, route)
-        return ml if self.perception_mode == "ml" else ground_truth
+        self._score_ml(ml)
+        if self.perception_mode == "ml":
+            return ml, ground_truth
+        return ground_truth, ml
+
+    def _score_ml(self, ml_detections: Sequence[Detection]) -> None:
+        """Score the ML source's latest published frame against the truth
+        recorded for that same instant, and cache the result on
+        `perception_score` for `state_update` to thread onto the wire.
+
+        Scored once per *frame*, mirroring the `_processed` guard in
+        `MlPerception.observe`: `last_frame_t` is a plain read of the
+        source's own state (never the world's -- see that property's
+        docstring), so comparing it against the last-scored value is enough
+        to tell whether this step's publish is the same frame already
+        scored or a new one.
+
+        Not every test double passed as `ml_perception` implements
+        `last_frame_t` (only `MlPerception` does), so the read is duck-typed
+        the same way `reset` is above -- a source with nothing to report
+        here simply never gets scored.
+
+        Ground truth for the ML detections' own frame comes from
+        `pose_history`, not from `agents` above: `agents` is this step's
+        positions, but the detections being scored describe a frame from
+        several steps back. Scoring them against `agents` would fold
+        perception's own transport latency into position error -- exactly
+        what `pose_history` exists to keep separate (see its docstring).
+        When the lookup misses -- the frame has aged out of the buffer, or a
+        scene swap cleared it -- `perception_score` is left as it was rather
+        than scored against the wrong world.
+        """
+        frame_t = getattr(self._ml_perception, "last_frame_t", None)
+        if frame_t is None or frame_t == self._scored_frame_t:
+            return
+        self._scored_frame_t = frame_t
+        truth = self.pose_history.at(frame_t)
+        if truth is None:
+            return
+        predictions = [
+            Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in ml_detections
+        ]
+        self.perception_score = score(predictions, truth)
 
     def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
@@ -379,7 +473,7 @@ class Simulation:
         actually advancing on rather than silently reverting to `self.dt`.
         """
         dt = self.dt if dt is None else dt
-        detections = self._observe()
+        detections, detections_shadow = self._observe()
         signals = self._signals.state(self.world.t)
         context = PlanContext(
             t=self.world.t,
@@ -402,6 +496,7 @@ class Simulation:
             context,
         )
         self.world.detections = detections
+        self.world.detections_shadow = detections_shadow
         self.world.signals = signals
         self.world.plan_result = result
         return result
@@ -444,6 +539,57 @@ class Simulation:
         cutoff = self.world.t - _TRAJECTORY_HISTORY_S
         self.world.history = [h for h in self.world.history if h[0] >= cutoff]
 
+    def _record_truth(self) -> None:
+        """Snapshot where every agent actually is, keyed by the instant those
+        positions describe -- `world.t` *after* `step` has incremented it,
+        which is the same `t` the `StateUpdate` assembled from this tick
+        carries. A frame echoes that `t` back verbatim, so this is the key
+        `pose_history.at(frame_t)` will later be asked for, and the snapshot
+        under it is the world the shutter actually saw.
+
+        Every step once an ML source exists, regardless of perception mode:
+        Phase 3 scoring reads this after the fact, and a frame's `t` cannot be
+        known in advance, so nothing short of recording continuously keeps the
+        instant it eventually asks for in the buffer. With no ML source there
+        is no consumer at all -- the shipped `.app` is ground-truth only -- so
+        the early return below skips the work rather than allocating a
+        snapshot and a hypot per agent for nobody. That is what keeps this as
+        wide as the documented exception to "nothing runs on the sim thread
+        except the sim", which covers projection and tracking, not this.
+
+        Gated to `MAX_RANGE_M` from ego, the same constant and the same
+        straight-line measure both perception sources publish within
+        (`perception/service.py`, `perception/ml_source.py`). `ScriptedTraffic`
+        spreads agents around the whole scene so ego meets them at intervals
+        -- recording every agent regardless of distance would count every
+        far-away one as a false negative every step, and `recall` would
+        measure how large the scene is rather than how the detector
+        performs. Ungated precision and `mean_pos_err_m` are unaffected --
+        `GATE_M` in `perception/scoring.py` already keeps a distant truth
+        from ever stealing a nearby prediction -- so only this cared.
+
+        One residual gap, deliberately left rather than chased here: this
+        gates truth against the ego *as of the instant being recorded* --
+        the correct "frame time" ego for whichever future frame lands on
+        this `t`. `MlPerception.observe` instead gates its publication
+        against the ego of *now*, applied to a track computed from a frame
+        captured one inference-latency earlier (see `EgoFrame.range_to`'s
+        docstring, and `observe`'s own "Recomputed every step even so"
+        note). The two egos are metres apart, not the scene-spanning miss
+        this method fixes.
+        """
+        if self._ml_perception is None:
+            return
+        ex, ey = self.world.ego.x, self.world.ego.y
+        self.pose_history.record(
+            self.world.t,
+            [
+                TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y)
+                for a in self._traffic.agents
+                if math.hypot(a.state.x - ex, a.state.y - ey) <= MAX_RANGE_M
+            ],
+        )
+
     # -- frame assembly ---------------------------------------------------- #
 
     def state_update(self) -> StateUpdate:
@@ -463,6 +609,7 @@ class Simulation:
             world=self.world,
             scene=self.scene,
             detections=detections,
+            detections_shadow=self.world.detections_shadow,
             plan=plan.plan,
             # Reused from `_plan()` rather than recomputed, for the same
             # reason as `posted_limit_mps` below: the phase the car obeyed and
@@ -477,6 +624,7 @@ class Simulation:
             posted_limit_mps=self.posted_limit(),
             perception_pipeline=self.perception_pipeline,
             perception_mode=self.perception_mode,
+            perception_quality=self.perception_score,
         )
         self.world.events = []
         return frame
@@ -710,12 +858,14 @@ def assemble_state_update(
     world: WorldState,
     scene: BuiltScene,
     detections: Sequence[Detection],
+    detections_shadow: Sequence[Detection] | None,
     plan: Plan,
     signals: Sequence[SignalState],
     sim_rate_hz: float,
     posted_limit_mps: float | None = None,
     perception_pipeline: PerceptionPipeline | None = None,
     perception_mode: PerceptionMode = "ground-truth",
+    perception_quality: ScoreResult | None = None,
 ) -> StateUpdate:
     """Build the one message the frontend consumes at frame rate.
 
@@ -784,6 +934,12 @@ def assemble_state_update(
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
         detections=list(detections),
+        # Null when there is no second source at all; a real (possibly
+        # empty) list whenever both sources ran -- see `_observe`'s
+        # docstring. Never collapse `None` into `[]` here.
+        detections_shadow=(
+            None if detections_shadow is None else list(detections_shadow)
+        ),
         plan=plan,
         telemetry=Telemetry(
             radar=_radar(ego, detections),
@@ -799,7 +955,7 @@ def assemble_state_update(
         perception=(
             None
             if perception_pipeline is None
-            else perception_pipeline.stats(perception_mode)
+            else perception_pipeline.stats(perception_mode, quality=perception_quality)
         ),
     )
 

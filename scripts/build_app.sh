@@ -22,6 +22,25 @@ echo "== 1/3: building the PyInstaller sidecar ($TRIPLE) =="
 cd "$BACKEND_DIR"
 rm -rf build dist
 rm -f streetlab-server.spec
+# onnxruntime loads its execution providers as dynamic libraries at runtime,
+# which PyInstaller's static import analysis cannot see coming -- normally
+# that means `--collect-all onnxruntime`. It is not needed here: PyInstaller
+# ships its own `hook-onnxruntime.py` (in `_pyinstaller_hooks_contrib`, a
+# `pyinstaller` dependency) that already runs `collect_dynamic_libs` for it,
+# and Pillow's own hooks cover its C extensions the same way. Verified, not
+# assumed: the packaged sidecar was run standalone with `--perception ml`
+# against a local model path and logged `detector session bound to
+# CPUExecutionProvider` -- proof a real session bound, not that the process
+# merely started. No `--collect-all` is needed specifically because this
+# hook ships it -- which is exactly why `pyinstaller-hooks-contrib` is
+# declared and pinned directly in `pyproject.toml`'s dev group (it is
+# otherwise only a transitive dependency of `pyinstaller`): an unpinned
+# transitive package could silently move or drop the hook on a routine
+# `uv lock --upgrade`, and nothing would catch it until perception quietly
+# started failing every frame in the field. Re-run the bound-provider check
+# above after any dependency-lock update that touches onnxruntime, Pillow,
+# or pyinstaller-hooks-contrib; don't add flags back speculatively without a
+# failure that calls for them.
 uv run pyinstaller --onefile --name streetlab-server \
   --add-data "bundled:bundled" \
   server/cli.py

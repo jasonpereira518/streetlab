@@ -1,7 +1,12 @@
 /**
  * Reports what the ML perception path is doing. Null fields render as an em
  * dash, never as a zero: "not measured" and "measured, and zero" are different
- * claims, and only one of them is true before Phase 3 lands scoring.
+ * claims. Phase 3 landed scoring (precision, recall, mean_pos_err_m), so a
+ * null quality field no longer means "scoring doesn't exist yet" — it means
+ * this cycle had nothing to measure: no score has landed yet, or the scoring
+ * ratio was 0/0 (no ground truth and no detections to compare). That is a
+ * different claim from "measured, and it was zero," and still worth keeping
+ * distinct.
  *
  * The latency figure shown is `server_e2e_ms` (socket arrival -> detections
  * available), not a true frame-render-to-detection end-to-end number — see
@@ -52,6 +57,10 @@ export function PerceptionPanel({ stats }: { stats: PerceptionStats | null }) {
       <div>
         <span>recall</span>
         <span data-testid="recall">{num(stats.recall, 2)}</span>
+      </div>
+      <div>
+        <span>mean position error</span>
+        <span data-testid="mean-pos-err">{num(stats.mean_pos_err_m, 2, ' m')}</span>
       </div>
     </div>
   );

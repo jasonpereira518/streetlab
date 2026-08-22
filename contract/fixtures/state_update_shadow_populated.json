@@ -13,6 +13,7 @@
       "y": 5.101892917463978,
       "heading": 2.079387088085904
     },
+    "speed_mps": 3.162255494077876,
     "accel_mps2": 0.31917957151144927,
     "steering_angle": -0.4138804824474944,
     "yaw_rate": -0.4789754383997085,
@@ -28,8 +29,7 @@
       "length": 4.7,
       "width": 1.9,
       "height": 1.45
-    },
-    "speedMps": 3.162255494077876
+    }
   },
   "detections": [
     {
@@ -153,7 +153,56 @@
       "lane_offset": -1
     }
   ],
-  "detections_shadow": null,
+  "detections_shadow": [
+    {
+      "id": "ml_track_7",
+      "cls": "car",
+      "pose": {
+        "x": 5.6,
+        "y": 62.207427,
+        "heading": 1.3958858571642048
+      },
+      "size": {
+        "length": 4.6,
+        "width": 1.9,
+        "height": 1.45
+      },
+      "velocity": [
+        1.1816905475089696,
+        6.68693617105095
+      ],
+      "speed_mps": 6.790545479251397,
+      "confidence": 0.87,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": -1
+    },
+    {
+      "id": "ml_track_12",
+      "cls": "pedestrian",
+      "pose": {
+        "x": 55.4,
+        "y": 40.0,
+        "heading": 0.0
+      },
+      "size": {
+        "length": 0.5,
+        "width": 0.5,
+        "height": 1.7
+      },
+      "velocity": [
+        0.0,
+        0.0
+      ],
+      "speed_mps": 0.0,
+      "confidence": 0.61,
+      "hazard": false,
+      "hazard_label": null,
+      "ttc_s": null,
+      "lane_offset": null
+    }
+  ],
   "plan": {
     "polyline": [
       [

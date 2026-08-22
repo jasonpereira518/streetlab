@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -406,6 +406,15 @@ export const StateUpdateSchema = z.object({
   scenario_id: z.string(),
   ego: EgoSchema,
   detections: z.array(DetectionSchema),
+  /**
+   * The perception source that is NOT driving, when both are running.
+   * `null` when there is no second source at all (no ML pipeline running) --
+   * distinct from `[]`, which means the other source ran and saw nothing.
+   * Collapsing the two would make "no ML running" indistinguishable from
+   * "ML saw an empty road". Present (possibly null) on every frame; see
+   * `perception` below for the same `.nullable()` discipline.
+   */
+  detections_shadow: z.array(DetectionSchema).nullable(),
   plan: PlanSchema,
   telemetry: TelemetrySchema,
   signals: z.array(SignalStateSchema),

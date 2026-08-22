@@ -315,6 +315,35 @@ together, or both suites fail — which is the mechanism working.
    step p50/p95 are unchanged from Cycle 3 within noise.
 4. `OnnxDetector` runs RT-DETRv2 through the CoreML provider, reporting which
    provider actually bound.
+
+   > **Amended 2026-08-21.** Both clauses of this item are contradicted by
+   > measurement and are corrected here rather than silently matched to the
+   > code.
+   >
+   > *Provider.* Measured on this machine (`perception/detector.py`'s
+   > `PROVIDER_ORDER` comment; Phase 2), CoreML is **4× slower than CPU on
+   > int8** (270 ms vs 63 ms) and roughly break-even on fp16 (84 ms vs 90 ms).
+   > `PROVIDER_ORDER` defaults to `("CPUExecutionProvider",)` deliberately.
+   > The real intent behind this item was never "run on CoreML specifically"
+   > — it was "know and report which provider is actually driving inference,"
+   > which is what `OnnxDetector._session_ready` does
+   > (`log.info("detector session bound to %s", self.provider)`). The item is
+   > amended to: **`OnnxDetector` runs the detector on the fastest measured
+   > provider and reports which provider actually bound** — CPU today, CoreML
+   > only if a future remeasurement shows it winning.
+   >
+   > *Model.* This item names RT-DETRv2. What ships is v1
+   > (`onnx-community/rtdetr_r18vd`, int8-quantized), not v2. Task 7 exported
+   > `PekingU/rtdetr_v2_r18vd`,
+   > measured both against real detector frames, and found detection quality
+   > **tied at zero vehicle detections** for both, with v1 faster (58.9 ms vs
+   > 67.0 ms median) and 3.7× smaller (21.7 MB vs 81.0 MB). Per the plan's
+   > stated tie-break, v1 ships; `DEFAULT_MODEL` is unchanged. See
+   > `docs/measurements/2026-08-20-detector-comparison.md` for the full
+   > comparison, including the diagnosis (both models are confident about
+   > objects that are not vehicles — trees read as umbrellas, buildings as
+   > TV monitors — and v2 detects stop signs in 4 of 8 frames, a real class
+   > this pipeline does not map).
 5. Weights resolve through a content-addressed cache; second launch needs no
    network.
 6. `MlPerception` satisfies `PerceptionSource` and produces `Detection`s with
@@ -328,6 +357,14 @@ together, or both suites fail — which is the mechanism working.
 10. README roadmap row flips to **Built**, the performance table carries the
     measured `.app` size, detector latency and detection quality, and the
     licence section records RT-DETRv2 Apache-2.0 / COCO provenance.
+
+    > **Amended 2026-08-21.** "RT-DETRv2" here should be read per item 4's
+    > amendment above, not on its own: v1 ships, and the licence section
+    > records v1's Apache-2.0/COCO provenance as what actually ships, plus
+    > v2's identical licence/provenance as the alternative that was exported
+    > and measured alongside it but did not replace v1. Not re-amending item
+    > 10's own wording, to keep the correction in one place (item 4) rather
+    > than duplicated.
 
 ## Deferred
 

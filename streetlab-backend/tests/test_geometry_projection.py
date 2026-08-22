@@ -6,7 +6,9 @@ rather than an approximation — which makes these tests exact too.
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 from perception.geometry import CLASS_SIZE, project_to_ground
 from perception.pipeline import Box2D
@@ -14,6 +16,12 @@ from schema import CameraParams
 
 W, H = 640, 384
 FOV_Y = 50.0
+
+# Cross-language pin, shared with detectorCamera.test.ts's "matches the
+# committed cross-language pitch fixture exactly" case. See that file's
+# fixture-loading comment and contract/mount_pitch_rad.json's own "_comment".
+_ROOT = Path(__file__).resolve().parents[2]
+MOUNT_PITCH_FIXTURE = json.loads((_ROOT / "contract" / "mount_pitch_rad.json").read_text())
 
 
 def camera(x=0.0, y=0.0, z=1.5, yaw=0.0, pitch=0.0) -> CameraParams:
@@ -181,3 +189,43 @@ def test_pitch_changes_the_range_by_the_angle_it_names():
     nose_up = project_to_ground(below, camera(z=1.5, pitch=0.05), W, H)
     assert nose_down is not None and level is not None and nose_up is not None
     assert nose_down[0] < level[0] < nose_up[0]
+
+
+def test_the_detector_mount_pitch_sign_agrees_with_the_frontend():
+    """Pins the actual mount pitch -- not an arbitrary test value -- against
+    the sign convention `test_pitch_changes_the_range_by_the_angle_it_names`
+    established above.
+
+    This is genuine cross-language enforcement, not inspection-level
+    agreement: `MOUNT_PITCH_FIXTURE["mount_pitch_rad"]` is read from
+    `contract/mount_pitch_rad.json`, a small committed data fixture (not a
+    wire message -- the wire-message harness has no path for a bare scalar)
+    that `streetlab/tests/detectorCamera.test.ts` asserts `MOUNT_PITCH_RAD`
+    equals **exactly**. If the frontend's mount geometry changes,
+    `detectorCamera.test.ts` goes red until someone updates that JSON file;
+    once it's updated, THIS test goes red until the value below (or the
+    formula it's checked against) follows. Neither side can drift silently
+    the way the Phase 2 bug did (wire reported pitch: 0 for a real downtilt;
+    every ML range came out long -- +3.4 m at 30 m, +29.9 m at 80 m).
+
+    The `math.isclose` below, not `==`, is deliberate: `MOUNT_PITCH_FIXTURE`
+    holds TypeScript's own computed value (`-Math.atan2(0.18, 40 - 0.15)`),
+    and Python's `math.atan2` on the identical inputs differs from V8's by
+    1 ULP (~1e-19) -- a real, harmless difference between two correctly
+    rounded but distinct libm implementations, not a drift this test exists
+    to catch. `rel_tol=1e-9` absorbs that while still failing on anything
+    that would matter -- a wrong horizontal run, a wrong drop, a sign flip,
+    or a stale literal, every one of which moves the value by orders of
+    magnitude more than a ULP.
+    """
+    mount_pitch_rad = -math.atan2(0.18, 40 - 0.15)  # see the JSON fixture's _formula
+    fixture_value = MOUNT_PITCH_FIXTURE["mount_pitch_rad"]
+
+    assert math.isclose(mount_pitch_rad, fixture_value, rel_tol=1e-9)
+    assert fixture_value < 0, "the mount tilts down; wire pitch is nose-up positive"
+
+    below = box(W / 2, H * 0.9)
+    tilted = project_to_ground(below, camera(z=1.33, pitch=fixture_value), W, H)
+    level = project_to_ground(below, camera(z=1.33, pitch=0.0), W, H)
+    assert tilted is not None and level is not None
+    assert tilted[0] < level[0], "a negative (nose-down) pitch must shorten the range"

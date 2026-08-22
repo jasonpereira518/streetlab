@@ -471,6 +471,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pyinstaller" },
+    { name = "pyinstaller-hooks-contrib" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -491,6 +492,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pyinstaller", specifier = ">=6.22.0" },
+    { name = "pyinstaller-hooks-contrib", specifier = "==2026.6" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
 ]

@@ -48,9 +48,11 @@ class ModelSpec:
     size_bytes: int
 
 
-# onnx-community/rtdetr_r18vd, int8. Measured 63 ms on CPU here, the fastest
-# of the variants tried; see the plan's provider table. The v2 weights that
-# scripts/export_detector.py produces replace this once exported.
+# onnx-community/rtdetr_r18vd, int8. Measured 58.9 ms on CPU here, the fastest
+# of the variants tried; see the plan's provider table. RT-DETRv2 was exported and
+# measured against this on 2026-08-20 and did NOT replace it: both models scored zero
+# vehicle detections on real detector frames, and v1 is faster and 3.7x smaller. See
+# docs/measurements/2026-08-20-detector-comparison.md.
 DEFAULT_MODEL = ModelSpec(
     name="rtdetr_r18vd_quantized",
     url="https://huggingface.co/onnx-community/rtdetr_r18vd/resolve/main/onnx/model_quantized.onnx",

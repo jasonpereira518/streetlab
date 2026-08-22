@@ -31,6 +31,7 @@ import { TrafficFleet } from './agents';
 import { ChaseCamera } from './chaseCam';
 import { PathRibbon } from './pathRibbon';
 import { HazardOverlay } from './hazardOverlay';
+import { createShadowBoxes } from './shadowBoxes';
 import { createDetectorCamera, DETECTOR_FRAME } from './detectorCamera';
 import type { Backend } from './detectorCamera';
 
@@ -352,6 +353,7 @@ function mount(
   const fleet = new TrafficFleet();
   const ribbon = new PathRibbon();
   const hazards = new HazardOverlay();
+  const shadowBoxes = createShadowBoxes(scene);
   ego.group.add(radar.mesh);
   scene.add(ego.group, fleet.group, ribbon.mesh, hazards.group);
 
@@ -396,6 +398,7 @@ function mount(
     fleet.setVisible(layers.detections);
     hazards.setVisible(layers.detections);
     hazards.setLabelsVisible(layers.labels);
+    shadowBoxes.setVisible(layers.detections);
     ribbon.setVisible(layers.plan_path);
     radar.mesh.visible = layers.radar_cone;
   };
@@ -504,6 +507,7 @@ function mount(
     fleet.update(frame.detections, dt);
     ribbon.update(frame.plan.polyline);
     hazards.update(frame.detections, cam.camera);
+    shadowBoxes.update(frame.detections_shadow);
     world?.updateSignals(frame.signals, frame.t);
 
     // Keep the shadow frustum centred on the car so a 160 m box is enough.
@@ -623,6 +627,7 @@ function mount(
     fleet.dispose();
     ribbon.dispose();
     hazards.dispose();
+    shadowBoxes.dispose();
     sky.dispose();
     ground.dispose();
     radar.dispose();

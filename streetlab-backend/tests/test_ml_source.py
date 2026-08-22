@@ -97,6 +97,21 @@ def test_detections_carry_finite_numbers_only(ego, traffic, built):
             assert math.isfinite(value)
 
 
+def test_last_frame_t_reports_the_published_frames_instant(ego, traffic, built):
+    """`last_frame_t` is the loop's only handle on which instant to score
+    against, and its sole production reader is a `getattr(..., None)` that
+    swallows the property's absence entirely (`sim/loop.py`, `_score_ml`).
+    Every other test drives `_score_ml` through a double that carries its own
+    attribute, so deleting the real property would stop production scoring
+    dead with the whole suite still green. This is the test that goes red.
+    """
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()], t=3.25), Tracker(birth_hits=1))
+    assert src.last_frame_t is None, "nothing published yet is None, not 0.0"
+
+    src.observe(ego, traffic.agents, built.ego_route)
+    assert src.last_frame_t == 3.25, "the frame's own t, not the world's"
+
+
 def test_a_box_above_the_horizon_is_discarded_rather_than_projected(ego, traffic, built):
     sky = Box2D(x0=300.0, y0=10.0, x1=340.0, y1=60.0, cls="car", confidence=0.9)
     src = MlPerception(CannedPipeline([sky]), Tracker(birth_hits=1))
