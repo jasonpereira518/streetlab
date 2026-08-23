@@ -85,9 +85,10 @@ def test_boxes_are_clamped_to_the_frame_but_partial_ones_survive():
 
 def test_the_sink_writes_coco_json_and_the_jpegs(tmp_path):
     sink = CaptureSink(tmp_path)
-    sink.write(label_frame(JPEG, 0, 0.0, W, H, camera(),
-                           [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
-                           {"veh_00": math.pi}))
+    frame0 = label_frame(JPEG, 0, 0.0, W, H, camera(),
+                         [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+                         {"veh_00": math.pi})
+    sink.write(frame0)
     sink.write(label_frame(JPEG, 1, 0.1, W, H, camera(),
                            [TruthObject(id="veh_00", cls="car", x=19.0, y=0.0)],
                            {"veh_00": math.pi}))
@@ -97,9 +98,13 @@ def test_the_sink_writes_coco_json_and_the_jpegs(tmp_path):
     assert len(doc["images"]) == 2
     assert len(doc["annotations"]) == 2
     # COCO bbox is [x, y, width, height], not [x0, y0, x1, y1] -- the single
-    # most common way to produce a dataset that trains on nonsense.
-    x, y, w, h = doc["annotations"][0]["bbox"]
-    assert w > 0 and h > 0
+    # most common way to produce a dataset that trains on nonsense. Pinned to
+    # the exact source box, not merely to positivity: [x0, y0, x1, y1] would
+    # also satisfy "w > 0 and h > 0" on this fixture, since every coordinate
+    # here is positive -- only comparing against the box itself catches the
+    # corner-convention bug (or a transposed/offset origin) for real.
+    b = frame0.boxes[0]
+    assert doc["annotations"][0]["bbox"] == [b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0]
     assert {c["name"] for c in doc["categories"]} >= {"car"}
     for img in doc["images"]:
         assert (tmp_path / img["file_name"]).read_bytes() == JPEG
