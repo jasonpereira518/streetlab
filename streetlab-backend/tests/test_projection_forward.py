@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from perception.geometry import CLASS_SIZE, project_to_ground
 from perception.pipeline import Box2D
 from perception.projection import project_box, project_point
@@ -83,6 +81,44 @@ def test_a_known_pixel_at_a_computed_range():
     assert math.isclose(px[1], 208.4, abs_tol=0.5)
 
 
+def test_a_ground_point_round_trips_at_nonzero_yaw():
+    """The yaw=0 round trip above can't catch a broken or transposed yaw
+    rotation: at yaw=0, cos_y=1 and sin_y=0, so the yaw block collapses to
+    the identity and a deleted or sign-flipped yaw block is invisible.
+    A yaw of 90 degrees, with points off the camera's forward axis (nonzero
+    x offset from a camera facing north), forces every term of the inverse
+    yaw rotation to actually participate.
+    """
+    cam = camera(yaw=math.pi / 2)
+    for true_x, true_y in ((5.0, 20.0), (-8.0, 15.0), (3.0, 40.0)):
+        px = project_point(true_x, true_y, 0.0, cam, W, H)
+        assert px is not None, f"({true_x}, {true_y}) must be in frame"
+        box = Box2D(x0=px[0], y0=px[1], x1=px[0], y1=px[1],
+                    cls="car", confidence=1.0)
+        back = project_to_ground(box, cam, W, H)
+        assert back is not None
+        assert math.isclose(back[0], true_x, rel_tol=1e-6, abs_tol=1e-9), f"x at {(true_x, true_y)}"
+        assert math.isclose(back[1], true_y, rel_tol=1e-6, abs_tol=1e-9), f"y at {(true_x, true_y)}"
+
+
+def test_project_point_yaw_convention_is_anchored_absolutely():
+    """The round trip above only proves project_point inverts whatever
+    yaw convention project_to_ground happens to use -- Y . P . (P^T . Y^T)
+    is the identity for any yaw, even a shared sign error on both sides. It
+    cannot prove that convention is the *real* one. This test never calls
+    project_to_ground: a camera facing north (yaw = pi/2) has east as its
+    right, by the same right-handed (forward, up, right) convention
+    documented in geometry.py, so a point east of the camera must land
+    right of centre and a point west of it must land left of centre.
+    """
+    cam = camera(yaw=math.pi / 2)
+    right = project_point(3.0, 20.0, 0.0, cam, W, H)
+    left = project_point(-3.0, 20.0, 0.0, cam, W, H)
+    assert right is not None and left is not None
+    assert right[0] > W / 2, "east of a north-facing camera is its right"
+    assert left[0] < W / 2, "west of a north-facing camera is its left"
+
+
 def test_a_box_is_wider_than_it_is_tall_for_a_car_seen_head_on():
     cam = camera()
     box = project_box(20.0, 0.0, math.pi, CLASS_SIZE["car"], cam, W, H)
@@ -112,3 +148,37 @@ def test_heading_rotates_the_footprint():
     broadside = project_box(20.0, 0.0, math.pi / 2, CLASS_SIZE["car"], cam, W, H)
     assert head_on is not None and broadside is not None
     assert (broadside[2] - broadside[0]) > (head_on[2] - head_on[0])
+
+
+def test_a_box_straddling_the_camera_plane_is_none():
+    """A 4.5 m car centred 2.26 m out has corners at lx = 0.01 and lx = 4.51
+    -- all eight technically in front of the lens, so the old "any corner
+    behind the camera" rule would have let this through. But lx = 0.01 m of
+    depth makes the perspective divide degenerate: measured, this box
+    explodes to roughly (-39820, -7392, 40460, 34401) on a 640x384 frame,
+    a numerically valid but semantically false "the car fills the frame"
+    label. NEAR_PLANE_M exists to catch exactly this.
+    """
+    cam = camera()
+    assert project_box(2.26, 0.0, math.pi, CLASS_SIZE["car"], cam, W, H) is None
+
+
+def test_a_near_but_clear_box_still_projects():
+    """5 m out, the same car's nearest corner is 2.75 m deep -- well past
+    NEAR_PLANE_M -- so this must still yield an ordinary, if large, box.
+    Pins that the near-plane margin does not swallow ordinary close traffic.
+    """
+    cam = camera()
+    box = project_box(5.0, 0.0, math.pi, CLASS_SIZE["car"], cam, W, H)
+    assert box is not None
+    x0, y0, x1, y1 = box
+    assert x1 > x0 and y1 > y0
+    assert (x1 - x0) < W * 2, "sanity: not the exploded-box failure mode"
+
+
+def test_a_long_vehicle_straddling_the_near_plane_is_none():
+    """A 12 m bus centred 4.0 m out has its nearest corner at lx = -2.0 --
+    already behind the camera on the vehicle's own footprint -- so this
+    must be None for the same reason a straddling car is None."""
+    cam = camera()
+    assert project_box(4.0, 0.0, math.pi, CLASS_SIZE["bus"], cam, W, H) is None
