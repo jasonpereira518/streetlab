@@ -90,9 +90,20 @@ def ws_session_factory():
     """
     loops: list[SimLoop] = []
 
-    def make(*, perception_pipeline=None, hz: float = 120.0, tick_hz: float = 120.0):
-        sim = Simulation(SyntheticGrid(), seed=1, perception_pipeline=perception_pipeline)
-        loop = SimLoop(sim, hz=hz)
+    def make(
+        *,
+        perception_pipeline=None,
+        hz: float = 120.0,
+        tick_hz: float = 120.0,
+        capture_sink=None,
+    ):
+        sim = Simulation(
+            SyntheticGrid(),
+            seed=1,
+            perception_pipeline=perception_pipeline,
+            capture=capture_sink is not None,
+        )
+        loop = SimLoop(sim, hz=hz, capture_sink=capture_sink)
         loop.start()
         loops.append(loop)
         sent: list[dict] = []

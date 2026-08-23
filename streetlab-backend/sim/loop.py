@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
 from map.scene_build import LANE_W, BuiltScene, SceneSource
+from perception.capture import CaptureSink
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
@@ -177,6 +178,7 @@ class Simulation:
         planner: Planner | None = None,
         perception_pipeline: PerceptionPipeline | None = None,
         ml_perception: PerceptionSource | None = None,
+        capture: bool = False,
     ) -> None:
         self._source = source
         self._seed = seed
@@ -195,6 +197,11 @@ class Simulation:
             if perception_pipeline is None
             else MlPerception(perception_pipeline, Tracker())
         )
+        # Cycle 5: `--capture` needs `pose_history` populated exactly like an
+        # ML source does, but a plain capture run has no ML source at all --
+        # see `_record_truth`'s docstring for the two consumers this now
+        # serves and why their gating differs.
+        self._capture = capture
         # Shadow is the default: the ML path runs and is measured, but ground
         # truth is what the planner drives on until someone asks otherwise.
         self.perception_mode: PerceptionMode = "ground-truth"
@@ -295,6 +302,16 @@ class Simulation:
 
     def scene_description(self) -> SceneDescription:
         return self.scene.description
+
+    def agent_headings(self) -> dict[str, float]:
+        """Heading in radians, by id, for every agent currently in the world.
+
+        `label_frame` (`perception/capture.py`) reads this to orient each
+        truth box's silhouette -- a vehicle's projected box is narrower
+        head-on than broadside, and that depends on which way it is
+        actually pointed, not on its position alone.
+        """
+        return {a.id: a.state.heading for a in self._traffic.agents}
 
     # -- stepping ---------------------------------------------------------- #
 
@@ -547,48 +564,84 @@ class Simulation:
         `pose_history.at(frame_t)` will later be asked for, and the snapshot
         under it is the world the shutter actually saw.
 
-        Every step once an ML source exists, regardless of perception mode:
-        Phase 3 scoring reads this after the fact, and a frame's `t` cannot be
-        known in advance, so nothing short of recording continuously keeps the
-        instant it eventually asks for in the buffer. With no ML source there
-        is no consumer at all -- the shipped `.app` is ground-truth only -- so
-        the early return below skips the work rather than allocating a
-        snapshot and a hypot per agent for nobody. That is what keeps this as
-        wide as the documented exception to "nothing runs on the sim thread
-        except the sim", which covers projection and tracking, not this.
+        Every step whenever either of two consumers exists, regardless of
+        perception mode: Phase 3 scoring reads this after the fact, and a
+        frame's `t` cannot be known in advance, so nothing short of recording
+        continuously keeps the instant it eventually asks for in the buffer.
+        `--capture` (Cycle 5) is the second consumer -- it labels a captured
+        frame against exactly this snapshot (`perception/capture.py`), and
+        needs it recorded even when no ML source is attached at all: a plain
+        `streetlab serve --capture <dir>` run has `_ml_perception is None`.
+        With neither consumer there is nobody to read this at all -- the
+        shipped `.app` is ground-truth only -- so the early return below
+        skips the work rather than allocating a snapshot and a hypot per
+        agent for nobody. That is a statement about who consumes this, not
+        about how expensive it would be to keep running; it is what keeps
+        this as wide as the documented exception to "nothing runs on the sim
+        thread except the sim", which covers projection and tracking, not
+        this.
 
-        Gated to `MAX_RANGE_M` from ego, the same constant and the same
-        straight-line measure both perception sources publish within
-        (`perception/service.py`, `perception/ml_source.py`). `ScriptedTraffic`
-        spreads agents around the whole scene so ego meets them at intervals
-        -- recording every agent regardless of distance would count every
-        far-away one as a false negative every step, and `recall` would
-        measure how large the scene is rather than how the detector
-        performs. Ungated precision and `mean_pos_err_m` are unaffected --
-        `GATE_M` in `perception/scoring.py` already keeps a distant truth
-        from ever stealing a nearby prediction -- so only this cared.
+        The two consumers disagree on how *much* of the snapshot they need,
+        so the gating differs by which one is asking:
 
-        One residual gap, deliberately left rather than chased here: this
-        gates truth against the ego *as of the instant being recorded* --
-        the correct "frame time" ego for whichever future frame lands on
-        this `t`. `MlPerception.observe` instead gates its publication
-        against the ego of *now*, applied to a track computed from a frame
-        captured one inference-latency earlier (see `EgoFrame.range_to`'s
-        docstring, and `observe`'s own "Recomputed every step even so"
-        note). The two egos are metres apart, not the scene-spanning miss
-        this method fixes.
+        - ML scoring is gated to `MAX_RANGE_M` from ego, the same constant
+          and the same straight-line measure both perception sources publish
+          within (`perception/service.py`, `perception/ml_source.py`).
+          `ScriptedTraffic` spreads agents around the whole scene so ego
+          meets them at intervals -- recording every agent regardless of
+          distance would count every far-away one as a false negative every
+          step, and `recall` would measure how large the scene is rather
+          than how the detector performs. Ungated precision and
+          `mean_pos_err_m` are unaffected -- `GATE_M` in
+          `perception/scoring.py` already keeps a distant truth from ever
+          stealing a nearby prediction -- so only recall cared.
+        - `--capture` is deliberately UNGATED. Its real visibility limit is
+          `MIN_BOX_PX` in image space (`perception/capture.py`), not a
+          world-space radius: at `fov_y = 50 deg` and 640x384 a head-on car
+          does not fall below `MIN_BOX_PX` until roughly 185 m, and broadside
+          roughly 460 m -- both well past `MAX_RANGE_M = 90.0`. Keeping the
+          world-space gate here would leave real, above-threshold vehicles
+          unlabelled across the whole 90-400 m band, and this capture is
+          reused as a fine-tuning dataset, where an unlabelled visible car
+          actively teaches "car = background". So capture records every
+          agent and lets `label_frame`'s own clamp against `MIN_BOX_PX`
+          decide visibility instead.
+
+        The cost of that: a run with both `--capture` and an ML source
+        active (`streetlab serve --capture <dir> --perception ml`) reports a
+        `recall` that measures scene size, not detector performance --
+        ungating for capture ungates the same snapshot `_score_ml` reads,
+        since there is exactly one snapshot per instant, not one per
+        consumer. That is the deliberate price of the ungating, stated here
+        rather than left for someone to discover later while puzzling over a
+        bad number: capture runs are not scoring runs, and nothing here
+        tries to keep the two apart within one snapshot.
+
+        One residual gap, deliberately left rather than chased here: the ML
+        gate above uses the ego *as of the instant being recorded* -- the
+        correct "frame time" ego for whichever future frame lands on this
+        `t`. `MlPerception.observe` instead gates its publication against
+        the ego of *now*, applied to a track computed from a frame captured
+        one inference-latency earlier (see `EgoFrame.range_to`'s docstring,
+        and `observe`'s own "Recomputed every step even so" note). The two
+        egos are metres apart, not the scene-spanning miss this method
+        fixes.
         """
-        if self._ml_perception is None:
+        if self._ml_perception is None and not self._capture:
             return
-        ex, ey = self.world.ego.x, self.world.ego.y
-        self.pose_history.record(
-            self.world.t,
-            [
+        if self._capture:
+            objects = [
+                TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y)
+                for a in self._traffic.agents
+            ]
+        else:
+            ex, ey = self.world.ego.x, self.world.ego.y
+            objects = [
                 TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y)
                 for a in self._traffic.agents
                 if math.hypot(a.state.x - ex, a.state.y - ey) <= MAX_RANGE_M
-            ],
-        )
+            ]
+        self.pose_history.record(self.world.t, objects)
 
     # -- frame assembly ---------------------------------------------------- #
 
@@ -1135,9 +1188,30 @@ class SimLoop:
     driving simulator wants the newest state, never a backlog of stale ones.
     """
 
-    def __init__(self, sim: Simulation, *, hz: float = 60.0) -> None:
+    def __init__(
+        self,
+        sim: Simulation,
+        *,
+        hz: float = 60.0,
+        capture_sink: CaptureSink | None = None,
+    ) -> None:
         self.sim = sim
         self.hz = hz
+        # `None` unless `--capture` was passed; `_Connection._capture_frame`
+        # reads this to decide whether an incoming camera frame has anywhere
+        # to go. Lives here, not on `Simulation`, because it survives across
+        # reconnects the way `Simulation.capture` (the bool that un-gates
+        # `_record_truth`) already does -- a `_Connection` is per-socket and
+        # comes and goes, this does not.
+        self.capture_sink = capture_sink
+        # A frame number private to the sink's whole lifetime, handed out by
+        # `next_capture_seq` below -- deliberately NOT the wire's own
+        # `CameraFrameCmd.seq`, which restarts at zero on every reconnect
+        # (see that method's docstring). Touched only from the asyncio
+        # event-loop thread inside `_ingest_frame`, which never awaits
+        # between reading and incrementing it, so plain increments are safe
+        # with no lock: nothing else can run on that thread in between.
+        self._capture_seq = 0
         self._latest: StateUpdate | None = None
         self._lock = threading.Lock()
         self._published = threading.Event()
@@ -1162,6 +1236,23 @@ class SimLoop:
         # would be a race; a queue is the same shape commands already use.
         self._events: queue.Queue[SimEvent] = queue.Queue()
         sim.set_build_sink(self.submit_scene)
+
+    def next_capture_seq(self) -> int:
+        """A fresh, gap-free frame number for the capture sink.
+
+        Deliberately decoupled from `CameraFrameCmd.seq`: that counter is
+        `captureSeq++` in the frontend, restarted at zero by a reconnect, a
+        scene swap, or a page reload, while this counter and the sink it
+        numbers both live for the whole process. Reusing the wire `seq`
+        would let a post-reconnect frame silently overwrite an earlier
+        JPEG and duplicate a COCO `image_id` -- an "ordinary event, not a
+        pathological one" per the task that added this. Labels are keyed by
+        `sim_t` downstream (Task 4 compares two runs by `(sim_t, track_id)`),
+        so nothing reads this value as anything but a unique file name.
+        """
+        seq = self._capture_seq
+        self._capture_seq += 1
+        return seq
 
     @property
     def running(self) -> bool:

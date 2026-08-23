@@ -33,6 +33,7 @@ from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource, default_source
 from map.overpass import HttpxFetcher, OverpassClient, OverpassError
 from map.scene_build import SceneSource, SyntheticGrid
+from perception.capture import CaptureSink
 from perception.detector import OnnxDetector, build_session
 from perception.model_cache import DEFAULT_MODEL, ModelCache
 from perception.pipeline import Detector, PerceptionPipeline, StubDetector
@@ -155,6 +156,43 @@ def perception_pipeline_for(args) -> PerceptionPipeline | None:
     return PerceptionPipeline(build_detector(args.detector_model))
 
 
+def capture_sink_for(args) -> CaptureSink | None:
+    """The `CaptureSink` `--capture <dir>` asks for, or `None` for a plain run.
+
+    Only `serve` defines `--capture` (see Amendment 1 on this task: `run`
+    builds a bare `Simulation` with no WebSocket and no `_ingest_frame`, so a
+    capture directory there would accept the flag and produce an empty
+    `labels.json` -- worse than not offering it), so `getattr` rather than
+    `args.capture` directly, since `args` from `run` has no such attribute.
+
+    Warns rather than staying silent when `--capture` is given without
+    `--perception ml`: capture rides two independent gates it does not
+    control -- `perception_pipeline is None` short-circuits `_ingest_frame`
+    before any frame is even decoded, and the frontend never sends a
+    `camera_frame` at all while `perception` is null in `useSimStore` (see
+    `_ingest_frame` in `server/ws_server.py` and the `Renderer.tsx` comment
+    it references). Neither gate lives here, and neither should move to
+    accommodate this -- ML-off users should not pay for an offscreen render,
+    GPU readback, JPEG encode and ~0.5 MB/s over the socket that would be
+    discarded on arrival. So the only thing left to do is say so loudly:
+    without this, a mistyped command line looks identical to a working one
+    until someone notices `DIR` never got anything written to it.
+    """
+    directory = getattr(args, "capture", None)
+    if directory is None:
+        return None
+    if args.perception != "ml":
+        log.warning(
+            "--capture %s given without --perception ml: no camera frame will "
+            "ever reach the sink (perception_pipeline gates decoding in "
+            "_ingest_frame, and the frontend only streams frames once an ML "
+            "pipeline is attached), so %s will stay empty for the whole run",
+            directory,
+            directory,
+        )
+    return CaptureSink(Path(directory))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="streetlab", description="StreetLab simulation backend."
@@ -182,6 +220,18 @@ def build_parser() -> argparse.ArgumentParser:
         "detector pipeline and reports it (shadow mode)",
     )
     serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
+    serve.add_argument(
+        "--capture",
+        default=None,
+        metavar="DIR",
+        help="write a COCO-format labelled capture (frames/ + labels.json) to DIR, "
+        "built from simulation truth, never from annotation; requires "
+        "--perception ml -- capture rides the same ML pipeline that gates frame "
+        "decoding in _ingest_frame and the frontend's perception-attached gate "
+        "in Renderer.tsx, so without --perception ml no camera_frame ever "
+        "reaches the sink and DIR stays empty for the whole run. Not available "
+        "on `run`, which has no WebSocket and so no frames to capture at all.",
+    )
 
     run_ = sub.add_parser("run", help="drive a scenario headlessly and log the reactions")
     run_.add_argument("--scenario", default=None)
@@ -340,6 +390,10 @@ def _serve(args) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     pipeline = perception_pipeline_for(args)
+    # Built before `Simulation` so its warning (if any) appears before the
+    # scene build's own log lines -- a user staring at a wall of startup
+    # output is more likely to see a mistake called out first.
+    sink = capture_sink_for(args)
 
     try:
         sim = Simulation(
@@ -348,11 +402,13 @@ def _serve(args) -> int:
             seed=args.seed,
             dt=1 / args.sim_hz,
             perception_pipeline=pipeline,
+            capture=sink is not None,
         )
     except _SOURCE_ERRORS as exc:
         # The pipeline's worker thread already exists by this point -- if
         # construction fails there is no later `finally` to reach, so it is
-        # torn down here instead of leaking a live `ThreadPoolExecutor`.
+        # torn down here instead of leaking a live `ThreadPoolExecutor`. `sink`
+        # never had `write` called on it, so there is nothing worth flushing.
         if pipeline is not None:
             pipeline.shutdown()
         print(f"error: {exc}")
@@ -362,7 +418,7 @@ def _serve(args) -> int:
     sock = _bind(args.host, port)
     real_port = sock.getsockname()[1]
 
-    loop = SimLoop(sim, hz=args.sim_hz)
+    loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
     app = create_app(loop, tick_hz=args.tick_hz)
 
     print(
@@ -389,6 +445,17 @@ def _serve(args) -> int:
         # lifespan: process teardown, not a per-request concern.
         if pipeline is not None:
             pipeline.shutdown()
+        # Nothing is on disk as `labels.json` until this runs -- `CaptureSink`
+        # holds every COCO record in memory and only `finalize()` flushes it
+        # (see that method's docstring). A graceful stop (uvicorn's own
+        # SIGINT/SIGTERM handling, or `.run()` simply returning) always
+        # reaches here. A `SIGKILL`, or the stdin watchdog's `os._exit(0)`
+        # above (both bypass this `finally` by design -- neither one leaves
+        # a Python frame to unwind), does not: every JPEG `write()` already
+        # wrote survives under `frames/`, but the annotations describing them
+        # are lost, since they existed only in this process's memory.
+        if sink is not None:
+            sink.finalize()
     return 0
 
 
