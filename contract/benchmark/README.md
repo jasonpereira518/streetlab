@@ -182,15 +182,26 @@ verbatim comparison output.
 
 ## Stopping the capture
 
-`CaptureSink` holds every COCO record in memory; `labels.json` is written
-only by `finalize()`, called from `_serve`'s `finally` in
-`streetlab-backend/server/cli.py`. That `finally` is reached by a graceful
-stop, but **not** by `SIGKILL` or by the process's own stdin-watchdog
-`os._exit(0)` path (closing stdin), and empirically **not** by plain
-`SIGTERM` either in this environment — only `SIGINT` (`kill -INT <pid>`,
-the same signal a terminal Ctrl-C sends) was observed to reach it. Anyone
-re-capturing this set should stop the backend with `SIGINT` and confirm
-`labels.json` exists before trusting the run.
+`CaptureSink` holds every COCO record in memory; `labels.json` was, at the
+time this set was captured, written only by `finalize()`, called from
+`_serve`'s `finally` in `streetlab-backend/server/cli.py`. That `finally`
+is reached by a graceful stop, but **not** by `SIGKILL`, and — as
+originally written — not by the process's own stdin-watchdog `os._exit(0)`
+path (closing stdin) either; empirically, plain `SIGTERM` also did not
+reach it in this environment. Only `SIGINT` (`kill -INT <pid>`, the same
+signal a terminal Ctrl-C sends) was observed to reach it, which is how this
+set was captured and stopped.
+
+**This has since been fixed** (task-4 review Finding 4, same commit that
+added this note): the stdin watchdog now finalizes the sink itself before
+exiting, and `CaptureSink.write` rewrites `labels.json` every 20 frames
+regardless of how the process ends, so a future re-capture is far more
+durable against a parent-death or `SIGKILL` path. **`SIGINT` remains the
+recommended, cleanest stop** (an immediate, complete, final write); the
+periodic rewrite and watchdog fix are both safety nets for a kill, not a
+reason to stop being deliberate about shutdown. Always confirm
+`labels.json` exists — and, ideally, that its `images` count matches the
+frame count on disk — before trusting a run.
 
 ## Regenerating
 
