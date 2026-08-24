@@ -27,12 +27,13 @@ benchmark: ../contract/benchmark
 thresholds: [0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]
 gate: 3.0 m
 ego-x-max: 74.0 m
+decode-mode: argmax
 loading benchmark and decoding frames ...
 loaded 60 frames, 84 truth objects
-ego-x-max 74.0 m is valid for this benchmark's truth (no point within 1.0 m required)
+ego-x-max 74.0 m is VALID: largest gap (2.832 m, between x=72.469 and x=75.302) is 2.40x the second-largest and 9.59x the median; split 46/38 of 84 points
 building onnxruntime session ...
 running inference (once per frame) ...
-inference: 3.51s total, 58.5ms/frame
+inference: 5.24s total, 87.3ms/frame
 
 ==============================================================================
 PEAK VEHICLE-CLASS SCORES (threshold-independent, raw sigmoid scores)
@@ -108,7 +109,8 @@ Peak across the whole benchmark, per vehicle class:
 ==============================================================================
 THRESHOLD SWEEP
 ==============================================================================
-benchmark truth: 84 annotations total (46 ego-street, 38 cross-street/occluded). A perfect detector scores whole-set recall ~= 0.55 on this set -- occlusion is not modelled, so the cross-street boxes can never be seen. Read whole-set recall next to that ceiling, always; read ego-street recall as the number where 1.0 is actually achievable -- but see the SHAM CONTROL table below before trusting recall(ego) as signal rather than chance.
+benchmark truth: 84 annotations total (46 ego-street, 38 cross-street/occluded). A perfect detector scores whole-set recall ~= 0.55 on this set -- occlusion is not modelled, so the cross-street boxes can never be seen. Read whole-set recall next to that ceiling, always.
+ego-street split is real: largest gap (2.832 m, between x=72.469 and x=75.302) is 2.40x the second-largest and 9.59x the median; split 46/38 of 84 points. recall(ego) is the number where 1.0 is actually achievable -- but see the SHAM CONTROL table below before trusting it as signal rather than chance.
 
 threshold  precision  recall(all)  recall(ego)  mean_err_m    tp     fp    fn
 -----------------------------------------------------------------------------
@@ -135,6 +137,92 @@ threshold   real tp   sham(+10)   sham(+20)   sham(+30)
      0.05         3           0           4           0
      0.01         9           1           6           3
 ```
+
+## Fixing Finding 4: `--ego-x-max` is now a real bimodality test, not local isolation
+
+A task-5 re-review found the original validity check for `--ego-x-max` (require no truth
+point within 1.0 m of the cutoff) was a **local-isolation** test, not a **bimodality** test —
+run against two synthetic non-bimodal distributions, it validated `True` on both:
+
+- an evenly-spaced 11-point lattice (0, 15, …, 150 — no cluster structure at all): valid at
+  **every** inter-point midpoint;
+- 84 uniformly-random points, cutoff placed at their own largest gap (11.65 m in the
+  re-reviewer's instance): valid.
+
+On any dataset with more points than gaps of ~2 m, *some* cutoff always clears a
+local-only check — which makes that check worse than none, because it lets `recall(ego)`
+print a confident number off a split with no real meaning.
+
+**`_ego_cutoff_is_valid` (`scripts/sweep_threshold.py`) now tests global structure, not local
+isolation**, requiring all three:
+
+1. `--ego-x-max` falls strictly inside the **single largest** gap between consecutive sorted
+   truth x-values — not merely inside *some* gap.
+2. That largest gap dominates **both** the second-largest gap (≥ 2.0x) **and** the median gap
+   (≥ 5.0x) — two independent measures of "this really is one dominant gap", chosen so an
+   unlucky draw would have to clear both simultaneously to false-accept.
+3. Both sides of the split hold at least 15% of the points — rules out one point isolated
+   against the rest.
+
+The two dominance thresholds were picked by measuring this benchmark's own numbers first:
+largest gap 2.832 m is 2.40x the second-largest (1.182 m) and 9.59x the median (0.295 m), so
+2.0x/5.0x each clear the real data with headroom while still being real constraints, not
+rubber stamps.
+
+**Transcript, all three of the re-review's required cases, run against the actual shipped
+`_ego_cutoff_is_valid`** (scratch harness, not committed — imports the real function directly
+from `scripts/sweep_threshold.py` rather than reimplementing it):
+
+```
+==============================================================================
+CASE 1: real benchmark (contract/benchmark) -- expect ACCEPT
+==============================================================================
+n points = 84, cutoff = 74.0
+result: valid=True
+reason: largest gap (2.832 m, between x=72.469 and x=75.302) is 2.40x the second-largest and 9.59x the median; split 46/38 of 84 points
+-> ACCEPTED, as expected.
+
+==============================================================================
+CASE 2: evenly-spaced 11-point lattice (0, 15, ..., 150) -- expect REJECT
+==============================================================================
+points: [0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0, 105.0, 120.0, 135.0, 150.0]
+  cutoff=  7.50: valid=False  reason=largest gap (15.000 m) is only 1.00x the second-largest (15.000 m), below the 2.0x minimum -- the data does not have one gap that clearly dominates the rest
+  cutoff= 22.50: valid=False  reason=--ego-x-max 22.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff= 37.50: valid=False  reason=--ego-x-max 37.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff= 52.50: valid=False  reason=--ego-x-max 52.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff= 67.50: valid=False  reason=--ego-x-max 67.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff= 82.50: valid=False  reason=--ego-x-max 82.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff= 97.50: valid=False  reason=--ego-x-max 97.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff=112.50: valid=False  reason=--ego-x-max 112.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff=127.50: valid=False  reason=--ego-x-max 127.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+  cutoff=142.50: valid=False  reason=--ego-x-max 142.5 does not fall inside this benchmark's single largest gap (0.000 m, 15.000 m) -- it may sit inside some other, smaller gap, which is not evidence of a real bimodal split
+-> REJECTED at every midpoint, as expected.
+
+==============================================================================
+CASE 3: 84 uniform-random points, cutoff at their own largest gap -- expect REJECT
+==============================================================================
+n points = 84, own largest gap = 6.23 m, cutoff = 81.91 m
+result: valid=False
+reason: largest gap (6.228 m) is only 1.65x the second-largest (3.767 m), below the 2.0x minimum -- the data does not have one gap that clearly dominates the rest
+-> REJECTED, as expected.
+
+==============================================================================
+ALL THREE CASES BEHAVED AS REQUIRED: accept / reject / reject.
+==============================================================================
+```
+
+(Case 3 uses a locally-generated 84-point uniform draw, seed 7, range [0, 90] m — not the
+re-reviewer's own draw, which was not shared verbatim — but it exercises the same failure
+mode they described: a careless caller placing the cutoff at whatever gap happens to be
+largest in noise. The specific numbers differ from their 11.65 m example; the outcome
+(rejected) is what the transcript proves.)
+
+**When the check fails, `recall(ego)` is not printed at all** — not even as `—`. Compare the
+sweep table's header in the verbatim output above (has a `recall(ego)` column, because
+`--ego-x-max 74.0` passed) against `sweep()`'s behaviour on a failing cutoff: the whole
+column is omitted and a `recall(ego) NOT REPORTED: <reason>` line is printed once, above the
+table. `—` means "measured, ratio undefined" (0/0); an inapplicable metric is a different
+thing entirely, and printing `—` for it would still imply the question was asked.
 
 ## Reading the table
 
@@ -212,14 +300,71 @@ threshold recovers recall" in this sweep is partly a *decoding* choice, not only
 threshold, not just each query's winner) is a distinct, cheap-looking lever Task 7 might
 otherwise think this sweep left undiscovered.
 
-A task-5 review measured it, so this is reported here rather than left as an open question:
-per-class decoding instead of argmax gives **tp 0 / 1 / 3 / 21** at thresholds 0.20 / 0.10 /
-0.05 / 0.01, against **fp 40 / 683 / 3,372 / 30,203** at those same thresholds. The tp gain at
-0.01 (9 → 21) is real, but the false-positive cost is roughly 7.6x the already-unusable
-argmax-decode number (3,989 → 30,203) at the same threshold — precision gets worse, not
-better, and by a wide margin. **This is not a viable lever**: it trades a small, uncertain
-recall gain (itself not yet run through the sham control above) for an order-of-magnitude
-worse false-positive rate. Named here so it is closed, not rediscovered.
+**A task-5 review flagged that these numbers originally sat in prose with no committed
+command behind them — the one rule this whole document is built around. Fixed**:
+`scripts/sweep_threshold.py` now has a `--decode-mode {argmax,per-class}` flag (`argmax` is
+the default, unchanged production decode; `per-class` is a new `_decode_per_class` function
+in the script, kept out of `perception/detector.py` since that file is reviewed and closed).
+`per-class` keeps every one of the **six** `COCO_ID_TO_CLASS` classes (car, truck, bus,
+motorcycle, *and* pedestrian, cyclist — not just the four vehicle classes; pedestrian/cyclist
+"detections" are guaranteed false positives against this car/truck-only benchmark and
+dominate the false-positive count, which is why the scope matters here).
+
+```bash
+cd streetlab-backend && uv run python ../scripts/sweep_threshold.py \
+  --model ~/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx \
+  --benchmark ../contract/benchmark \
+  --decode-mode per-class
+```
+
+```
+model: /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx
+benchmark: ../contract/benchmark
+thresholds: [0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]
+gate: 3.0 m
+ego-x-max: 74.0 m
+decode-mode: per-class
+loading benchmark and decoding frames ...
+loaded 60 frames, 84 truth objects
+ego-x-max 74.0 m is VALID: largest gap (2.832 m, between x=72.469 and x=75.302) is 2.40x the second-largest and 9.59x the median; split 46/38 of 84 points
+building onnxruntime session ...
+running inference (once per frame) ...
+inference: 4.30s total, 71.6ms/frame
+
+[... PEAK VEHICLE-CLASS SCORES table is identical to the argmax run above -- peak scores are
+read off raw sigmoid output directly and do not depend on decode_mode ...]
+
+threshold  precision  recall(all)  recall(ego)  mean_err_m    tp     fp    fn
+-----------------------------------------------------------------------------
+     0.50          —        0.000        0.000           —     0      0    84
+     0.40          —        0.000        0.000           —     0      0    84
+     0.30      0.000        0.000        0.000           —     0      1    84
+     0.20      0.000        0.000        0.000           —     0     40    84
+     0.10      0.001        0.012        0.022        0.54     1    683    83
+     0.05      0.001        0.036        0.065        0.40     3   3372    81
+     0.01      0.001        0.250        0.457        1.46    21  30203    63
+
+threshold   real tp   sham(+10)   sham(+20)   sham(+30)
+-------------------------------------------------------
+     0.50         0           0           0           0
+     0.40         0           0           0           0
+     0.30         0           0           0           0
+     0.20         0           0           0           0
+     0.10         1           0           5           0
+     0.05         3           0           6           0
+     0.01        21          16          10           4
+```
+
+**tp 0/1/3/21 and fp 40/683/3,372/30,203** at thresholds 0.20/0.10/0.05/0.01 — matching the
+review's independently-measured numbers exactly. The tp gain at threshold 0.01 (9 → 21) is
+real, but the false-positive cost is roughly 7.6x the already-unusable argmax-decode number
+(3,989 → 30,203) at the same threshold — precision gets worse, not better, and by a wide
+margin. The sham control on this run makes the recall gain look even less trustworthy than
+the argmax numbers did: at 0.01, sham(+10) is 16 against a real tp of 21 — the real count
+barely clears its own chance-control. **This is not a viable lever**: it trades a small,
+chance-adjacent recall gain for an order-of-magnitude worse false-positive rate. Reported
+here with a reproducible command so it stays closed, not rediscovered by a future reader who
+assumes it was never tried.
 
 ## The one sentence Task 7 consumes
 
@@ -249,16 +394,26 @@ average a position error over. `recall(all)` and `recall(ego)` never hit their o
 undefined case on this benchmark, because ground truth is never empty (84 and 46 annotations
 respectively, always > 0) — but the script prints `—` for that case too (`perception/scoring.py`
 already returns `None` rather than `0.0` for every one of these; the script only had to not
-override that with a numeral when formatting). `recall(ego)` has a second, distinct undefined
-case added in review: it prints `—` for every threshold, unconditionally, whenever
-`--ego-x-max` does not sit in a real gap in the loaded benchmark's truth (`_ego_cutoff_is_valid`)
-— on this run the cutoff was confirmed valid (`ego-x-max 74.0 m is valid ...` in the verbatim
-output above), so this case did not fire, but a future capture with a different truth
-distribution could hit it, and reporting a number there would be reporting a meaningless
-split rather than an undefined one. No `0.00` anywhere in this table stands in for "no data"
-— every `0.00`/`0.000` in the table is a measured zero (a defined ratio whose value happens
-to be zero, e.g. threshold 0.30's precision: one false positive, zero true positives,
-`0/(0+1) = 0.000`, a real measurement, not an absence of one).
+override that with a numeral when formatting).
+
+**`recall(ego)` has a second, distinct failure mode that is not "undefined" at all — it is
+*inapplicable*, and a task-5 re-review asked that the two be kept visibly different rather
+than both collapsing to `—`.** If `--ego-x-max` fails `_ego_cutoff_is_valid`'s bimodality test
+(see "Fixing Finding 4" above) against the loaded benchmark's truth, `recall(ego)` is not
+merely a ratio with an empty denominator — there is no real ego-street/cross-street boundary
+to measure against at all. So the script does not print `—` in that case: it omits the whole
+`recall(ego)` column from the table and prints a one-line reason above it
+(`recall(ego) NOT REPORTED: <reason>`). `—` still means "the question was asked and had no
+answer" (0/0); an omitted column means "the question does not apply here". On this run the
+cutoff passed (`ego-x-max 74.0 m is VALID: ...` in the verbatim output above), so the column
+is present and every cell in it is a real ratio or a genuine `—`; a future capture whose
+truth is not cleanly bimodal would instead lose the column entirely, with the reason printed
+in its place.
+
+No `0.00` anywhere in this table stands in for "no data" — every `0.00`/`0.000` in the table
+is a measured zero (a defined ratio whose value happens to be zero, e.g. threshold 0.30's
+precision: one false positive, zero true positives, `0/(0+1) = 0.000`, a real measurement,
+not an absence of one).
 
 ## Files changed
 
@@ -274,9 +429,12 @@ to be zero, e.g. threshold 0.30's precision: one false positive, zero true posit
 - Confirmed inference truly runs once per frame, not once per threshold: `_run_inference`
   populates `FrameRecord.logits`/`.pred_boxes` in a single pass before the threshold loop;
   `sweep()` and `sham_control()` both consume a `predictions_by_threshold` cache built once
-  in `main()` by `_predictions_for_threshold` (pure `postprocess` calls, no session access).
-  The printed timing (3.51 s / 60 frames = 58.5 ms/frame) matches the brief's ~59 ms estimate
-  for inference alone, confirming no repeated inference is hiding in that number.
+  in `main()` by `_predictions_for_threshold` (pure `postprocess`/`_decode_per_class` calls,
+  no session access). Printed timing across this task's several re-runs has ranged
+  ~58-87 ms/frame depending on machine load at the moment (5.24 s / 60 frames = 87.3 ms/frame
+  on the run pasted above), all consistent with the brief's ~59 ms estimate for inference
+  alone -- no repeated inference is hiding in that number regardless of which run's timing is
+  quoted.
 - Confirmed the peak vehicle-class score is read off raw sigmoid scores
   (`1/(1+exp(-logits))`), never off `postprocess`'s threshold-filtered boxes — `postprocess`
   keeps only each query's single argmax-class score, which would silently under-report a
@@ -288,11 +446,19 @@ to be zero, e.g. threshold 0.30's precision: one false positive, zero true posit
   constants before picking the 74.0 m default cutoff — there is a clean ~2.8 m gap in the
   back-projected truth (46 annotations at x ≤ 72.47 m, 38 at x ≥ 75.30 m), confirmed by direct
   computation against this committed `labels.json`, not assumed from the README's prose alone.
-  A task-5 review asked for this to be enforced programmatically rather than trusted by
-  eyeball, so `--ego-x-max` is now a flag (default 74.0 m, documented as scene-specific in its
-  own help text) and `_ego_cutoff_is_valid` refuses recall(ego) — printing `—` at every
-  threshold — unless no truth point falls within 1.0 m of the configured cutoff. The verbatim
-  output above shows this check running and passing (`ego-x-max 74.0 m is valid ...`).
+  `--ego-x-max` is a flag (default 74.0 m, documented as scene-specific in its own help text).
+- **Rewrote `_ego_cutoff_is_valid` after a task-5 re-review demonstrated the first version
+  was a local-isolation test, not a bimodality test** ("Fixing Finding 4" above has the full
+  story and three transcripts). The new version requires the cutoff to sit inside the single
+  largest gap in the sorted truth, requires that gap to dominate both the second-largest and
+  median gaps by a wide margin, and requires both sides of the split to hold a real share of
+  the points. Verified against the re-review's own two counter-examples (an evenly-spaced
+  lattice, and 84 uniform-random points with the cutoff at their own largest gap) plus the
+  real benchmark, in a scratch harness importing the actual shipped function — accept /
+  reject / reject, as required. When the check fails, `recall(ego)` is no longer printed as
+  `—`; the whole column is omitted and the reason is printed once, per the re-review's
+  distinction between "undefined" (0/0, prints `—`) and "inapplicable" (no real split exists,
+  prints nothing at all for that column).
 - **Fixed a real bug a task-5 review caught**: `recall(ego)` was originally computed by a
   *second* `score()` call passing the full (unfiltered) prediction set against only the
   ego-street truth subset. Because `score()`'s matcher operates on whatever candidate pool it
@@ -313,6 +479,15 @@ to be zero, e.g. threshold 0.30's precision: one false positive, zero true posit
 - Recounted every count quoted in "Reading the table" by hand against the verbatim
   `top-any-class` column after a task-5 review caught two wrong ones (see that section for the
   correction and the numbers).
+- **Added `--decode-mode {argmax,per-class}` after a task-5 re-review pointed out the
+  per-class-decode numbers had no committed command behind them**, breaking this document's
+  own rule that every published number carries the command that produced it. Re-ran with
+  `--decode-mode per-class` and pasted the verbatim output in "A lever this sweep incidentally
+  rules out" above; the reproduced tp/fp numbers (0/1/3/21 and 40/683/3,372/30,203) match the
+  review's independently-measured figures exactly. Also corrected the described scope from
+  "the four vehicle classes" to the actual six in `COCO_ID_TO_CLASS` (car, truck, bus,
+  motorcycle, pedestrian, cyclist) per the review's note that pedestrian/cyclist false
+  positives dominate the count and a vehicles-only version would understate it.
 - Checked every ratio cell in the printed table by hand against its `tp`/`fp`/`fn`: e.g.
   threshold 0.01's `recall(ego)` = 9/46 = 0.1956 → prints 0.196; `recall(all)` = 9/84 =
   0.1071 → prints 0.107.

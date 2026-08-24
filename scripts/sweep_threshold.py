@@ -155,29 +155,120 @@ def _coco_name(coco_id: int) -> str:
 # given unless the data actually backs it up.
 _DEFAULT_EGO_X_MAX_M = 74.0
 
-# recall(ego) is only a meaningful number when ego-street and cross-street
-# truth are genuinely bimodal in world-x -- a cutoff drawn through a
-# continuous cloud of points would produce a ratio with no natural
-# boundary behind it. Rather than assume the cutoff sits in a gap, this
-# script requires no truth point within this margin of it on either side.
-# 1.0 m is comfortably inside the ~2.8 m gap this specific benchmark is
-# known to have, while still being a real check rather than a rubber stamp.
-_EGO_GAP_MARGIN_M = 1.0
+# A task-5 re-review found the original "no point within 1.0 m of the
+# cutoff" check passed on data with no cluster structure at all -- an
+# evenly-spaced lattice validates at every midpoint, and 84 uniform-random
+# points validate at their own largest gap, because on any dataset with
+# more points than gaps of ~2 m, *some* cutoff always clears a local-only
+# check. That is a local-isolation test, not a bimodality test, and it is
+# worse than no check: it prints a confident number off a meaningless
+# split. `_ego_cutoff_is_valid` below instead requires the *single largest*
+# gap in the whole sorted set to dominate both the second-largest gap and
+# the median gap by a wide margin, and requires both sides of that gap to
+# hold a real share of the points -- not local isolation, global structure.
+#
+# Constants calibrated against this committed benchmark's own numbers
+# (measured directly off labels.json): largest gap 2.832 m, second-largest
+# 1.182 m (ratio 2.40x), median gap 0.295 m (ratio 9.59x), split 46/38 of
+# 84 points (each side 45-55% of the total). The thresholds below (2.0x,
+# 5.0x, 15%) each clear the real benchmark's numbers with headroom while
+# rejecting both synthetics the re-review supplied -- see the transcripts
+# in docs/measurements/2026-08-22-threshold-sweep.md's bimodality section
+# for all three cases run against this exact implementation.
+_GAP_DOMINANCE_VS_SECOND_MIN = 2.0  # largest gap must be >= this x the second-largest
+_GAP_DOMINANCE_VS_MEDIAN_MIN = 5.0  # largest gap must be >= this x the median gap
+_MIN_SIDE_FRACTION = 0.15  # each side of the split must hold >= this share of points
 
 
-def _ego_cutoff_is_valid(
-    frames: list[FrameRecord], ego_x_max: float, margin_m: float = _EGO_GAP_MARGIN_M
-) -> bool:
-    """True only if `ego_x_max` sits inside a clean gap in the truth's
-    back-projected world-x distribution -- no ground-truth point within
-    `margin_m` of the cutoff on either side. Callers must not report
-    recall(ego) when this is false; the split would be arbitrary, not a
-    real ego-street/cross-street boundary.
+@dataclass(frozen=True, slots=True)
+class EgoCutoffCheck:
+    """Result of testing whether `--ego-x-max` sits on real bimodal
+    structure in the benchmark's truth, not just in a locally-empty patch.
+    `reason` is always populated -- with why it passed, or why it failed --
+    so a caller never has to reconstruct the story from a bare bool.
     """
-    all_x = [t.x for frame in frames for t in frame.truth]
-    if not all_x:
-        return False  # no truth at all -- nothing to validate or report
-    return all(abs(x - ego_x_max) >= margin_m for x in all_x)
+
+    valid: bool
+    reason: str
+
+
+def _ego_cutoff_is_valid(frames: list[FrameRecord], ego_x_max: float) -> EgoCutoffCheck:
+    """Test `ego_x_max` against the *global* shape of the truth's
+    back-projected world-x distribution, not merely its own neighbourhood.
+
+    Three conditions, all required:
+    1. `ego_x_max` falls strictly inside the single largest gap between
+       consecutive sorted x values -- not merely inside *some* gap, which
+       is all the original (superseded) check required.
+    2. That largest gap dominates both the second-largest gap
+       (>= `_GAP_DOMINANCE_VS_SECOND_MIN` x) and the median gap
+       (>= `_GAP_DOMINANCE_VS_MEDIAN_MIN` x) -- two independent measures of
+       "this really is one dominant gap", not one metric that an unlucky
+       draw can satisfy alone.
+    3. Both sides of the split hold at least `_MIN_SIDE_FRACTION` of the
+       points -- rules out one point isolated against all the rest.
+
+    Callers must not report recall(ego) when this returns invalid; the
+    split would be a number with no natural boundary behind it, not merely
+    an undefined ratio.
+    """
+    all_x = sorted(t.x for frame in frames for t in frame.truth)
+    n = len(all_x)
+    if n < 4:
+        return EgoCutoffCheck(False, f"too few truth points ({n}) to test bimodality")
+
+    gaps = [all_x[i + 1] - all_x[i] for i in range(n - 1)]
+    order = sorted(range(len(gaps)), key=lambda i: gaps[i], reverse=True)
+    largest_idx = order[0]
+    largest = gaps[largest_idx]
+    second_largest = gaps[order[1]] if len(order) > 1 else 0.0
+    median = sorted(gaps)[len(gaps) // 2]
+
+    gap_lo, gap_hi = all_x[largest_idx], all_x[largest_idx + 1]
+    if not (gap_lo < ego_x_max < gap_hi):
+        return EgoCutoffCheck(
+            False,
+            f"--ego-x-max {ego_x_max} does not fall inside this benchmark's single "
+            f"largest gap ({gap_lo:.3f} m, {gap_hi:.3f} m) -- it may sit inside some "
+            "other, smaller gap, which is not evidence of a real bimodal split",
+        )
+
+    ratio_vs_second = largest / second_largest if second_largest > 0 else float("inf")
+    if ratio_vs_second < _GAP_DOMINANCE_VS_SECOND_MIN:
+        return EgoCutoffCheck(
+            False,
+            f"largest gap ({largest:.3f} m) is only {ratio_vs_second:.2f}x the "
+            f"second-largest ({second_largest:.3f} m), below the "
+            f"{_GAP_DOMINANCE_VS_SECOND_MIN}x minimum -- the data does not have one "
+            "gap that clearly dominates the rest",
+        )
+
+    ratio_vs_median = largest / median if median > 0 else float("inf")
+    if ratio_vs_median < _GAP_DOMINANCE_VS_MEDIAN_MIN:
+        return EgoCutoffCheck(
+            False,
+            f"largest gap ({largest:.3f} m) is only {ratio_vs_median:.2f}x the "
+            f"median gap ({median:.3f} m), below the {_GAP_DOMINANCE_VS_MEDIAN_MIN}x "
+            "minimum -- the points are too evenly spread for one gap to mean anything",
+        )
+
+    n_left = largest_idx + 1
+    n_right = n - n_left
+    min_side = _MIN_SIDE_FRACTION * n
+    if n_left < min_side or n_right < min_side:
+        return EgoCutoffCheck(
+            False,
+            f"split is {n_left}/{n_right} of {n} points -- at least one side holds "
+            f"less than {_MIN_SIDE_FRACTION:.0%} of the total, too lopsided to call "
+            "the smaller side a real cluster",
+        )
+
+    return EgoCutoffCheck(
+        True,
+        f"largest gap ({largest:.3f} m, between x={gap_lo:.3f} and x={gap_hi:.3f}) is "
+        f"{ratio_vs_second:.2f}x the second-largest and {ratio_vs_median:.2f}x the "
+        f"median; split {n_left}/{n_right} of {n} points",
+    )
 
 
 @dataclass
@@ -350,8 +441,52 @@ def report_peak_vehicle_scores(frames: list[FrameRecord]) -> None:
         print(f"  {cls:<10}: {peak:.4f}  (frame {where})")
 
 
+DECODE_MODES: tuple[str, ...] = ("argmax", "per-class")
+
+
+def _decode_per_class(
+    logits: np.ndarray, pred_boxes: np.ndarray, frame_w: int, frame_h: int, score_threshold: float
+) -> list[Box2D]:
+    """Alternative to `perception.detector.postprocess`'s argmax decode:
+    keep every one of `COCO_ID_TO_CLASS`'s six mapped classes whose own
+    score clears `score_threshold` for a query, not just that query's
+    single highest-scoring class.
+
+    `postprocess` (reviewed and closed, not modified here) discards a
+    query's car score entirely if `stop sign` happened to win that query's
+    argmax, however high the car score was -- so "no threshold recovers
+    recall" in the main sweep is partly a decoding choice, not only a
+    confidence one. This function measures that choice directly: named and
+    reported as a dismissed lever in the task-5 measurement doc (task-5
+    review, Finding 6), not adopted as the default, because it trades a
+    small recall gain for an order-of-magnitude worse false-positive rate
+    (see that doc for the numbers).
+
+    Box geometry (`cx, cy, w, h`) is shared across every class for a given
+    query in RT-DETR -- only the class-selection rule differs from
+    `postprocess`, so the box math below is deliberately identical to it
+    (same clip-to-frame, same degenerate-box rejection) rather than
+    reinvented.
+    """
+    scores = 1.0 / (1.0 + np.exp(-logits[0]))  # (n_queries, n_classes)
+    boxes: list[Box2D] = []
+    for cls_id, cls in COCO_ID_TO_CLASS.items():
+        cls_scores = scores[:, cls_id]
+        for qi in np.nonzero(cls_scores >= score_threshold)[0]:
+            conf = float(cls_scores[qi])
+            cx, cy, w, h = pred_boxes[0][qi]
+            x0 = float(np.clip((cx - w / 2.0) * frame_w, 0.0, frame_w))
+            y0 = float(np.clip((cy - h / 2.0) * frame_h, 0.0, frame_h))
+            x1 = float(np.clip((cx + w / 2.0) * frame_w, 0.0, frame_w))
+            y1 = float(np.clip((cy + h / 2.0) * frame_h, 0.0, frame_h))
+            if x1 <= x0 or y1 <= y0:
+                continue  # degenerate after clamping, same rule as postprocess
+            boxes.append(Box2D(x0=x0, y0=y0, x1=x1, y1=y1, cls=cls, confidence=conf))
+    return boxes
+
+
 def _predictions_for_threshold(
-    frames: list[FrameRecord], threshold: float
+    frames: list[FrameRecord], threshold: float, decode_mode: str = "argmax"
 ) -> list[list[Prediction]]:
     """Post-process every frame's cached raw output at `threshold`, once,
     projecting each surviving box to ground-plane world coordinates.
@@ -361,16 +496,34 @@ def _predictions_for_threshold(
     is "everything held fixed except which frame's truth is matched
     against", so the predictions themselves must be identical objects, not
     independently recomputed and merely equal.
+
+    `decode_mode` selects which function turns raw logits into boxes:
+    `"argmax"` is the production decode (`perception.detector.postprocess`,
+    unmodified); `"per-class"` is `_decode_per_class` above, the dismissed
+    lever from Finding 6. Threaded through so a second invocation with
+    `--decode-mode per-class` reproduces that lever's numbers from this
+    same committed script, rather than leaving them un-reproducible prose.
     """
     per_frame: list[list[Prediction]] = []
     for frame in frames:
-        boxes: list[Box2D] = postprocess(
-            frame.logits[np.newaxis, ...],
-            frame.pred_boxes,
-            frame.width,
-            frame.height,
-            threshold,
-        )
+        if decode_mode == "argmax":
+            boxes: list[Box2D] = postprocess(
+                frame.logits[np.newaxis, ...],
+                frame.pred_boxes,
+                frame.width,
+                frame.height,
+                threshold,
+            )
+        elif decode_mode == "per-class":
+            boxes = _decode_per_class(
+                frame.logits[np.newaxis, ...],
+                frame.pred_boxes,
+                frame.width,
+                frame.height,
+                threshold,
+            )
+        else:
+            raise ValueError(f"unknown decode_mode: {decode_mode!r}")
         predictions: list[Prediction] = []
         for box in boxes:
             ground = project_to_ground(box, frame.camera, frame.width, frame.height)
@@ -387,7 +540,7 @@ def sweep(
     thresholds: tuple[float, ...],
     gate_m: float,
     predictions_by_threshold: dict[float, list[list[Prediction]]],
-    ego_valid: bool,
+    ego_check: EgoCutoffCheck,
 ) -> None:
     """Print the full precision/recall/error curve, one row per threshold.
 
@@ -405,9 +558,13 @@ def sweep(
     happened to land on an ego-street truth -- but a partition is exact by
     construction and a second independent match is not, on any data.
 
-    If `ego_valid` is false (the configured `--ego-x-max` does not sit in a
-    real gap in this benchmark's truth), recall(ego) is not computable as a
-    meaningful number and every recall(ego) cell prints `—`.
+    If `ego_check.valid` is false, recall(ego) is not merely undefined, it
+    is *inapplicable* -- there is no real ego-street/cross-street boundary
+    to measure against. Per task-5 re-review: an inapplicable metric must
+    not be printed at all (not even as `—`, which reads as "measured, zero
+    predictions" rather than "this question doesn't apply here") -- the
+    whole `recall(ego)` column is dropped from the table and the reason is
+    printed once, above it.
     """
     n_ego = sum(sum(f.truth_is_ego_street) for f in frames)
     n_cross = sum(len(f.truth) - sum(f.truth_is_ego_street) for f in frames)
@@ -421,23 +578,34 @@ def sweep(
         "A perfect detector scores whole-set recall ~= "
         f"{n_ego / (n_ego + n_cross):.2f} on this set -- occlusion is not "
         "modelled, so the cross-street boxes can never be seen. Read "
-        "whole-set recall next to that ceiling, always; read ego-street "
-        "recall as the number where 1.0 is actually achievable -- but see "
-        "the SHAM CONTROL table below before trusting recall(ego) as signal "
-        "rather than chance."
+        "whole-set recall next to that ceiling, always."
     )
-    if not ego_valid:
+    if ego_check.valid:
         print(
-            "WARNING: --ego-x-max does not sit in a clean gap in this "
-            "benchmark's truth (some ground-truth point falls within "
-            f"{_EGO_GAP_MARGIN_M} m of it) -- recall(ego) is not a "
-            "meaningful split on this data and prints as '—' below."
+            f"ego-street split is real: {ego_check.reason}. recall(ego) is "
+            "the number where 1.0 is actually achievable -- but see the "
+            "SHAM CONTROL table below before trusting it as signal rather "
+            "than chance."
+        )
+    else:
+        print(
+            f"recall(ego) NOT REPORTED: {ego_check.reason}. This is not an "
+            "undefined ratio (that prints '—') -- it is an inapplicable "
+            "one, so the column is omitted entirely rather than printed "
+            "with a placeholder."
         )
     print()
-    header = (
-        f"{'threshold':>9}  {'precision':>9}  {'recall(all)':>11}  "
-        f"{'recall(ego)':>11}  {'mean_err_m':>10}  {'tp':>4}  {'fp':>5}  {'fn':>4}"
-    )
+
+    if ego_check.valid:
+        header = (
+            f"{'threshold':>9}  {'precision':>9}  {'recall(all)':>11}  "
+            f"{'recall(ego)':>11}  {'mean_err_m':>10}  {'tp':>4}  {'fp':>5}  {'fn':>4}"
+        )
+    else:
+        header = (
+            f"{'threshold':>9}  {'precision':>9}  {'recall(all)':>11}  "
+            f"{'mean_err_m':>10}  {'tp':>4}  {'fp':>5}  {'fn':>4}"
+        )
     print(header)
     print("-" * len(header))
 
@@ -456,12 +624,13 @@ def sweep(
             total_fn += fn
             dist_sum += sum(d for _, _, d in matches)
 
-            n_ego_here = sum(frame.truth_is_ego_street)
-            ego_tp_here = sum(
-                1 for ti, _, _ in matches if frame.truth_is_ego_street[ti]
-            )
-            ego_tp += ego_tp_here
-            ego_fn += n_ego_here - ego_tp_here
+            if ego_check.valid:
+                n_ego_here = sum(frame.truth_is_ego_street)
+                ego_tp_here = sum(
+                    1 for ti, _, _ in matches if frame.truth_is_ego_street[ti]
+                )
+                ego_tp += ego_tp_here
+                ego_fn += n_ego_here - ego_tp_here
 
         precision = (
             total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else None
@@ -469,18 +638,21 @@ def sweep(
         recall_all = (
             total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else None
         )
-        recall_ego = (
-            ego_tp / (ego_tp + ego_fn)
-            if ego_valid and (ego_tp + ego_fn) > 0
-            else None
-        )
         mean_err = dist_sum / total_tp if total_tp > 0 else None
 
-        print(
-            f"{threshold:9.2f}  {_fmt_ratio(precision):>9}  {_fmt_ratio(recall_all):>11}  "
-            f"{_fmt_ratio(recall_ego):>11}  {_fmt_err(mean_err):>10}  "
-            f"{total_tp:4d}  {total_fp:5d}  {total_fn:4d}"
-        )
+        if ego_check.valid:
+            recall_ego = ego_tp / (ego_tp + ego_fn) if (ego_tp + ego_fn) > 0 else None
+            print(
+                f"{threshold:9.2f}  {_fmt_ratio(precision):>9}  {_fmt_ratio(recall_all):>11}  "
+                f"{_fmt_ratio(recall_ego):>11}  {_fmt_err(mean_err):>10}  "
+                f"{total_tp:4d}  {total_fp:5d}  {total_fn:4d}"
+            )
+        else:
+            print(
+                f"{threshold:9.2f}  {_fmt_ratio(precision):>9}  {_fmt_ratio(recall_all):>11}  "
+                f"{_fmt_err(mean_err):>10}  "
+                f"{total_tp:4d}  {total_fp:5d}  {total_fn:4d}"
+            )
 
 
 # Circular frame-index offsets used by the sham control below. Chosen to
@@ -609,8 +781,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "contract/benchmark; a different capture (e.g. a Task 6 "
             "re-run) needs its own value, re-derived by back-projecting "
             "that capture's own truth and finding where it splits. The "
-            "script refuses to report recall(ego) if the value given here "
-            "does not sit in a real gap in the loaded benchmark's truth."
+            "script refuses to report recall(ego) -- omitting the column "
+            "entirely, not printing a placeholder -- unless the value "
+            "given here passes _ego_cutoff_is_valid's bimodality test "
+            "against the loaded benchmark's truth."
+        ),
+    )
+    parser.add_argument(
+        "--decode-mode",
+        choices=DECODE_MODES,
+        default="argmax",
+        help=(
+            "how raw model output becomes boxes. 'argmax' (default) is "
+            "the production decode (perception.detector.postprocess): one "
+            "box per query, only its single highest-scoring class. "
+            "'per-class' keeps every one of the six COCO_ID_TO_CLASS "
+            "classes that clears the threshold for a query, not just the "
+            "winner -- a lever named and measured (then dismissed) in the "
+            "task-5 measurement doc; re-run with this flag to reproduce "
+            "those numbers rather than trusting them as prose."
         ),
     )
     return parser.parse_args(argv)
@@ -631,17 +820,17 @@ def main() -> int:
     print(f"thresholds: {args.thresholds}")
     print(f"gate: {args.gate_m} m")
     print(f"ego-x-max: {args.ego_x_max} m")
+    print(f"decode-mode: {args.decode_mode}")
 
     print("loading benchmark and decoding frames ...")
     frames = _load_benchmark(args.benchmark, args.ego_x_max)
     print(f"loaded {len(frames)} frames, {sum(len(f.truth) for f in frames)} truth objects")
 
-    ego_valid = _ego_cutoff_is_valid(frames, args.ego_x_max)
+    ego_check = _ego_cutoff_is_valid(frames, args.ego_x_max)
     print(
         f"ego-x-max {args.ego_x_max} m is "
-        + ("valid" if ego_valid else "NOT valid")
-        + f" for this benchmark's truth (no point within {_EGO_GAP_MARGIN_M} m "
-        "required)"
+        + ("VALID" if ego_check.valid else "NOT VALID")
+        + f": {ego_check.reason}"
     )
 
     print("building onnxruntime session ...")
@@ -656,10 +845,12 @@ def main() -> int:
     # and sham_control() -- see _predictions_for_threshold's docstring for
     # why the sham control needs the literal same prediction objects, not
     # an independently recomputed equal set.
-    predictions_by_threshold = {t: _predictions_for_threshold(frames, t) for t in thresholds}
+    predictions_by_threshold = {
+        t: _predictions_for_threshold(frames, t, args.decode_mode) for t in thresholds
+    }
 
     report_peak_vehicle_scores(frames)
-    sweep(frames, thresholds, args.gate_m, predictions_by_threshold, ego_valid)
+    sweep(frames, thresholds, args.gate_m, predictions_by_threshold, ego_check)
     sham_control(frames, thresholds, args.gate_m, predictions_by_threshold)
 
     return 0
