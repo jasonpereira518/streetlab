@@ -26,11 +26,13 @@ model: /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantize
 benchmark: ../contract/benchmark
 thresholds: [0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]
 gate: 3.0 m
+ego-x-max: 74.0 m
 loading benchmark and decoding frames ...
 loaded 60 frames, 84 truth objects
+ego-x-max 74.0 m is valid for this benchmark's truth (no point within 1.0 m required)
 building onnxruntime session ...
 running inference (once per frame) ...
-inference: 3.65s total, 60.8ms/frame
+inference: 3.51s total, 58.5ms/frame
 
 ==============================================================================
 PEAK VEHICLE-CLASS SCORES (threshold-independent, raw sigmoid scores)
@@ -106,7 +108,7 @@ Peak across the whole benchmark, per vehicle class:
 ==============================================================================
 THRESHOLD SWEEP
 ==============================================================================
-benchmark truth: 84 annotations total (46 ego-street, 38 cross-street/occluded). A perfect detector scores whole-set recall ~= 0.55 on this set -- occlusion is not modelled, so the cross-street boxes can never be seen. Read whole-set recall next to that ceiling, always; read ego-street recall as the number where 1.0 is actually achievable.
+benchmark truth: 84 annotations total (46 ego-street, 38 cross-street/occluded). A perfect detector scores whole-set recall ~= 0.55 on this set -- occlusion is not modelled, so the cross-street boxes can never be seen. Read whole-set recall next to that ceiling, always; read ego-street recall as the number where 1.0 is actually achievable -- but see the SHAM CONTROL table below before trusting recall(ego) as signal rather than chance.
 
 threshold  precision  recall(all)  recall(ego)  mean_err_m    tp     fp    fn
 -----------------------------------------------------------------------------
@@ -117,6 +119,21 @@ threshold  precision  recall(all)  recall(ego)  mean_err_m    tp     fp    fn
      0.10      0.002        0.012        0.022        0.54     1    475    83
      0.05      0.002        0.036        0.065        0.40     3   1840    81
      0.01      0.002        0.107        0.196        0.73     9   3989    75
+
+==============================================================================
+SHAM CONTROL (same predictions, scored against a shifted frame's truth)
+==============================================================================
+real tp is the same total_tp column as the sweep above. sham tp scores the identical per-frame predictions against truth from a different frame (60-frame circular offset), gate and threshold held fixed. A sham count near or above the real one means the real matches are not distinguishable from chance.
+
+threshold   real tp   sham(+10)   sham(+20)   sham(+30)
+-------------------------------------------------------
+     0.50         0           0           0           0
+     0.40         0           0           0           0
+     0.30         0           0           0           0
+     0.20         0           0           0           0
+     0.10         1           0           1           0
+     0.05         3           0           4           0
+     0.01         9           1           6           3
 ```
 
 ## Reading the table
@@ -133,9 +150,38 @@ Only at thresholds far below anything ever shipped (0.10, 0.05, 0.01) does the s
 any true positives at all — 1, 3, and 9 respectively — each accompanied by hundreds to
 thousands of false positives (475, 1840, 3989 at threshold 0.01). This is not a usable
 operating point; it is what "count everything the model outputs, regardless of confidence"
-looks like. `mean_pos_err_m` on the handful of matches that do occur (0.40–0.73 m) is small,
-comfortably inside the 3.0 m gate — the few true positives that occur are real geometric
-matches, not gate artefacts, they are simply extremely rare.
+looks like.
+
+**A task-5 review caught a non-sequitur here: a low `mean_pos_err_m` among survivors does not
+mean those survivors are real detections.** The original version of this document argued that
+0.40–0.73 m position error, comfortably inside the 3.0 m gate, meant "these are real
+geometric matches, just rare." That argument only speaks to accuracy *among* matches — it
+says nothing about whether the matches themselves are more than coincidence. With 3,998
+low-confidence predictions scattered across a bounded ~90 m world region against only 84
+truth objects, some falling within 3.0 m of some truth object by chance alone is expected,
+not surprising.
+
+**The sham control (verbatim table above) tests this directly**, by scoring the same
+per-frame predictions against a *different* frame's truth (a circular offset — the ego and
+every vehicle have moved by 10, 20, or 30 frames later in this ~6-second clip) and comparing
+the resulting tp count to the real one:
+
+| threshold | real tp | sham(+10) | sham(+20) | sham(+30) |
+|---|---|---|---|---|
+| 0.10 | 1 | 0 | 1 | 0 |
+| 0.05 | 3 | 0 | 4 | 0 |
+| 0.01 | 9 | 1 | 6 | 3 |
+
+**At threshold 0.05, the sham count at offset +20 (4) exceeds the real count (3).** At every
+threshold, at least one sham offset produces a nonzero count comparable to the real one. The
+9 real true positives at threshold 0.01 are not cleanly separable from a set of unrelated
+predictions scored against the wrong frame's truth. **`recall(ego)` (and `recall(all)`) in
+the table above should be read as an upper bound on genuine detection, not as evidence of
+it** — the control does not prove zero real detections exist, but it does mean this sweep
+cannot distinguish "a few real detections, mostly discarded" from "no detection signal at
+all, and a handful of coincidental gate hits." That shifts the honest reading toward the
+more expensive world (fine-tuning), not the cheaper one (recalibration) — an unqualified
+`recall(ego) 0.196` would have pointed the other way.
 
 **Peak vehicle-class scores, read directly off raw sigmoid output before any threshold is
 applied**, sit at 0.083–0.187 across the whole 60-frame set: car 0.1872, bus 0.1116, truck
@@ -143,43 +189,76 @@ applied**, sit at 0.083–0.187 across the whole 60-frame set: car 0.1872, bus 0
 the benchmark.
 
 **The model is not blind — it is confidently looking at the wrong things.** The
-highest-scoring class of any kind, vehicle or not, tops 0.40 on 33 of the 60 frames, and
-tops 0.60 twice (`stop sign` 0.6161 on frame 41, `stop sign` 0.5991 on frame 44) —
-comfortably above any of the four vehicle peaks. `stop sign`, `traffic light`,
-`dining table`, `umbrella`, `wine glass`, `person`, `apple`, `bed`, `orange`, and `keyboard`
-each lead at least one frame. This reproduces the same "confidently wrong domain" pattern
-`docs/measurements/2026-08-20-detector-comparison.md` measured on 8 frames from a different
-capture: the model is capable of sharp, structured confidence on this exact imagery — it
-simply never places that confidence on a vehicle class.
+highest-scoring class of any kind, vehicle or not, tops 0.40 on **20** of the 60 frames
+(counted directly from the verbatim `top-any-class` column above), and tops 0.60 on
+**exactly one** frame (`stop sign` 0.6161 on frame 41 — frame 44's `stop sign` 0.5991, the
+runner-up, falls just short of 0.60) — comfortably above any of the four vehicle peaks.
+`stop sign`, `traffic light`, `dining table`, `umbrella`, `wine glass`, `person`, `apple`,
+`bed`, `orange`, and `keyboard` each lead at least one frame. This reproduces the same
+"confidently wrong domain" pattern `docs/measurements/2026-08-20-detector-comparison.md`
+measured on 8 frames from a different capture: the model is capable of sharp, structured
+confidence on this exact imagery — it simply never places that confidence on a vehicle
+class. (An earlier version of this paragraph miscounted this as "33 of 60" and "tops 0.60
+twice"; both were wrong and both overstated the finding — a task-5 review caught it, and the
+corrected counts above were recounted by hand against the verbatim table.)
+
+## A lever this sweep incidentally rules out: per-class decoding
+
+`postprocess` (`perception/detector.py`) decodes one box per query by taking that query's
+single **argmax** class — if a query's highest score belongs to `stop sign` rather than
+`car`, the car score is discarded entirely for that query, however high it was. So "no
+threshold recovers recall" in this sweep is partly a *decoding* choice, not only a
+*confidence* choice, and per-class decoding (keep every class whose score clears the
+threshold, not just each query's winner) is a distinct, cheap-looking lever Task 7 might
+otherwise think this sweep left undiscovered.
+
+A task-5 review measured it, so this is reported here rather than left as an open question:
+per-class decoding instead of argmax gives **tp 0 / 1 / 3 / 21** at thresholds 0.20 / 0.10 /
+0.05 / 0.01, against **fp 40 / 683 / 3,372 / 30,203** at those same thresholds. The tp gain at
+0.01 (9 → 21) is real, but the false-positive cost is roughly 7.6x the already-unusable
+argmax-decode number (3,989 → 30,203) at the same threshold — precision gets worse, not
+better, and by a wide margin. **This is not a viable lever**: it trades a small, uncertain
+recall gain (itself not yet run through the sham control above) for an order-of-magnitude
+worse false-positive rate. Named here so it is closed, not rediscovered.
 
 ## The one sentence Task 7 consumes
 
 **The data does not cleanly pick either world, and forcing a choice would be dishonest: peak
 vehicle-class scores (car 0.1872, bus 0.1116, truck 0.1105, motorcycle 0.0830) sit an order
 of magnitude above the ~0.01 floor that would mean "the model cannot see these shapes at
-all," but well below the 0.2–0.4 band that would mean "detected, just miscalibrated" — and
-no threshold in the swept range recovers usable recall (best case, at threshold 0.01 with
-3,989 false positives against 60 frames: recall(all) 0.107, recall(ego) 0.196) — so this
-sweep rules out simple recalibration as sufficient by itself, without being able to rule in
-or out whether the shortfall is domain gap (needs fine-tuning) or the scale/exposure
-problem `contract/benchmark/README.md` documents (near-black frames, nothing closer than
-31.5 m, boxes as small as 10.5×9.1 px) — a question this lever cannot answer on its own,
-since the model is demonstrably capable of confident, well-structured predictions on this
-same imagery (`stop sign` up to 0.6161), just never for a vehicle class.**
+all," but well below the 0.2–0.4 band that would mean "detected, just miscalibrated" — and no
+threshold in the swept range recovers recall distinguishable from chance (best case, at
+threshold 0.01 with 3,989 false positives: recall(all) 0.107 against a whole-set ceiling of
+~0.55 for *any* detector on this occlusion-heavy benchmark, recall(ego) 0.196 — and the sham
+control above shows a same-sized offset scoring pass against the *wrong* frame's truth
+produces a comparable or larger tp count at every threshold that has any real matches at all,
+so both recall numbers are upper bounds on genuine detection, not confirmed signal) — so this
+sweep rules out simple recalibration as sufficient by itself, without being able to rule in or
+out whether the shortfall is domain gap (needs fine-tuning) or the scale/exposure problem
+`contract/benchmark/README.md` documents (near-black frames, nothing closer than 31.5 m,
+boxes as small as 10.5×9.1 px) — a question this lever cannot answer on its own, since the
+model is demonstrably capable of confident, well-structured predictions on this same imagery
+(`stop sign` up to 0.6161), just never for a vehicle class.**
 
 ## How undefined metrics were handled
 
 `precision` is undefined (printed `—`) whenever `tp + fp == 0` — no predictions survived the
 threshold, so there is nothing to be precise about (thresholds 0.50, 0.40 above).
 `mean_pos_err_m` is undefined (printed `—`) whenever `tp == 0` — no matched pair exists to
-average a position error over. `recall(all)` and `recall(ego)` never hit their own undefined
-case on this benchmark, because ground truth is never empty (84 and 46 annotations
+average a position error over. `recall(all)` and `recall(ego)` never hit their own zero-truth
+undefined case on this benchmark, because ground truth is never empty (84 and 46 annotations
 respectively, always > 0) — but the script prints `—` for that case too (`perception/scoring.py`
 already returns `None` rather than `0.0` for every one of these; the script only had to not
-override that with a numeral when formatting). No `0.00` anywhere in this table stands in
-for "no data" — every `0.00`/`0.000` in the table is a measured zero (a defined ratio whose
-value happens to be zero, e.g. threshold 0.30's precision: one false positive, zero true
-positives, `0/(0+1) = 0.000`, a real measurement, not an absence of one).
+override that with a numeral when formatting). `recall(ego)` has a second, distinct undefined
+case added in review: it prints `—` for every threshold, unconditionally, whenever
+`--ego-x-max` does not sit in a real gap in the loaded benchmark's truth (`_ego_cutoff_is_valid`)
+— on this run the cutoff was confirmed valid (`ego-x-max 74.0 m is valid ...` in the verbatim
+output above), so this case did not fire, but a future capture with a different truth
+distribution could hit it, and reporting a number there would be reporting a meaningless
+split rather than an undefined one. No `0.00` anywhere in this table stands in for "no data"
+— every `0.00`/`0.000` in the table is a measured zero (a defined ratio whose value happens
+to be zero, e.g. threshold 0.30's precision: one false positive, zero true positives,
+`0/(0+1) = 0.000`, a real measurement, not an absence of one).
 
 ## Files changed
 
@@ -194,9 +273,10 @@ positives, `0/(0+1) = 0.000`, a real measurement, not an absence of one).
   `scripts/export_detector.py`.
 - Confirmed inference truly runs once per frame, not once per threshold: `_run_inference`
   populates `FrameRecord.logits`/`.pred_boxes` in a single pass before the threshold loop;
-  `sweep()` only calls `postprocess` (pure function, no session) inside the per-threshold
-  loop. The printed timing (3.65 s / 60 frames = 60.8 ms/frame) matches the brief's ~59 ms
-  estimate for inference alone, confirming no repeated inference is hiding in that number.
+  `sweep()` and `sham_control()` both consume a `predictions_by_threshold` cache built once
+  in `main()` by `_predictions_for_threshold` (pure `postprocess` calls, no session access).
+  The printed timing (3.51 s / 60 frames = 58.5 ms/frame) matches the brief's ~59 ms estimate
+  for inference alone, confirming no repeated inference is hiding in that number.
 - Confirmed the peak vehicle-class score is read off raw sigmoid scores
   (`1/(1+exp(-logits))`), never off `postprocess`'s threshold-filtered boxes — `postprocess`
   keeps only each query's single argmax-class score, which would silently under-report a
@@ -205,46 +285,70 @@ positives, `0/(0+1) = 0.000`, a real measurement, not an absence of one).
 - Verified the ego-street/cross-street split (46/38) against
   `contract/benchmark/README.md`'s stated counts and against
   `streetlab-backend/tests/test_benchmark_set.py`'s own `_EGO_LANE_Y`/`_CROSS_LANE_X`
-  constants before picking the 74.0 m cutoff — there is a clean gap in the back-projected
-  truth (46 annotations at x ≤ 72.47 m, 38 at x ≥ 75.30 m), confirmed by direct computation
-  against this committed `labels.json`, not assumed from the README's prose alone.
+  constants before picking the 74.0 m default cutoff — there is a clean ~2.8 m gap in the
+  back-projected truth (46 annotations at x ≤ 72.47 m, 38 at x ≥ 75.30 m), confirmed by direct
+  computation against this committed `labels.json`, not assumed from the README's prose alone.
+  A task-5 review asked for this to be enforced programmatically rather than trusted by
+  eyeball, so `--ego-x-max` is now a flag (default 74.0 m, documented as scene-specific in its
+  own help text) and `_ego_cutoff_is_valid` refuses recall(ego) — printing `—` at every
+  threshold — unless no truth point falls within 1.0 m of the configured cutoff. The verbatim
+  output above shows this check running and passing (`ego-x-max 74.0 m is valid ...`).
+- **Fixed a real bug a task-5 review caught**: `recall(ego)` was originally computed by a
+  *second* `score()` call passing the full (unfiltered) prediction set against only the
+  ego-street truth subset. Because `score()`'s matcher operates on whatever candidate pool it
+  is given, a prediction consumed by a cross-street truth in the whole-set pass would be
+  "freed" to match a nearby ego truth once that cross-street truth is removed from the pool —
+  silently inflating `ego_tp` above its true share on data where that occurs. It happened not
+  to bite on this benchmark (`ego_tp == total_tp` at every threshold, confirmed by hand before
+  this fix), but the fix does not depend on that coincidence: `sweep()` now calls
+  `perception.scoring._match` directly once per frame per threshold and partitions the
+  resulting match list by `truth_is_ego_street`, so `ego_tp + cross_tp == total_tp` by
+  construction, always. Re-running the fixed script reproduced byte-identical `tp`/`fp`/`fn`
+  numbers to the original (buggy-but-not-triggered) run, which is expected given the
+  coincidence above, not evidence the fix was unnecessary.
+- Added the sham control (`sham_control()`) directly requested by the task-5 review, using the
+  same cached predictions as the real sweep so "everything else held fixed" is literally true,
+  not just approximately so. Its output is pasted verbatim above and reproduced in "Reading
+  the table".
+- Recounted every count quoted in "Reading the table" by hand against the verbatim
+  `top-any-class` column after a task-5 review caught two wrong ones (see that section for the
+  correction and the numbers).
 - Checked every ratio cell in the printed table by hand against its `tp`/`fp`/`fn`: e.g.
   threshold 0.01's `recall(ego)` = 9/46 = 0.1956 → prints 0.196; `recall(all)` = 9/84 =
-  0.1071 → prints 0.107. All nine `tp`-derived `recall(ego)` values across the sweep are
-  ≤ the corresponding `tp`-derived `recall(all)`×(84/46) relationship implied by every true
-  positive on this set landing on an ego-street truth object — never a cross-street one,
-  consistent with cross-street vehicles being genuinely unseeable by any detector on this
-  benchmark.
+  0.1071 → prints 0.107.
 - Did not modify `perception/`, `server/`, `sim/`, `contract/benchmark/`, or the test suite.
-  `git status` after these changes shows only the two new files under `scripts/` and
-  `docs/measurements/`.
+  `scripts/sweep_threshold.py` now imports `perception.scoring._match` (a private/underscore
+  helper) directly, read-only — this reads the reviewed module, does not change it, and avoids
+  re-deriving the matching algorithm a second time in this script where it could drift from
+  the canonical one. `git status` after these changes shows only the two files under
+  `scripts/` and `docs/measurements/`.
 
 ## Concerns
 
 - **`COCO_80_NAMES` in `scripts/sweep_threshold.py` is best-effort for the "top-any-class"
-  display column**, not authoritative. It is the standard 80-class COCO `id2label` ordering,
-  cross-checked against `COCO_ID_TO_CLASS`'s six known ids and against eight ids independently
-  confirmed by real measured output in `docs/measurements/2026-08-20-detector-comparison.md`
-  (`stop sign`, `bird`, `umbrella`, `cup`, `tvmonitor`, `laptop`, `sink`, `vase`) — 14 of 80
-  ids verified this way, all consistent with the standard ordering, which is reasonable
-  evidence for the rest. But the ~65 unverified names (e.g. `dining table`, `bed`, `wine
-  glass`, `orange`, `keyboard`, `chair`, `apple`, which this specific run's "top-any-class"
-  column actually surfaces) were never independently confirmed against this checkpoint's real
-  `id2label` and could carry the same VOC-style rename this checkpoint is known to apply
-  elsewhere (`motorbike`/`aeroplane` per `perception/detector.py`'s own comment, `tvmonitor`
-  confirmed by measurement). The class **ids** printed alongside every name are exact (read
-  directly off the model's own output); only the **names** are best-effort. This does not
-  affect any scored number in this document — `COCO_ID_TO_CLASS`, the only class map that
-  feeds `postprocess`/scoring, is untouched and exact.
-  Worth fixing if it starts contradicting a name-conditional statement, but not before
-  Task 7 makes a lever decision. Flagging rather than fixing per the brief: "that file is
-  reviewed and closed" applies to `perception/detector.py`, and I did not touch it or
-  extend its class map — the name list lives only in this new script, but the underlying
-  uncertainty (what this checkpoint's true `id2label` is beyond the six vehicle classes) is
-  the same one Cycle 4 already carried unresolved.
+  display column**, not authoritative. Only **6** of its 80 ids are actually id-verified: 0,
+  1, 2, 3, 5, 7 agree with `COCO_ID_TO_CLASS`, which is keyed by id, so that is a real
+  cross-check. A task-5 review caught an overstated version of this comment claiming 14 ids
+  verified, citing `docs/measurements/2026-08-20-detector-comparison.md` for 8 more (`stop
+  sign`, `bird`, `umbrella`, `cup`, `tvmonitor`, `laptop`, `sink`, `vase`) — that document is
+  **name-only** (`umbrella 0.374`, `bird 0.239`, …) and prints no class ids anywhere, so it
+  corroborates that those names exist somewhere in this checkpoint's label set, not that they
+  sit at the specific ids this script assigns them. The comment and this note have been
+  corrected accordingly. The ~74 unverified names (including several this specific run's
+  `top-any-class` column surfaces — `dining table`, `bed`, `wine glass`, `orange`, `keyboard`,
+  `chair`, `apple`) are the standard COCO spelling and could carry the same VOC-style rename
+  this checkpoint is independently known to apply elsewhere (`motorbike`/`aeroplane` per
+  `perception/detector.py`'s own comment). The class **ids** printed alongside every name are
+  exact (read directly off the model's own output); only the **names** are best-effort. This
+  does not affect any scored number in this document — `COCO_ID_TO_CLASS`, the only class map
+  that feeds `postprocess`/scoring, is untouched and exact. Flagging rather than fixing:
+  `perception/detector.py` is reviewed and closed and was not touched; the underlying
+  uncertainty (this checkpoint's true `id2label` beyond the six vehicle classes) is the same
+  one Cycle 4 already carried unresolved.
 - The peak vehicle scores (0.083–0.187) are close enough to the low end of the "detected but
-  discarded" band that a reader skimming only the peak-score summary, without the full
-  false-positive counts in the threshold table, could mistake this for a calibration
-  problem. The one-sentence reading above deliberately cites the false-positive counts
-  (475/1840/3989) alongside the peak scores to block that misreading — Task 7 should not
-  quote the peak-score paragraph without the recall/false-positive numbers next to it.
+  discarded" band that a reader skimming only the peak-score summary, without the sham control
+  and false-positive counts, could mistake this for a calibration problem. The one-sentence
+  reading above now cites the ~0.55 whole-set ceiling, the sham control's finding that
+  recall(ego)/recall(all) are upper bounds rather than confirmed signal, and the
+  false-positive counts (475/1840/3989) together specifically to block that misreading — Task
+  7 should not quote the peak-score number or `recall(ego)` in isolation from those.
