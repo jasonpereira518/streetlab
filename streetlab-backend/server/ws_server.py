@@ -281,15 +281,24 @@ class _Connection:
         """Label one already-decoded frame against simulation truth and hand
         it to the capture sink, if `--capture` attached one to this loop.
 
-        Truth comes from `pose_history.at(cmd.t)`, never from the world as it
-        stands *now* — the same rule `_score_ml` follows, and for the same
-        reason: by the time this frame arrived, the world has moved on.
-        `None` here means no snapshot exists for this instant (older than
-        the buffer, or a scene swap cleared it), and the frame is skipped
-        rather than labelled against the wrong world. `()` — a snapshot that
-        exists and is simply empty — is not this case; `PoseHistory.at`
-        keeps the two apart on purpose (see its docstring), and an empty
-        road is a label the benchmark needs, not a frame to drop.
+        Both truth and heading come from the *recorded* snapshot at `cmd.t`
+        — `pose_history.at(cmd.t)` and `pose_history.headings_at(cmd.t)`
+        respectively — never from the world or `self._traffic` as they
+        stand *now*. Same rule `_score_ml` follows, and for the same
+        reason: by the time this frame arrived, the world has moved on,
+        and reading live agent state here (as an earlier version of
+        this method did, via a since-removed `Simulation.agent_headings`)
+        would silently orient a box by a heading the frame's instant never
+        actually had. `None` from `at` means no snapshot exists for this
+        instant (older than the buffer, or a scene swap cleared it), and
+        the frame is skipped rather than labelled against the wrong world.
+        `()` — a snapshot that exists and is simply empty — is not this
+        case; `PoseHistory.at` keeps the two apart on purpose (see its
+        docstring), and an empty road is a label the benchmark needs, not
+        a frame to drop. `headings_at` cannot legitimately disagree with
+        `at` about whether an instant was recorded (both read the same
+        locked snapshot list) — the `or {}` below is a defensive fallback,
+        not a code path either is expected to take.
 
         Wrapped in one broad `except`, matching the never-raises discipline
         `_ingest_frame` already documents for the rest of this method: a
@@ -305,6 +314,7 @@ class _Connection:
             truth = self.loop.sim.pose_history.at(cmd.t)
             if truth is None:
                 return
+            headings = self.loop.sim.pose_history.headings_at(cmd.t) or {}
             frame = label_frame(
                 jpeg,
                 self.loop.next_capture_seq(),
@@ -313,7 +323,7 @@ class _Connection:
                 cmd.height,
                 cmd.camera,
                 truth,
-                self.loop.sim.agent_headings(),
+                headings,
             )
             sink.write(frame)
         except Exception:

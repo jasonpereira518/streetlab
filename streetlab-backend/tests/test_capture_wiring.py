@@ -5,23 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
+from dataclasses import replace
 
 import pytest
 
 from map.scene_build import SyntheticGrid
-from perception.capture import CaptureSink
+from perception.capture import CaptureSink, label_frame
 from perception.pipeline import PerceptionPipeline, StubDetector
+from perception.scoring import TruthObject
+from schema import CameraParams
 from sim.loop import Simulation
-
-
-def test_agent_headings_are_exposed_for_every_agent():
-    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4,
-                     perception_pipeline=PerceptionPipeline(StubDetector()))
-    sim.step()
-    headings = sim.agent_headings()
-    ids = {a.id for a in sim._traffic.agents}
-    assert set(headings) == ids
-    assert all(isinstance(v, float) for v in headings.values())
 
 
 def test_capture_records_history_even_without_an_ml_source():
@@ -40,14 +34,25 @@ def test_capture_records_history_even_without_an_ml_source():
 # --------------------------------------------------------------------------- #
 
 
+# The fixed dummy camera every payload below uses -- origin, facing +x
+# (east), matching `CameraParams`'s own wire convention. Kept as one object
+# so a test computing an "expected" box via `label_frame` directly and a
+# test sending a `camera_frame` payload are provably using the same camera.
+_CAMERA = CameraParams(
+    x=0.0, y=0.0, z=1.33, yaw=0.0, pitch=0.0, roll=0.0,
+    fov_y_deg=50.0, aspect=640 / 384,
+)
+
+
 def _camera_payload(seq: int, t: float) -> dict:
     return {
         "id": f"f{seq}", "cmd": "camera_frame", "seq": seq, "t": t,
         "width": 640, "height": 384, "format": "jpeg",
         "data": base64.b64encode(b"\xff\xd8jpegbytes").decode(),
         "camera": {
-            "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
-            "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            "x": _CAMERA.x, "y": _CAMERA.y, "z": _CAMERA.z, "yaw": _CAMERA.yaw,
+            "pitch": _CAMERA.pitch, "roll": _CAMERA.roll,
+            "fov_y_deg": _CAMERA.fov_y_deg, "aspect": _CAMERA.aspect,
         },
     }
 
@@ -100,6 +105,107 @@ def test_a_frame_with_recorded_truth_reaches_the_sink(ws_session_factory, tmp_pa
         pipeline.shutdown()
 
 
+def test_an_empty_recorded_snapshot_is_written_not_skipped(ws_session_factory, tmp_path):
+    """`()` -- a snapshot that was recorded and simply held no objects -- is a
+    real zero-truth measurement, not the same as `None` ("nothing recorded
+    for this instant"). `PoseHistory.at` and `_capture_frame` must keep the
+    two apart: an empty road is a valid negative example the benchmark
+    needs, and skipping it would silently teach a fine-tuned detector that
+    empty scenes never occur.
+
+    `ws_session_factory`'s default scenario (`grid-loop`) always has three
+    agents, so nothing the real sim records is ever empty on its own --
+    exercising this path means recording an empty snapshot directly, at a
+    `t` the real sim will never reach in this test's lifetime.
+    """
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sink = CaptureSink(tmp_path / "out")
+        session, _sent = ws_session_factory(perception_pipeline=pipeline, capture_sink=sink)
+
+        empty_t = session.loop.sim.world.t + 10_000.0
+        session.loop.sim.pose_history.record(empty_t, (), {})
+
+        asyncio.run(session._handle(json.dumps(_camera_payload(0, empty_t))))
+
+        labels = sink.finalize()
+        doc = json.loads(labels.read_text())
+        assert len(doc["images"]) == 1, "an empty recorded snapshot must still be written"
+        assert doc["images"][0]["sim_t"] == empty_t
+        assert doc["annotations"] == []
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_frame_is_labelled_with_the_recorded_heading_not_the_live_one(
+    ws_session_factory, tmp_path
+):
+    """Heading rides in the same locked `PoseHistory` snapshot as position,
+    read back via `headings_at`, specifically so a label can never describe
+    an instant later than the one its position already describes. This
+    proves the pairing holds end to end: an agent's *live* heading is
+    deliberately diverged from what was recorded for `cmd.t` after the
+    snapshot was taken, and the box `_capture_frame` writes must still
+    reflect the recorded heading, not the live one.
+    """
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sink = CaptureSink(tmp_path / "out")
+        session, _sent = ws_session_factory(perception_pipeline=pipeline, capture_sink=sink)
+
+        frame = session.loop.await_frame(timeout=2.0)
+        assert frame is not None
+        agent = session.loop.sim._traffic.agents[0]
+
+        # A `t` the real sim will never reach in this test, holding a
+        # fabricated but `_CAMERA`-visible position at x=20m dead ahead.
+        # What matters is only that this snapshot's heading and the live
+        # heading set below differ measurably.
+        recorded_t = session.loop.sim.world.t + 10_000.0
+        truth_obj = TruthObject(id=agent.id, cls=agent.cls, x=20.0, y=0.0)
+        h_recorded = 0.0  # head-on to `_CAMERA`, which faces +x from the origin
+        session.loop.sim.pose_history.record(
+            recorded_t, (truth_obj,), {agent.id: h_recorded}
+        )
+
+        # Diverge the live heading from the recorded one -- broadside
+        # instead of head-on -- strictly after the snapshot above was taken.
+        h_live = math.pi / 2
+        agent.state = replace(agent.state, heading=h_live)
+        assert session.loop.sim._traffic.agents[0].state.heading == h_live
+
+        expected_recorded = label_frame(
+            b"", 0, recorded_t, 640, 384, _CAMERA, (truth_obj,), {agent.id: h_recorded}
+        ).boxes
+        expected_live = label_frame(
+            b"", 0, recorded_t, 640, 384, _CAMERA, (truth_obj,), {agent.id: h_live}
+        ).boxes
+        assert expected_recorded, "the fabricated truth must actually be visible to _CAMERA"
+        assert expected_recorded != expected_live, (
+            "head-on and broadside must produce visibly different boxes, or "
+            "this test cannot discriminate anything"
+        )
+
+        asyncio.run(session._handle(json.dumps(_camera_payload(0, recorded_t))))
+
+        labels = sink.finalize()
+        doc = json.loads(labels.read_text())
+        assert len(doc["images"]) == 1
+        [ann] = doc["annotations"]
+
+        expected_box = expected_recorded[0]
+        assert ann["bbox"] == pytest.approx(
+            [
+                expected_box.x0,
+                expected_box.y0,
+                expected_box.x1 - expected_box.x0,
+                expected_box.y1 - expected_box.y0,
+            ]
+        )
+    finally:
+        pipeline.shutdown()
+
+
 def test_a_seq_collision_does_not_overwrite_an_earlier_frame(ws_session_factory, tmp_path):
     """`CameraFrameCmd.seq` is a per-connection counter (`captureSeq++` in the
     frontend) -- a reconnect restarts it at zero while the sink keeps
@@ -135,9 +241,19 @@ def test_a_seq_collision_does_not_overwrite_an_earlier_frame(ws_session_factory,
         pipeline.shutdown()
 
 
-def test_a_capture_failure_does_not_take_down_the_socket(ws_session_factory, tmp_path, monkeypatch):
+def test_a_capture_failure_does_not_take_down_the_socket(
+    ws_session_factory, tmp_path, monkeypatch, caplog
+):
     """Same never-raises discipline `_ingest_frame` already documents for the
-    rest of the frame path: a broken sink degrades to a log line."""
+    rest of the frame path: a broken sink degrades to a log line.
+
+    `sent == []` alone is symmetric here -- `_ingest_frame` never acks a
+    camera frame regardless of whether capture succeeds, so that assertion
+    would hold even if the failure were silently swallowed
+    (`except Exception: pass`). The load-bearing checks are that
+    `asyncio.run` does not raise at all, and that the failure was actually
+    logged rather than dropped on the floor.
+    """
     pipeline = PerceptionPipeline(StubDetector())
     try:
         sink = CaptureSink(tmp_path / "out")
@@ -151,8 +267,10 @@ def test_a_capture_failure_does_not_take_down_the_socket(ws_session_factory, tmp
 
         monkeypatch.setattr(CaptureSink, "write", _boom)
 
-        asyncio.run(session._handle(json.dumps(_camera_payload(0, frame.t))))  # must not raise
+        with caplog.at_level("ERROR", logger="streetlab.server"):
+            asyncio.run(session._handle(json.dumps(_camera_payload(0, frame.t))))  # must not raise
         assert sent == []
+        assert "capture failed" in caplog.text
     finally:
         pipeline.shutdown()
 

@@ -303,16 +303,6 @@ class Simulation:
     def scene_description(self) -> SceneDescription:
         return self.scene.description
 
-    def agent_headings(self) -> dict[str, float]:
-        """Heading in radians, by id, for every agent currently in the world.
-
-        `label_frame` (`perception/capture.py`) reads this to orient each
-        truth box's silhouette -- a vehicle's projected box is narrower
-        head-on than broadside, and that depends on which way it is
-        actually pointed, not on its position alone.
-        """
-        return {a.id: a.state.heading for a in self._traffic.agents}
-
     # -- stepping ---------------------------------------------------------- #
 
     def step(self, dt: float | None = None) -> None:
@@ -557,12 +547,22 @@ class Simulation:
         self.world.history = [h for h in self.world.history if h[0] >= cutoff]
 
     def _record_truth(self) -> None:
-        """Snapshot where every agent actually is, keyed by the instant those
-        positions describe -- `world.t` *after* `step` has incremented it,
-        which is the same `t` the `StateUpdate` assembled from this tick
-        carries. A frame echoes that `t` back verbatim, so this is the key
+        """Snapshot where every agent actually is (and, alongside it, which
+        way each one is facing), keyed by the instant those positions
+        describe -- `world.t` *after* `step` has incremented it, which is
+        the same `t` the `StateUpdate` assembled from this tick carries. A
+        frame echoes that `t` back verbatim, so this is the key
         `pose_history.at(frame_t)` will later be asked for, and the snapshot
         under it is the world the shutter actually saw.
+
+        Heading rides alongside position in the same snapshot, read back via
+        `pose_history.headings_at(frame_t)`, for the same reason position
+        does: `label_frame` (`perception/capture.py`) needs the heading *as
+        of the instant the frame describes*, not whatever it has become by
+        the time a capture handler gets around to reading it. Recording the
+        two together, once, under one lock (`perception/history.py`) is what
+        keeps a heading read from ever describing a different instant than
+        the position it is paired with.
 
         Every step whenever either of two consumers exists, regardless of
         perception mode: Phase 3 scoring reads this after the fact, and a
@@ -597,15 +597,22 @@ class Simulation:
           stealing a nearby prediction -- so only recall cared.
         - `--capture` is deliberately UNGATED. Its real visibility limit is
           `MIN_BOX_PX` in image space (`perception/capture.py`), not a
-          world-space radius: at `fov_y = 50 deg` and 640x384 a head-on car
-          does not fall below `MIN_BOX_PX` until roughly 185 m, and broadside
-          roughly 460 m -- both well past `MAX_RANGE_M = 90.0`. Keeping the
-          world-space gate here would leave real, above-threshold vehicles
-          unlabelled across the whole 90-400 m band, and this capture is
-          reused as a fine-tuning dataset, where an unlabelled visible car
-          actively teaches "car = background". So capture records every
-          agent and lets `label_frame`'s own clamp against `MIN_BOX_PX`
-          decide visibility instead.
+          world-space radius, and at `fov_y = 50 deg` and 640x384 that limit
+          is set by a car's HEIGHT, not its width, in both orientations: a
+          sedan is only ~1.5 m tall against 1.8-4.5 m wide, so the vertical
+          extent of its projected box crosses `MIN_BOX_PX` first regardless
+          of which way it is facing. Measured directly against
+          `project_box`: a head-on car is 8.45x7.04 px at 90 m and 4.06x3.38
+          px at 185 m, crossing the 4.0 px floor (on height) at roughly
+          157 m; broadside is 20.80x6.93 px at 90 m and crosses (again on
+          height) at roughly 155 m. So the real cutoff is ~155-157 m in
+          either orientation, not the few-hundred-metre figure width alone
+          would suggest -- still a real 65-67 m band (90-157 m) of visible,
+          above-threshold vehicles that `MAX_RANGE_M` would leave unlabelled,
+          and this capture is reused as a fine-tuning dataset, where an
+          unlabelled visible car actively teaches "car = background". So
+          capture records every agent and lets `label_frame`'s own clamp
+          against `MIN_BOX_PX` decide visibility instead.
 
         The cost of that: a run with both `--capture` and an ML source
         active (`streetlab serve --capture <dir> --perception ml`) reports a
@@ -630,18 +637,24 @@ class Simulation:
         if self._ml_perception is None and not self._capture:
             return
         if self._capture:
-            objects = [
-                TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y)
-                for a in self._traffic.agents
-            ]
+            agents = self._traffic.agents
         else:
             ex, ey = self.world.ego.x, self.world.ego.y
-            objects = [
-                TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y)
+            agents = [
+                a
                 for a in self._traffic.agents
                 if math.hypot(a.state.x - ex, a.state.y - ey) <= MAX_RANGE_M
             ]
-        self.pose_history.record(self.world.t, objects)
+        # `objects` and `headings` are built from the same filtered `agents`
+        # list, in the same pass, so a heading recorded under this `t` is
+        # guaranteed to describe the same instant as the position recorded
+        # alongside it -- see this method's docstring on why that pairing
+        # matters.
+        objects = [
+            TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y) for a in agents
+        ]
+        headings = {a.id: a.state.heading for a in agents}
+        self.pose_history.record(self.world.t, objects, headings)
 
     # -- frame assembly ---------------------------------------------------- #
 
