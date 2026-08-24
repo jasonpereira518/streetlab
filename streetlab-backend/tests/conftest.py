@@ -18,6 +18,14 @@ from sim.loop import SimLoop, Simulation
 # ../../contract/validate_py_test.py — see that file for how to regenerate it.
 FIXTURES = Path(__file__).resolve().parents[2] / "contract" / "fixtures"
 
+# The committed Cycle 5 detection benchmark (Task 4): 60 labelled frames plus
+# `labels.json`, never regenerated to make a downstream number look better.
+# Same "../.." from `tests/` to the git root as `FIXTURES` above, just a
+# sibling directory under `contract/`. `tests/test_benchmark_set.py` and any
+# later task scoring against this set (Tasks 5, 6) should resolve the path
+# through this constant rather than each hardcoding their own.
+BENCHMARK_DIR = Path(__file__).resolve().parents[2] / "contract" / "benchmark"
+
 
 def load_fixture(name: str) -> dict:
     """Read a wire fixture from the canonical contract fixture set."""

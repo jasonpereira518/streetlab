@@ -350,7 +350,7 @@ def test_serve_finalizes_the_capture_sink_on_shutdown(tmp_path, monkeypatch):
                 sock.close()
 
     monkeypatch.setattr(uvicorn, "Server", _NoOpServer)
-    monkeypatch.setattr(cli, "_start_stdin_watchdog", lambda: None)
+    monkeypatch.setattr(cli, "_start_stdin_watchdog", lambda sink: None)
 
     capture_dir = tmp_path / "capture"
     args = cli.build_parser().parse_args(
@@ -362,3 +362,62 @@ def test_serve_finalizes_the_capture_sink_on_shutdown(tmp_path, monkeypatch):
 
     assert cli._serve(args) == 0
     assert (capture_dir / "labels.json").exists()
+
+
+def test_stdin_watchdog_finalizes_the_sink_before_exiting(monkeypatch, tmp_path):
+    """Task-4 review Finding 4: the stdin watchdog used to call `os._exit(0)`
+    the instant the parent's stdin pipe closed, which wins the race against
+    `_serve`'s own `finally` -- every JPEG on disk, zero annotations, and it
+    looks exactly like success. This fires on *any* parent-death path (the
+    common case under a supervisor), not just `SIGTERM`.
+
+    Exercises the real `_start_stdin_watchdog`, not a stand-in: `os._exit`
+    and `sys.stdin` are stubbed (a real `os._exit(0)` would kill the whole
+    test process; a real blocking `stdin.read()` would hang it), but the
+    watchdog thread itself, and `CaptureSink.finalize`, run for real.
+    """
+    import threading
+
+    from server import cli
+
+    sink = CaptureSink(tmp_path)
+    sink.write(label_frame(
+        b"\xff\xd8\xff\xe0not-a-real-jpeg", 0, 0.0, 640, 384,
+        CameraParams(x=0.0, y=0.0, z=1.33, yaw=0.0, pitch=-0.0045169078,
+                     roll=0.0, fov_y_deg=50.0, aspect=640 / 384),
+        [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+        {"veh_00": math.pi},
+    ))
+
+    order: list[str] = []
+    orig_finalize = sink.finalize
+
+    def spy_finalize():
+        order.append("finalize")
+        return orig_finalize()
+
+    monkeypatch.setattr(sink, "finalize", spy_finalize)
+
+    exited = threading.Event()
+
+    def fake_exit(code):
+        order.append("exit")
+        exited.set()
+
+    monkeypatch.setattr(cli.os, "_exit", fake_exit)
+
+    class _ImmediateEofStdin:
+        def read(self):
+            return ""
+
+    monkeypatch.setattr(cli.sys, "stdin", _ImmediateEofStdin())
+
+    cli._start_stdin_watchdog(sink)
+
+    assert exited.wait(timeout=2.0), "watchdog thread never reached its exit call"
+    assert order == ["finalize", "exit"], (
+        "finalize() must run before the process exits, not after or never"
+    )
+    doc = json.loads((tmp_path / "labels.json").read_text())
+    assert len(doc["images"]) == 1
+    assert len(doc["annotations"]) == 1

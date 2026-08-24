@@ -1260,8 +1260,13 @@ class SimLoop:
         would let a post-reconnect frame silently overwrite an earlier
         JPEG and duplicate a COCO `image_id` -- an "ordinary event, not a
         pathological one" per the task that added this. Labels are keyed by
-        `sim_t` downstream (Task 4 compares two runs by `(sim_t, track_id)`),
-        so nothing reads this value as anything but a unique file name.
+        `sim_t` downstream: `CaptureSink.write` (`perception/capture.py`)
+        never persists a `track_id` on the annotation records it writes
+        (only the in-memory `LabelBox` carries one), so a determinism check
+        comparing two runs keys annotations by `(sim_t, category_id, bbox)`
+        rather than `(sim_t, track_id)` -- see the task-4 report for why
+        that is an equally strict check here. Either way, nothing reads
+        this counter's value as anything but a unique file name.
         """
         seq = self._capture_seq
         self._capture_seq += 1

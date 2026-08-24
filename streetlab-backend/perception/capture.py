@@ -23,6 +23,7 @@ label came from, not a nominal one.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -38,6 +39,20 @@ from schema import CameraParams, DetectionClass
 # and later scores a real detector as having "missed" something nothing
 # could plausibly have seen.
 MIN_BOX_PX: float = 4.0
+
+# `CaptureSink.write` rewrites `labels.json` after this many frames, on top
+# of the authoritative write `finalize()` always does at the end. This
+# exists for the failure modes nothing in this process can run code for --
+# a `SIGKILL` of this process itself, or the OS killing it outright -- where
+# neither `finalize()`'s own `finally` nor the stdin watchdog's now-also-
+# finalizing exit path gets a chance to run at all. Without it, that failure
+# degrades all the way to "every JPEG on disk, zero annotations" (see
+# `CaptureSink`'s docstring); with it, the same failure degrades only to
+# "this run's last <= N frames are unlabelled," which is a far smaller loss
+# for the same catastrophic kill. Tuned as a frame count, not a wall-clock
+# timer, so the cadence is deterministic and reproducible given the same
+# sequence of `write()` calls -- see `_maybe_rewrite`'s docstring.
+REWRITE_EVERY_N_FRAMES: int = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,13 +147,21 @@ def _camera_record(camera: CameraParams) -> dict[str, float]:
 class CaptureSink:
     """Accumulates `LabelledFrame`s and writes them out as a COCO dataset.
 
-    `write` is the only place that touches the filesystem per-frame (the
-    JPEG); everything else is held in memory and flushed once by
-    `finalize`, so a capture that crashes partway through never leaves a
-    half-written `labels.json` behind.
+    `write` is the only place that touches the filesystem per-frame for the
+    JPEG; the COCO records themselves are held in memory and flushed to
+    `labels.json` in two ways: an authoritative write from `finalize()`
+    (always the final word on this run's content), and a periodic rewrite
+    every `REWRITE_EVERY_N_FRAMES` frames from inside `write()` itself, so a
+    kill that reaches neither `finalize()` nor the stdin watchdog's own
+    finalize-before-exit (a `SIGKILL` of this process) degrades to a
+    truncated-but-valid `labels.json` instead of none at all. Both writers
+    go through `_write_json`, guarded by one lock, so a periodic rewrite and
+    a `finalize()` racing from different threads (this process's own
+    request-handling thread and the stdin watchdog thread, say) cannot
+    interleave two partial writes into a corrupt file on disk.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, rewrite_every: int = REWRITE_EVERY_N_FRAMES) -> None:
         self._root = root
         self._frames_dir = root / "frames"
         self._images: list[dict] = []
@@ -148,6 +171,9 @@ class CaptureSink:
         # seed -- first class encountered gets the lowest id.
         self._category_order: list[DetectionClass] = []
         self._next_annotation_id = 1
+        self._rewrite_every = rewrite_every
+        self._frames_since_rewrite = 0
+        self._lock = threading.Lock()
 
     def write(self, frame: LabelledFrame) -> None:
         self._frames_dir.mkdir(parents=True, exist_ok=True)
@@ -183,22 +209,56 @@ class CaptureSink:
             })
             self._next_annotation_id += 1
 
+        self._maybe_rewrite()
+
+    def _maybe_rewrite(self) -> None:
+        """Every `_rewrite_every` calls to `write`, persist the current
+        (possibly incomplete) COCO document to `labels.json`.
+
+        Triggered purely by a call count, never by wall-clock time -- a
+        timer-based rewrite would make *how many frames a kill at a given
+        moment loses* depend on wall-clock scheduling jitter, which is
+        exactly the kind of nondeterminism this dataset's capture pipeline
+        is required to avoid (see the task-4 report's determinism section).
+        A count-based cadence means the same sequence of `write()` calls
+        rewrites at the same points every time, deterministically. This
+        never changes what `finalize()` ultimately writes -- only how many
+        times, and at which frame counts, an equivalent-or-earlier version
+        of that same content lands on disk first.
+        """
+        self._frames_since_rewrite += 1
+        if self._frames_since_rewrite >= self._rewrite_every:
+            self._frames_since_rewrite = 0
+            self._write_json(self._build_doc())
+
     def _category_id(self, cls: DetectionClass) -> int:
         # Stable integer ids: position in first-seen order, 1-based (COCO
         # convention reserves 0 for "no category" in some tooling).
         return self._category_order.index(cls) + 1
 
-    def finalize(self) -> Path:
-        self._root.mkdir(parents=True, exist_ok=True)
+    def _build_doc(self) -> dict:
         categories = [
             {"id": self._category_id(cls), "name": cls}
             for cls in self._category_order
         ]
-        doc = {
+        return {
             "images": self._images,
             "annotations": self._annotations,
             "categories": categories,
         }
+
+    def _write_json(self, doc: dict) -> Path:
+        self._root.mkdir(parents=True, exist_ok=True)
         out = self._root / "labels.json"
-        out.write_text(json.dumps(doc, indent=2))
+        with self._lock:
+            out.write_text(json.dumps(doc, indent=2))
         return out
+
+    def finalize(self) -> Path:
+        """The authoritative, final write. Safe to call more than once (the
+        stdin watchdog and `_serve`'s own `finally` can both legitimately
+        reach this during a cooperative shutdown race) -- every call writes
+        the same in-memory state, and `_write_json`'s lock keeps two such
+        calls from interleaving into a corrupt file.
+        """
+        return self._write_json(self._build_doc())

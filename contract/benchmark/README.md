@@ -46,17 +46,35 @@ never correcting a box by eye — see "Visual verification" below.
 These are not bugs. They are documented here so nobody re-discovers them by
 staring at a confusing score later.
 
-**Occlusion is not modelled.** A vehicle entirely behind a building still
-gets a full ground-truth box, because `project_box` only reasons about
-camera geometry — it has no notion of what else is in the scene between the
-camera and the object. This punishes a real detector for missing something
-it could not possibly have seen: a human looking at the raw frame would
-agree no vehicle is visible where the box says one is. Two of the 84
-annotations in this set were visually confirmed to be exactly this case
-(box sits on a flat building wall, no vehicle visible in the frame; the
-other box in the same frame, for a vehicle actually in view, is correctly
-placed). Fixing this needs depth information the sim does not currently
-expose, and is deferred.
+**Occlusion is not modelled, and it is not a minor effect on this set — it
+caps whole-set recall at ~0.55 for any detector, however good.**
+`project_box` only reasons about camera geometry — it has no notion of what
+else is in the scene between the camera and the object — so a vehicle
+entirely behind a building still gets a full ground-truth box. On this
+benchmark specifically: **38 of the 84 annotations (45%), spread across 30
+of the 46 populated frames, are for vehicles on the cross-street the ego is
+merging into, all of which sit behind the building row for this entire
+clip** (the ego's own camera x never exceeds ~41 m over the whole run; the
+cross-street objects back-project to x ≈ 77 m, well past the building line
+it never reaches). The other 46 annotations, on the ego's own street, are
+the ones a detector actually has a chance to see.
+
+**A perfect detector — one that misses nothing actually visible — scores
+recall ≈ 0.55 (46/84) on this benchmark, for reasons that have nothing to
+do with detection quality.** Any recall number Tasks 5, 6 or 7 publish off
+this set should be reported **two ways**: whole-set recall (bounded above
+by ~0.55, and mixing "detector missed it" with "detector was structurally
+incapable of seeing it") and **ego-street-only recall** (the 46
+ego-street-lane annotations only, where 1.0 is actually achievable) —
+whole-set recall alone will look like a domain-gap failure even for a
+detector performing perfectly on everything the camera could show it.
+
+Six of the cross-street boxes (frames 22, 25, 28 ×2, 34, 40 in this set's
+numbering) were visually confirmed to sit on blank building facade with no
+vehicle visible in the frame, the same check described under "Visual
+verification" below. Fixing this needs depth information the sim does not
+currently expose, and is deferred to a future cycle — it is not something
+Task 4 or Task 6 should attempt.
 
 **A vehicle very close to the camera gets no label at all.** `project_box`
 returns `None` when any corner of the vehicle's 3D box is nearer than
@@ -66,7 +84,10 @@ the lens. This is deliberate: a corner that close is a numerically
 degenerate perspective divide, and clamping the resulting box to the frame
 would silently produce a confident full-frame "car" label for an object
 that was not actually filling the frame. The cost is real: a vehicle that
-close is highly visible to a human but carries no ground truth here.
+close is highly visible to a human but carries no ground truth here. **This
+set never exercises that gap either way** — see "Everything labelled is far
+and small" below; nothing in it comes close enough to the near plane to
+test this path.
 
 **Capture-mode truth is not range-gated.** `perception/service.py`'s
 `MAX_RANGE_M = 90.0` gate applies to *scoring* (`ml_source.py`), not to
@@ -77,6 +98,58 @@ detector is actually scored against, because a box only drops below
 `MIN_BOX_PX` at long range. A consumer that reuses this dataset for scoring
 rather than training should be aware the label set is not pre-filtered to
 the 90 m scoring gate.
+
+## The imagery itself: far, small, and mostly black
+
+Two properties of this set's frames are not label artefacts — they are what
+the detector camera actually produces — but they bear directly on how to
+read any "zero detections" or low-recall result out of Cycle 5, so they are
+recorded here rather than left for someone to rediscover while debugging a
+confusing score.
+
+**Everything labelled is far and small.** Back-projecting every annotation
+through its own recorded camera pose (`perception/geometry.project_to_ground`,
+the same function Task 5 will use to re-project predictions) gives
+ground-truth distances from **31.5 m to 88.5 m** — ego-street annotations
+cluster 31.5-47.9 m, cross-street ones 62.7-88.5 m. Nothing in this set is
+closer than 31.5 m. Box sizes bottom out at **10.5 × 9.1 px** and top out at
+**44.4 × 19.6 px**, in a 640×384 frame — every labelled object is a small
+fraction of the image. A detector tuned or evaluated only against this set
+would never be exercised against a near, large target.
+
+**The frames are near-black, and the ground plane in front of the ego is
+not rendered at all in the detector camera.** Per-frame mean luminance
+(0-255 grayscale) ranges **8.9 to 14.7** across all 60 committed frames, and
+**53% to 80%** of each frame's pixels are below luminance value 8. More
+specifically: the bottom **~37-41% of every single frame (roughly rows
+225-241 through 383)** is at or effectively at zero — there is no ground,
+road markings, or shadow rendered there, only near-black. This is specific
+to the detector camera's offscreen render; the same scene renders normally
+in the user-facing 3D view (see the screenshots taken while driving the
+capture). Both figures were measured directly off the committed JPEGs with
+a simple luminance/row-max scan; see the task-4 report for the exact method.
+
+**Why this matters for Cycle 5:** a "zero vehicle detections" result against
+targets this distant and small, in frames this dark with an unrendered near
+field, is a scale-and-exposure story before it is a domain-gap story. Do not
+read a low score off this benchmark as evidence the detector cannot
+recognise vehicles in general — it may simply never have been shown
+anything that looks like this. **This does not make the benchmark
+invalid** — it faithfully captures what the production detector pipeline
+actually receives, which is the entire point of capturing from the real
+render path rather than synthesizing test images. Fixing the renderer (if
+that turns out to be warranted) is a Task 6 lever, not something to change
+here — changing it now would confound the very measurement this set exists
+to provide a fixed target for.
+
+## `category_id` is run-relative
+
+`CaptureSink._category_id` assigns category ids by first-seen order within
+this specific capture run, not from any global registry — this run happened
+to see `car` before `truck`, so `car = 1` and `truck = 2` in this file's
+`categories` array, but that assignment is an artefact of capture order, not
+a guarantee. A consumer should map `category_id -> name` through the
+`categories` array itself, never assume `1 == "car"`.
 
 ## Visual verification
 
@@ -100,6 +173,12 @@ annotation sets. `CaptureSink`'s written COCO format does not persist
 comparison keyed on `(category_id, bbox)` per shared `sim_t` rather than
 `(sim_t, track_id)` literally — see the task-4 report for detail on why
 that is an equivalent check here.
+
+The 20 shared instants were not all empty frames (a vacuous pass): **12 of
+the 20 carried at least one annotation, and 22 annotations total were
+compared** (both sides — run A and run B each contributed 22 annotations
+across those 20 instants, all matching). See the task-4 report for the
+verbatim comparison output.
 
 ## Stopping the capture
 

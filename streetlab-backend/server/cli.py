@@ -364,17 +364,39 @@ def _bind(host: str, port: int) -> socket.socket:
     return sock
 
 
-def _start_stdin_watchdog() -> None:
+def _start_stdin_watchdog(sink: CaptureSink | None) -> None:
     """Exit the moment the parent's stdin pipe closes.
 
     Tauri gives this process a piped stdin; when the app dies the pipe
     closes, the blocking read returns EOF, and the process exits itself. This
     is the layer that survives a ``SIGKILL`` of the parent app — no Rust
     teardown hook runs in that case, so nothing else would catch it.
+
+    This path used to call ``os._exit(0)`` directly, which wins the race
+    against ``_serve``'s own ``finally`` and its ``sink.finalize()`` --
+    every JPEG already on disk survives (each `write()` call is its own
+    file), but every annotation, which lives only in `CaptureSink`'s memory
+    until `finalize()` runs, is lost. That is not a `SIGTERM`-specific
+    problem: this watchdog fires on *any* parent-death path, which is the
+    common case when this process runs under a supervisor rather than a
+    terminal -- and the failure looks exactly like success, since the
+    frames directory is still there. Finalizing here, before the exit,
+    closes that gap for a cooperative parent death; `CaptureSink.write`'s
+    own periodic rewrite (see its docstring) is the other half of this
+    guarantee, for a kill that skips even this thread (`SIGKILL` of this
+    process itself, not just its parent).
     """
 
     def _watch() -> None:
         sys.stdin.read()
+        if sink is not None:
+            try:
+                sink.finalize()
+            except Exception:
+                # Losing labels.json is bad; taking down the exit path
+                # entirely because finalize() hit a full disk or similar
+                # would be worse -- log and still exit.
+                log.exception("capture sink finalize failed during stdin-watchdog shutdown")
         os._exit(0)
 
     threading.Thread(target=_watch, daemon=True, name="stdin-watchdog").start()
@@ -428,7 +450,7 @@ def _serve(args) -> int:
     )
     print(f"Point the frontend at:  ?backend=ws://{args.host}:{real_port}", file=sys.stderr)
 
-    _start_stdin_watchdog()
+    _start_stdin_watchdog(sink)
 
     ready = {
         "ws": f"ws://{args.host}:{real_port}",
@@ -445,15 +467,25 @@ def _serve(args) -> int:
         # lifespan: process teardown, not a per-request concern.
         if pipeline is not None:
             pipeline.shutdown()
-        # Nothing is on disk as `labels.json` until this runs -- `CaptureSink`
-        # holds every COCO record in memory and only `finalize()` flushes it
-        # (see that method's docstring). A graceful stop (uvicorn's own
-        # SIGINT/SIGTERM handling, or `.run()` simply returning) always
-        # reaches here. A `SIGKILL`, or the stdin watchdog's `os._exit(0)`
-        # above (both bypass this `finally` by design -- neither one leaves
-        # a Python frame to unwind), does not: every JPEG `write()` already
-        # wrote survives under `frames/`, but the annotations describing them
-        # are lost, since they existed only in this process's memory.
+        # The *final, authoritative* write of `labels.json` happens here --
+        # `CaptureSink` accumulates every COCO record in memory and
+        # `finalize()` (idempotent -- see its docstring) flushes the
+        # complete, correct set. This `finally` is reached by `SIGINT`
+        # (confirmed empirically: uvicorn's own graceful shutdown) and by
+        # `.run()` simply returning. It is *not* reached by `SIGKILL`, nor
+        # by the stdin watchdog's exit path when the parent (not this
+        # process) dies -- both were observed, before this task's fix, to
+        # lose every annotation while leaving the JPEGs on disk under
+        # `frames/`, because they bypass this `finally` entirely (no Python
+        # frame to unwind). Plain `SIGTERM` to *this* process was also
+        # observed, in this environment, to exit without reaching here --
+        # `_start_stdin_watchdog` now finalizes the sink itself before its
+        # own `os._exit(0)`, which closes that gap for any parent-death or
+        # signal path that races the watchdog rather than this `finally`.
+        # `CaptureSink.write`'s periodic rewrite (see its docstring) is the
+        # last line of defence, for a `SIGKILL` of this process itself,
+        # which no userspace code -- this `finally`, the watchdog, nothing
+        # -- can ever run code in response to.
         if sink is not None:
             sink.finalize()
     return 0

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -146,3 +148,105 @@ def test_a_frame_with_nothing_visible_is_still_recorded(tmp_path):
     doc = json.loads(sink.finalize().read_text())
     assert len(doc["images"]) == 1
     assert doc["annotations"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Task-4 review Finding 4: a hard kill that reaches neither `finalize()` nor  #
+# the stdin watchdog's own finalize-before-exit (a SIGKILL of this process    #
+# itself) must not lose every annotation -- `write()`'s periodic rewrite is   #
+# the last line of defence for exactly that case.                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_labels_json_does_not_exist_before_the_rewrite_threshold(tmp_path):
+    """Below the threshold, nothing has been written yet -- proves the
+    rewrite is actually periodic, not on-every-write."""
+    sink = CaptureSink(tmp_path, rewrite_every=3)
+    sink.write(label_frame(JPEG, 0, 0.0, W, H, camera(), [], {}))
+    sink.write(label_frame(JPEG, 1, 0.1, W, H, camera(), [], {}))
+    assert not (tmp_path / "labels.json").exists()
+
+
+def test_write_periodically_rewrites_labels_json_without_finalize(tmp_path):
+    """Simulates the failure this exists for: a kill after the Nth `write()`
+    that never reaches `finalize()`. `labels.json` must already hold every
+    frame and annotation `write()` has been given so far."""
+    sink = CaptureSink(tmp_path, rewrite_every=3)
+    for seq in range(3):
+        sink.write(label_frame(JPEG, seq, seq * 0.1, W, H, camera(),
+                               [TruthObject(id="veh_00", cls="car", x=20.0 - seq, y=0.0)],
+                               {"veh_00": math.pi}))
+    # No finalize() call -- this is the point of the test.
+    assert (tmp_path / "labels.json").exists(), "periodic rewrite never fired"
+    doc = json.loads((tmp_path / "labels.json").read_text())
+    assert len(doc["images"]) == 3
+    assert len(doc["annotations"]) == 3
+    assert {c["name"] for c in doc["categories"]} == {"car"}
+
+
+def test_the_periodic_rewrite_fires_again_on_the_next_threshold(tmp_path):
+    """Not a one-shot: a second batch of `rewrite_every` frames rewrites
+    again, so a kill anywhere in a long run loses at most `rewrite_every`
+    frames, not everything after the first rewrite."""
+    sink = CaptureSink(tmp_path, rewrite_every=2)
+    for seq in range(5):
+        sink.write(label_frame(JPEG, seq, seq * 0.1, W, H, camera(), [], {}))
+    doc = json.loads((tmp_path / "labels.json").read_text())
+    # 5 frames, threshold 2: rewrites fire after frame 2 and frame 4 --
+    # frame 5 (the incomplete third batch) is the at-most-`rewrite_every`
+    # frames a kill at this exact point would still lose.
+    assert len(doc["images"]) == 4
+
+
+def test_finalize_after_periodic_rewrites_still_has_every_frame(tmp_path):
+    """The periodic rewrite is a safety net, not a replacement for
+    `finalize()` -- a normal, uninterrupted run must still end with every
+    frame in `labels.json`, not just whatever the last periodic rewrite saw."""
+    sink = CaptureSink(tmp_path, rewrite_every=2)
+    for seq in range(5):
+        sink.write(label_frame(JPEG, seq, seq * 0.1, W, H, camera(), [], {}))
+    doc = json.loads(sink.finalize().read_text())
+    assert len(doc["images"]) == 5
+
+
+def test_finalize_is_idempotent(tmp_path):
+    """The stdin watchdog and `_serve`'s own `finally` can both legitimately
+    call `finalize()` during a cooperative shutdown race (Finding 4) -- a
+    second call must not raise, and must not change the file's content."""
+    sink = CaptureSink(tmp_path)
+    sink.write(label_frame(JPEG, 0, 0.0, W, H, camera(),
+                           [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+                           {"veh_00": math.pi}))
+    first = json.loads(sink.finalize().read_text())
+    second = json.loads(sink.finalize().read_text())
+    assert first == second
+
+
+def test_the_periodic_rewrite_produces_exactly_what_finalize_would_at_that_point(tmp_path):
+    """Determinism guard for the rewrite cadence itself (Finding 4's
+    instruction: the periodic rewrite must not change the final file's
+    content, only how often something is written). Compares a sink stopped
+    exactly at the rewrite threshold against a fresh sink fed the identical
+    frames and finalized immediately -- the two documents must be
+    byte-identical, proving the periodic write is not some lesser, lossier
+    snapshot but the same document `finalize()` would have produced."""
+    frames = [
+        label_frame(JPEG, seq, seq * 0.1, W, H, camera(),
+                   [TruthObject(id="veh_00", cls="car", x=20.0 - seq, y=0.0)],
+                   {"veh_00": math.pi})
+        for seq in range(3)
+    ]
+
+    periodic_root = Path(tempfile.mkdtemp())
+    periodic_sink = CaptureSink(periodic_root, rewrite_every=3)
+    for f in frames:
+        periodic_sink.write(f)
+    periodic_doc = json.loads((periodic_root / "labels.json").read_text())
+
+    finalized_root = Path(tempfile.mkdtemp())
+    finalized_sink = CaptureSink(finalized_root)
+    for f in frames:
+        finalized_sink.write(f)
+    finalized_doc = json.loads(finalized_sink.finalize().read_text())
+
+    assert periodic_doc == finalized_doc
