@@ -22,7 +22,7 @@ published in [B], with its command, and touching no capture or model:
 **Result in one line: both cheap levers failed, and that is a clean finding.** It rules out
 two explanations that would have been cheap to act on and justifies the expensive one on
 measurement rather than assumption. Nothing here is promising. **One caveat the reader
-should carry from the first line:** a *third* cheap explanation — an unlettered 1.67×
+should carry from the first line:** a *third* cheap explanation — an unletterboxed 1.67×
 aspect stretch in the preprocessing path — was found in shipped code during this report's
 own review, appears in no Phase 1 document, and is still untested (§8, §9.0). The branch
 decision below is "the levers measured do not reach this gap", not "nothing cheap is
@@ -532,7 +532,7 @@ in Phase 1 tried:
 
 ## 9. Open questions carried forward
 
-0. **The unlettered 1.67× vertical stretch in `preprocess` is untested, and it is the
+0. **The unletterboxed 1.67× vertical stretch in `preprocess` is untested, and it is the
    cheapest open question on this list.** `_resize_stretch`
    (`streetlab-backend/perception/detector.py:44`) squares every 640×384 frame to 640×640
    with no pad. It is config-correct (`do_pad` is false) and it has never been measured
