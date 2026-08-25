@@ -1503,7 +1503,7 @@ fixed frames, verified matching truth composition):
 | n frames | 332 | 331 |
 | mean luminance (0-255) | 6.6 - 17.5 (avg 11.74) | 19.9 - 39.3 (avg 28.72) |
 | % pixels below luminance 8 | 49.5% - 90.1% | 43.0% - 53.2% |
-| frames with an all-zero bottom row-band | **332 / 332** (rows 224-257) | **0 / 331** |
+| frames with an all-zero bottom row-band | **332 / 332** (rows 224-256) | **0 / 331** |
 
 Unlike the peak-score comparison, this result is **not** subject to the scene-content
 confound (Finding 1): every single frame in both captures shows the same pattern, not just
