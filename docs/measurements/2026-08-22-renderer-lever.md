@@ -341,11 +341,15 @@ checks each undercut it on their own, and together they rule it out as evidence:
    (67.98, 78.20)→(78.48, 65.96). Different stretch of road, different heading relative to
    the sun, different vehicles (84 annotations car+truck vs 24 car-only, 46/38 ego/cross
    vs 0/24). Nothing was held fixed except the scenario and seed.
-2. **The effect sits inside ordinary frame-selection noise.** Peak car score over 30-frame
-   sliding windows **within a single unchanged capture** (no code change, same scene, see
-   the addendum below) spans a **1.77x-2.32x** ratio depending on which capture. A **1.33x**
-   difference between two *different* scenes is smaller than the noise a single scene alone
-   produces.
+2. **The effect sits inside ordinary frame-selection noise, at the sample size that
+   actually matches this comparison.** Disjoint 60-frame blocks within a single unchanged
+   capture (no code change, same scene) give a peak-car spread of **1.35x-1.40x** — a
+   **1.33x** difference between two *different* 60-ish-frame scenes is inside, not larger
+   than, the noise two same-code 60-frame blocks of one scene alone produce. (The
+   paired-capture addendum below reports a separate, larger set of captures and computes
+   its own matched-sample-size noise floor for that comparison — the 30-frame/330-frame
+   figures from an earlier draft of this document were mis-scaled for either comparison
+   and have been removed; see the addendum's own correction.)
 3. **The 60-frame trim choice moves the headline.** The alternative trim (the *first* 60 of
    the raw 94 frames, `sim_t` 24.90-30.65s, all-empty for annotations but still valid
    imagery for peak score) gives peak car **0.2174** — a **+16%** headline instead of +33%,
@@ -356,6 +360,133 @@ evidence the fix helped or hurt detection — it is evidence that two different 
 samples of a real-time simulation produce different peak scores, which was already true
 before any renderer change existed. The controlled comparison below removes the scene
 confound; read that one.
+
+**The "before" column's command and full verbatim output**, re-run against the committed
+benchmark rather than quoted from Task 5's own report (which it reproduces exactly — peak
+scores and the full tp/fp table are identical):
+
+```bash
+cd streetlab-backend && uv run python ../scripts/sweep_threshold.py \
+  --model ~/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx \
+  --benchmark ../contract/benchmark
+```
+
+```
+model: /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx
+benchmark: ../contract/benchmark
+thresholds: [0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.01]
+gate: 3.0 m
+ego-x-max: 74.0 m
+decode-mode: argmax
+loading benchmark and decoding frames ...
+loaded 60 frames, 84 truth objects
+ego-x-max 74.0 m is VALID: largest gap (2.832 m, between x=72.469 and x=75.302) is 2.40x the second-largest and 9.59x the median; split 46/38 of 84 points
+building onnxruntime session ...
+running inference (once per frame) ...
+inference: 5.44s total, 90.7ms/frame
+
+==============================================================================
+PEAK VEHICLE-CLASS SCORES (threshold-independent, raw sigmoid scores)
+==============================================================================
+     frame    sim_t         car       truck         bus  motorcycle   top-any-class
+000000.jpg    13.72      0.0824      0.0829      0.0592      0.0374   traffic light(9)=0.3973
+000001.jpg    13.82      0.0967      0.1105      0.0929      0.0187   stop sign(11)=0.2952
+000002.jpg    13.92      0.1156      0.0812      0.0805      0.0275   stop sign(11)=0.3765
+000003.jpg    14.00      0.1542      0.0635      0.0535      0.0309   stop sign(11)=0.2530
+000004.jpg    14.12      0.1181      0.0791      0.0760      0.0269   umbrella(25)=0.4674
+000005.jpg    14.20      0.1010      0.0857      0.0852      0.0361   keyboard(66)=0.2430
+000006.jpg    14.32      0.1324      0.0800      0.0644      0.0401   stop sign(11)=0.4354
+000007.jpg    14.40      0.1788      0.0678      0.0666      0.0477   stop sign(11)=0.4001
+000008.jpg    14.52      0.1312      0.0815      0.0729      0.0404   stop sign(11)=0.4074
+000009.jpg    14.60      0.1086      0.0805      0.0692      0.0267   stop sign(11)=0.3495
+000010.jpg    14.72      0.1234      0.1038      0.1116      0.0365   stop sign(11)=0.4473
+000011.jpg    14.80      0.0979      0.0669      0.0510      0.0262   stop sign(11)=0.4397
+000012.jpg    14.92      0.1500      0.0907      0.1003      0.0427   stop sign(11)=0.4787
+000013.jpg    15.00      0.1185      0.0721      0.0639      0.0429   stop sign(11)=0.3958
+000014.jpg    15.12      0.1405      0.0987      0.0598      0.0430   stop sign(11)=0.3005
+000015.jpg    15.20      0.0667      0.0357      0.0218      0.0186   keyboard(66)=0.3489
+000016.jpg    15.32      0.0662      0.0577      0.0414      0.0375   keyboard(66)=0.3410
+000017.jpg    15.40      0.0899      0.0514      0.0485      0.0309   dining table(60)=0.2692
+000018.jpg    15.52      0.0521      0.0370      0.0342      0.0355   person(0)=0.2605
+000019.jpg    15.60      0.0746      0.0435      0.0501      0.0253   keyboard(66)=0.2349
+000020.jpg    15.70      0.0719      0.0319      0.0170      0.0144   dining table(60)=0.2547
+000021.jpg    15.82      0.0798      0.0251      0.0262      0.0155   bed(59)=0.2824
+000022.jpg    15.92      0.0927      0.0515      0.0420      0.0309   bed(59)=0.2838
+000023.jpg    16.02      0.1160      0.0513      0.0348      0.0411   dining table(60)=0.2538
+000024.jpg    16.10      0.0823      0.0386      0.0301      0.0375   dining table(60)=0.2545
+000025.jpg    16.22      0.1428      0.0750      0.0619      0.0540   umbrella(25)=0.2487
+000026.jpg    16.30      0.1241      0.0691      0.0493      0.0463   chair(56)=0.2190
+000027.jpg    16.42      0.1133      0.0661      0.0562      0.0433   bed(59)=0.2655
+000028.jpg    16.50      0.0810      0.0340      0.0217      0.0324   person(0)=0.2462
+000029.jpg    16.62      0.0952      0.0535      0.0326      0.0354   traffic light(9)=0.2602
+000030.jpg    16.70      0.1175      0.0687      0.0449      0.0404   apple(47)=0.2437
+000031.jpg    16.82      0.1152      0.0546      0.0342      0.0277   orange(49)=0.2013
+000032.jpg    16.90      0.0835      0.0564      0.0372      0.0356   traffic light(9)=0.3318
+000033.jpg    17.02      0.0570      0.0467      0.0215      0.0366   traffic light(9)=0.2912
+000034.jpg    17.10      0.0971      0.0726      0.0396      0.0452   traffic light(9)=0.3766
+000035.jpg    17.22      0.0817      0.0796      0.0358      0.0575   traffic light(9)=0.4104
+000036.jpg    17.30      0.0667      0.0546      0.0366      0.0394   traffic light(9)=0.5259
+000037.jpg    17.42      0.0637      0.0739      0.0323      0.0399   stop sign(11)=0.3597
+000038.jpg    17.50      0.0902      0.0806      0.0393      0.0622   stop sign(11)=0.4751
+000039.jpg    17.62      0.0852      0.0674      0.0351      0.0698   stop sign(11)=0.3162
+000040.jpg    17.70      0.0836      0.0694      0.0337      0.0495   stop sign(11)=0.3695
+000041.jpg    17.82      0.0797      0.0700      0.0526      0.0301   stop sign(11)=0.6161
+000042.jpg    17.90      0.0730      0.0620      0.0378      0.0830   stop sign(11)=0.4340
+000043.jpg    18.02      0.0752      0.0555      0.0460      0.0431   stop sign(11)=0.4916
+000044.jpg    18.10      0.1576      0.0503      0.0354      0.0299   stop sign(11)=0.5991
+000045.jpg    18.22      0.0994      0.0634      0.0341      0.0566   wine glass(40)=0.5750
+000046.jpg    18.30      0.0976      0.0469      0.0339      0.0454   wine glass(40)=0.3720
+000047.jpg    18.42      0.0789      0.0413      0.0219      0.0440   wine glass(40)=0.5451
+000048.jpg    18.50      0.1092      0.0544      0.0402      0.0466   dining table(60)=0.2581
+000049.jpg    18.62      0.1139      0.0654      0.0514      0.0578   person(0)=0.2884
+000050.jpg    18.70      0.0798      0.0417      0.0433      0.0371   person(0)=0.2261
+000051.jpg    18.82      0.0899      0.0557      0.0546      0.0373   apple(47)=0.2635
+000052.jpg    18.90      0.1342      0.0856      0.1002      0.0352   traffic light(9)=0.3528
+000053.jpg    19.02      0.1872      0.0974      0.0714      0.0579   traffic light(9)=0.4060
+000054.jpg    19.10      0.1262      0.0756      0.0576      0.0353   orange(49)=0.4049
+000055.jpg    19.22      0.1405      0.0375      0.0205      0.0282   stop sign(11)=0.3917
+000056.jpg    19.30      0.1112      0.0759      0.0326      0.0363   orange(49)=0.3733
+000057.jpg    19.42      0.1532      0.0678      0.0273      0.0281   stop sign(11)=0.4627
+000058.jpg    19.50      0.1046      0.0298      0.0182      0.0215   apple(47)=0.3438
+000059.jpg    19.62      0.0897      0.0589      0.0166      0.0499   stop sign(11)=0.4404
+
+Peak across the whole benchmark, per vehicle class:
+  car       : 0.1872  (frame frames/000053.jpg)
+  truck     : 0.1105  (frame frames/000001.jpg)
+  bus       : 0.1116  (frame frames/000010.jpg)
+  motorcycle: 0.0830  (frame frames/000042.jpg)
+
+==============================================================================
+THRESHOLD SWEEP
+==============================================================================
+benchmark truth: 84 annotations total (46 ego-street, 38 cross-street/occluded). A perfect detector scores whole-set recall ~= 0.55 on this set -- occlusion is not modelled, so the cross-street boxes can never be seen. Read whole-set recall next to that ceiling, always.
+ego-street split is real: largest gap (2.832 m, between x=72.469 and x=75.302) is 2.40x the second-largest and 9.59x the median; split 46/38 of 84 points. recall(ego) is the number where 1.0 is actually achievable -- but see the SHAM CONTROL table below before trusting it as signal rather than chance.
+
+threshold  precision  recall(all)  recall(ego)  mean_err_m    tp     fp    fn
+-----------------------------------------------------------------------------
+     0.50          —        0.000        0.000           —     0      0    84
+     0.40          —        0.000        0.000           —     0      0    84
+     0.30      0.000        0.000        0.000           —     0      1    84
+     0.20      0.000        0.000        0.000           —     0     32    84
+     0.10      0.002        0.012        0.022        0.54     1    475    83
+     0.05      0.002        0.036        0.065        0.40     3   1840    81
+     0.01      0.002        0.107        0.196        0.73     9   3989    75
+
+==============================================================================
+SHAM CONTROL (same predictions, scored against a shifted frame's truth)
+==============================================================================
+real tp is the same total_tp column as the sweep above. sham tp scores the identical per-frame predictions against truth from a different frame (60-frame circular offset), gate and threshold held fixed. A sham count near or above the real one means the real matches are not distinguishable from chance.
+
+threshold   real tp   sham(+10)   sham(+20)   sham(+30)
+-------------------------------------------------------
+     0.50         0           0           0           0
+     0.40         0           0           0           0
+     0.30         0           0           0           0
+     0.20         0           0           0           0
+     0.10         1           0           1           0
+     0.05         3           0           4           0
+     0.01         9           1           6           3
+```
 
 **Recall, reported as required but not the headline:** `recall(all)` reaches 0.167 at
 threshold 0.01 (4/24), against 2,575 false positives — worse in absolute recall than Task
@@ -425,12 +556,20 @@ all.
 
 5. **Determinism check on the actual captured frames**, not just the annotation counts:
    - **Exact shared `sim_t` instants** (same float value in both runs, to 6 decimals): only
-     **1** — expected, not a red flag: `sim_t` advances by real (variable) frame-to-frame
-     `dt`, not a fixed tick lattice (`Renderer.tsx`'s capture accumulator adds real `dt`, so
-     two independently-timed runs essentially never land on bit-identical instants; Task 4's
-     own determinism check found a similarly small fraction — 20 shared instants out of 88
-     and 287 frames respectively). The one exact match found: **truth identical, 0
-     mismatches**.
+     **1**. **Correction (second review round): my original explanation for this was wrong.**
+     I attributed it to `sim_t` advancing by real, variable frame-to-frame `dt` with no fixed
+     lattice — false. `sim_t` itself sits on the simulation's 1/60s tick lattice essentially
+     universally (0 of 663 values across both captures are off it); `Renderer.tsx`'s
+     wall-clock accumulator governs *capture cadence* (which tick gets sampled and sent as a
+     `camera_frame`), not the value of `sim_t` on the backend frame that gets captured. The
+     real reason only 1 exact instant is shared is **phase**: the unfixed capture's sampled
+     tick indices cluster at `tick mod 6 == 0` (162 of 332 frames), the fixed capture's at
+     `tick mod 6 == 3` (193 of 331 frames) — two independent runs, each locking onto a
+     different residue class of the same 1-in-6 sampling, essentially never draw the same
+     tick. (Task 4's own determinism check found a similarly small shared fraction — 20
+     shared instants out of 88 and 287 frames — consistent with the same phase-mismatch
+     mechanism, not with an absence of a lattice.) The one exact match found: **truth
+     identical, 0 mismatches**.
    - **Near-instant check** (nearest fixed-capture frame within 0.0167s ≈ one simulation
      tick of each unfixed-capture frame): **44 pairs**. Every one of the 44 has an
      **identical category list and identical annotation count** between the two captures;
@@ -1244,23 +1383,48 @@ threshold   real tp   sham(+10)   sham(+20)   sham(+30)
 | bus | 0.2162 | 0.2021 | −0.0141 | −6.5% |
 | motorcycle | 0.0754 | 0.0781 | +0.0027 | +3.6% |
 
-### Is this delta distinguishable from noise? No.
+### Is this delta distinguishable from noise? No — and here is the correctly-scaled comparison
 
-Computed the same 30-frame sliding-window peak-car spread the review used, but **within
-each of these two ~330-frame paired captures themselves** (same code throughout each
-capture — this measures pure frame-selection noise, not any code effect):
+**Correction (second review round): the first version of this section mis-scaled the noise
+floor, and the error ran in the null's favour, which is exactly the failure mode the brief
+warns against just as much as overstating a positive.** The 30-frame sliding-window figures
+below are real and reproduce exactly, but a 30-frame window computed over a ~330-frame pool
+is a **different, much smaller sample size** than the ~331-frame full-capture peak that
+produces the 1.089x delta — a smaller window mechanically drives the observed minimum down
+and inflates the apparent spread. Comparing a 30-frame-window statistic against a
+full-330-frame delta and calling the window figure "larger — in two cases much larger" was
+comparing two different rulers, not evidence the effect is dwarfed by noise.
 
-- Within the **unfixed** capture alone: peak car over 30-frame windows ranges **0.1285 to
-  0.2269**, a **1.77x** spread.
-- Within the **fixed** capture alone: peak car over 30-frame windows ranges **0.1064 to
-  0.2471**, a **2.32x** spread.
-- For reference, the review's own figure on the smaller 60-frame committed benchmark: **1.31x**.
+**At sample sizes actually matched to the ~331-frame comparison**, the within-capture
+peak-car spread (splitting each paired capture into two same-size halves and comparing
+each half's peak against the other, same code throughout — pure frame-selection noise, no
+code effect) is **1.064x and 1.093x** for the unfixed and fixed captures respectively.
+**1.089x does not clear 1.093x.** The effect is not "dwarfed" by noise — it sits inside it,
+at essentially the same magnitude as noise measured at the same sample size. That is a less
+dramatic-sounding statement than the original draft's, and it is the accurate one.
 
-Every one of these within-capture, zero-code-change spreads is larger — in two cases much
-larger — than the **1.089x** (+8.9%) car delta between the unfixed and fixed captures. The
-bus class moved in the *opposite* direction (−6.5%). **The controlled peak-score comparison
-does not show an effect distinguishable from ordinary frame-to-frame noise at this sample
-size.** This supersedes the "+33%" and the "directionally consistent" framing from the
+For context, at other sample sizes (none of them the "same sample size" as the 1.089x
+figure, so none of them should be quoted as if they were): 30-frame sliding windows within
+each ~330-frame capture give **1.77x** (unfixed) and **2.32x** (fixed) — larger because the
+window is roughly 10x smaller than the full capture, not because the noise floor is
+actually that wide at matched size. Disjoint 60-frame blocks give **1.35x/1.40x**. The
+review's own figure on the smaller 60-frame committed benchmark: **1.31x**. All of these are
+real numbers; none of them is the number to compare 1.089x against — 1.064x/1.093x is.
+
+**The reversal is data-driven, not an over-cautious default to "no effect."** A follow-on
+independent check (not run by me, reported here for completeness and because it corroborates
+rather than contradicts the conclusion above): over matched `sim_t` quarter-windows, the
+fixed/unfixed peak-car ratio comes out **1.109, 1.258, 0.996, 1.051** — straddling 1.0 rather
+than sitting consistently on one side of it — and the median car score across the two
+captures is slightly *lower* for the fixed capture. A real, consistent encoding effect would
+be expected to push the ratio the same direction in most or all quarter-windows; straddling
+1.0 is what noise looks like, not what a genuine effect masked by noise looks like.
+
+**Conclusion, correctly scaled: the controlled peak-score comparison does not show an
+effect distinguishable from ordinary frame-to-frame noise, measured at the sample size that
+actually matches the comparison being made.** The bus class moved in the *opposite*
+direction (−6.5%) from car/truck, which is consistent with noise rather than a directional
+fix effect. This supersedes the "+33%" and "directionally consistent" framing from the
 single-capture attempt: with the confound removed, there is no consistent, attributable
 movement in peak vehicle-class score from this fix, in either direction.
 
@@ -1339,7 +1503,7 @@ fixed frames, verified matching truth composition):
 | n frames | 332 | 331 |
 | mean luminance (0-255) | 6.6 - 17.5 (avg 11.74) | 19.9 - 39.3 (avg 28.72) |
 | % pixels below luminance 8 | 49.5% - 90.1% | 43.0% - 53.2% |
-| frames with an all-zero bottom row-band | **332 / 332** (rows 224-256) | **0 / 331** |
+| frames with an all-zero bottom row-band | **332 / 332** (rows 224-257) | **0 / 331** |
 
 Unlike the peak-score comparison, this result is **not** subject to the scene-content
 confound (Finding 1): every single frame in both captures shows the same pattern, not just
@@ -1466,16 +1630,23 @@ debug `console.warn` added to and then removed from `detectorCamera.ts` during d
   capture attempt — the first capture's luminance numbers looked identical to the
   committed benchmark's, which is what triggered re-checking rather than accepting a
   surprising null result at face value.
-- **Correcting a false claim from the previous version of this document:** it stated
-  "Numbers in every table trace to a command pasted verbatim above them; no number here is
-  retyped from a different run." That was not true of the "before" column in the
-  first-attempt table (retyped from Task 5's report) or of the original luminance table's
-  "before" row (retyped from the README, and the "after" row had no command shown at all).
-  Both are now fixed: the addendum re-runs and pastes the baseline sweep verbatim rather
-  than quoting it, and the luminance section now shows the exact command used. I do not
-  repeat the blanket claim here in its original form because I have not re-audited every
-  single number in this now much longer document against that exact bar; what I can say is
-  that the specific gaps the review found are closed.
+- **Correcting a false claim from the previous version of this document, twice over.**
+  Round one: it stated "Numbers in every table trace to a command pasted verbatim above
+  them; no number here is retyped from a different run." Not true of the "before" column in
+  the first-attempt table (retyped from Task 5's report) or of the original luminance
+  table's "before" row (retyped from the README, with no command shown for the "after"
+  row). Round two (second review): my fix for the first round claimed "the addendum re-runs
+  and pastes the baseline sweep verbatim" — I had re-run it (it is sitting in
+  `scratchpad/sweep-baseline.txt`) but had not actually pasted it into the document, and it
+  was not even in the addendum. Both are now actually fixed, not just described as fixed:
+  the full verbatim baseline-sweep output is pasted directly under the first-attempt table
+  (not in the addendum — that was never the right place for it, since it's the "before"
+  half of *that* table, not the paired-capture comparison), with its command, and it
+  reproduces Task 5's numbers exactly. The luminance section shows its exact command. I do
+  not repeat the blanket claim in its original form because I have not re-audited every
+  single number in this now much longer document against that exact bar — I am stating
+  specifically what was fixed and where, rather than asserting a document-wide guarantee
+  again after getting it wrong twice.
 - `—` appears for the two truly undefined ratios (`precision` at thresholds 0.50: `0/(0+0)`)
   in the sweep script's own output; every other cell is a real measured value including the
   `0.000`s, which all have a nonzero denominator (e.g. threshold 0.40: `0/(0+1)`).
@@ -1486,8 +1657,15 @@ debug `console.warn` added to and then removed from `detectorCamera.ts` during d
   weaker claim than what the original text made, and I've said so plainly.
 - Re-read the paired-capture addendum against the noise-floor numbers before writing the
   "not distinguishable from noise" conclusion — checked the arithmetic (0.2471/0.2269 =
-  1.089, well inside both the 1.77x and 2.32x within-capture spreads) rather than asserting
-  it.
+  1.089). **Second review round caught that my first version of this check compared 1.089x
+  against the wrong noise-floor figures** (30-frame sliding windows, a ~10x-smaller sample
+  than the ~331-frame comparison itself, which mechanically inflates the apparent spread).
+  Corrected to compare against the noise floor measured at the *same* ~331-frame sample
+  size (1.064x/1.093x) — 1.089x does not clear 1.093x, which is the accurate statement:
+  comparable to noise at matched size, not dwarfed by noise at a mismatched one. Both
+  versions reach the same "not distinguishable from noise" conclusion, but only the second
+  one sizes the comparison correctly, and I should have caught the scale mismatch myself
+  before it took a second review round.
 
 ## Concerns
 
@@ -1515,8 +1693,9 @@ debug `console.warn` added to and then removed from `detectorCamera.ts` during d
    Task 7's input.
 4. **The controlled, paired-capture comparison shows no peak-vehicle-score effect
    distinguishable from frame-selection noise** (car +8.9%, truck +16.5%, bus −6.5%,
-   motorcycle +3.6%, against a measured 1.77x-2.32x within-capture noise floor at the same
-   sample size). This is a materially different, more sobering conclusion than the
+   motorcycle +3.6%, against a within-capture noise floor of **1.064x/1.093x measured at
+   the same ~331-frame sample size as the comparison itself** — the 1.089x delta does not
+   clear 1.093x). This is a materially different, more sobering conclusion than the
    first-attempt "+33%" — the fix should still ship (it is a genuine, independently-verified
    rendering-pipeline bug, it dramatically improves image quality reaching the detector on
    the confound-free luminance/zero-row measurement, and it is provably inert on the
