@@ -89,22 +89,23 @@ weights do not transfer to this renderer's geometry, a domain gap the design
 anticipated and named as Cycle 5's motivation. ML perception ships and is
 switchable, but it cannot drive the car today; ground-truth perception
 remains the default, and the ML toolbar mode stays labelled experimental.
-
-**Cycle 5 Phase 1 found that Cycle 4 measured that result on mis-encoded
-frames.** The detector camera never applied tone-mapping or sRGB output
-encoding — a three.js output-render-target bug — so every detector frame
-this project produced before the fix was raw linear bytes with a black
-bottom band. The bug is fixed, and on correctly encoded frames the detector
-*still* detects zero vehicles at any production threshold, so the conclusion
-above survives; it simply was not honestly earned until now. Phase 1's two
-cheap levers both failed and the branch decision is fine-tuning — see
-[`docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md`](docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md).
 See the [performance table](#performance) below for the full measurement and
 [`DEMO.md`](DEMO.md) for the walkthrough. Nothing here is trained on
 anything yet (Cycle 5). The
 [design doc](docs/superpowers/specs/2026-08-12-streetlab-backend-design.md)
 covers the full cycle breakdown; the short version is in
 [Roadmap](#roadmap) below.
+
+**Cycle 5 Phase 1 found that Cycle 4 measured that result on mis-encoded
+frames.** The detector camera never applied tone-mapping or sRGB output
+encoding — a three.js output-render-target bug — so every detector frame this
+project produced before the fix was raw linear bytes with a black bottom
+band. The bug is fixed, and on correctly encoded frames the detector *still*
+detects zero vehicles at any production threshold, so the conclusion above
+survives; it simply was not honestly earned until now. Phase 1's two cheap
+levers (score threshold, renderer encoding) both failed and the branch
+decision is fine-tuning — see
+[`docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md`](docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md).
 
 **What's real today:** `StreetLab.app` is a real, double-clickable native
 macOS app — launch it and it spawns its own Python sidecar, connects to it,

@@ -129,8 +129,8 @@ floor.
 | rank | lever | effect on peak car score | noise floor at matched sample size | verdict |
 |---|---|---|---|---|
 | **1** | **B — renderer encoding** | **1.089×** (0.2269 → 0.2471) | **1.064× / 1.093×** | inside noise; not a detection fix |
-| **2** | **A — score threshold** | **1.000×**, by construction | — (not applicable) | ruled out |
-| — | *C — per-class decoding* (incidental) | **1.000×**, by construction | — (not applicable) | ruled out |
+| **2** | **A — score threshold** | **1.000×**, by construction | *inapplicable* | ruled out |
+| — | *C — per-class decoding* (incidental) | **1.000×**, by construction | *inapplicable* | ruled out |
 
 **Lever B ranks first because it is the only lever that moved the ranking metric at all —
 and it did not move it past noise.** 1.089× sits *inside* a within-capture,
@@ -143,8 +143,10 @@ draft that got it the other way round.
 measurement.** Peak score is read pre-threshold, so no threshold can change it — `1.000×`
 here is arithmetic, not evidence. Lever A is ruled out on its own terms instead (§5).
 
-The noise-floor cell is `—` for levers A and C because the question is inapplicable, not
-undefined: there is no measured delta to compare against a floor.
+The noise-floor cell reads *inapplicable* rather than `—` for levers A and C, keeping [A]'s
+distinction: `—` means "the question was asked and had no answer" (an undefined ratio);
+*inapplicable* means the question does not apply — there is no measured delta to compare
+against a floor, because the metric cannot move.
 
 ---
 
