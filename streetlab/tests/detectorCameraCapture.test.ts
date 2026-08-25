@@ -33,6 +33,11 @@ describe('capture() render target restore', () => {
       setRenderTarget: (t: unknown) => {
         setCalls.push(t);
       },
+      // No-ops: this suite only exercises the render-target restore path.
+      // See the `capture() output target restore` suite below for the
+      // corresponding output-target coverage.
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: async () => {
         throw new Error('simulated GPU readback failure');
@@ -67,6 +72,8 @@ describe('capture() render target restore', () => {
         return originalTarget;
       },
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: async () => {
         throw new Error('simulated GPU readback failure');
@@ -109,6 +116,8 @@ describe('capture() renderTargetBusy timing', () => {
     const renderer = {
       getRenderTarget: () => originalTarget,
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {
         // capture() switches the target synchronously before its first
         // `await`, so by the time this runs, the flag the render loop reads
@@ -147,6 +156,8 @@ describe('capture() renderTargetBusy timing', () => {
     const renderer = {
       getRenderTarget: () => originalTarget,
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: async () => {
         busyAtReadbackStart.push(detector.renderTargetBusy());
@@ -187,6 +198,8 @@ describe('capture() renderTargetBusy timing', () => {
           throw new Error('simulated device-lost on restore');
         }
       },
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       // Distinct from the restore failure on purpose: if some future change
       // ever let capture() reach readback despite the restore throwing, this
@@ -230,6 +243,8 @@ describe('capture() readback timeout', () => {
     const renderer = {
       getRenderTarget: () => originalTarget,
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: () => {
         readbackCalls += 1;
@@ -299,6 +314,8 @@ describe('capture() readback timeout', () => {
       setRenderTarget: (t: unknown) => {
         setRenderTargetCalls.push(t);
       },
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: () => {
         readbackCallCount += 1;
