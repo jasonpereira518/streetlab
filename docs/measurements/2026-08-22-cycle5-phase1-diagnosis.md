@@ -5,10 +5,12 @@
 
 Cycle 4 shipped a real ONNX detector and measured **zero vehicle detections**. Phase 1
 exists to find out *why* on evidence, before anyone commits to the expensive fix. It
-measured two cheap levers and incidentally closed a third. **This document synthesises;
-it measures nothing new.** Every number below is quoted from one of four source
-documents, with the command that produced it, so a reader who disagrees with the
-conclusion can re-run the measurement rather than argue with the prose:
+measured two cheap levers and incidentally closed a third. **This document synthesises; it
+runs no new measurement of the detector.** Every number below is quoted from one of four
+source documents, with the command that produced it, so a reader who disagrees with the
+conclusion can re-run the measurement rather than argue with the prose. The single
+exception is §3's resampling, which is computed here — from per-frame scores already
+published in [B], with its command, and touching no capture or model:
 
 | tag | source | what it holds |
 |---|---|---|
@@ -17,9 +19,14 @@ conclusion can re-run the measurement rather than argue with the prose:
 | **[BM]** | `contract/benchmark/README.md` | the benchmark's own documented limitations |
 | **[C4]** | `docs/measurements/2026-08-20-detector-comparison.md` | Cycle 4's v1-vs-v2 comparison |
 
-**Result in one line: both cheap levers failed, and that is a clean finding.** It rules
-out the two explanations that would have been cheap to act on, and it justifies the
-expensive one on measurement rather than on assumption. Nothing here is promising.
+**Result in one line: both cheap levers failed, and that is a clean finding.** It rules out
+two explanations that would have been cheap to act on and justifies the expensive one on
+measurement rather than assumption. Nothing here is promising. **One caveat the reader
+should carry from the first line:** a *third* cheap explanation — an unlettered 1.67×
+aspect stretch in the preprocessing path — was found in shipped code during this report's
+own review, appears in no Phase 1 document, and is still untested (§8, §9.0). The branch
+decision below is "the levers measured do not reach this gap", not "nothing cheap is
+left".
 
 ---
 
@@ -36,10 +43,14 @@ renderer's working (linear) space [B, "The tone-mapping hypothesis holds", trace
 temporary `isOutputTarget` debug log: `false` before the fix, `true` +
 `currentToneMapping: 7` + `currentColorSpace: "srgb"` after].
 
-That path — `capture()` in `streetlab/src/three/detectorCamera.ts` — has existed unchanged
-since `b870dde` ("Detector camera: offscreen forward view"), Cycle 4 Phase 1. **Every
-detector frame this project has ever produced before the fix on this branch was raw linear
-bytes with a pure-black bottom band**: Cycle 4 Phase 2's 8-frame v1-vs-v2 comparison [C4],
+`capture()` in `streetlab/src/three/detectorCamera.ts` has been edited nine times since
+`b870dde` ("Detector camera: offscreen forward view", Cycle 4 Phase 1), including
+`604a5ab` (WebGPU row flip) and `3419025` (bounded readback) — but **the missing
+output-target declaration was present continuously** from `b870dde` until `2652d40` on
+this branch: `git log -S'setOutputRenderTarget' -- streetlab/src/three/detectorCamera.ts`
+returns exactly two commits, `2652d40` (the fix) and `aa27e6c` (its review follow-up), and
+nothing earlier. So **every detector frame this project produced before the fix was raw
+linear bytes with a pure-black bottom band**: Cycle 4 Phase 2's 8-frame v1-vs-v2 comparison [C4],
 the committed 60-frame benchmark [BM], and every frame Cycle 4 Phase 3 scored.
 
 The controlled measurement of what that cost, from the paired capture [B, "Controlled
@@ -139,6 +150,51 @@ size [B, "Is this delta distinguishable from noise?"]. This is "comparable to no
 "dwarfed by noise"; the distinction matters and the source document corrects an earlier
 draft that got it the other way round.
 
+**How solid is that, given 1.089× misses 1.093× by only 0.004?** Solid, and the check
+needs no new capture — [B] publishes every per-frame car score for both captures, so the
+noise distribution can be resampled directly instead of resting on one split. Parsing those
+332 + 331 rows and taking **2,000 random equal half-splits** of each capture (same code
+throughout, so every ratio is pure frame-selection noise):
+
+| capture | median ratio | p90 | p95 | **P(ratio ≥ 1.089)** |
+|---|---|---|---|---|
+| unfixed (n=332) | 1.056 | 1.088 | 1.105 | **0.071** |
+| fixed (n=331) | 1.045 | 1.145 | 1.192 | **0.493** |
+
+**In the fixed capture, a random half-split of identical code reproduces an effect at least
+as large as the observed one roughly half the time.** [B]'s published 1.064× and 1.093×
+are ordinary draws from these distributions (the ~52nd and ~75th percentiles), not lucky
+ones. Contiguous partitions are wider still — disjoint 60-frame blocks give 1.35×/1.40× [B].
+Every partition scheme points the same way, so the margin being thin is a fact about one
+arbitrarily-chosen split, not about the strength of the conclusion.
+
+```bash
+# reproduces the table above from the verbatim per-frame rows in
+# docs/measurements/2026-08-22-renderer-lever.md; no capture, no model, no new data
+uv run --with numpy python - <<'PY'
+import re, numpy as np
+doc = open('docs/measurements/2026-08-22-renderer-lever.md').read().splitlines()
+row = re.compile(r'^\s*(\d{6})\.jpg\s+([\d.]+)\s+([\d.]+)\s')
+def cars(a, b): return np.array([float(row.match(l).group(3)) for l in doc[a-1:b-1] if row.match(l)])
+for name, v in (('unfixed', cars(584, 943)), ('fixed', cars(981, 1339))):
+    rng, n = np.random.default_rng(0), len(v); h = n // 2
+    r = np.array([max(x, y) / min(x, y) for x, y in
+                  ((v[p[:h]].max(), v[p[h:2*h]].max()) for p in (rng.permutation(n) for _ in range(2000)))])
+    print(f'{name}: n={n} median={np.median(r):.3f} p90={np.percentile(r,90):.3f} '
+          f'p95={np.percentile(r,95):.3f} P(r>=1.089)={np.mean(r>=1.089):.3f}')
+PY
+```
+
+```
+unfixed: n=332 median=1.056 p90=1.088 p95=1.105 P(r>=1.089)=0.071
+fixed: n=331 median=1.045 p90=1.145 p95=1.192 P(r>=1.089)=0.493
+```
+
+(Seed 1 gives 1.064 / 1.088 / 1.105 / 0.067 and 1.045 / 1.145 / 1.192 / 0.481; seed 2
+gives P(ratio ≥ 1.089) of 0.050 and 0.500 — the
+conclusion does not depend on the draw. This is the one computation in this document I ran
+myself rather than quoting; it reads only text already published in [B].)
+
 **Lever A ranks second because its effect on the ranking metric is an identity, not a
 measurement.** Peak score is read pre-threshold, so no threshold can change it — `1.000×`
 here is arithmetic, not evidence. Lever A is ruled out on its own terms instead (§5).
@@ -193,6 +249,14 @@ check over matched `sim_t` quarter-windows gives fixed/unfixed peak-car ratios o
 **1.109, 1.258, 0.996, 1.051** — straddling 1.0 — and a slightly *lower* median car score
 for the fixed capture [B, same section].
 
+**Truck's +16.5% (1.165×) exceeds the 1.093× figure quoted in §3, and that is not a
+contradiction:** [B]'s within-capture noise floor was measured on peak **car** only ("the
+within-capture peak-car spread", [B, "Is this delta distinguishable from noise?"]). There
+is no published truck floor for 1.165× to clear. Truck's peak (0.1705) is also lower and
+therefore noisier than car's, so its floor would if anything be *wider*, not narrower —
+but that is an expectation, not a measurement, and no lever should be ranked on it. The
+ranking metric is peak car, for which a floor exists.
+
 ### 4.3 Raw sweep numbers, both sides
 
 [B, verbatim unfixed and fixed sweep tables]
@@ -208,18 +272,31 @@ for the fixed capture [B, same section].
 | 0.01 | 12 / 21,851 / 0.076 | 11 / 12,711 / 0.070 |
 
 `recall(ego)` is absent from both: the `--ego-x-max` bimodality gate correctly declined to
-report it on both captures (largest gaps 13.631 m / 56.481 m and 13.776 m / 56.528 m —
-neither clears the 2×/5× dominance bar the committed benchmark's 2.832 m gap does) [B,
-Concern 2]. That is an *inapplicable* metric, so the column is omitted rather than printed
-as `—`.
+report it on both captures. **The rejection was on criterion 1, not on the dominance bar**:
+the verbatim output reads "`--ego-x-max 74.0 does not fall inside this benchmark's single
+largest gap (13.776 m, 56.528 m)`" — that parenthesis is the gap's **interval of
+x-values** (a ~42.8 m gap between truth at x ≈ 13.8 m and x ≈ 56.5 m), not two gap
+magnitudes. The default cutoff of 74.0 m simply sits outside it, because these captures'
+truth is distributed differently from the committed benchmark's. [B, Concern 2] describes
+this as a dominance-bar failure; that is a misreading of its own tool's output, and the
+correct reading is in the same file's verbatim block. Nothing downstream changes — the
+metric is unavailable either way — but a reader who checks this cell should find it right.
+An *inapplicable* metric has its column omitted rather than printed as `—`.
 
 Two honest observations from this table, neither of them a lever win:
 
 - **Post-fix false positives are roughly half of pre-fix at every low threshold** (474 vs
   1,191 at 0.10; 2,581 vs 4,982 at 0.05; 12,711 vs 21,851 at 0.01) — consistent with a
   model emitting less low-confidence noise on correctly-encoded imagery. **I have no noise
-  floor for this quantity**: no within-capture control for false-positive counts was
-  measured, so I record it and decline to lean on it. It is one paired capture.
+  floor for this quantity**, and I hold it to a stricter standard than the luminance result
+  from the same paired capture for a specific reason, not out of blanket caution: [B]'s
+  justification for trusting luminance is that it is a whole-distribution property present
+  in every frame, and false-positive counts are whole-distribution too, so that argument
+  would cover them. What it does not cover is that **false-positive counts depend on scene
+  clutter** — how many trees, facades and signs are in frame across the capture — in a way
+  mean luminance does not. The paired captures match on truth composition, which says
+  nothing about clutter. So this needs a within-capture control before it means anything,
+  and it does not have one.
 - **Post-fix tp at threshold 0.10 is 6 against sham+10 of 1**, a wider real-vs-sham margin
   than unfixed's 1-against-1 [B, "Recall and sham control, for completeness"]. Single-digit
   counts over ~330 frames. Task 6 explicitly declined to lean on it, and so do I.
@@ -301,9 +378,10 @@ scores were never near the gate.
 
 **On the same imagery, the same model scores `stop sign` up to 0.6161** (frame 41), tops
 0.40 on 20 of 60 frames, and puts its per-frame top score on `stop sign`, `traffic light`,
-`dining table`, `umbrella`, `wine glass`, `person`, `apple`, `bed`, `orange` or `keyboard`
-[A, "Reading the table", recounted by hand against the verbatim column after a review
-caught two wrong counts]. On the post-fix paired capture the top non-vehicle score reaches
+`dining table`, `umbrella`, `wine glass`, `person`, `apple`, `bed`, `orange`, `keyboard`
+and `chair` — each of which leads at least one frame; this is not a closed list, and
+`chair(56)=0.2190` on frame `000026.jpg` is one [A] itself omits [A, "Reading the table",
+recounted by hand against the verbatim column after a review caught two wrong counts]. On the post-fix paired capture the top non-vehicle score reaches
 `umbrella` **0.9164**, and on the *pre-fix* paired capture `umbrella` **0.9023** — so
 near-0.9 confidence on the wrong class is present with and without the encoding fix [B,
 verbatim peak tables]. **The model is not blind. It is confidently looking at the wrong
@@ -353,8 +431,15 @@ Lever B changed the imagery completely and moved peak car score 1.089× against 
 1.093× noise floor, with bus moving the opposite way. Lever C makes precision an order of
 magnitude worse.
 
-**The evidence therefore implies the fine-tuning branch.** The cheap explanations are ruled
-out on measurement rather than on assumption, which is precisely what this phase was for.
+**The evidence therefore implies the fine-tuning branch** — with one qualification that
+belongs in the decision itself, not in a footnote. The three levers *measured* are ruled
+out on evidence rather than assumption, which is precisely what this phase was for. But
+§8's aspect-stretch candidate is cheap, untested, and lives in the same preprocessing path
+every one of these measurements ran through. **Phase 2 should run §8 step 0 before it
+commits to a training set**, not because it is likely to overturn the decision, but because
+it costs one flag and one command, and a phase whose job was ruling out the cheap
+explanations should not hand over an untested one.
+
 Phase 2 is planned against this report, not by it — the ruling recorded here is what the
 numbers imply, and Phase 2's plan is where the shape of the work gets decided.
 
@@ -362,11 +447,12 @@ numbers imply, and Phase 2's plan is where the shape of the work gets decided.
 
 ---
 
-## 8. The evidence does not separate "doesn't know these shapes" from "targets are too small"
+## 8. The evidence does not separate "doesn't know these shapes" from three cheaper stories
 
 The brief's rule says "the gap is semantic and fine-tuning is warranted." Fine-tuning is
-warranted. **"Semantic" is not established**, and this phase surfaced a competing
-explanation it cannot rule out.
+warranted. **"Semantic" is not established**, and there are **three** competing
+explanations this phase cannot rule out. One of them was found during Task 7's review, sits
+in shipped code, and appears in no other Phase 1 document.
 
 **The scale story, all from [BM]:** every labelled object in the benchmark is **31.5 m to
 88.5 m** away (ego-street 31.5–47.9 m, cross-street 62.7–88.5 m). The largest box in the
@@ -375,10 +461,25 @@ Nothing in the set is closer than 31.5 m. A detector failing on 20-pixel targets
 story at least as much as a semantic one, and [BM] says so in its own words before any
 lever was tried.
 
+**The aspect-ratio story — a third explanation, in shipped code, that no Phase 1 document
+before this one names.** `_resize_stretch` (`streetlab-backend/perception/detector.py:44`)
+bilinear-resizes every frame to `MODEL_INPUT = (640, 640)` with **no letterboxing**: the
+detector's 640×384 frames are stretched **1.67× vertically** before the model ever sees
+them. The docstring is explicit and *config-correct* about why — `do_pad` is false for this
+checkpoint, and skipping the pad means there is no offset to undo when boxes are decoded
+back to frame pixels — but its consequence for *this* aspect ratio is unexamined anywhere.
+
+The interaction with §8's own scale argument is the point: a car arriving **20 × 9 px**
+reaches the model as **20 × 15 px**. COCO images are mostly 4:3 or 3:2; 5:3 stretched to
+1:1 distorts substantially more than anything in the training distribution, and it distorts
+*most* what is already smallest. This is not the same hypothesis as "the model doesn't know
+these shapes" (it knows them, in the right proportions) nor as "the targets are too small"
+(they are small *and* wrong-shaped). **It is cheap to test and needs no new capture.**
+
 **The semantic story:** the model puts 0.62–0.92 confidence on `stop sign` and `umbrella`
-in the same frames — objects of comparable or smaller angular size — while vehicle classes
-stay at 0.19–0.25. If pure scale were the barrier, it should bite the non-vehicle classes
-too.
+in the same frames while vehicle classes stay at 0.19–0.25. If pure scale were the barrier,
+it might be expected to bite the non-vehicle classes too — *if* those predictions land on
+objects of comparable angular size, which nobody has checked (see immediately below).
 
 **Why that argument is suggestive rather than decisive:** the high-scoring non-vehicle
 predictions are not scored against ground truth for *location* or *size*. `umbrella 0.9164`
@@ -386,12 +487,26 @@ may well be a whole tree canopy or a building facade occupying far more pixels t
 labelled vehicle — a large-object false positive says nothing about small-object
 sensitivity. Nothing in Phase 1 measured the pixel extent of the high-scoring non-vehicle
 boxes, so the comparison is between a confident prediction of unknown size and a weak
-prediction of known-tiny size. **The evidence does not cleanly separate the two
+prediction of known-tiny size. **The evidence does not cleanly separate these
 explanations, and I am not going to claim it does.**
 
 **Phase 2's first step should be the experiment that separates them**, before any training
-run is committed to:
+run is committed to. Ordered cheapest-first, and the cheapest one is also the one nothing
+in Phase 1 tried:
 
+0. **The letterbox test — run this first.** Add a `--letterbox` flag to
+   `scripts/sweep_threshold.py` that pads the 640×384 frame to a square with a neutral fill
+   before the resize, instead of stretching it, and re-run the peak-score measurement
+   against the unchanged committed benchmark. This is exactly the precedent §6 set with
+   `--decode-mode`: a decode/preprocess variant lives in the script, `perception/` stays
+   closed, and the answer is one command with **no new capture**. If peak car score moves
+   materially, a substantial part of "zero vehicle detections" is a preprocessing bug and
+   the fine-tuning brief changes shape completely — and if the letterboxed pipeline is the
+   better one, note that boxes then need the pad offset undone on decode, which is precisely
+   the complexity `_resize_stretch`'s docstring is avoiding. If it does not move, one cheap
+   explanation is closed on evidence and the case for fine-tuning strengthens.
+   - **This must run before step 2**, which as originally written would have been useless:
+     an upscaled crop is still 640×384 going into the same 1.67× stretch.
 1. **A close-range measurement on correctly-encoded frames.** Capture with the encoding fix
    in place, in a scenario where vehicles pass within 5–20 m of the ego (boxes of 100+ px
    rather than 10–44 px). Run the same `sweep_threshold.py` peak-score measurement. If peak
@@ -403,10 +518,12 @@ run is committed to:
      depth), so labels vanish for a vehicle very close to the lens. A close-range benchmark
      must stay outside that hole or it will silently lose its own ground truth.
 2. **A cheap upper-bound check that needs no new capture**: crop the committed benchmark
-   around a labelled vehicle and upscale to 640×384, then re-run the peak-score
-   measurement. It changes the preprocessing distribution, so a *negative* result is weak
-   evidence — but a large positive jump would settle the scale question immediately, for
-   the cost of one script.
+   around a labelled vehicle and upscale it, then re-run the peak-score measurement. **Crop
+   to the model's own 1:1 input aspect, not to 640×384** — the obvious version of this
+   experiment upscales to frame size and then feeds it straight back through step 0's
+   stretch, measuring the two effects together and separating neither. It changes the
+   preprocessing distribution either way, so a *negative* result is weak evidence — but a
+   large positive jump would settle the scale question for the cost of one script.
 3. **Measure the pixel extent of the high-scoring non-vehicle predictions.** One pass over
    the existing raw output. If `umbrella 0.9164`'s box is 300 px wide, the semantic argument
    in this section weakens considerably and step 1 becomes the only way to decide.
@@ -415,6 +532,17 @@ run is committed to:
 
 ## 9. Open questions carried forward
 
+0. **The unlettered 1.67× vertical stretch in `preprocess` is untested, and it is the
+   cheapest open question on this list.** `_resize_stretch`
+   (`streetlab-backend/perception/detector.py:44`) squares every 640×384 frame to 640×640
+   with no pad. It is config-correct (`do_pad` is false) and it has never been measured
+   against this aspect ratio. **No Phase 1 document names it** — not the two measurement
+   docs, not `contract/benchmark/README.md`, not any task brief — which is why it is
+   recorded here at the top rather than buried. It was found reading shipped source during
+   Task 7's review, not by any measurement. §8 step 0 is the one-command test; this phase
+   deliberately did not run it, because Phase 1 reports rather than measures and
+   `perception/` and `scripts/` are closed to this task. **A phase that exists to rule out
+   the cheap explanations should not close while one of them is untested.**
 1. **Detector camera mount geometry, unresolved** [B, Diagnosis and Concern 3]. Task 6
    found that `MOUNT_HEIGHT` / `MOUNT_FORWARD` in `detectorCamera.ts` sit low and close
    enough to the ego's own body that a naive geometric check suggested the camera may be
@@ -460,11 +588,17 @@ chasing:
 
 **What would flip the branch decision:**
 
-- **A close-range benchmark on which peak car score rises past ~0.5.** This is the single
-  most likely thing to change the answer, and it is §8's step 1. It would not make Lever A
-  or B a winner, but it would reframe the fine-tuning brief from "teach the model these
-  shapes" to "the model knows the shapes, it needs near-range examples" — a materially
-  different dataset.
+- **A letterboxed re-run in which peak car score moves materially** (§8 step 0). This is
+  the cheapest thing that could change the answer and the only untested cheap lever left.
+  It would not resurrect Lever A or B, but it would mean a real part of "zero vehicle
+  detections" was a preprocessing defect rather than a domain gap, and the fine-tuning
+  brief would have to be rewritten around a pipeline that had never fed the model an
+  undistorted vehicle.
+- **A close-range benchmark on which peak car score rises past ~0.5.** The single most
+  likely *capture-based* thing to change the answer, and it is §8's step 1. It would not
+  make Lever A or B a winner, but it would reframe the fine-tuning brief from "teach the
+  model these shapes" to "the model knows the shapes, it needs near-range examples" — a
+  materially different dataset.
 - **A different scenario or map.** Everything here is `grid-merge`, seed 4 — one synthetic
   grid, one time of day, one sun angle. [C4]'s eight frames came from `grid-loop` and
   showed the same shape of result, which is mild corroboration across scenes, not across
@@ -476,12 +610,16 @@ chasing:
   on identical truth would be the cleanest possible version of Lever B's measurement, and
   if it showed a large, consistent, all-four-classes-same-direction gain, §3's ranking would
   need revisiting.
-- **A within-capture noise floor that turns out much tighter than 1.064×/1.093×.** 1.089×
-  fails to clear 1.093× by a hair. That is a genuinely marginal call, and it is presented as
-  marginal rather than as a verdict. A better-powered noise estimate — more capture pairs,
-  not more frames from the same two — could land it either side. It would still be an 8.9%
-  peak-score move on a class that needs to reach 0.50, so it would not on its own make
-  Lever B a fix.
+- **Not this: a better-powered noise floor.** An earlier draft of this document listed
+  Lever B's 1.089×-vs-1.093× margin here as fragile, and claimed a tighter estimate would
+  need more capture pairs rather than more frames from the existing two. **Both halves of
+  that were wrong**, and §3's resampling — computed from the per-frame scores already
+  published in [B], no new capture — shows why: the published floor is a typical draw from
+  a wide distribution, and **half of all same-code half-splits of the fixed capture produce
+  a ratio at least as large as the observed effect**. More pairs would sharpen the estimate
+  of a floor that is already comfortably above the effect. This is the one item on this list
+  that got *less* likely to flip on inspection, and it is recorded because understating a
+  null is the same defect as overstating one.
 
 **What would not change it:** more thresholds. The sweep already spans 0.50 down to 0.01
 and the peak scores are threshold-independent. That question is closed.
@@ -494,9 +632,12 @@ and the peak scores are threshold-independent. That question is closed.
 - `README.md` — Cycle 5 roadmap row **Not started → In progress**; Cycle 4 row and the
   Status section annotated with the mis-encoded-frames finding from §1.
 
-No measurement code was run or changed by this task. `perception/`, `server/`, `sim/`,
-`scripts/`, `contract/benchmark/`, `streetlab/src/` and the two source measurement
-documents are untouched.
+No detector measurement was run and no measurement code was changed by this task.
+`perception/`, `server/`, `sim/`, `scripts/`, `contract/benchmark/`, `streetlab/src/` and
+the two source measurement documents are untouched. §3's resampling ran as a throwaway
+`python - <<'PY'` heredoc over text published in [B]; it is reproduced inline in this
+document rather than committed as a script, since it exists to check one claim, not to be
+re-run by a pipeline.
 
 ## Self-review
 
@@ -506,10 +647,11 @@ documents are untouched.
   both times, so I checked it deliberately rather than assuming.
 - Checked the two ratios I could check by arithmetic: 0.2471 / 0.2269 = 1.0890, and
   46 / 84 = 0.5476 ≈ the ~0.55 ceiling [BM] states.
-- Verified the claim in §1 that the encoding bug predates Cycle 4's measurements by reading
-  `git log --follow` on `streetlab/src/three/detectorCamera.ts`: the offscreen-target path
-  originates at `b870dde` (Cycle 4 Phase 1); the fix is `aa27e6c` on this branch and exists
-  nowhere earlier. I did not take this from the dispatch.
+- Verified the claim in §1 that the encoding bug predates Cycle 4's measurements, and
+  **tightened it after review**: an earlier draft said `capture()` "has existed unchanged
+  since `b870dde`", which is false — the file has ten commits. The load-bearing claim is
+  narrower and is what `git log -S'setOutputRenderTarget'` actually establishes: the
+  *defect* was continuous from `b870dde` to `2652d40`. §1 now says that instead.
 - Checked the "the fix made the model more confident" story before writing it, and **found
   it false**: the pre-fix paired capture reaches `umbrella` 0.9023 against the post-fix
   capture's 0.9164. §5.4 states the corrected version. Had I not checked, this report would
@@ -520,31 +662,70 @@ documents are untouched.
   real-vs-sham margin post-fix) rather than omitting them, and stated plainly that neither
   has a noise floor behind it. Omitting them would have been the "poor result published
   poor" failure running in the other direction.
-- Did **not** conclude "semantic domain gap". §8 says the evidence does not separate scale
-  from semantics, names the strongest counter-argument to my own semantic reading, and
-  makes the separating experiment Phase 2's first step.
+- Did **not** conclude "semantic domain gap". §8 says the evidence does not separate the
+  explanations, names the strongest counter-argument to my own semantic reading, and makes
+  the separating experiments Phase 2's first step.
+- **Did not find the aspect-stretch candidate myself.** §8's third explanation and §9.0 came
+  out of this task's own review, from reading `perception/detector.py` — which I treated as
+  closed and therefore did not read, having taken the brief's framing that the levers were
+  the two named ones. A grep for `stretch|letterbox|aspect|640x640` across every measurement
+  doc, the benchmark README and all seven task briefs and reports returns nothing, so the
+  gap was the phase's, not only mine — but the phase's own purpose was to catch exactly this,
+  and reading the preprocessing path is not the same as modifying it.
+- **Re-derived Lever B's noise conclusion instead of leaning on one split**, after review
+  pointed out that quoting a thin margin understates a solid null. §3's resampling is the
+  one computation here I ran rather than quoted; its command is published, it reads only
+  text already in [B], and it reproduces across three seeds. Also corrected "one thousandth"
+  to four thousandths — plain arithmetic I got wrong.
+- **Checked every published command actually runs.** §3's resampling snippet was rewritten
+  more compactly than the scratch version I first ran, which reseeded the generator per
+  capture and shifted one figure from 0.497 to 0.493; the pasted output now matches what the
+  pasted command produces, not what a different script produced.
 - Carried Task 6's unresolved mount-geometry question forward (§9.1) rather than letting it
   die with its source document.
 - Left Phase 2 a decision to make: §7 records what the evidence implies, §8 tells Phase 2
   what to run before committing to a dataset shape, and neither prescribes the plan.
-- Found no error in the source measurement documents. Every number in the dispatch I was
-  given verified against its source, including the ones I expected to be paraphrases.
+- **Found one error in a source measurement document**, on the second pass: [B]'s Concern 2
+  misreads a gap *interval* as two gap *magnitudes* and attributes the `recall(ego)`
+  rejection to the wrong criterion. §4.3 states the correct reading against the verbatim
+  output in the same file; Concerns 4 records it as a source-document error rather than
+  silently fixing it. Every other number in the dispatch I was given verified against its
+  source, including the ones I expected to be paraphrases.
+- Re-read §5.4's class list after review caught it reading as exhaustive: `chair(56)` leads
+  frame `000026.jpg` and was missing from both [A]'s list and mine. Now phrased as an open
+  list, which is what [A] meant.
 
 ## Concerns
 
-1. **1.089× against 1.093× is a hair's breadth.** Lever B's failure to clear its noise
-   floor is the single least robust step in this report's chain. The conclusion does not
-   rest on it alone — peak car at 0.2471 is far from the 0.50 gate whether or not the delta
-   is real, and bus moved the other way — but a reader should know the margin is one
-   thousandth. §10 says what would settle it.
-2. **§8's semantic-vs-scale argument leans on a name (`umbrella`, `stop sign`) that
+1. **A cheap explanation reached this report only via its own review, and Phase 1 closes
+   with it untested.** The 1.67× aspect stretch (§8, §9.0) sits in shipped code and is named
+   in no other Phase 1 document. Nothing was wrong with the measurements that were taken;
+   the phase simply never looked here, and its purpose was to rule out the cheap
+   explanations before committing to the expensive one. The branch decision in §7 still
+   holds — the two levers it *did* measure genuinely failed — but it should be read as
+   "these levers do not reach it, and one cheap candidate remains open" rather than "only
+   fine-tuning is left". §8 step 0 closes it for the cost of one flag.
+2. **Lever B's margin is thin at one split and robust across all of them.** 1.089× against
+   1.093× is 0.004 — four thousandths, and an earlier draft of this document called it "one
+   thousandth", which was simply wrong arithmetic. The resampling in §3 is what the
+   conclusion actually rests on: half of same-code half-splits of the fixed capture produce
+   a ratio at least as large as the observed effect. Quoting the thin margin without the
+   distribution understates the null, which this document treats as the same defect as
+   overstating it.
+3. **§8's semantic argument leans on a name (`umbrella`, `stop sign`) that
    §9.3 says is best-effort**, and on box sizes nobody measured. It is the weakest
-   reasoning in the document, which is why §8 ends in an experiment rather than a verdict.
-3. **Everything is one scenario, one seed, one time of day.** `grid-merge` seed 4 for the
+   reasoning in the document, which is why §8 ends in experiments rather than a verdict.
+4. **[B] misreads its own tool's output in Concern 2**, describing the `recall(ego)`
+   rejection on the paired captures as a dominance-bar failure when the verbatim text in the
+   same file shows it was criterion 1, and reading an interval of x-values as a pair of gap
+   magnitudes (§4.3). Reported rather than fixed — [B] is reviewed and closed to this task.
+   It changes nothing downstream (the metric is unavailable either way), but it is a wrong
+   number in a source document, and this report is where that has to be said out loud.
+5. **Everything is one scenario, one seed, one time of day.** `grid-merge` seed 4 for the
    benchmark and both paired captures; `grid-loop` for [C4]'s eight frames. The result is
    consistent across those, and that is a narrower base than "the detector cannot see this
    simulator's vehicles" sounds like.
-4. **The committed benchmark now describes imagery the simulator no longer produces.** It
+6. **The committed benchmark now describes imagery the simulator no longer produces.** It
    is deliberately not regenerated [BM, "Regenerating"], which is correct — it is a fixed
    target defined before any lever was tried. But every future reader of a score against it
    needs §1 to interpret the number, and the benchmark's own README cannot be edited to say

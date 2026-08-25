@@ -101,10 +101,14 @@ frames.** The detector camera never applied tone-mapping or sRGB output
 encoding — a three.js output-render-target bug — so every detector frame this
 project produced before the fix was raw linear bytes with a black bottom
 band. The bug is fixed, and on correctly encoded frames the detector *still*
-detects zero vehicles at any production threshold, so the conclusion above
-survives; it simply was not honestly earned until now. Phase 1's two cheap
-levers (score threshold, renderer encoding) both failed and the branch
-decision is fine-tuning — see
+detects zero vehicles at any production threshold — so the **zero-detections
+finding** above survives; it simply was not honestly earned until now. What
+Phase 1 does **not** confirm is the *domain gap* half of that paragraph: it
+could not separate "COCO weights don't transfer to these shapes" from "the
+targets are 10–44 px" or from a preprocessing defect, and it says so.
+Phase 1's two cheap levers (score threshold, renderer encoding) both failed
+and the branch decision is fine-tuning, with one cheap candidate still
+untested — see
 [`docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md`](docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md).
 
 **What's real today:** `StreetLab.app` is a real, double-clickable native
@@ -232,7 +236,7 @@ in behind an existing seam (`SceneSource`, `PerceptionSource`, `Planner`,
 | 2 | Real map data via OSM ingest (`OsmSceneSource`), address/route commands | **Built** — OSM ingest behind the SceneSource seam (Phase 1), plus in-app address entry, an off-thread build executor, and offline bundled extracts (Phase 2) |
 | 3 | Junction compliance (red lights, stop signs), lane-level overtaking, reactive traffic (IDM/MOBIL) and the full hazard scenario set | **Built** — signals and stop signs behind a behaviour FSM (Phase 1), carriageway-checked lane changes with a labelled return (Phase 2), and IDM car-following, MOBIL lane changes and five distinct hazards (Phase 3) |
 | 4 | ML perception (a real ONNX detector) alongside ground truth | **Built** — camera-frame transport off the render thread (Phase 1); a real RT-DETR ONNX detector whose 2D boxes become tracked world-frame detections (Phase 2); scoring against exact ground truth, a toolbar toggle to drive on ML detections, and shadow-mode box overlays (Phase 3). Measured result: **zero vehicle detections** on the frames tested — see [Performance](#performance) — so ground truth stays the default and ML mode stays labelled experimental. (Cycle 5 Phase 1 later found those frames were mis-encoded by a renderer bug; the result reproduces on correctly encoded frames — see [the Phase 1 diagnosis](docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md).) |
-| 5 | Sim-generated training dataset, fine-tuning, evaluation | **In progress** — Phase 1 (diagnosis) measured two cheap levers against a committed 60-frame benchmark and **both failed**: score threshold (peak vehicle-class scores never exceed **car 0.1872** anywhere in the set, and the few true positives at threshold 0.01 are not distinguishable from a sham control) and renderer encoding (a real three.js output-target bug, fixed — every detector frame before it was raw linear bytes with a black bottom band — which transforms the imagery but moves peak car score only **1.089×** against a **1.064×/1.093×** noise floor). Per-class decoding was ruled out too. **Branch decision: the cheap levers do not reach this gap, so fine-tuning is warranted** — though Phase 1 could not separate "the model doesn't know these shapes" from "the targets are 10–44 px at 31.5–88.5 m", and says so. See [`docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md`](docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md). |
+| 5 | Sim-generated training dataset, fine-tuning, evaluation | **In progress** — Phase 1 (diagnosis) measured two cheap levers against a committed 60-frame benchmark and **both failed**: score threshold (peak vehicle-class scores never exceed **car 0.1872** anywhere in the set, and the few true positives at threshold 0.01 are not distinguishable from a sham control) and renderer encoding (a real three.js output-target bug, fixed — every detector frame before it was raw linear bytes with a black bottom band — which transforms the imagery but moves peak car score only **1.089×** against a **1.064×/1.093×** noise floor). Per-class decoding was ruled out too. **Branch decision: the levers measured do not reach this gap, so fine-tuning is warranted** — though Phase 1 could not separate "the model doesn't know these shapes" from "the targets are 10–44 px at 31.5–88.5 m", and it left one cheap candidate untested (the preprocessing path stretches every 640×384 frame to 640×640 with no letterboxing, distorting exactly those small targets). Both are recorded as Phase 2's first experiments. See [`docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md`](docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md). |
 
 ## Licenses
 
