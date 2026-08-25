@@ -386,13 +386,37 @@ export function createDetectorCamera(
         // release unconditionally, and the restore failure is logged, not
         // swallowed.
         if (acquiredPrevious && !restoredEarly) {
+          // Each restore gets its OWN try/catch, deliberately not one try
+          // wrapping both: the original single-try version let a thrown
+          // setRenderTarget (the device-lost case this whole block exists
+          // for) skip setOutputRenderTarget entirely, since a throw jumps
+          // straight past the rest of the try body. That left
+          // `_outputRenderTarget` pointed at this detector's 640x384 target
+          // indefinitely — worse than the dangling `_renderTarget` this
+          // block was written to guard against, since `_getFrameBufferTarget()`
+          // keys its cached intermediate buffer on `_outputRenderTarget ||
+          // _canvasTarget` (see the comment above `setOutputRenderTarget`
+          // earlier in this function): the *next* canvas frame's own tonemap
+          // pass would silently pick up a buffer sized for the wrong
+          // viewport. Splitting the try means a lost GPU device that keeps
+          // failing setRenderTarget still gets setOutputRenderTarget's
+          // restore attempted and logged independently.
           try {
             renderer.setRenderTarget(previous);
-            renderer.setOutputRenderTarget(previousOutput);
           } catch (err) {
             console.warn(
               '[streetlab] detector camera: failed to restore render target; ' +
                 'a subsequent main-view render may draw into the wrong target',
+              err,
+            );
+          }
+          try {
+            renderer.setOutputRenderTarget(previousOutput);
+          } catch (err) {
+            console.warn(
+              '[streetlab] detector camera: failed to restore output render target; ' +
+                'a subsequent main-view render may use a tonemap buffer sized for ' +
+                'the wrong viewport',
               err,
             );
           }
