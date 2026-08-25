@@ -1677,11 +1677,16 @@ debug `console.warn` added to and then removed from `detectorCamera.ts` during d
    paired-capture addendum's trimmed sets do not have this problem (117 ego-street
    annotations in both), which is part of why I trust that comparison and not the first one.
 2. **The `--ego-x-max` bimodality gate declined to validate on every new capture in this
-   task** (first attempt: largest gap 74.397 m; paired unfixed: 13.631 m/56.481 m; paired
-   fixed: 13.776 m/56.528 m — none clear the 2×/5× bimodality bar the way the committed
-   benchmark's 2.832 m gap does). Expected per Amendment 3 given these are real-time,
-   non-cherry-picked captures, not a bug, but it means `recall(ego)` was never available at
-   any threshold on any of this task's own captures, only on the committed benchmark.
+   task** (first attempt: largest gap 74.397 m; paired unfixed gap 13.631 m–56.481 m; paired
+   fixed gap 13.776 m–56.528 m). **Correction:** the paired-capture figures above are one
+   gap's x-value endpoints (`gap_lo`, `gap_hi` in `scripts/sweep_threshold.py:227-234`), not
+   two gap magnitudes, and the rejection on both was criterion 1 — the default
+   `--ego-x-max` of 74.0 simply does not fall inside either ~42.8 m-wide interval — not the
+   2×/5× dominance bar (criterion 2) this entry originally blamed; see
+   `docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md` §4.3 for the verbatim reading.
+   Expected per Amendment 3 given these are real-time, non-cherry-picked captures, not a
+   bug, but it means `recall(ego)` was never available at any threshold on any of this
+   task's own captures, only on the committed benchmark.
 3. **The mount-inside-ego-geometry question I raised in Diagnosis was not run to ground.**
    I stopped once the zero-band problem was empirically resolved by the encoding fix alone,
    but I did not positively confirm *why* the geometric concern doesn't manifest as a

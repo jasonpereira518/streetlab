@@ -23,10 +23,12 @@ label came from, not a nominal one.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
+from uuid import uuid4
 
 from perception.geometry import CLASS_SIZE
 from perception.projection import project_box
@@ -49,9 +51,12 @@ MIN_BOX_PX: float = 4.0
 # degrades all the way to "every JPEG on disk, zero annotations" (see
 # `CaptureSink`'s docstring); with it, the same failure degrades only to
 # "this run's last <= N frames are unlabelled," which is a far smaller loss
-# for the same catastrophic kill. Tuned as a frame count, not a wall-clock
-# timer, so the cadence is deterministic and reproducible given the same
-# sequence of `write()` calls -- see `_maybe_rewrite`'s docstring.
+# for the same catastrophic kill -- *provided* the rewrite itself cannot be
+# caught mid-write by that same kill and corrupt what was already on disk;
+# see `_write_json`'s docstring for how that is now guaranteed. Tuned as a
+# frame count, not a wall-clock timer, so the cadence is deterministic and
+# reproducible given the same sequence of `write()` calls -- see
+# `_maybe_rewrite`'s docstring.
 REWRITE_EVERY_N_FRAMES: int = 20
 
 
@@ -153,12 +158,18 @@ class CaptureSink:
     (always the final word on this run's content), and a periodic rewrite
     every `REWRITE_EVERY_N_FRAMES` frames from inside `write()` itself, so a
     kill that reaches neither `finalize()` nor the stdin watchdog's own
-    finalize-before-exit (a `SIGKILL` of this process) degrades to a
-    truncated-but-valid `labels.json` instead of none at all. Both writers
+    finalize-before-exit (a `SIGKILL` of this process) degrades to an
+    earlier-but-complete `labels.json` instead of none at all. Both writers
     go through `_write_json`, guarded by one lock, so a periodic rewrite and
     a `finalize()` racing from different threads (this process's own
     request-handling thread and the stdin watchdog thread, say) cannot
-    interleave two partial writes into a corrupt file on disk.
+    interleave two partial writes into a corrupt file on disk -- and
+    `_write_json` itself writes through a temp file and an atomic rename
+    (see its docstring), so a kill landing *during* a rewrite cannot corrupt
+    the complete `labels.json` an earlier rewrite already produced either.
+    The guarantee this class makes is: whatever `labels.json` holds at any
+    moment, from any kind of interruption, is either absent or a complete,
+    parseable COCO document as of some `write()` call -- never a partial one.
     """
 
     def __init__(self, root: Path, rewrite_every: int = REWRITE_EVERY_N_FRAMES) -> None:
@@ -174,6 +185,23 @@ class CaptureSink:
         self._rewrite_every = rewrite_every
         self._frames_since_rewrite = 0
         self._lock = threading.Lock()
+        self._sweep_orphaned_tmp()
+
+    def _sweep_orphaned_tmp(self) -> None:
+        """Delete `_write_json` temp files left behind by a previous run that
+        was killed between writing the temp file and renaming it into place
+        -- same failure this class's docstring describes `_write_json`
+        guarding against, just from a run that ended before this one
+        started. Mirrors `map/cache.py`'s `DiskCache._sweep_orphaned_tmp`: a
+        `.tmp` file here is only ever a write in progress, nothing reads it,
+        so it is always safe to discard. `glob` on a directory that does not
+        exist yet (a fresh capture root) simply yields nothing.
+        """
+        for p in self._root.glob("labels.json.*.tmp"):
+            try:
+                p.unlink()
+            except OSError:  # pragma: no cover - defensive
+                pass
 
     def write(self, frame: LabelledFrame) -> None:
         self._frames_dir.mkdir(parents=True, exist_ok=True)
@@ -248,10 +276,48 @@ class CaptureSink:
         }
 
     def _write_json(self, doc: dict) -> Path:
+        """Write `doc` to `labels.json`, atomically.
+
+        Writes to a per-call temp file (name + pid + a random suffix, same
+        naming as `map/cache.py`'s `DiskCache.put`) and `Path.replace`s it
+        into position -- atomic on POSIX -- rather than `Path.write_text`ing
+        `labels.json` directly, which truncates the file before writing the
+        new content. That distinction matters specifically because of what
+        `REWRITE_EVERY_N_FRAMES` exists for: a `SIGKILL` of this process is
+        exactly the failure a periodic rewrite is supposed to soften, and a
+        truncating write is corruptible by precisely that failure -- a kill
+        landing inside a plain `write_text` call leaves a truncated,
+        unparseable `labels.json` where a complete earlier one used to sit,
+        which is worse than never having rewritten at all. With the temp
+        file plus rename, a kill lands either before the rename (the old,
+        complete `labels.json` is untouched; the half-written temp file is
+        an invisible orphan, cleaned up by `_sweep_orphaned_tmp` on the next
+        run) or after it (the new, complete document is in place) -- there
+        is no window in which `labels.json` itself is partially written.
+
+        The guarantee is only about `labels.json`'s own contents, though:
+        this does not make the write cheaper, and does not protect the
+        in-memory COCO records still not yet handed to a `write()` call --
+        those are lost to a kill exactly as before, which is why the
+        rewrite cadence (not this atomicity) bounds how much a kill loses.
+        """
         self._root.mkdir(parents=True, exist_ok=True)
         out = self._root / "labels.json"
+        tmp = out.with_name(f"{out.name}.{os.getpid()}.{uuid4().hex}.tmp")
         with self._lock:
-            out.write_text(json.dumps(doc, indent=2))
+            try:
+                tmp.write_text(json.dumps(doc, indent=2))
+                tmp.replace(out)
+            finally:
+                # `write_text` may have partially succeeded while a later
+                # step failed (or raised, as in a simulated kill) -- never
+                # leave that half behind for `_sweep_orphaned_tmp` alone to
+                # find later.
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:  # pragma: no cover - defensive
+                        pass
         return out
 
     def finalize(self) -> Path:

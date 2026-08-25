@@ -447,12 +447,14 @@ numbers imply, and Phase 2's plan is where the shape of the work gets decided.
 
 ---
 
-## 8. The evidence does not separate "doesn't know these shapes" from three cheaper stories
+## 8. The evidence does not separate "doesn't know these shapes" from four cheaper stories
 
 The brief's rule says "the gap is semantic and fine-tuning is warranted." Fine-tuning is
-warranted. **"Semantic" is not established**, and there are **three** competing
-explanations this phase cannot rule out. One of them was found during Task 7's review, sits
-in shipped code, and appears in no other Phase 1 document.
+warranted. **"Semantic" is not established**, and there are **four** competing explanations
+this phase cannot rule out. Two of them were found only during shipped-code or shipped-config
+review rather than by measurement — the aspect-ratio story during Task 7's review, the
+quantization story during this branch's final whole-branch review — and appear in no
+measurement document before now.
 
 **The scale story, all from [BM]:** every labelled object in the benchmark is **31.5 m to
 88.5 m** away (ego-street 31.5–47.9 m, cross-street 62.7–88.5 m). The largest box in the
@@ -475,6 +477,42 @@ reaches the model as **20 × 15 px**. COCO images are mostly 4:3 or 3:2; 5:3 str
 *most* what is already smallest. This is not the same hypothesis as "the model doesn't know
 these shapes" (it knows them, in the right proportions) nor as "the targets are too small"
 (they are small *and* wrong-shaped). **It is cheap to test and needs no new capture.**
+
+**A cheaper-at-the-cause alternative to testing the aspect-ratio story at the decode
+boundary: render the detector camera natively at the model's own input shape.**
+`streetlab/src/three/detectorCamera.ts:22-24` chooses `DETECTOR_FRAME` as 640×384, which is
+what forces `_resize_stretch`'s 1.67× vertical squash in the first place — the letterbox
+test above compensates for that squash on decode, at the cost §7 already names (a pad offset
+to undo when boxes are decoded back to frame pixels, precisely the complexity
+`_resize_stretch`'s docstring is avoiding). Rendering at 640×640 instead avoids that
+complexity entirely: the frame would arrive at the model's native input shape, `preprocess`'s
+resize becomes a no-op, and normalised `cxcywh` predictions still map straight back with no
+pad to undo. It is not cheaper in dollars than the letterbox test — it costs `aspect` as a
+parameter change in `cameraParamsFromThree` (which `geometry.py` and `projection.py` already
+consume as a parameter, not a hardcoded constant, so nothing downstream breaks) plus a full
+re-capture, where the letterbox test costs one flag and no new capture. It is named here as
+the version that fixes the cause rather than compensating for it, for Phase 2 to weigh
+against the letterbox test's lower cost, not as a replacement for it.
+
+**The quantization story — a fourth explanation, found only during this branch's final
+review, that questions the weights every number in this document was measured on.** Every
+peak score this phase ranks on — §3's table, §4.2's deltas, §5.4's peaks — was measured
+against `onnx/model_quantized.onnx`: `perception/model_cache.py:56-61` pins that exact
+int8-quantized file, by name and hash, from `onnx-community/rtdetr_r18vd`. Quantization is
+not named as a candidate explanation anywhere in this document until now. The same
+Hugging Face repo ships fp32 `onnx/model.onnx` beside the quantized one, and
+`scripts/sweep_threshold.py --model` already accepts an arbitrary local path — so this
+candidate has exactly step 0's cost profile: one download, one command, the unchanged
+committed benchmark, no code change, `perception/` untouched. Post-training int8
+quantization is known to degrade small-object confidence disproportionately, and this is
+precisely that regime: 9-20 px targets, peaks pinned at 0.19-0.25. Nobody has looked yet —
+`detector.py:128-130`'s own comment measured an fp16 variant's *latency*, never its scores,
+and [C4]'s fp32 comparison was RT-DETRv2, a different architecture, reporting only top-*class
+names*, never v1-vs-fp32 vehicle-class peaks. **This bites §10 directly**: §10 states the
+0.08–0.25 peak band as a property of *the detector*, with no quantization caveat — if fp32
+peaks land materially higher (say, 0.45), §10's own survival criterion for that band would be
+violated, because every number behind it was measured on one specific quantized checkpoint,
+not on "the detector" in general.
 
 **The semantic story:** the model puts 0.62–0.92 confidence on `stop sign` and `umbrella`
 in the same frames while vehicle classes stay at 0.19–0.25. If pure scale were the barrier,
@@ -507,6 +545,23 @@ in Phase 1 tried:
    explanation is closed on evidence and the case for fine-tuning strengthens.
    - **This must run before step 2**, which as originally written would have been useless:
      an upscaled crop is still 640×384 going into the same 1.67× stretch.
+   - **Also step-0 cost, and independent of the letterbox question: swap in fp32 weights.**
+     `onnx-community/rtdetr_r18vd` ships `onnx/model.onnx` (fp32) beside the
+     `model_quantized.onnx` this whole report ranks on (`perception/model_cache.py:56-61`).
+     `sweep_threshold.py --model <path>` already takes an arbitrary path, so this is one
+     download and one command against the unchanged committed benchmark, no code change, no
+     new capture. Not tested by this phase — named because every peak score in this
+     document was measured on int8 weights only, and post-training quantization is known to
+     hit small-object confidence disproportionately, which is exactly this regime (9-20 px
+     targets, peaks pinned at 0.19-0.25). See this section's quantization story above.
+   - **A cause-level fix for the aspect story, costing more than step 0.** Rendering the
+     detector camera natively at 640×640 (`streetlab/src/three/detectorCamera.ts:22-24`
+     currently chooses 640×384) would make `_resize_stretch`'s resize a no-op instead of a
+     1.67× vertical squash, with `cxcywh` still mapping straight back — no pad offset to
+     undo, unlike the letterbox variant step 0 tests. Its cost is a re-capture plus an
+     `aspect` parameter change, not just a script flag, so step 0 remains the cheaper first
+     test; this is the fix to build in Phase 2 if step 0 shows the aspect distortion
+     matters. See this section's alternative-render paragraph above.
 1. **A close-range measurement on correctly-encoded frames.** Capture with the encoding fix
    in place, in a scenario where vehicles pass within 5–20 m of the ego (boxes of 100+ px
    rather than 10–44 px). Run the same `sweep_threshold.py` peak-score measurement. If peak
@@ -569,6 +624,31 @@ in Phase 1 tried:
 5. **Only 1 exact shared `sim_t` instant** between the paired captures (44 near-instant
    pairs at one-tick tolerance, all matching category and count) [B, Concern 5]. The
    determinism check passed on a thinner sample than Task 4's.
+6. **The committed benchmark's box *extent* is a per-class prior, not the simulator's true
+   per-agent size — found during this branch's final review.** `label_frame` builds every
+   box from `CLASS_SIZE[cls]` (`perception/capture.py:110`), a fixed dictionary
+   `perception/geometry.py` itself documents as "plausible... not measurements of any
+   specific object," while `sim/agents.py`'s `_PROFILES` gives each traffic agent its own,
+   slightly different size that `TruthObject` never carries into capture. Measured
+   mismatch for the profiles in `grid-merge` runs a few percent in each dimension (see
+   `contract/benchmark/README.md`, "Labels are exact simulation truth for centre and class;
+   box extent is a per-class prior") — roughly 0.5-1.5 px of systematic, per-class-constant
+   error on a 13.3 px median box height. **The check every task gate up to this one cited as
+   proof of correctness — implied height exactly 1.500 m for every car, 3.000 m for every
+   truck — is this bug's fingerprint, not independent verification**: no `_PROFILES` agent
+   has those dimensions; the check back-projected the prior and recovered the prior.
+   Carrying `size` through the capture snapshot is the correct fix, but it would invalidate
+   this committed benchmark, so it is deferred to Phase 2.
+7. **Every peak score in this document was measured on int8-quantized weights only, and
+   quantization is not named as a candidate explanation anywhere before this review.** See
+   §8's quantization story and its step-0-cost fp32 swap. Untested: this phase reports, it
+   does not measure a new lever, and this candidate was found by the same final review that
+   found item 6.
+8. **The aspect-stretch fix §8 step 0 tests is a decode-side compensation; rendering the
+   detector camera natively at 640×640 fixes the same distortion at its cause, for the price
+   of a re-capture instead of a script flag.** See §8's alternative-render paragraph and its
+   step-0 sub-bullet. Untested and unscheduled — Phase 2's to sequence against step 0's
+   result, not this phase's to choose between.
 
 ---
 
@@ -583,7 +663,10 @@ chasing:
   correctly or not.
 - Peak vehicle-class scores in the 0.08–0.25 band — an order of magnitude above the ~0.01
   floor that would mean "cannot see these shapes at all", well below the 0.2–0.4 band that
-  would mean "detected, just miscalibrated" [A, "The one sentence Task 7 consumes"].
+  would mean "detected, just miscalibrated" [A, "The one sentence Task 7 consumes"]. **This
+  band is a property of the int8-quantized checkpoint this phase measured, not a verified
+  property of the architecture** — see §8's quantization story. It should survive
+  re-measurement on the same weights; it is not yet known whether it survives on fp32.
 - Top-scoring class being a non-vehicle, at 0.6–0.9, on the same frames.
 
 **What would flip the branch decision:**
@@ -594,6 +677,20 @@ chasing:
   detections" was a preprocessing defect rather than a domain gap, and the fine-tuning
   brief would have to be rewritten around a pipeline that had never fed the model an
   undistorted vehicle.
+- **An fp32-weights re-run in which peak scores move materially** (§8's quantization story,
+  the step-0-cost fp32 swap). Equally cheap to the letterbox test — one download, one
+  command, no new capture — and untested. If fp32 peaks land near or above the 0.2–0.4
+  "detected, just miscalibrated" band this section names above, every ranking in §3 and
+  every peak-score number in §4 through §6 would need to be re-read as a property of the
+  quantized checkpoint this phase happened to measure, not of "the detector," and the branch
+  decision would need re-examining before Phase 2 commits to a fine-tuning set shaped around
+  int8-only numbers.
+- **A native-640×640 recapture showing the same aspect-fix effect as the letterbox test, at
+  a re-capture's cost instead of a script flag** (§8's alternative-render paragraph and its
+  step-0 sub-bullet). Would not itself flip the decision beyond what the letterbox test
+  already would — it is the same finding at a different price point — but if the letterbox
+  test shows a material effect, this is the version Phase 2 should build rather than
+  shipping a permanent decode-side pad-and-unpad step.
 - **A close-range benchmark on which peak car score rises past ~0.5.** The single most
   likely *capture-based* thing to change the answer, and it is §8's step 1. It would not
   make Lever A or B a winner, but it would reframe the fine-tuning brief from "teach the
@@ -731,3 +828,9 @@ re-run by a pipeline.
    needs §1 to interpret the number, and the benchmark's own README cannot be edited to say
    so under this task's constraints. Phase 2 should decide whether to add a second,
    correctly-encoded benchmark alongside it rather than replacing it.
+   **Resolved by the final whole-branch review**: `contract/benchmark/README.md`'s imagery
+   section has since been rewritten to describe the darkness and zero row-band as properties
+   of this specific committed capture, taken before commit `2652d40`'s encoding fix, with a
+   direct pointer to this document's §1 for the fix and the controlled before/after numbers.
+   The frames themselves are still not regenerated — that part of this concern still stands
+   as a Phase 2 decision, not something this review made.

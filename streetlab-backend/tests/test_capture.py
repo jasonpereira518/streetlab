@@ -222,6 +222,69 @@ def test_finalize_is_idempotent(tmp_path):
     assert first == second
 
 
+# --------------------------------------------------------------------------- #
+# Final-review Fix 3: `_write_json` must write through a temp file and an     #
+# atomic `os.replace`/`Path.replace`, never truncate `labels.json` in place.  #
+# `REWRITE_EVERY_N_FRAMES` exists precisely for a `SIGKILL` landing mid-write #
+# -- a truncating write leaves a corrupt, unparseable `labels.json` in that   #
+# exact window, which is worse than having no periodic rewrite at all.       #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_crash_mid_write_leaves_labels_json_untouched_and_parseable(tmp_path, monkeypatch):
+    """Differential test, not implementation-specific: intercepts any
+    `Path.write_text` call whose target name *starts with* `labels.json` --
+    matching both a non-atomic implementation (which calls it directly on
+    `labels.json`) and this fix's atomic one (which calls it only on a
+    `labels.json.<pid>.<hex>.tmp` temp file) -- truncates whatever it was
+    about to write to half-length, then raises, simulating a kill mid-write.
+
+    Against the old `Path.write_text(labels.json, ...)` implementation this
+    corrupts the *real* file: the previously-valid `labels.json` from the
+    first rewrite is left half-overwritten and fails to parse. Against the
+    atomic implementation, the corrupted half-write lands on the temp file
+    only -- `tmp.replace(out)` is never reached because `write_text` raised
+    first -- so `labels.json` must still be byte-identical to what the first,
+    successful rewrite produced, and must still parse.
+    """
+    sink = CaptureSink(tmp_path, rewrite_every=1)
+    sink.write(label_frame(JPEG, 0, 0.0, W, H, camera(),
+                           [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+                           {"veh_00": math.pi}))
+    good = (tmp_path / "labels.json").read_text()
+    assert json.loads(good)["images"], "sanity: the first rewrite must have landed and be valid"
+
+    original_write_text = Path.write_text
+
+    def _kill_mid_write(self: Path, data: str, *args, **kwargs):
+        if self.name.startswith("labels.json"):
+            original_write_text(self, data[: len(data) // 2])
+            raise OSError("simulated SIGKILL mid-write")
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _kill_mid_write)
+
+    with pytest.raises(OSError):
+        sink.write(label_frame(JPEG, 1, 0.1, W, H, camera(), [], {}))
+
+    on_disk = (tmp_path / "labels.json").read_text()
+    assert on_disk == good, "a crash mid-write must never touch the previously-good file"
+    assert json.loads(on_disk)["images"], "labels.json present on disk must always parse"
+    assert not list(tmp_path.glob("labels.json.*.tmp")), "no orphaned temp file survives a clean OSError"
+
+
+def test_a_successful_periodic_rewrite_leaves_no_temp_file_behind(tmp_path):
+    """Hygiene check for the ordinary, uninterrupted path: the atomic
+    implementation's temp file must be renamed away, not left sitting next to
+    `labels.json` after every rewrite that actually succeeds."""
+    sink = CaptureSink(tmp_path, rewrite_every=2)
+    for seq in range(4):
+        sink.write(label_frame(JPEG, seq, seq * 0.1, W, H, camera(), [], {}))
+    assert (tmp_path / "labels.json").exists()
+    assert not list(tmp_path.glob("labels.json.*.tmp"))
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_the_periodic_rewrite_produces_exactly_what_finalize_would_at_that_point(tmp_path):
     """Determinism guard for the rewrite cadence itself (Finding 4's
     instruction: the periodic rewrite must not change the final file's

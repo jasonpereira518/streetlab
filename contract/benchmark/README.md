@@ -32,7 +32,7 @@ a signal to re-roll the benchmark.
   2 `categories` (`car`, `truck`). 46 frames carry at least one annotation;
   14 are empty roads, a real negative example, not a gap in the data.
 
-## Labels are exact simulation truth, never annotation
+## Labels are exact simulation truth for centre and class; box extent is a per-class prior
 
 Every box in `labels.json` comes from `perception/capture.py`'s
 `label_frame`, which projects the simulator's own `TruthObject` records
@@ -40,6 +40,54 @@ Every box in `labels.json` comes from `perception/capture.py`'s
 `perception/projection.py`'s `project_box`. No box here was drawn or
 adjusted by a human. Verifying this set meant looking at the *projection*,
 never correcting a box by eye — see "Visual verification" below.
+
+**This is true of the box's centre (ground position) and class. It is not
+true of the box's extent (length/width/height).** `label_frame` builds
+every box from `size = CLASS_SIZE[obj.cls]`
+(`perception/capture.py:110`) — a fixed, per-class prior dictionary in
+`perception/geometry.py:58-66` that the module's own docstring calls
+"plausible box dimensions, not measurements of any specific object." The
+simulator's actual agents do not share that size: `sim/agents.py`'s
+`_PROFILES` gives each traffic profile its own `(length, width, height)`,
+and the renderer draws each vehicle at *that* size — but `TruthObject`
+(`perception/scoring.py`) carries only `id`/`cls`/`x`/`y`, so the real size
+never survives into capture. Measured against the profiles that actually
+appear in `grid-merge` (`CLASS_SIZE` vs. `_PROFILES`, percent difference
+relative to the true size):
+
+| class | prior (`CLASS_SIZE`) | actual (`_PROFILES`) | ΔL | ΔW | ΔH |
+|---|---|---|---|---|---|
+| car | 4.5×1.8×1.5 | 4.6×1.9×1.45 | −2.2% | −5.3% | +3.4% |
+| car | 4.5×1.8×1.5 | 4.9×1.95×1.50 | −8.2% | −7.7% | 0.0% |
+| car | 4.5×1.8×1.5 | 4.3×1.82×1.42 | +4.7% | −1.1% | +5.6% |
+| truck | 8.0×2.5×3.0 | 7.8×2.4×3.10 | +2.6% | +4.2% | −3.2% |
+
+The median committed box is 13.3 px tall, so this is roughly 0.5-1.5 px of
+systematic, **per-class-constant** extent error — every `car` box in this
+set has the same length/width/height baked in regardless of which of the
+three car profiles actually produced it, and likewise for `truck`.
+
+This is also the explanation for the check every task gate up to this one
+cited as proof of correctness: back-projecting a box's implied height
+recovers *exactly* 1.500 m for every car and 3.000 m for every truck. No
+`_PROFILES` agent has those dimensions — the check was tautological, in
+that it back-projected the `CLASS_SIZE` prior through the same prior and
+recovered the prior it started with. It correctly pins that `label_frame`
+did not corrupt, mirror, or mis-scale a box; it does not, and never did,
+verify the box against the simulator's true per-agent extent. See
+`tests/test_benchmark_set.py`'s `test_every_boxs_implied_height_matches_its_class`.
+
+**Consequence for reuse:** a consumer fine-tuning against this set is
+training on per-class-constant box extents, not per-agent ones. That is a
+real, if small (sub-2-pixel-median), source of label noise on top of
+whatever else this README documents, and it will not average out across
+the three car profiles the way per-agent noise would — it is a constant
+bias, the same size and direction for every box of a given class. Fixing
+it means carrying `size` through `TruthObject`/the capture snapshot instead
+of re-deriving it from `CLASS_SIZE`, which is deferred to Phase 2 (see
+`docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md`, open questions)
+specifically because it would invalidate this committed set, and this set
+is deliberately fixed as Phase 2's before/after reference.
 
 ## Known, deliberate label characteristics
 
@@ -97,15 +145,34 @@ in practice that extends to roughly 155-157 m, well past the 90 m a
 detector is actually scored against, because a box only drops below
 `MIN_BOX_PX` at long range. A consumer that reuses this dataset for scoring
 rather than training should be aware the label set is not pre-filtered to
-the 90 m scoring gate.
+the 90 m scoring gate. **In practice, though, this set's own content never
+gets near that ceiling**: as "Everything labelled is far and small" below
+measures, every annotation actually in this set sits between 31.5 m and
+88.5 m — there is nothing here between 90 m and the ~155-157 m capture-mode
+range extends to. Do not read this set as exercising that band; it does not.
 
-## The imagery itself: far, small, and mostly black
+**13 of the 84 boxes (15%) are clamped at the right image edge.** A vehicle
+exiting frame-right has its box's right edge set to exactly the frame width
+(`640.0`) by the clamping `label_frame` always applies (see "Labels are
+exact simulation truth for centre and class..." above) — standard COCO
+practice for a partially visible object, and not a bug. Example:
+`frames/000028.jpg`'s box is
+`[607.4, 180.5, 32.6, 17.4]`, and `607.4 + 32.6 = 640.0` exactly. The
+consequence is real for anyone computing IoU against this set: the box's
+right edge is where the frame ends, not necessarily where the vehicle's
+true extent ends, so it truncates true extent and shifts IoU relative to
+what an unclamped ground truth would give.
 
-Two properties of this set's frames are not label artefacts — they are what
-the detector camera actually produces — but they bear directly on how to
-read any "zero detections" or low-recall result out of Cycle 5, so they are
-recorded here rather than left for someone to rediscover while debugging a
-confusing score.
+## The imagery in this committed set: far, small, and captured before an encoding fix
+
+Two more properties of this set's frames are not label artefacts, but —
+unlike the geometry-driven ones above — they are properties **of this
+specific committed capture**, not general statements about what the
+detector camera produces. The second one below describes a rendering bug
+that has since been fixed on this branch; it is recorded in the present
+tense only insofar as it still describes *these frames*, captured before
+the fix. They are recorded here because they bear directly on how to read
+any "zero detections" or low-recall result scored against this set.
 
 **Everything labelled is far and small.** Back-projecting every annotation
 through its own recorded camera pose (`perception/geometry.project_to_ground`,
@@ -115,32 +182,51 @@ cluster 31.5-47.9 m, cross-street ones 62.7-88.5 m. Nothing in this set is
 closer than 31.5 m. Box sizes bottom out at **10.5 × 9.1 px** and top out at
 **44.4 × 19.6 px**, in a 640×384 frame — every labelled object is a small
 fraction of the image. A detector tuned or evaluated only against this set
-would never be exercised against a near, large target.
+would never be exercised against a near, large target. This is a property
+of the scene and the scenario, not a rendering defect, and it is still true
+today.
 
-**The frames are near-black, and the ground plane in front of the ego is
-not rendered at all in the detector camera.** Per-frame mean luminance
-(0-255 grayscale) ranges **8.9 to 14.7** across all 60 committed frames, and
-**53% to 80%** of each frame's pixels are below luminance value 8. More
-specifically: the bottom **~37-41% of every single frame (roughly rows
-225-241 through 383)** is at or effectively at zero — there is no ground,
-road markings, or shadow rendered there, only near-black. This is specific
-to the detector camera's offscreen render; the same scene renders normally
-in the user-facing 3D view (see the screenshots taken while driving the
-capture). Both figures were measured directly off the committed JPEGs with
-a simple luminance/row-max scan; see the task-4 report for the exact method.
+**These frames are near-black, and the ground plane in front of the ego is
+not rendered at all — a rendering bug present when this set was captured,
+fixed on this branch since.** Per-frame mean luminance (0-255 grayscale)
+ranges **8.9 to 14.7** across all 60 committed frames, and **53% to 80%** of
+each frame's pixels are below luminance value 8. More specifically: the
+bottom **~37-41% of every single frame (roughly rows 225-241 through 383)**
+is at or effectively at zero — there is no ground, road markings, or shadow
+rendered there, only near-black. **This was not what the scene looked
+like: it was a missing output-encoding pass.** The detector camera's
+offscreen render target never applied tone-mapping or sRGB output encoding
+before this branch's commit `2652d40`, so every frame captured before that
+fix — including every frame in this set — is raw linear-space bytes, which
+reads as near-black and produces the zero row-band described above. See
+`docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md` §1 for the fix
+itself and the controlled before/after measurement (a paired capture put
+mean luminance at ~11.7 unfixed vs ~28.7 fixed, and the all-zero bottom
+row-band at 332/332 frames unfixed vs 0/331 fixed). Both figures above were
+measured directly off the committed JPEGs with a simple luminance/row-max
+scan; see the task-4 report for the exact method. **This set is
+deliberately not re-captured against the fix** (see "Regenerating" below),
+so these numbers remain an accurate description of *these particular
+frames* — useful as the "before" half of that before/after comparison — but
+they are no longer a description of what the detector camera currently
+produces.
 
-**Why this matters for Cycle 5:** a "zero vehicle detections" result against
-targets this distant and small, in frames this dark with an unrendered near
-field, is a scale-and-exposure story before it is a domain-gap story. Do not
-read a low score off this benchmark as evidence the detector cannot
-recognise vehicles in general — it may simply never have been shown
-anything that looks like this. **This does not make the benchmark
-invalid** — it faithfully captures what the production detector pipeline
-actually receives, which is the entire point of capturing from the real
-render path rather than synthesizing test images. Fixing the renderer (if
-that turns out to be warranted) is a Task 6 lever, not something to change
-here — changing it now would confound the very measurement this set exists
-to provide a fixed target for.
+**Why this matters for Cycle 5:** a "zero vehicle detections" result
+measured against targets this distant and small, in frames this dark with
+an unrendered near field, looked like a scale-and-exposure story before it
+was cleanly separated from one. Phase 1 re-measured on correctly-encoded
+imagery from the fixed side of a controlled paired capture and the result
+did not change (still zero at every production threshold) — see the
+diagnosis doc §1 for the fixed-imagery numbers. So: do not read this
+set's particular darkness as an unresolved confound in the current
+pipeline, but do not use "the encoding is fixed now" to wave away every low
+score either — the far-and-small property above is untouched by the
+encoding fix and still applies to every frame here. **This does not make
+the benchmark invalid** — it is deliberately the fixed "before" reference
+Phase 2 needs for its before/after comparison, which is exactly why it is
+not regenerated. A reader scoring against it should read this section
+first, not rediscover a fixed bug's signature by staring at a confusing
+score.
 
 ## `category_id` is run-relative
 

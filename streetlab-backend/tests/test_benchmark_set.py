@@ -18,6 +18,20 @@ every box's ground point sits on one of this run's two lane lines. Neither
 fact is a coincidence a wrong box could stumble into: see the task-4 report
 for mutation transcripts proving both tests fail on mirrored, scaled, and
 class-swapped copies of this same file, and pass only on the real one.
+
+**What the height check does and does not prove.** `CLASS_SIZE` is a
+per-class prior (`perception/geometry.py`'s own docstring: "plausible box
+dimensions, not measurements of any specific object"), not the true extent
+of any `sim/agents.py` `_PROFILES` entry -- those carry their own, slightly
+different, per-profile `(length, width, height)` that `TruthObject` never
+carries into capture (see `contract/benchmark/README.md`, "Labels are
+exact simulation truth for centre and class; box extent is a per-class
+prior"). So `test_every_boxs_implied_height_matches_its_class` below pins
+that `label_frame` reproduced *the prior* faithfully -- catching a box that
+was scaled, mirrored, or assigned the wrong class -- and nothing more. It
+is not, and was never, a check against the simulator's true per-agent
+size; a box built from the correct prior passes this test even though the
+prior itself is off by a few percent from the agent that actually rendered.
 """
 
 from __future__ import annotations
@@ -158,7 +172,17 @@ def test_every_boxs_implied_height_matches_its_class():
     That implied height must match `CLASS_SIZE[cls].height` -- a box that
     was scaled, mirrored, or assigned the wrong class breaks this even
     though it stays a perfectly well-formed COCO box (see this file's
-    module docstring for the mutation transcripts that prove it)."""
+    module docstring for the mutation transcripts that prove it).
+
+    This pins the box against the *prior* `label_frame` actually used
+    (`CLASS_SIZE`), which is what makes it sensitive to scaling/mirroring/
+    class-swap mutations. It does not verify the box against any
+    `sim/agents.py` agent's true rendered size -- `CLASS_SIZE` is a
+    per-class prior, not a measurement, and every real profile's actual
+    dimensions differ from it by a few percent (see the module docstring
+    and `contract/benchmark/README.md`). A passing result here means "this
+    box faithfully reproduces the prior", not "this box matches the
+    vehicle that was actually rendered"."""
     checked = 0
     for ann, box, (ground_x, ground_y), camera in _annotations_with_context():
         top_row = box.y0
