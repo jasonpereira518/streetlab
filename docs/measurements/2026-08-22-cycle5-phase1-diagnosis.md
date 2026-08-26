@@ -626,7 +626,7 @@ in Phase 1 tried:
    determinism check passed on a thinner sample than Task 4's.
 6. **The committed benchmark's box *extent* is a per-class prior, not the simulator's true
    per-agent size — found during this branch's final review.** `label_frame` builds every
-   box from `CLASS_SIZE[cls]` (`perception/capture.py:110`), a fixed dictionary
+   box from `CLASS_SIZE[cls]` (`perception/capture.py:115`), a fixed dictionary
    `perception/geometry.py` itself documents as "plausible... not measurements of any
    specific object," while `sim/agents.py`'s `_PROFILES` gives each traffic agent its own,
    slightly different size that `TruthObject` never carries into capture. Measured

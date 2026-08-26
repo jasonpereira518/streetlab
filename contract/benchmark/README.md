@@ -44,7 +44,7 @@ never correcting a box by eye — see "Visual verification" below.
 **This is true of the box's centre (ground position) and class. It is not
 true of the box's extent (length/width/height).** `label_frame` builds
 every box from `size = CLASS_SIZE[obj.cls]`
-(`perception/capture.py:110`) — a fixed, per-class prior dictionary in
+(`perception/capture.py:115`) — a fixed, per-class prior dictionary in
 `perception/geometry.py:58-66` that the module's own docstring calls
 "plausible box dimensions, not measurements of any specific object." The
 simulator's actual agents do not share that size: `sim/agents.py`'s
