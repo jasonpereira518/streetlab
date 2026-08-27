@@ -948,7 +948,8 @@ Car peak deltas from cell 1: letterbox alone +0.0906, fp32 alone +0.3008, both +
 **fp32 alone (cell 3) produces the largest car peak of all four cells (0.4880) — larger than the
 combined cell (0.3917).** The fp32 effect is not uniform across vehicle classes, and it is not
 one-directional either: truck's peak **rises** under fp32-alone (cell1 0.1105 → cell3 0.1621,
-+0.0516, 1.47× — the second-largest peak move in the factorial) and falls in the combined cell
++0.0516, 1.47× — the second-largest peak move within cell 3, behind car's; across all
+twelve peak deltas from cell 1 it is fourth, behind car's three) and falls in the combined cell
 (cell4 0.0932), while motorcycle falls under both fp32 cells (cell1 0.0830 → cell3 0.0574 →
 cell4 0.0743). Section 12's rank-1 paragraph and Section 13.1 state the truck rise in the same
 terms.
@@ -1694,8 +1695,11 @@ already checked:
 - The `PROVIDER_ORDER` comment in `perception/detector.py` measured an **fp16 variant's latency**,
   never its scores [P1 §8]. **[P1 §8] cites it as `detector.py:128-130`, which this branch
   invalidated**: Task 1 inserted `preprocess_letterbox` above it, and the comment block now sits
-  at `detector.py:230-235`, of which the literal translation of Phase 1's three cited lines is
-  `231-233` — the fp16 measurement itself is line 232. The other pointer in the same [P1 §8]
+  at `detector.py:232-237`, of which the literal translation of Phase 1's three cited lines is
+  `233-235` — the fp16 measurement itself is line 234. (Those numbers read `230-235`/`231-233`
+  until the same fix wave that corrected them added two docstring lines above the block and
+  shifted it again by two; recorded because it is the defect this paragraph documents,
+  committed twice.) The other pointer in the same [P1 §8]
   paragraph, `model_cache.py:56-61`,
   still lands correctly.
 - Cycle 4's fp32 comparison [`docs/measurements/2026-08-20-detector-comparison.md`, via P1 §8]
@@ -1853,7 +1857,8 @@ exist to prevent, so none is passed over — including the ones whose failure is
 Two of the three failed outright and the third failed on one axis. Phase 1's survival criteria
 did not survive, on Phase 1's own pre-stated terms.
 
-**[P1 §10]'s adjacent "what would flip the branch decision" list holds two more conditions, and
+**[P1 §10]'s adjacent "what would flip the branch decision" list holds seven conditions. Two more of
+them are cheap enough for this phase to have borne on, and
 both are named here rather than passed over.**
 Quoting a phase's pre-stated criteria where they confirm a ranking and skipping the adjacent ones
 would defeat the purpose of writing them down in advance, which is the only reason they have any
