@@ -833,7 +833,11 @@ def save_frame_scores(
 
 
 def compare_to_baseline(
-    frames: list[FrameRecord], baseline_path: Path, *, preprocess_mode: str
+    frames: list[FrameRecord],
+    baseline_path: Path,
+    *,
+    preprocess_mode: str,
+    model_path: Path,
 ) -> None:
     """Paired per-frame peak-score comparison against a saved run.
 
@@ -855,37 +859,59 @@ def compare_to_baseline(
     A second, config-level version of that same failure mode exists here:
     Phase 2 runs four cells (stretch/letterbox x int8/fp32) against this
     *same* 60-frame benchmark, so the `file_name`-set guard above passes
-    for every pairing of the four, including a cell against itself or
-    against the wrong sibling. `save_frame_scores` now records
-    `preprocess`/`model`/`benchmark` alongside `frames` for exactly this
-    reason. This function refuses outright when the baseline's recorded
-    `preprocess` matches this run's -- comparing a cell against itself is
-    never what a paired comparison is for -- and prints both runs' full
-    provenance (preprocess/model/benchmark) so a model-only mismatch
-    (e.g. int8 vs fp32 under the same preprocessing) is visible to a
-    reader even though it isn't refused outright.
+    for every pairing of the four, including a cell against itself.
+    `save_frame_scores` records `preprocess`/`model`/`benchmark` alongside
+    `frames` for exactly this reason.
+
+    This function refuses only when BOTH the baseline's `preprocess` AND
+    its model *filename* match this run's -- that pair is the only one
+    that is never a legitimate Phase 2 comparison (a cell against
+    itself). An earlier version of this guard refused on `preprocess`
+    equality alone, which is wrong: two of Phase 2's three real
+    comparisons hold `preprocess` fixed and vary only the model
+    (stretch-fp32 vs stretch-int8, and the letterbox equivalent), so that
+    version hard-refused exactly the comparisons the factorial needs.
+    Keying on the `(preprocess, model)` pair fixes that while still
+    catching the one comparison nobody means.
+
+    Model identity is compared by filename (`Path(...).name`), not the
+    full path: the same checkpoint is legitimately reachable through
+    different paths in this project (Task 2's model cache path vs. an ad
+    hoc scratch/download path), and a full-path comparison would read
+    that as a model change when it is not. The checkpoint filenames
+    already distinguish the fp32 and int8 builds (see Task 2), so
+    filename is the right granularity -- coarser (ignoring the model
+    entirely, the original bug) misses real model swaps; finer (the full
+    path) reintroduces a different false positive.
     """
     saved = json.loads(baseline_path.read_text())
     base_preprocess = saved.get("preprocess")
     base_model = saved.get("model")
     base_benchmark = saved.get("benchmark")
+    here_model_name = model_path.name
 
-    if base_preprocess is None:
+    missing_provenance = [
+        key for key, value in (("preprocess", base_preprocess), ("model", base_model))
+        if value is None
+    ]
+    if missing_provenance:
         print(
-            "warning: baseline has no 'preprocess' provenance recorded "
+            f"warning: baseline is missing {missing_provenance} provenance "
             "(saved by an older run of this script) -- cannot confirm "
             "this comparison pairs two different cells rather than the "
             "same one twice; proceeding, but treat the result with "
             "caution",
             file=sys.stderr,
         )
-    elif base_preprocess == preprocess_mode:
+    elif base_preprocess == preprocess_mode and Path(base_model).name == here_model_name:
         raise SystemExit(
             f"refusing to compare: baseline was saved with "
-            f"--preprocess {base_preprocess!r}, same as this run "
-            f"({preprocess_mode!r}). Comparing a cell against itself is "
-            "never what a paired comparison is for -- save a baseline "
-            "from the other preprocessing mode instead."
+            f"--preprocess {base_preprocess!r} and model "
+            f"{Path(base_model).name!r}, both identical to this run "
+            f"(preprocess {preprocess_mode!r}, model {here_model_name!r}). "
+            "Comparing a cell against itself is never what a paired "
+            "comparison is for -- save a baseline from a different "
+            "preprocessing mode or a different model instead."
         )
 
     base = {f["file_name"]: f["peaks"] for f in saved["frames"]}
@@ -928,10 +954,10 @@ def compare_to_baseline(
         f"benchmark={base_benchmark!r}"
     )
     print(
-        f"this run: preprocess={preprocess_mode!r} -- compare the "
-        "'model'/'benchmark' fields above against this run's own "
-        "'model:'/'benchmark:' lines printed earlier, to confirm the only "
-        "thing that differs between the two runs is preprocessing."
+        f"this run:  preprocess={preprocess_mode!r} model={str(model_path)!r} "
+        "-- the refusal above (if any) compared preprocess exactly and "
+        "model by filename only, so a cache-path vs. scratch-path "
+        "difference here would not by itself have triggered it."
     )
     print(
         f"{len(file_names)} frames present in both runs, matched by "
@@ -1172,7 +1198,12 @@ def main() -> int:
         print(f"saved per-frame peak scores to {args.save_scores}")
 
     if args.baseline is not None:
-        compare_to_baseline(frames, args.baseline, preprocess_mode=args.preprocess)
+        compare_to_baseline(
+            frames,
+            args.baseline,
+            preprocess_mode=args.preprocess,
+            model_path=args.model,
+        )
 
     sweep(frames, thresholds, args.gate_m, predictions_by_threshold, ego_check)
     sham_control(frames, thresholds, args.gate_m, predictions_by_threshold)
