@@ -52,6 +52,12 @@ no download occurred in this session.
 Cell 1 is Phase 1's shipped configuration: stretch preprocessing, int8 weights. Run twice, each
 saving per-frame scores.
 
+**Note for anyone re-running these commands:** every `--save-scores` and `--baseline` path below
+is under `/tmp` and will not survive between sessions. Re-running any of the `--baseline` cells
+(2, 3, or 4) as pasted requires first regenerating `/tmp/cell1-run-a.json` by re-running the Run
+A command in this section — otherwise `--baseline` fails on a missing file. Re-running the Run A
+command itself is always safe on its own.
+
 ### Run A
 
 ```bash
@@ -978,16 +984,29 @@ gain that is more spread across frames rather than concentrated in one.
 |---|---|---|---:|---:|
 | 1 run A | int8 | stretch | 3.51s | 58.5 |
 | 1 run B | int8 | stretch | 3.64s | 60.6 |
+| 1 self-compare guard-test (Section 2) | int8 | stretch | 5.19s | 86.5 |
 | 2 | int8 | letterbox | 3.59s | 59.9 |
 | 3 | fp32 | stretch | 5.16s | 86.0 |
 | 4 | fp32 | letterbox | 4.79s | 79.8 |
 
-fp32 costs roughly **1.3–1.5x** the per-frame latency of int8 on this CPU
-(`CPUExecutionProvider`): 86.0/58.5 = 1.47x for stretch, 79.8/59.9 = 1.33x for letterbox.
-Preprocessing mode itself (stretch vs. letterbox) makes no meaningful difference to latency
-within a given precision — the two int8 runs (58.5–60.6 ms/frame) and the two fp32 runs
-(79.8–86.0 ms/frame) each cluster tightly. This latency cost is exactly the half of the shipping
-tradeoff this phase does not resolve; Task 5 weighs it against the accuracy numbers above.
+**No jitter floor was established for latency, unlike for the scores.** Section 2 measured the
+score jitter across two identical-config runs and got exactly zero, which is why every score
+delta in this document is trustworthy without qualification. Latency was never repeated-measured
+the same way — each cell above is n=1 — and this document's own data shows why that matters: the
+Section 2 guard-test run (line ~351 above) is a **third** stretch/int8 run, same config as run A
+and run B, and it timed at 86.5 ms/frame — slower than *both* fp32 cells (86.0 and 79.8
+ms/frame). That is ~48% above run A's 58.5 ms/frame on an identical configuration, almost
+certainly machine contention (background load during that particular call) rather than a real
+difference in the int8 path, but this document cannot rule that out because no repeated-latency
+measurement was designed for it the way Section 2 was designed for scores.
+
+Read with that caveat: the three int8 measurements cluster at 58.5–60.6 ms/frame except for the
+86.5 ms outlier, and the two fp32 measurements sit at 79.8–86.0 ms/frame, so fp32 probably does
+cost roughly **1.3–1.5x** int8's per-frame latency on this CPU (`CPUExecutionProvider`):
+86.0/58.5 = 1.47x for stretch, 79.8/59.9 = 1.33x for letterbox, using the least-contended-looking
+int8 samples. But that ratio is a probable read on n=1-per-cell data with a demonstrated ~48% same-config swing sitting in this very table, not a measurement with its own established floor.
+Task 5 should weigh it as such — a likely-true number, not a floor-cleared one — against the
+accuracy numbers above, which are floor-cleared.
 
 ---
 
@@ -1077,9 +1096,17 @@ This run's cell 2 (Section 3) reproduces every one of those figures exactly:
 | peak car | 0.1872 → 0.2778 | 0.1872 → 0.2778 | exact |
 | tp @ 0.01 | 9 → 6 | 9 → 6 | exact |
 | fp @ 0.01 | 3989 → 5671 | 3989 → 5671 | exact |
-| mean_err_m (reads as threshold 0.10, where the swing is closest to "0.5 to 2.0") | ~0.5 → ~2.0 | 0.54 → 2.05 | matches |
+| mean_err_m @ 0.10 | ~0.5 → ~2.0 | 0.54 → 2.05 | matches |
+| mean_err_m @ 0.05 (for comparison) | — | 0.40 → 2.14 | same shape |
+| mean_err_m @ 0.01 (for comparison) | — | 0.73 → 1.37 | shape does not hold |
 | sham @ 0.01 | real tp equal to sham | real=6, sham(+20)=6 | equal, matches |
 | sham @ 0.10 | real tp below sham | real=1, sham(+20)=6 | real below, matches |
+
+Amendment 3's `mean_err_m` figure ("roughly 0.5 to 2.0") does not name a threshold, so all three
+non-trivial thresholds are quoted above rather than picking the one that fits best: the shape
+holds at 0.10 and 0.05 but not at 0.01, where cell 2's mean_err_m actually falls relative to cell
+1 (0.73 → 1.37 is still a rise, but far short of "0.5 to 2.0", and smaller in absolute terms than
+the 0.10/0.05 rows). Read the fit as good-not-exact, not as a clean match at every threshold.
 
 Given the jitter floor is exactly zero (Section 2), this is not a coincidence of noise — the
 prior reviewer's single run and this run's cell 2 are the same deterministic computation, and
@@ -1091,12 +1118,28 @@ score while making everything below that ceiling noisier and less trustworthy at
 where predictions actually clear the bar.
 
 fp32 (cell 3) was not covered by the Amendment 3 observation (that reviewer only ran the
-letterbox/int8 cell). This run's cell 3 shows a materially different and stronger picture: real
-precision of 1.000 at thresholds 0.30–0.40 (the first time any cell in this document shows
-nonzero precision at those thresholds), and real tp clearing all three sham offsets at every
-threshold from 0.01 through 0.40 except where both are zero. That is the closest any single cell
-comes to distinguishable, sham-clearing detections at this benchmark's more conservative
-thresholds.
+letterbox/int8 cell). This run's cell 3 shows a materially different and stronger picture, but
+the two strongest-sounding readings both need their basis stated alongside them, the same way
+cell 2's degradation was given a full paragraph above rather than left in the tables:
+
+- **"Real precision of 1.000 at thresholds 0.30–0.40" is computed from tp=1, fp=0 at each of
+  those two thresholds** — a single true-positive detection with zero false positives, not a
+  distribution. It is the first time any cell in this document shows nonzero precision at those
+  thresholds, and it is a real, exact number, but it is an n=1 result and should be read as one.
+- **"Real tp clears every sham offset from 0.01 through 0.40"** is literally true, but the
+  margin is thin at two of the six thresholds: at 0.10, real tp is 5 against sham(+20)'s 4 (a
+  margin of one detection); at 0.05, real tp is 7 against sham(+20)'s 6 (also a margin of one).
+  The comfortable margins are at 0.20 (real 3 vs. sham 0) and 0.01 (real 15 vs. the largest sham
+  count of 9) — six clear detections' worth of separation, not one.
+
+Cell 3's other secondary metrics are genuinely mixed-to-favourable and worth stating plainly
+too: false positives at matched thresholds **fall** relative to cell 1 — 475→136 at 0.10 and
+1840→944 at 0.05 — and only rise at 0.01 (3989→4811). So the finding survives its qualifications:
+fp32 alone is the closest any single cell in this factorial comes to distinguishable,
+sham-clearing detections at this benchmark's more conservative thresholds, with lower false-positive
+counts at two of the three thresholds where cell 1 has any real detections at all — it just does
+so on small counts (tp in the single digits to low teens) that the precision and sham-margin
+figures above should be read at, not past.
 
 ---
 
