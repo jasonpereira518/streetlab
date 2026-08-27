@@ -1178,6 +1178,9 @@ figures above should be read at, not past.
 
 ## 10. Files touched
 
+*(This section covers Task 4, which produced Sections 0–9. Part II's own file list is in
+Section 18.)*
+
 - Created: `docs/measurements/2026-08-26-cycle5-phase2-gates.md` (this file)
 - No other repository files modified.
 - Scratch files (not committed): `/tmp/cell1-run-a.json`, `/tmp/cell1-run-b.json`,
@@ -1185,3 +1188,544 @@ figures above should be read at, not past.
 - Model cache (not part of the repo): fp32 checkpoint resolved to
   `~/Library/Caches/StreetLab/models/rtdetr_r18vd_fp32-11843b02455cc240.onnx`, alongside the
   existing int8 checkpoint — both left resident, `evict_to_budget()` never called.
+
+---
+
+# Part II — Task 5: the ranked result and the branch decision
+
+**Task 5 synthesises; it runs no new measurement of the detector.** Every number in Part II is
+quoted from Part I of this document (Sections 0–10 above) or from one of the sources tagged
+below, naming the section it came from and the command that produced it, so a reader who
+disagrees with the ranking can re-run the measurement rather than argue with the prose. Where
+Part II does arithmetic on published numbers (a difference or a ratio), both operands and the
+operation are shown inline.
+
+| tag | source | what it holds |
+|---|---|---|
+| **[P2]** | this document, Sections 0–10 | the factorial: four cells, the jitter floor, the sweeps, the sham controls |
+| **[P1]** | `docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md` | Phase 1's ranked diagnosis, its branch decision, and its own pre-stated flip conditions (§10) |
+| **[T2]** | Task 2's checkpoint-metadata inspection | what the two `.onnx` files declare about their own classes (reproduced with its command in Section 15) |
+
+**Two constraints carried from [P2]'s header and applied throughout Part II.** Recall is never
+read as a lever's effect: 38 of the benchmark's 84 annotations are cross-street vehicles behind
+a building row, capping whole-set recall at ~0.55 for a perfect detector [P1 §2, from
+`contract/benchmark/README.md`], and what survives that ceiling is not distinguished from chance
+by this benchmark. Recall figures appear in Part I's sweep tables and are not quoted in any
+ranking below. And an undefined ratio is `—`: where a cell has no predicted boxes at a
+threshold, precision and `mean_pos_err_m` have no denominator and are printed as `—`, never
+`0.00`.
+
+---
+
+## 11. The pre-committed decision rule, applied mechanically
+
+**The rule, fixed before the data existed** (phase plan, Task 5): a cell counts as moving the
+metric only if **both** hold —
+
+1. its peak car score exceeds cell 1's by more than the measured jitter, **and**
+2. its paired per-frame car deltas are positive for a majority of the 60 frames.
+
+**The jitter is exactly zero.** All four vehicle classes, 0 of 60 frames with any nonzero delta,
+at full float32 precision — `max|Δ| = 0.0000000000`, peak Δ `0.0000000000` (Section 2, jitter
+table; command: the `python3 -c` JSON diff of `/tmp/cell1-run-a.json` against
+`/tmp/cell1-run-b.json` pasted in Section 2). The two identical-config runs are byte-identical
+apart from the machine-dependent timing line. Condition 1 is therefore satisfied by **any**
+positive peak delta at all, and condition 2 is what actually discriminates.
+
+Applying both conditions to the car class, the ranking metric [P1 §2]:
+
+| cell | peak car | peak Δ vs cell 1 | > jitter (0.0000)? | car frames improved / 60 | majority? | **rule verdict** |
+|---|---:|---:|:--:|---:|:--:|:--:|
+| 2 — letterbox, int8 | 0.2778 | **+0.0906** | yes | **47** | yes | **clears** |
+| 3 — stretch, fp32 | 0.4880 | **+0.3008** | yes | **45** | yes | **clears** |
+| 4 — letterbox, fp32 | 0.3917 | **+0.2045** | yes | **49** | yes | **clears** |
+
+Peaks from Section 4's 2×2 table; improved-counts and peak Δ from Section 5's paired-delta
+summary, which is transcribed from the `PAIRED PER-FRAME DELTA vs BASELINE` blocks printed by
+each cell's own command in Section 3.
+
+**All three cells clear both conditions.** That is the mechanical reading and it is stated
+without hedging: on the metric this phase pre-committed to, every configuration tested beats the
+shipped one by a margin that is provably not noise.
+
+**What the rule does not say.** It was written to stop a single lucky frame masquerading as a
+lever — that is why condition 2 exists at all. It was **not** written to certify that a cell
+clearing it is worth acting on, and it cannot be read that way here: it looks only at car peak
+and car per-frame sign, and three of the four vehicle classes and every secondary metric are
+outside its view. Sections 12 and 13 put those back in. A cell whose sham control stops
+separating real matches from chance has not demonstrated detection, whatever its peak did.
+
+---
+
+## 12. The ranked result
+
+**Ranked by measured effect on peak car score** — the metric [P1 §2] fixed for Cycle 5, chosen
+because it is threshold-independent, decode-independent, and defined on every frame. Each row
+names the command that produced its number.
+
+| rank | cell | peak car | Δ vs cell 1 | ratio vs cell 1 | rule (§11) | **verdict** |
+|---|---|---:|---:|---:|:--:|---|
+| **1** | **3 — stretch, fp32** | **0.4880** | **+0.3008** | 0.4880 / 0.1872 = **2.61×** | clears | the strongest result two cycles have produced, and one frame from ordinary |
+| **2** | 4 — letterbox, fp32 | 0.3917 | +0.2045 | 0.3917 / 0.1872 = 2.09× | clears | a negative interaction: below cell 3 alone and below what 2 and 3 predict |
+| **3** | 2 — letterbox, int8 | 0.2778 | +0.0906 | 0.2778 / 0.1872 = 1.48× | clears | peak lift is real; the secondary evidence contradicts reading it as detection |
+| — | 1 — stretch, int8 (shipped) | 0.1872 | — | — | baseline | reproduces Phase 1 exactly |
+
+Commands (each pasted verbatim with its full output in the section named):
+
+```bash
+# cell 1 (baseline, run A) — Section 1
+cd streetlab-backend && uv run python ../scripts/sweep_threshold.py \
+  --model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx \
+  --benchmark ../contract/benchmark --preprocess stretch \
+  --save-scores /tmp/cell1-run-a.json
+
+# cell 2 (rank 3) — Section 3
+cd streetlab-backend && uv run python ../scripts/sweep_threshold.py \
+  --model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx \
+  --benchmark ../contract/benchmark --preprocess letterbox \
+  --baseline /tmp/cell1-run-a.json --save-scores /tmp/cell2.json
+
+# cell 3 (rank 1) — Section 3
+cd streetlab-backend && uv run python ../scripts/sweep_threshold.py \
+  --model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_fp32-11843b02455cc240.onnx \
+  --benchmark ../contract/benchmark --preprocess stretch \
+  --baseline /tmp/cell1-run-a.json --save-scores /tmp/cell3.json
+
+# cell 4 (rank 2) — Section 3
+cd streetlab-backend && uv run python ../scripts/sweep_threshold.py \
+  --model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_fp32-11843b02455cc240.onnx \
+  --benchmark ../contract/benchmark --preprocess letterbox \
+  --baseline /tmp/cell1-run-a.json --save-scores /tmp/cell4.json
+```
+
+The fp32 checkpoint in cells 3 and 4 was resolved through `ModelCache.ensure(FP32_MODEL,
+fetch_weights)`, which re-hashes the whole file against its pin on every call — so those two
+cells provably ran on the pinned bytes (Section 0, with its command and output).
+
+### Rank 1 — cell 3 (stretch, fp32): the strongest result two cycles have produced, and one frame from ordinary
+
+Both halves of that sentence are true and both belong in the ranking.
+
+**The strong half.** Peak car 0.4880 is the largest number any configuration has produced in
+Cycle 4 or Cycle 5 (Section 4). It is the only cell with **any** true positive above threshold
+0.20: tp=1 at both 0.30 and 0.40, with fp=0, `mean_pos_err_m` 0.08 (Section 3, cell 3 sweep
+table) — the first nonzero precision at those thresholds anywhere in this factorial. Its real
+true-positive count exceeds every sham offset at all six thresholds where it detects anything,
+which no other cell manages (Section 13's sham-margin table). And its false positives **fall**
+against the baseline at two of the three thresholds where cell 1 detects anything at all:
+475 → 136 at 0.10 and 1840 → 944 at 0.05 (Section 3, cells 1 and 3 sweep tables), rising only at
+0.01 (3989 → 4811). A lever that raises the peak *and* lowers the false-positive count is not
+what a preprocessing artefact usually looks like.
+
+**The ordinary half.** The +0.3008 peak swing sits against a median per-frame car Δ of **+0.0114**
+(Section 5) — a factor of 26 apart. The peak is substantially one frame, `000057.jpg`, which
+Section 4 names explicitly. `precision = 1.000` at 0.30 and 0.40 is computed from **tp=1, fp=0**:
+a single detection, not a distribution. The sham margin is exactly **one true positive** at four
+of its six detecting thresholds (0.40, 0.30, 0.10, 0.05 — see Section 13), including both
+thresholds where the sham control produces any matches of its own. And its motorcycle class
+collapses: 3 frames improved against 57 worsened, median Δ −0.0143, peak Δ −0.0255 (Section 5).
+Truck and bus are flat (Section 13).
+
+Ranked first because it moved the pre-committed metric furthest and is the only cell whose
+secondary evidence points the same way as its peak. Not ranked first because it demonstrated
+detection — it did not.
+
+### Rank 2 — cell 4 (letterbox, fp32): a negative interaction
+
+Cell 4 clears the rule (+0.2045, 49/60 frames improved) and has the **largest median per-frame
+car gain of any cell** (+0.0825, Section 5). But on the ranking metric it is dominated: 0.3917 is
+below cell 3 alone (0.4880), and 0.1869 below the 0.5786 that summing the two individual lever
+effects onto cell 1 would predict (Section 7, additive check, with its command and verbatim
+output). Truck is the same shape (actual 0.0932 against a predicted 0.1675). Section 7 also shows
+*why*: per-frame the two levers combine close to additively for car (interaction mean +0.0136,
+median +0.0193), and it is specifically the set-wide maximum that fails to stack, because each
+cell's peak sits on a different frame (cell 1 `000053.jpg`, cell 2 `000054.jpg`, cell 3
+`000057.jpg`, cell 4 `000026.jpg`).
+
+One number in cell 4's favour that the ranking does not reward and that should not be buried: at
+threshold 0.01 its real tp of 18 against a largest sham count of 7 is the **widest absolute
+sham margin in the factorial** (Section 13). It buys that with 5955 false positives at the same
+threshold, against cell 1's 3989 (Section 3), so it is a margin measured in a haystack.
+
+### Rank 3 — cell 2 (letterbox, int8): the peak lift is real, and it is not detection
+
+This is the cell the rule was least able to judge, and the one where the mechanical reading and
+the evidence diverge hardest. Its peak lift is real and exactly reproduced — Section 8 confirms
+every figure of the independent Amendment 3 observation to four decimal places, which the zero
+jitter floor makes a confirmation rather than a coincidence. But everything except the peak moves
+the wrong way (all from Section 3, cells 1 and 2 sweep and sham tables):
+
+- true positives at 0.01 **fall** 9 → 6, and at 0.05 fall 3 → 2;
+- `mean_pos_err_m` rises 0.54 → 2.05 at 0.10 (3.80×), 0.40 → 2.14 at 0.05 (5.35×), 0.73 → 1.37 at
+  0.01 (1.88×);
+- false positives rise 3989 → 5671 at 0.01;
+- and **the sham control loses the one margin the baseline had.** Under cell 1, real tp exceeds
+  every sham offset at exactly one threshold — 0.01, 9 against 6. Under cell 2 that becomes 6
+  against 6: a tie. At 0.10 and 0.05 cell 2's real count is *below* its largest sham count (1 vs
+  6, and 2 vs 6).
+
+**A correction to how this is sometimes summarised, including in the instructions this task was
+given.** It is not true that the baseline was distinguishable from sham at 0.10 and cell 2 lost
+that: at 0.10 the baseline is already tied (real 1, sham(+20) 1), and at 0.05 the baseline's real
+count is already *below* sham (3 vs 4) — [P1 §2] says exactly this in its own words. The accurate
+statement, which is if anything worse for cell 2, is that **the baseline had precisely one
+threshold with any margin over chance, and letterbox erases it.** Section 8's own wording of the
+Amendment 3 match is correct as written; this note is about the gloss, not about [P2].
+
+Ranked third on the metric, and the only cell where this report would tell a reader that clearing
+the decision rule does not make it a lever.
+
+### The latency half of the picture, published beside the accuracy half
+
+fp32 probably costs roughly **1.33–1.47×** int8's per-frame latency on this CPU: 86.0 / 58.5 =
+1.47× for stretch, 79.8 / 59.9 = 1.33× for letterbox (Section 6, from the `inference:` line each
+cell's command prints). **That ratio is not floor-cleared the way the scores are.** Every cell is
+n=1 for latency, no repeated-latency measurement was designed the way Section 2 was designed for
+scores, and Section 6's own table contains a third stretch/int8 run at 86.5 ms/frame — ~48% above
+run A's 58.5 ms/frame on an identical configuration, and slower than *both* fp32 cells. Read it
+as a likely-true number, not a measured one.
+
+---
+
+## 13. Raw per-class and per-threshold numbers
+
+The ranking above is a summary. These are the numbers under it, so a marginal result is visible
+as marginal.
+
+### 13.1 Peak score by class and cell (Section 4)
+
+| class | cell 1 (stretch/int8) | cell 2 (letterbox/int8) | cell 3 (stretch/fp32) | cell 4 (letterbox/fp32) |
+|---|---:|---:|---:|---:|
+| car        | 0.1872 | 0.2778 | **0.4880** | 0.3917 |
+| truck      | 0.1105 | 0.1159 | 0.1621 | 0.0932 |
+| bus        | 0.1116 | 0.1176 | 0.1099 | 0.1273 |
+| motorcycle | 0.0830 | 0.1128 | 0.0574 | 0.0743 |
+
+**Only car moves materially anywhere.** Against cell 3 — the ranked winner — truck's peak rises
+(0.1105 → 0.1621) while bus falls (0.1116 → 0.1099) and motorcycle falls (0.0830 → 0.0574); on
+the paired per-frame view, which is the one condition 2 uses, **three of the four classes move
+against cell 3**: truck 27 improved / 33 worsened, bus 34/26, motorcycle 3/57 (Section 5). Only
+bus improves on a majority of frames alongside car, and by a median of +0.0022. Every peak in
+this table except car's stays inside the 0.08–0.25 band [P1 §10] named as the shipped
+configuration's signature; the entire measured effect of this factorial lives in one class.
+
+### 13.2 Paired per-frame car deltas (Section 5)
+
+| cell | improved | worsened | tied | median Δ | mean Δ | peak Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| 2 (letterbox, int8) | 47 | 13 | 0 | +0.0452 | +0.0457 | +0.0906 |
+| 3 (stretch, fp32)   | 45 | 15 | 0 | **+0.0114** | +0.0232 | **+0.3008** |
+| 4 (letterbox, fp32) | 49 | 11 | 0 | +0.0825 | +0.0825 | +0.2045 |
+
+Cell 3 has the largest peak and the **smallest** median of the three. That is the single most
+important row in this document for anyone reading the ranking sceptically, and Section 17 states
+what follows from it.
+
+### 13.3 Threshold sweep, all four cells (Section 1 and Section 3)
+
+`tp` / `fp` / `precision` / `mean_pos_err_m`, at every threshold where any cell detects anything.
+`—` marks a ratio with no denominator (no predicted boxes, or no true positives), never `0.00`.
+Recall columns are in Part I's tables and are deliberately not reproduced here — see the header
+of Part II.
+
+| threshold | cell 1 tp/fp/prec/err | cell 2 tp/fp/prec/err | cell 3 tp/fp/prec/err | cell 4 tp/fp/prec/err |
+|---|---|---|---|---|
+| 0.50 | 0 / 0 / — / — | 0 / 0 / — / — | 0 / 0 / — / — | 0 / 0 / — / — |
+| 0.40 | 0 / 0 / — / — | 0 / 0 / — / — | **1 / 0 / 1.000 / 0.08** | 0 / 1 / 0.000 / — |
+| 0.30 | 0 / 1 / 0.000 / — | 0 / 1 / 0.000 / — | **1 / 0 / 1.000 / 0.08** | 0 / 7 / 0.000 / — |
+| 0.20 | 0 / 32 / 0.000 / — | 0 / 21 / 0.000 / — | 3 / 4 / 0.429 / 0.42 | 0 / 29 / 0.000 / — |
+| 0.10 | 1 / 475 / 0.002 / 0.54 | 1 / 314 / 0.003 / 2.05 | 5 / 136 / 0.035 / 0.42 | 1 / 152 / 0.007 / 1.88 |
+| 0.05 | 3 / 1840 / 0.002 / 0.40 | 2 / 1772 / 0.001 / 2.14 | 7 / 944 / 0.007 / 0.49 | 5 / 1007 / 0.005 / 1.19 |
+| 0.01 | 9 / 3989 / 0.002 / 0.73 | 6 / 5671 / 0.001 / 1.37 | 15 / 4811 / 0.003 / 1.07 | 18 / 5955 / 0.003 / 1.19 |
+
+**Every cell still scores zero true positives at 0.50**, the threshold the shipped pipeline runs
+at. Nothing in this factorial produces a detection the product would act on.
+
+### 13.4 Sham-control margins (Section 1 and Section 3)
+
+`margin` = real tp minus the largest of the three sham offsets (+10, +20, +30) at that threshold.
+A margin of zero or less means the real matches are not distinguishable from chance at that
+threshold.
+
+| threshold | cell 1 real / max sham / margin | cell 2 | cell 3 | cell 4 |
+|---|---|---|---|---|
+| 0.40 | 0 / 0 / 0 | 0 / 0 / 0 | 1 / 0 / **+1** | 0 / 0 / 0 |
+| 0.30 | 0 / 0 / 0 | 0 / 0 / 0 | 1 / 0 / **+1** | 0 / 1 / −1 |
+| 0.20 | 0 / 0 / 0 | 0 / 5 / −5 | 3 / 0 / **+3** | 0 / 6 / −6 |
+| 0.10 | 1 / 1 / 0 | 1 / 6 / −5 | 5 / 4 / **+1** | 1 / 6 / −5 |
+| 0.05 | 3 / 4 / −1 | 2 / 6 / −4 | 7 / 6 / **+1** | 5 / 6 / −1 |
+| 0.01 | 9 / 6 / **+3** | 6 / 6 / 0 | 15 / 9 / **+6** | 18 / 7 / **+11** |
+
+Cell 3 is the only cell with a positive margin at every threshold where it detects anything, and
+the only cell with any margin at all above 0.10. Four of its six margins are exactly one
+detection. Cell 2 is negative or zero everywhere. Cell 4 is the widest margin in the table at
+0.01 and negative at four of the five thresholds above it.
+
+---
+
+## 14. Process finding: int8 quantization was never named as a candidate until Phase 1's final review
+
+**This belongs in the record as prominently as any number above, because it is the reason the
+number above exists.**
+
+Cycle 4 measured zero vehicle detections. Cycle 5 Phase 1 measured two cheap levers, ruled both
+out, and ruled that the gap justified fine-tuning. **Every peak score in both cycles was measured
+on int8-quantized weights, and nobody had compared them against the unquantized checkpoint of the
+same architecture.** Quantization appears as a candidate explanation nowhere in any document of
+either cycle until [P1 §8], written during that branch's *final whole-branch review* — found by
+reading shipped source (`perception/model_cache.py:56-61` pins `onnx/model_quantized.onnx` by
+name and hash), not by any measurement. [P1 §9 item 7] records it in the same words.
+
+Two near-misses are worth naming precisely, because at a glance the project looks like it had
+already checked:
+
+- `detector.py:128-130`'s comment measured an **fp16 variant's latency**, never its scores [P1 §8].
+- Cycle 4's fp32 comparison [`docs/measurements/2026-08-20-detector-comparison.md`, via P1 §8]
+  was **RT-DETRv2 — a different architecture** — and reported only top-*class names*, never
+  v1-versus-fp32 vehicle-class peaks.
+
+So the shipped weights had never been compared against their own unquantized twin, and the one
+comparison that sounded like it was, was not. The test cost one download and one command against
+the unchanged committed benchmark (Section 0 and Section 3), and it moved the ranking metric
+2.61×.
+
+**This is a process finding at least as much as a technical one.** Both of the untested
+explanations this phase measured — the aspect stretch and the quantization — were found the same
+way: by reading shipped source during a review, after two cycles of measurement had run straight
+past them. The measurement discipline on this project is strong and the numbers it produces
+reproduce exactly; what it did not have was a step that asks what the pipeline's *defaults* are
+before ranking levers on top of them. [P1 §10] states the 0.08–0.25 peak band as a property of
+"the detector" with no quantization caveat, and flags in the same section that this could not be
+justified — that flag was right, and this phase is where it cashed out.
+
+---
+
+## 15. Class metadata: neither checkpoint carries a label map
+
+Task 2 inspected both checkpoints' exported metadata via `onnxruntime`'s session metadata (the
+`onnx` package is not importable in this environment), against the cached int8 file and the fp32
+file [T2]:
+
+```bash
+cd streetlab-backend && uv run python -c "
+import onnxruntime as ort
+paths = [
+    '/Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx',
+    '/tmp/rtdetr_fp32.onnx',
+]
+for path in paths:
+    print('==', path)
+    session = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
+    meta = session.get_modelmeta()
+    print('  producer_name =', meta.producer_name)
+    print('  graph_name =', meta.graph_name)
+    print('  description =', meta.description)
+    print('  domain =', meta.domain)
+    print('  version =', meta.version)
+    cmm = meta.custom_metadata_map
+    if not cmm:
+        print('  (no custom_metadata_map)')
+    else:
+        for k, v in cmm.items():
+            print(f'  {k} = {v[:300]}')
+"
+```
+
+Output (verbatim, [T2]):
+
+```
+== /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx
+  producer_name = onnx.quantize
+  graph_name = main_graph
+  description = 
+  domain = 
+  version = 9223372036854775807
+  onnx.infer = onnxruntime.quant
+== /tmp/rtdetr_fp32.onnx
+  producer_name = pytorch
+  graph_name = main_graph
+  description = 
+  domain = 
+  version = 9223372036854775807
+  (no custom_metadata_map)
+```
+
+**Finding: neither checkpoint carries a label map.** The quantized file's only custom metadata
+entry is `onnx.infer = onnxruntime.quant`, which is the quantization tool's own provenance marker
+— it names the tool that produced the file, not a class mapping. The fp32 file has no custom
+metadata at all. Nothing in either file associates output class indices with names.
+
+**[P1 §9 item 3] therefore stays open.** The six vehicle ids (0/1/2/3/5/7) remain verified only
+against `COCO_ID_TO_CLASS` by the earlier out-of-band check that produced that mapping; the rest
+— `umbrella(25)`, `stop sign(11)` and the other names printed in the `top-any-class` column of
+every per-frame table in Part I — are still the standard COCO spelling assigned to an exact
+observed id, not a verified name. The ids are right; the names might not be. No number ranked in
+Part II depends on this, because every ranked figure is a vehicle-class peak or a vehicle-class
+tp/fp count. [P1 §8]'s "the model recognises stop signs" argument does depend on it, mildly, and
+that argument is inherited by whatever comes next unchanged.
+
+---
+
+## 16. The branch decision the evidence implies
+
+**The rule this follows was written by Phase 1, before this data existed.** [P1 §10], under "what
+would flip the branch decision":
+
+> **An fp32-weights re-run in which peak scores move materially.** [...] If fp32 peaks land near
+> or above the 0.2–0.4 "detected, just miscalibrated" band this section names above, every
+> ranking in §3 and every peak-score number in §4 through §6 would need to be re-read as a
+> property of the quantized checkpoint this phase happened to measure, not of "the detector," and
+> the branch decision would need re-examining before Phase 2 commits to a fine-tuning set shaped
+> around int8-only numbers.
+
+**That condition is met.** Cell 3's peak car score is 0.4880 (Section 4), above the top of the
+0.2–0.4 band. [P1 §10] also lists, under "what should survive any re-measurement", peak
+vehicle-class scores in the 0.08–0.25 band, with the caveat that this "is a property of the
+int8-quantized checkpoint this phase measured, not a verified property of the architecture [...]
+it is not yet known whether it survives on fp32." It does not survive. Phase 1's own survival
+criterion failed on Phase 1's own pre-stated terms.
+
+The decision the evidence implies, in four parts:
+
+**1. Phase 1's fine-tuning ruling is not overturned.** Nothing measured here shows the detector
+detecting vehicles. Every cell scores **zero true positives at threshold 0.50**, the threshold
+the shipped pipeline runs at, and cell 3's best result above 0.20 is a single true positive
+(Section 13.3). The gap between 0.4880 and a working detector is not a threshold adjustment.
+
+**2. Its evidentiary basis is now known to be checkpoint-specific, and must be re-established
+before a training set is committed to.** Phase 1 ranked levers, named a peak band, and ruled on a
+branch using numbers every one of which came from one quantized checkpoint that had never been
+compared against its unquantized twin (Section 14). The comparison now exists and moves the
+ranking metric 2.61×. Any fine-tuning brief written against Phase 1's peak numbers is written
+against int8-only numbers, and this document is the reason to notice that before the training set
+is built rather than after.
+
+**3. This phase ships nothing, and that is a decision, not an omission.** No configuration change
+is recommended here — specifically, **this document does not recommend shipping fp32**. The two
+halves of that tradeoff, published side by side and with their evidential status stated:
+
+| | measured effect | evidential status |
+|---|---|---|
+| accuracy (fp32 vs int8, stretch) | peak car **+0.3008** (0.1872 → 0.4880), 45/60 frames improved | **floor-cleared**: jitter measured at exactly 0.0000 across 60 frames and 4 classes (Section 2) |
+| latency (fp32 vs int8) | **~1.33–1.47×** per frame (86.0/58.5, 79.8/59.9 ms/frame) | **not floor-cleared**: n=1 per cell, and a ~48% same-config swing sits in the same table (Section 6) |
+
+Changing the packaged app's default model is its own decision with its own evidence — a repeated
+latency measurement with a floor, on the machine class the app ships to, plus whatever the
+closed-loop budget in `README.md`'s Performance table implies — and that evidence has not been
+gathered. Publishing the delta and the cost and stopping is the whole of what this phase does
+with it.
+
+**4. What the next phase inherits — facts, not a plan.** Three things are now established that
+were not before, and the shape of the work that follows them is the next phase's to decide, not
+this one's:
+
+- **Numerical precision is a real axis on this problem**, larger in effect than either cheap lever
+  Phase 1 measured and larger than the aspect stretch (Section 12).
+- **The aspect stretch, alone, is not a lever worth carrying.** It clears the decision rule and
+  fails everything else (Sections 12, 13.4). Ruling it out on evidence is exactly what [P1 §9
+  item 0] asked Phase 2 to do, and the answer is negative.
+- **The two do not stack.** Combining them undershoots fp32 alone by 0.0963 on peak car and
+  undershoots the additive prediction by 0.1869 (Section 7). Whatever comes next should not assume
+  it can take both.
+
+**Phase 3 is planned against this document, not by it.** The ruling recorded here is what the
+numbers imply; the shape of the next phase's work is where that gets decided.
+
+---
+
+## 17. What would change the conclusion
+
+Stated in the same discipline as [P1 §10].
+
+**What should survive any re-measurement**, and if it does not, the discrepancy is worth chasing:
+
+- **Cell 1's numbers, exactly.** car 0.1872, truck 0.1105, bus 0.1116, motorcycle 0.0830, on
+  frames 000053 / 000001 / 000010 / 000042 (Section 1). This has now reproduced across Phase 1,
+  both of this phase's runs, and an independent reviewer's re-run of all four cells.
+- **Zero true positives at threshold 0.50, in every cell** (Section 13.3).
+- **Zero run-to-run jitter** on this machine, model set and code path (Section 2). If a future
+  re-run shows nonzero jitter, every delta in this document needs re-reading against the new
+  floor, and the decision rule's condition 1 stops being free.
+- **Cell 3's peak on `000057.jpg`** (Section 4). If it lands on a different frame, the peak is
+  less about that frame than this document assumes.
+
+**What would change the ranking:**
+
+- **A different choice of metric would reverse it entirely.** Ranked on median per-frame car Δ
+  instead of peak, the order is cell 4 (+0.0825), cell 2 (+0.0452), cell 3 (+0.0114) — the exact
+  inverse of Section 12 (Section 13.2). The peak metric was pre-committed by [P1 §2] and this
+  report will not swap metrics after seeing the data, but a reader who thinks the median is the
+  better metric is not making an unreasonable argument, and under it the ranked winner ranks last.
+  What does *not* change under either metric is the sham-control evidence (Section 13.4), which
+  favours cell 3 and only cell 3 — the metrics disagree and the controls do not.
+- **A second scenario, map or seed.** Everything here is `grid-merge`, seed 4, one 60-frame clip,
+  one time of day — the same single-scene limitation [P1 §10] records. Cell 3's headline rests on
+  one frame of it.
+- **A close-range benchmark** [P1 §8 step 1]. Every labelled object here is 31.5–88.5 m away and
+  the largest box in the set is 44.4 × 19.6 px. If fp32's advantage is a small-object-confidence
+  effect — which is the mechanism by which post-training int8 quantization is expected to hurt —
+  then it should grow with target size, and that is a prediction this benchmark cannot test.
+- **A repeated-latency measurement with its own floor** (Section 6). It would not move the
+  accuracy ranking, but it is the missing half of any shipping decision, and the ~48% same-config
+  swing in Section 6's own table is the reason it cannot be skipped.
+- **Carrying `size` through the capture snapshot** [P1 §9 item 6]. The committed benchmark's box
+  *extent* is a per-class prior, not the simulator's per-agent truth — a systematic ~0.5–1.5 px
+  per-class-constant error on a 13.3 px median box height. Fixing it invalidates this benchmark
+  and re-runs every tp/fp/`mean_pos_err_m` number in Section 13.3. The peak scores, which are read
+  off logits before any box math, would not move.
+
+**What would not change it:** more thresholds. The sweep spans 0.50 to 0.01 in seven steps on all
+four cells, and the ranking metric is threshold-independent. That question was closed by [P1 §10]
+and this factorial does not reopen it.
+
+---
+
+## 18. Files changed by Task 5, self-review, and concerns
+
+**Files changed:**
+
+- `docs/measurements/2026-08-26-cycle5-phase2-gates.md` — this Part II appended. Sections 0–10
+  (Task 4's measurement) are unmodified; no number in them was edited.
+- `README.md` — the Cycle 5 roadmap row extended with what Phase 2 measured and what the decision
+  was. **The row stays `In progress`.**
+- No file under `perception/`, `scripts/`, `server/`, `sim/`, `contract/` or `streetlab/src/` was
+  touched. Task 5 ran no measurement and needed no code.
+
+**Self-review:**
+
+- **Every number in Part II traces to a named section of Part I or to a tagged source**, and every
+  ranked cell carries the command that produced it (Section 12). Two derived quantities are
+  arithmetic on published numbers with both operands shown: the ratios in Section 12's table, and
+  the `mean_pos_err_m` multipliers in the cell 2 paragraph.
+- **One discrepancy found and corrected in the prose, not in a source.** The commonly repeated
+  gloss that cell 2 "falls below sham at 0.10 where the baseline was distinguishable" overstates
+  the baseline: at 0.10 the baseline is already tied, and at 0.05 it is already below sham
+  (Section 1's sham table, and [P1 §2] which states it directly). Section 12 carries the accurate
+  version. **No error was found in Sections 0–10, in `scripts/sweep_threshold.py`'s output, or in
+  any Task 1–4 deliverable** — everything Part II checked against its source matched.
+- **The favourable and unfavourable readings of the ranked winner are in the same paragraph**, at
+  the same prominence, per Section 8's own correction on that point.
+- **Recall appears nowhere in Part II's ranking or reasoning**, only as a pointer back to Part I's
+  tables, with the ~0.55 ceiling restated in Part II's header.
+- **`—` is used for every undefined ratio** in Section 13.3 and nowhere is a `0.00` substituted;
+  note that `0.000` in that table where fp > 0 and tp = 0 is a *defined* zero (0/1, 0/7, 0/29,
+  0/32, 0/21), not an undefined one, and the two are distinguished.
+- **Phase 3 keeps a decision to make.** Section 16 records what the evidence implies and names
+  three inherited facts; it does not schedule work, does not choose between a precision swap and a
+  training set, and explicitly declines to recommend shipping fp32.
+
+**Concerns:**
+
+1. **Cell 3's headline is one frame.** Peak 0.4880 on `000057.jpg` against a median per-frame
+   gain of +0.0114. Section 12 says so and Section 17 makes it the first thing that would change
+   the ranking, but a reader who takes only the 2.61× away from this document will have taken the
+   wrong thing.
+2. **The ranking metric and the per-frame median disagree completely** (Section 17). This is not
+   resolved by anything measured here; it is bounded by the sham controls, which point one way
+   only.
+3. **The latency half of the shipping tradeoff is n=1** and this document publishes it as a
+   probable number. That is the correct treatment of the evidence available, and it is also the
+   single largest gap between what this phase measured and what a shipping decision would need.
+4. **Nothing here has been tested outside `grid-merge` seed 4**, and the benchmark whose tp/fp
+   numbers Section 13.3 reports is known to carry a per-class box-extent prior rather than
+   per-agent truth [P1 §9 item 6].
