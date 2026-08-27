@@ -946,9 +946,12 @@ Jitter floor is 0.0000 (Section 2) — every delta below is real.
 
 Car peak deltas from cell 1: letterbox alone +0.0906, fp32 alone +0.3008, both +0.2045.
 **fp32 alone (cell 3) produces the largest car peak of all four cells (0.4880) — larger than the
-combined cell (0.3917).** Truck and motorcycle peaks are flat-to-down under fp32 (truck: cell1
-0.1105 → cell3 0.1621 → cell4 0.0932; motorcycle: cell1 0.0830 → cell3 0.0574 → cell4 0.0743) —
-the fp32 effect is not uniform across vehicle classes.
+combined cell (0.3917).** The fp32 effect is not uniform across vehicle classes, and it is not
+one-directional either: truck's peak **rises** under fp32-alone (cell1 0.1105 → cell3 0.1621,
++0.0516, 1.47× — the second-largest peak move in the factorial) and falls in the combined cell
+(cell4 0.0932), while motorcycle falls under both fp32 cells (cell1 0.0830 → cell3 0.0574 →
+cell4 0.0743). Section 12's rank-1 paragraph and Section 13.1 state the truck rise in the same
+terms.
 
 ---
 
@@ -969,7 +972,12 @@ the fp32 effect is not uniform across vehicle classes.
 | 4 | bus | 31 | 29 | 0 | +0.0017 | −0.0013 | +0.0157 |
 | 4 | motorcycle | 24 | 36 | 0 | −0.0037 | −0.0041 | −0.0087 |
 
-Car is the only class that improves on the majority of frames in every cell. fp32 alone (cell 3)
+Car improves on the majority of frames in every cell, by the largest margins in the table — but it
+is **not** the only class that does: bus also improves on a majority in all three cells (36/60,
+34/60, 31/60), though by medians of +0.0062, +0.0022 and +0.0017, one to two orders of magnitude
+below car's. Truck is a minority in all three (23/60, 27/60, 18/60); motorcycle is a majority in
+cell 2 only (44/60), and collapses to 3/60 in cell 3. Section 13.1 reads the same split.
+fp32 alone (cell 3)
 shows the largest peak swing (+0.3008) but a comparatively modest median per-frame gain (+0.0114)
 — consistent with the peak being driven substantially by one frame (000057.jpg, 0.4880), similar
 to the caution the script's own docstring raises about peak-over-set. Cell 2 (letterbox alone)
@@ -1104,9 +1112,8 @@ This run's cell 2 (Section 3) reproduces every one of those figures exactly:
 
 Amendment 3's `mean_err_m` figure ("roughly 0.5 to 2.0") does not name a threshold, so all three
 non-trivial thresholds are quoted above rather than picking the one that fits best: the shape
-holds at 0.10 and 0.05 but not at 0.01, where cell 2's mean_err_m actually falls relative to cell
-1 (0.73 → 1.37 is still a rise, but far short of "0.5 to 2.0", and smaller in absolute terms than
-the 0.10/0.05 rows). Read the fit as good-not-exact, not as a clean match at every threshold.
+holds at 0.10 and 0.05 but not at 0.01, where 0.73 → 1.37 is still a rise, but far short of
+"0.5 to 2.0", and smaller in absolute terms than the 0.10/0.05 rows. Read the fit as good-not-exact, not as a clean match at every threshold.
 
 Given the jitter floor is exactly zero (Section 2), this is not a coincidence of noise — the
 prior reviewer's single run and this run's cell 2 are the same deterministic computation, and
@@ -1204,7 +1211,12 @@ operation are shown inline.
 |---|---|---|
 | **[P2]** | this document, Sections 0–10 | the factorial: four cells, the jitter floor, the sweeps, the sham controls |
 | **[P1]** | `docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md` | Phase 1's ranked diagnosis, its branch decision, and its own pre-stated flip conditions (§10) |
-| **[T2]** | Task 2's checkpoint-metadata inspection | what the two `.onnx` files declare about their own classes (reproduced with its command in Section 15) |
+| **[T2]** | Task 2's checkpoint-metadata inspection | what the two `.onnx` files declare about their own classes. **Task 2's report is not a committed file**, so nothing in this document rests on it: Section 15 re-runs the inspection against the cache-resolved, hash-verified paths and pastes the command and output in full. |
+
+`[P1]` is a committed file. `[P2]` is this one. `[T2]` resolves entirely inside Section 15. The
+only other named-but-uncommitted source is **Amendment 3** — an amendment to Task 4's brief,
+recording a prior reviewer's single letterbox/int8 run; Section 8 reproduces every figure it
+reported in a table rather than citing it by pointer, so that section is checkable without it.
 
 **Two constraints carried from [P2]'s header and applied throughout Part II.** Recall is never
 read as a lever's effect: 38 of the benchmark's 84 annotations are cross-street vehicles behind
@@ -1420,6 +1432,12 @@ inside the band. A precision swap that moves one class above the band and anothe
 evidence *for* Section 16's "numerical precision is a real axis", not against it: a uniform
 preprocessing or scaling artefact would not push classes in opposite directions.
 
+**That argument is made over four vehicle classes only, and Section 13.6 tests it against the
+other 76.** Non-vehicle confidence also rises substantially under fp32 — `stop sign` on
+`000003.jpg` by +0.4018, more than car's headline peak move — so what this table establishes is
+"not a uniform rescaling", which is weaker than "an axis on vehicles". Read this paragraph with
+Section 13.6, not without it.
+
 ### 13.2 Paired per-frame car deltas (Section 5)
 
 | cell | improved | worsened | tied | median Δ | mean Δ | peak Δ |
@@ -1472,6 +1490,189 @@ the only cell with any margin at all above 0.10. Four of its six margins are exa
 detection. Cell 2 is negative or zero everywhere. Cell 4 is the widest margin in the table at
 0.01 and negative at four of the five thresholds above it.
 
+### 13.5 `top-any-class`: the first frames in either cycle whose top-scoring class is a vehicle
+
+`report_peak_vehicle_scores`'s docstring (`scripts/sweep_threshold.py:453-455`) documents this
+column as printing *"the single highest-scoring class of any kind per frame (vehicle or not), the
+same check Cycle 4 used to tell 'blind' from 'confidently wrong domain'."* Part I prints it on all 60 frames of all six runs
+— 360 frame-rows — and until this revision the analysis read it exactly once, in Section 15, and
+only to caveat that the class *names* are unverified. **The column was never read for the thing
+it was built to say.** Read that way, it holds a result no other table here carries.
+
+The counts and the per-frame comparison, from a command that parses this document's own pasted
+tables, so it is checkable by anyone holding the committed file and needs no scratch file:
+
+```bash
+python3 -c "
+import re
+DOC = 'docs/measurements/2026-08-26-cycle5-phase2-gates.md'
+order = ['cell 1 (run A)', 'cell 1 (run B)', 'cell 1 (guard-test)', 'cell 2', 'cell 3', 'cell 4']
+cells = {}; rows = None; i = 0
+for line in open(DOC):
+    if line.startswith('PEAK VEHICLE-CLASS SCORES'):
+        rows = cells.setdefault(order[i], []); i += 1; continue
+    if rows is None: continue
+    m = re.match(r'^(\d{6}\.jpg)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(\S.*)\$', line.rstrip())
+    if m: rows.append((m.group(1), float(m.group(2)), m.group(3).strip()))
+    elif line.startswith('Peak across'): rows = None
+top = lambda s: float(s.split('=')[-1])
+iscar = lambda s: s.startswith('car(')
+for k in order:
+    r = cells[k]; t = [top(x[2]) for x in r]
+    n_car = sum(1 for x in r if iscar(x[2]))
+    print('%-20s n=%d  car-is-argmax on %d/60 frames  top-any-class mean=%.4f median=%.4f' % (k, len(r), n_car, sum(t)/len(t), sorted(t)[len(t)//2]))
+print()
+for lb, st in [('cell 2', 'cell 1 (run A)'), ('cell 4', 'cell 3')]:
+    a = {x[0]: x for x in cells[lb]}; b = {x[0]: x for x in cells[st]}
+    d = [top(a[f][2]) - top(b[f][2]) for f in a]
+    print('%s vs %s: top-any-class delta mean=%+.4f, lower on %d/60 frames' % (lb, st, sum(d)/len(d), sum(1 for x in d if x < 0)))
+    for f in sorted(a):
+        if iscar(a[f][2]):
+            print('    %s  %s: car=%.4f top=%-22s | %s: car=%.4f top=%s' % (f, lb, a[f][1], a[f][2], st, b[f][1], b[f][2]))
+    print()
+"
+```
+
+Output (verbatim):
+
+```
+cell 1 (run A)       n=60  car-is-argmax on 0/60 frames  top-any-class mean=0.3576 median=0.3528
+cell 1 (run B)       n=60  car-is-argmax on 0/60 frames  top-any-class mean=0.3576 median=0.3528
+cell 1 (guard-test)  n=60  car-is-argmax on 0/60 frames  top-any-class mean=0.3576 median=0.3528
+cell 2               n=60  car-is-argmax on 6/60 frames  top-any-class mean=0.3168 median=0.2745
+cell 3               n=60  car-is-argmax on 0/60 frames  top-any-class mean=0.5538 median=0.5900
+cell 4               n=60  car-is-argmax on 5/60 frames  top-any-class mean=0.4504 median=0.4206
+
+cell 2 vs cell 1 (run A): top-any-class delta mean=-0.0408, lower on 43/60 frames
+    000027.jpg  cell 2: car=0.2419 top=car(2)=0.2419          | cell 1 (run A): car=0.1133 top=bed(59)=0.2655
+    000029.jpg  cell 2: car=0.2433 top=car(2)=0.2433          | cell 1 (run A): car=0.0952 top=traffic light(9)=0.2602
+    000035.jpg  cell 2: car=0.2218 top=car(2)=0.2218          | cell 1 (run A): car=0.0817 top=traffic light(9)=0.4104
+    000053.jpg  cell 2: car=0.2740 top=car(2)=0.2740          | cell 1 (run A): car=0.1872 top=traffic light(9)=0.4060
+    000054.jpg  cell 2: car=0.2778 top=car(2)=0.2778          | cell 1 (run A): car=0.1262 top=orange(49)=0.4049
+    000056.jpg  cell 2: car=0.2244 top=car(2)=0.2244          | cell 1 (run A): car=0.1112 top=orange(49)=0.3733
+
+cell 4 vs cell 3: top-any-class delta mean=-0.1035, lower on 43/60 frames
+    000026.jpg  cell 4: car=0.3917 top=car(2)=0.3917          | cell 3: car=0.1260 top=umbrella(25)=0.2834
+    000029.jpg  cell 4: car=0.2904 top=car(2)=0.2904          | cell 3: car=0.1125 top=stop sign(11)=0.2777
+    000049.jpg  cell 4: car=0.3090 top=car(2)=0.3090          | cell 3: car=0.1402 top=stop sign(11)=0.4043
+    000050.jpg  cell 4: car=0.3148 top=car(2)=0.3148          | cell 3: car=0.1306 top=stop sign(11)=0.4310
+    000053.jpg  cell 4: car=0.3284 top=car(2)=0.3284          | cell 3: car=0.1960 top=stop sign(11)=0.5933
+```
+
+| cell | preprocess | weights | frames where `car` is the top-scoring class of all 80 |
+|---|---|---|---:|
+| 1 | stretch | int8 | **0 / 60** |
+| 2 | letterbox | int8 | **6 / 60** (`000027`, `000029`, `000035`, `000053`, `000054`, `000056`) |
+| 3 | stretch | fp32 | **0 / 60** |
+| 4 | letterbox | fp32 | **5 / 60** (`000026`, `000029`, `000049`, `000050`, `000053`) |
+
+**What this is.** It is the first time in either cycle that the detector's single most confident
+guess on a frame is a vehicle. Cycle 4's eight-frame table
+[`docs/measurements/2026-08-20-detector-comparison.md`] recorded a non-vehicle top class on every
+frame of both models, and summarised it as confident about something in every frame and never a
+vehicle; [P1 §10] carried "top-scoring class being a non-vehicle" forward as a criterion that
+*should survive any re-measurement*. In the two stretch cells here it does survive, 60/60 and
+60/60. In the two letterbox cells it does not. **It is a letterbox effect and not an fp32 one:**
+it appears at both precisions under letterbox and at neither precision under stretch, and the
+ranked winner — the largest peak in the factorial — produces zero such frames. The class id
+involved is `car(2)`, one of the six vehicle ids Section 15 records as *verified* against
+`COCO_ID_TO_CLASS`; the unverified-name caveat in Section 15 falls on the non-vehicle spellings
+(`umbrella(25)`, `stop sign(11)`), not on this one.
+
+**What this is not, stated at the same prominence.** Three things hold it down, and none of them
+is small:
+
+1. **It is 11 frame-cells out of 240**, 6/60 and 5/60. It is a qualitative first, not a rate.
+2. **Every one of those frames is still far below the production threshold.** The winning car
+   scores are 0.2218–0.2778 in cell 2 and 0.2904–0.3917 in cell 4. `car` being top of 80 at
+   0.2218 describes a flat score field, not a confident detection, and Section 13.3 still shows
+   zero true positives at 0.50 in every cell.
+3. **A material part of the effect is the field falling, not `car` rising alone.** Letterbox
+   lowers the whole `top-any-class` distribution — mean −0.0408 at int8 and −0.1035 at fp32,
+   lower on 43 of 60 frames in both. In **all six** of cell 2's argmax frames the winning score
+   is *lower* than the winner on the same frame under stretch (e.g. `000035`: stretch
+   `traffic light` 0.4104 → letterbox `car` 0.2218). Car does also rise absolutely on every one
+   of those frames (+0.09 to +0.15 in cell 2, +0.13 to +0.27 in cell 4), and in two of cell 4's
+   five the new winning score is *higher* than the stretch winner (`000026`, `000029`) — so this
+   is not purely a collapse of the field. But it is partly one, and reading the column as "the
+   model started seeing cars" would overstate what 11 frames of a shrinking score field support.
+
+Section 16 weighs this against the sham evidence rather than in place of it.
+
+### 13.6 The fp32 gain is not shown to be vehicle-specific
+
+Section 13.1 argues that fp32 moving car above [P1 §10]'s 0.08–0.25 band while pushing motorcycle
+below it "is what an axis looks like and what a uniform artefact would not." That argument is made
+over the four vehicle classes only, and the same pasted tables carry a competing reading it never
+tested: **non-vehicle confidence rises under fp32 too, by amounts comparable to or larger than
+car's headline.** Same-class, same-frame, from the `top-any-class` column of Sections 1 and 3:
+
+| frame | class | cell 1 (stretch/int8) | cell 3 (stretch/fp32) | Δ |
+|---|---|---:|---:|---:|
+| `000003.jpg` | stop sign(11) | 0.2530 | **0.6548** | **+0.4018** |
+| `000057.jpg` — the peak frame itself | stop sign(11) | 0.4627 | **0.6803** | **+0.2176** |
+
+On `000057.jpg`, the frame carrying cell 3's headline peak, **stop sign at 0.6803 still outscores
+car at 0.4880.** And the +0.4018 stop-sign move on `000003.jpg` is *larger* than car's +0.3008
+peak move, on a frame where car actually falls (0.1542 → 0.1240).
+
+Across the set, the same parse as Section 13.5 with the comparison pairs pointed along the
+precision axis instead of the aspect axis:
+
+```bash
+python3 -c "
+import re
+DOC = 'docs/measurements/2026-08-26-cycle5-phase2-gates.md'
+order = ['cell 1 (run A)', 'cell 1 (run B)', 'cell 1 (guard-test)', 'cell 2', 'cell 3', 'cell 4']
+cells = {}; rows = None; i = 0
+for line in open(DOC):
+    if line.startswith('PEAK VEHICLE-CLASS SCORES'):
+        rows = cells.setdefault(order[i], []); i += 1; continue
+    if rows is None: continue
+    m = re.match(r'^(\d{6}\.jpg)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(\S.*)\$', line.rstrip())
+    if m: rows.append((m.group(1), float(m.group(2)), m.group(3).strip()))
+    elif line.startswith('Peak across'): rows = None
+top = lambda s: float(s.split('=')[-1])
+for lb, st in [('cell 3', 'cell 1 (run A)'), ('cell 4', 'cell 2')]:
+    a = {x[0]: x for x in cells[lb]}; b = {x[0]: x for x in cells[st]}
+    d = [top(a[f][2]) - top(b[f][2]) for f in a]
+    print('%s vs %s: top-any-class delta mean=%+.4f median=%+.4f, HIGHER on %d/60 frames' % (lb, st, sum(d)/len(d), sorted(d)[len(d)//2], sum(1 for x in d if x > 0)))
+print()
+for f in ['000003.jpg', '000057.jpg']:
+    for k in ['cell 1 (run A)', 'cell 3']:
+        r = {x[0]: x for x in cells[k]}[f]
+        print('%s  %-14s car=%.4f  top-any-class=%s' % (f, k, r[1], r[2]))
+    print()
+"
+```
+
+Output (verbatim):
+
+```
+cell 3 vs cell 1 (run A): top-any-class delta mean=+0.1962 median=+0.1935, HIGHER on 58/60 frames
+cell 4 vs cell 2: top-any-class delta mean=+0.1335 median=+0.1405, HIGHER on 54/60 frames
+
+000003.jpg  cell 1 (run A) car=0.1542  top-any-class=stop sign(11)=0.2530
+000003.jpg  cell 3         car=0.1240  top-any-class=stop sign(11)=0.6548
+
+000057.jpg  cell 1 (run A) car=0.1532  top-any-class=stop sign(11)=0.4627
+000057.jpg  cell 3         car=0.4880  top-any-class=stop sign(11)=0.6803
+```
+
+Every one of cell 3's 60 winners is a non-vehicle (Section 13.5's `0/60`), so that +0.1935 median
+is a median rise in *non-vehicle* top confidence. Against it, cell 3's **median** per-frame car Δ
+is +0.0114 (Section 13.2). Two caveats keep that comparison honest: `top-any-class` is a maximum
+over ~76 non-vehicle classes while the car figure is a single class, so an order-statistic effect
+inflates the gap, and the two stop-sign rows above — which are same-class and carry no such
+effect — are two frames. But the direction is unambiguous in both views.
+
+**This is a live competing explanation for cell 3's headline: a broad de-quantization
+recalibration that lifts scores across the label space, of which car's rise is one instance
+rather than a vehicle-specific finding.** It does not overturn Section 13.1 — motorcycle still
+moves *down* under fp32 while everything discussed here moves up, and a uniform rescaling cannot
+do that — but "not uniform" is a weaker claim than "an axis on vehicles," and only the weaker one
+is established. Section 17 records the test that would separate them.
+
 ---
 
 ## 14. Process finding: int8 quantization was never named as a candidate until Phase 1's final review
@@ -1492,8 +1693,10 @@ already checked:
 
 - The `PROVIDER_ORDER` comment in `perception/detector.py` measured an **fp16 variant's latency**,
   never its scores [P1 §8]. **[P1 §8] cites it as `detector.py:128-130`, which this branch
-  invalidated**: Task 1 inserted `preprocess_letterbox` above it, and the comment now sits at
-  `detector.py:230-232`. The other pointer in the same [P1 §8] paragraph, `model_cache.py:56-61`,
+  invalidated**: Task 1 inserted `preprocess_letterbox` above it, and the comment block now sits
+  at `detector.py:230-235`, of which the literal translation of Phase 1's three cited lines is
+  `231-233` — the fp16 measurement itself is line 232. The other pointer in the same [P1 §8]
+  paragraph, `model_cache.py:56-61`,
   still lands correctly.
 - Cycle 4's fp32 comparison [`docs/measurements/2026-08-20-detector-comparison.md`, via P1 §8]
   was **RT-DETRv2 — a different architecture** — and reported only top-*class names*, never
@@ -1518,15 +1721,21 @@ justified — that flag was right, and this phase is where it cashed out.
 ## 15. Class metadata: neither checkpoint carries a label map
 
 Task 2 inspected both checkpoints' exported metadata via `onnxruntime`'s session metadata (the
-`onnx` package is not importable in this environment), against the cached int8 file and the fp32
-file [T2]:
+`onnx` package is not importable in this environment) [T2].
+
+**Task 2 ran its fp32 half against a `/tmp` scratch copy of the download, and the `shasum` tying
+that copy to the pin lived only in Task 2's report, which is not a committed file.** The command
+below is therefore the re-run, against the same **cache-resolved, hash-verified** path cells 3
+and 4 used (Section 0) — so this section stands on the same pinned bytes as the rest of the
+document, and needs no uncommitted file to be checked. The output is unchanged from Task 2's,
+which is itself the finding that the two paths hold the same file.
 
 ```bash
 cd streetlab-backend && uv run python -c "
 import onnxruntime as ort
 paths = [
     '/Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx',
-    '/tmp/rtdetr_fp32.onnx',
+    '/Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_fp32-11843b02455cc240.onnx',
 ]
 for path in paths:
     print('==', path)
@@ -1546,7 +1755,7 @@ for path in paths:
 "
 ```
 
-Output (verbatim, [T2]):
+Output (verbatim):
 
 ```
 == /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx
@@ -1556,13 +1765,32 @@ Output (verbatim, [T2]):
   domain = 
   version = 9223372036854775807
   onnx.infer = onnxruntime.quant
-== /tmp/rtdetr_fp32.onnx
+== /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_fp32-11843b02455cc240.onnx
   producer_name = pytorch
   graph_name = main_graph
   description = 
   domain = 
   version = 9223372036854775807
   (no custom_metadata_map)
+```
+
+Both filenames carry the first 16 hex of the pinned digest, and `ModelCache.ensure` re-hashes the
+whole file against that pin on every call (Section 0). The pins themselves, printed from the
+committed source so this section needs nothing outside the repo:
+
+```bash
+cd streetlab-backend && uv run python -c "
+from perception.model_cache import DEFAULT_MODEL, FP32_MODEL
+print('DEFAULT_MODEL', DEFAULT_MODEL.name, DEFAULT_MODEL.sha256)
+print('FP32_MODEL   ', FP32_MODEL.name, FP32_MODEL.sha256)
+"
+```
+
+Output (verbatim):
+
+```
+DEFAULT_MODEL rtdetr_r18vd_quantized 85703b0f56dbaceb89b21122e580fd11e11a879111fd727d0e9abdaf0e3620bf
+FP32_MODEL    rtdetr_r18vd_fp32 11843b02455cc24009aed24d4c40db721b1093be5ccd6bbe7b9c441abb1d0558
 ```
 
 **Finding: neither checkpoint carries a label map.** The quantized file's only custom metadata
@@ -1594,13 +1822,39 @@ would flip the branch decision":
 > around int8-only numbers.
 
 **That condition is met.** Cell 3's peak car score is 0.4880 (Section 4), above the top of the
-0.2–0.4 band. [P1 §10] also lists, under "what should survive any re-measurement", peak
-vehicle-class scores in the 0.08–0.25 band, with the caveat that this "is a property of the
-int8-quantized checkpoint this phase measured, not a verified property of the architecture [...]
-it is not yet known whether it survives on fp32." It does not survive. Phase 1's own survival
-criterion failed on Phase 1's own pre-stated terms.
+0.2–0.4 band.
 
-**The same list holds two more conditions, and both are named here rather than passed over.**
+**[P1 §10]'s "what should survive any re-measurement" list has three entries, and all three are
+dispositioned here.** Quoting one and skipping its neighbours is the failure mode these lists
+exist to prevent, so none is passed over — including the ones whose failure is thin.
+
+1. **"Peak vehicle-class scores in the 0.08–0.25 band"** — with Phase 1's own caveat that this
+   "is a property of the int8-quantized checkpoint this phase measured, not a verified property
+   of the architecture [...] it is not yet known whether it survives on fp32." **It does not
+   survive.** Car reaches 0.4880 in cell 3 and 0.3917 in cell 4; motorcycle drops below the
+   band's floor in both fp32 cells (0.0574, 0.0743) (Section 13.1).
+2. **"Zero vehicle detections at thresholds ≥ 0.30 on any capture of this simulator, encoded
+   correctly or not"** [`2026-08-22-cycle5-phase1-diagnosis.md:662`] — **it does not survive
+   either, and this document had skipped it.** Cell 3 scores **tp=1 at both 0.30 and 0.40, with
+   fp=0** (Section 13.3). **The failure is thin and is not worth more than it is:** one true
+   positive, `mean_pos_err_m` 0.08, against a sham margin of **+1** at each of those two
+   thresholds (Section 13.4) — a single detection clearing a control that found none. It is a
+   real falsification of a criterion written in absolute terms ("zero ... on any capture"), and
+   it is one box. Section 12's rank-1 paragraph already reads that same tp=1 as an n=1 result,
+   and nothing here upgrades it.
+3. **"Top-scoring class being a non-vehicle, at 0.6–0.9, on the same frames"** — **the
+   non-vehicle half survives in both stretch cells (60/60 each) and fails in both letterbox
+   cells** (6/60 and 5/60 frames with `car` as top of 80 — Section 13.5). The "0.6–0.9" half was
+   never a good fit to this benchmark in the first place: cell 1's `top-any-class` scores have a
+   median of 0.3528 and a mean of 0.3576 (Section 13.5), and cell 1 reproduces Phase 1 exactly.
+   Under fp32 the magnitudes move *toward* that band (cell 3 median 0.5900) while the non-vehicle
+   half holds.
+
+Two of the three failed outright and the third failed on one axis. Phase 1's survival criteria
+did not survive, on Phase 1's own pre-stated terms.
+
+**[P1 §10]'s adjacent "what would flip the branch decision" list holds two more conditions, and
+both are named here rather than passed over.**
 Quoting a phase's pre-stated criteria where they confirm a ranking and skipping the adjacent ones
 would defeat the purpose of writing them down in advance, which is the only reason they have any
 force.
@@ -1615,11 +1869,36 @@ force.
   its largest sham offset at every threshold, erasing the one threshold where the baseline beat
   chance (Section 13.4), while true positives fall 9 → 6 and false positives rise 3989 → 5671 at
   0.01 (Section 13.3). A peak lift that removes the only threshold at which real matches were
-  distinguishable from chance is not the preprocessing-defect finding Phase 1 described. Stated
-  plainly, so a reader can disagree with the judgement rather than discover the criterion was
-  omitted: **the letterbox criterion is nominally met, and this report declines to treat it as met
-  in substance.** Whether that judgement should stand is exactly the kind of thing Phase 3 gets to
-  revisit, on this record.
+  distinguishable from chance is not the preprocessing-defect finding Phase 1 described.
+
+  **Evidence pointing the other way, which the first version of this section ruled without
+  looking at.** Section 13.5 reads the `top-any-class` column that Part I printed 360 times and
+  the analysis never used. Letterbox — and only letterbox — produces frames where `car` is the
+  single highest-scoring class of all 80: 6/60 at int8, 5/60 at fp32, against 0/60 in both
+  stretch cells. The ranked winner, cell 3, produces none of them despite holding the largest
+  peak in the factorial. That is the first vehicle-argmax result in either cycle, on the exact
+  discriminator Cycle 4 built to tell "blind" from "confidently wrong domain", and it is a clean
+  main effect of the aspect axis at both precisions. **This is not the same question the sham
+  control answers.** The sham control tests whether *boxes land where vehicles are* — a
+  localization test against truth. The argmax column tests what the *classifier ranks first* on a
+  frame, independent of box geometry and of the annotations entirely. Letterbox degrading the
+  first while improving the second is coherent, not contradictory, and the earlier text read only
+  the first.
+
+  **How this report weighs the two, and it does not come out where the evidence is thin.** The
+  criterion Phase 1 wrote is about detections — a "preprocessing defect" whose fix would mean a
+  real part of "zero vehicle detections" was never a domain gap. On *that* question the sham
+  control is still decisive and still negative: cell 2 has no threshold at which its matches beat
+  chance, and Section 13.5's own deflations apply — 11 frame-cells out of 240, every winning score
+  below 0.40 and cell 2's six all below 0.28, and a `top-any-class` field that letterbox *lowers*
+  on 43 of 60
+  frames, so part of car's argmax win is the field falling rather than car rising. **So: the
+  letterbox criterion is nominally met, and this report still declines to treat it as met in
+  substance.** What changes is the strength of the surrounding claim. The earlier text left
+  letterbox with nothing in its favour but a peak; it now has one qualitative first that no other
+  configuration in this factorial produces, on a discriminator this project chose in advance.
+  Both sit in the record at the same prominence, and **which of them should drive sequencing is
+  Phase 3's to decide** — this section states the evidence, not the schedule.
 - **[P1 §10] and [P1 §9 item 8]: the native-640×640 recapture, and the fact that what was tested
   here is a decode-side compensation.** Phase 1's third flip bullet says a native-640×640
   recapture "would not itself flip the decision beyond what the letterbox test already would — it
@@ -1633,13 +1912,18 @@ force.
   resize a no-op with no offset to undo, for the price of a re-capture instead of a script flag
   [P1 §8, alternative-render paragraph]. Second, **[P1 §9 item 8] carries that cause-level fix as
   untested and unscheduled**, explicitly "Phase 2's to sequence against step 0's result, not this
-  phase's to choose between" — and step 0's result is now measured. Since the letterbox effect
-  measured here is a peak lift the sham evidence does not support, the premise of "this is the
-  version Phase 2 should build" is not cleanly satisfied. **That is a sequencing judgement and it
-  is Phase 3's to make on this evidence, not this phase's to make by omission.** Nothing is
-  scheduled here.
+  phase's to choose between" — and step 0's result is now measured. The premise of that sentence
+  — *if the letterbox test shows a material effect* — is neither cleanly satisfied nor cleanly
+  refuted: the peak lift is one the sham evidence does not support, while Section 13.5's
+  vehicle-argmax frames are a material effect of the aspect axis that nothing else in the
+  factorial reproduces, on a discriminator Cycle 4 chose in advance. **That is a sequencing
+  judgement and it is Phase 3's to make on this evidence, not this phase's to make by omission in
+  either direction.** Nothing is scheduled here.
 
-The decision the evidence implies, in four parts:
+### 16.1 The decision, in four parts
+
+Everything above is the disposition of Phase 1's pre-stated criteria. **This is the decision
+itself** — four parts, and the last one is what Phase 3 inherits.
 
 **1. Phase 1's fine-tuning ruling is not overturned.** Nothing measured here shows the detector
 detecting vehicles. Every cell scores **zero true positives at threshold 0.50**, the threshold
@@ -1675,14 +1959,26 @@ this one's:
 
 - **Numerical precision is a real axis on this problem**, larger in effect than either cheap lever
   Phase 1 measured and larger than letterboxing (Section 12). It moves classes in both directions
-  — car above [P1 §10]'s 0.08–0.25 band and motorcycle below it (Section 13.1) — which is what an
-  axis looks like and what a uniform artefact would not.
-- **Letterboxing alone — the aspect fix without the precision swap — is not a lever worth carrying
-  on this evidence.** It clears the decision rule and fails everything else (Sections 12, 13.4).
-  Note the referent: the *stretch* is cell 1, the shipped baseline, and cannot clear a rule
-  defined against itself; what was tested and is being ruled out is the letterboxed alternative to
-  it. Testing it at all is exactly what [P1 §9 item 0] asked Phase 2 to do, and the answer is
-  negative — with the nominal-versus-substantive distinction stated above, not buried here.
+  — car above [P1 §10]'s 0.08–0.25 band and motorcycle below it (Section 13.1) — which a uniform
+  rescaling could not do. **What is *not* established is that the axis is vehicle-specific.**
+  Section 13.6 shows non-vehicle confidence rising under fp32 by amounts comparable to or larger
+  than car's: `stop sign` on `000003.jpg` moves 0.2530 → 0.6548 (+0.4018, larger than car's
+  +0.3008 peak move, on a frame where car *falls*), and on `000057.jpg` — cell 3's own peak frame
+  — `stop sign` at 0.6803 still outscores car at 0.4880. A broad de-quantization recalibration
+  across the label space is a live competing explanation for the headline, and it is testable
+  from data already pasted here (Section 17).
+- **Letterboxing alone — the aspect fix without the precision swap — is not shown to be a
+  *detection* lever, and is the only lever that moves the argmax discriminator.** Both halves are
+  the record. On detection it clears the decision rule and fails everything else (Sections 12,
+  13.4): no threshold at which its matches beat chance. On classification it is the only cell type
+  producing frames whose top-scoring class of all 80 is a vehicle — 6/60 and 5/60 against 0/60 for
+  both stretch cells, including the ranked winner (Section 13.5) — a first in either cycle, on
+  11 frame-cells of 240, in a score field letterbox also *lowers* on 43/60 frames. Note the
+  referent: the *stretch* is cell 1, the shipped baseline, and cannot clear a rule defined against
+  itself; what was tested is the letterboxed alternative to it. Testing it at all is exactly what
+  [P1 §9 item 0] asked Phase 2 to do, and the answer is **negative on detection and non-empty on
+  classification** — an earlier draft of this section recorded only the first half, having never
+  read the column that holds the second.
 - **The peak metric does not stack; the per-frame behaviour close to does — and these are two
   different claims.** Cell 4's peak car undershoots cell 3 alone by 0.0963 and the additive
   prediction by 0.1869 (Section 7). But Section 7's conclusion about *mechanism* runs the other
@@ -1714,8 +2010,25 @@ Stated in the same discipline as [P1 §10].
   floor, and the decision rule's condition 1 stops being free.
 - **Cell 3's peak on `000057.jpg`** (Section 4). If it lands on a different frame, the peak is
   less about that frame than this document assumes.
+- **The `top-any-class` split along the aspect axis** (Section 13.5): `car` as top-scoring class
+  of all 80 on 0/60 frames under stretch at both precisions, and on 6/60 and 5/60 under letterbox.
+  If a re-measurement shows vehicle-argmax frames under *stretch*, the effect is not the aspect
+  axis and Section 16's reading of it is wrong.
 
 **What would change the ranking:**
+
+- **Whether fp32's gain is vehicle-specific or a broad de-quantization recalibration.** This is
+  the largest open question about the ranked winner and it was not asked until this revision.
+  Section 13.6 gives what the pasted data can already answer, and it answers against the
+  vehicle-specific reading: `stop sign` rises +0.4018 on `000003.jpg` — more than car's headline
+  peak move — and still outscores car on cell 3's own peak frame. What the pasted data *cannot*
+  do is compare car's delta against all 79 other classes, because only the per-frame maximum is
+  printed. **Settling it costs one re-run of cells 1 and 3 with a full 80-class score dump** — no
+  new capture, no new download, the same frozen benchmark. If car's median per-frame delta is not
+  distinguishable from the median delta across the other classes, then cell 3's 2.61× is a
+  property of the label space rather than of vehicles, and Section 16's "numerical precision is a
+  real axis" inherits a much narrower reading. The ranking *order* would not move — the metric is
+  peak car score and that number is what it is — but what the winner means would.
 
 - **A different choice of metric would swap the winner and the loser.** Ranked on median
   per-frame car Δ instead of peak, the order is cell 4 (+0.0825), cell 2 (+0.0452), cell 3
@@ -1760,6 +2073,18 @@ and this factorial does not reopen it.
 - No file under `perception/`, `scripts/`, `server/`, `sim/`, `contract/` or `streetlab/src/` was
   touched. Task 5 ran no measurement and needed no code.
 
+**Files changed by the final whole-branch review's fix wave** (no measured number changed; the
+factorial was not re-run):
+
+- `docs/measurements/2026-08-26-cycle5-phase2-gates.md` — Sections 13.5, 13.6 and 16.1 added;
+  Sections 4, 5, 8, 14, 15, 16, 17 and 18 amended. Section 15's metadata check re-run against the
+  cache-resolved path (its `/tmp` scratch path is gone) and the pins printed beside it.
+- `README.md` and `DEMO.md` — two over-general detector claims narrowed against Section 13.5 and
+  the int8 finding.
+- `streetlab-backend/perception/detector.py` — **docstrings only**, no behaviour: the module
+  docstring's list of weight-free pure functions, and `LetterboxTransform`'s list of frame sizes
+  measured exact. `DEFAULT_MODEL` is unchanged and the default code path is untouched.
+
 **Self-review:**
 
 - **Every number in Part II traces to a named section of Part I or to a tagged source**, and every
@@ -1770,8 +2095,24 @@ and this factorial does not reopen it.
   gloss that cell 2 "falls below sham at 0.10 where the baseline was distinguishable" overstates
   the baseline: at 0.10 the baseline is already tied, and at 0.05 it is already below sham
   (Section 1's sham table, and [P1 §2] which states it directly). Section 12 carries the accurate
-  version. **No error was found in Sections 0–10, in `scripts/sweep_threshold.py`'s output, or in
-  any Task 1–4 deliverable** — everything Part II checked against its source matched.
+  version.
+- **Two errors were later found in Part I's prose and corrected** (final whole-branch review; no
+  measured number changed). Section 4 described truck's peak as "flat-to-down under fp32" while
+  quoting the numbers that show it rising 0.1105 → 0.1621; Section 5 said car was "the only class
+  that improves on the majority of frames in every cell" while the table above it shows bus doing
+  so in all three (36/60, 34/60, 31/60). Both were contradicted by Part II of this same document
+  (Sections 12 and 13.1), so a reader of Part I alone was reading false statements. `scripts/
+  sweep_threshold.py`'s output and the Task 1–4 measurement numbers themselves matched their
+  sources throughout.
+- **The `top-any-class` column was printed 360 times and analysed nowhere** until the same review
+  (Sections 13.5 and 16). This was the largest single gap in the document: a discriminator the
+  harness was built to print, holding the only qualitative first either cycle has produced, and
+  Section 16 ruled on letterbox without reading it. The disposition was re-examined against it and
+  the surrounding claim narrowed; the ruling on Phase 1's letterbox criterion stands, on the sham
+  control.
+- **Phase 1's survival list was quoted selectively, twice, in the same section.** All three
+  entries are now dispositioned in Section 16, including the ≥0.30 zero-detections criterion cell
+  3 falsifies with a single true positive.
 - **The favourable and unfavourable readings of the ranked winner are in the same paragraph**, at
   the same prominence, per Section 8's own correction on that point.
 - **Recall appears nowhere in Part II's ranking or reasoning**, only as a pointer back to Part I's
@@ -1798,3 +2139,13 @@ and this factorial does not reopen it.
 4. **Nothing here has been tested outside `grid-merge` seed 4**, and the benchmark whose tp/fp
    numbers Section 13.3 reports is known to carry a per-class box-extent prior rather than
    per-agent truth [P1 §9 item 6].
+5. **Whether fp32's gain is vehicle-specific is open, and what this document can already check
+   points against it** (Section 13.6). The ranked winner's headline is quoted throughout as a
+   vehicle-class result; it may be one instance of a label-space-wide recalibration. Section 17
+   names the re-run that would settle it, and it is cheap. Until then, "numerical precision is a
+   real axis" should be read as "not a uniform rescaling", which is a weaker claim.
+6. **Section 13.5's vehicle-argmax result is 11 frame-cells out of 240, in a score field that
+   letterbox lowers on 43 of 60 frames.** It is reported as a qualitative first because that is
+   what it is, and it should not be read as a rate, a detection, or a reason to ship letterbox.
+   The temptation to over-read it is the mirror image of the earlier draft's failure to read it at
+   all, and both are errors.

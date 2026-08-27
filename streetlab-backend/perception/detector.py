@@ -1,7 +1,8 @@
 """RT-DETR pre/postprocessing, plus the ONNX session that drives them.
 
-The pure functions (`preprocess`, `postprocess`, the class map) need no
-model file and no `onnxruntime` import, so tests can pin their decoding
+The pure functions (`preprocess`, `preprocess_letterbox`, `LetterboxTransform`,
+`postprocess`, the class map) need no model file and no `onnxruntime`
+import, so tests can pin their decoding
 decisions without weights: sigmoid (not softmax) scores, normalised
 `cxcywh` boxes, and a class map keyed by integer id (not by this
 checkpoint's VOC-style label strings).
@@ -84,7 +85,8 @@ class LetterboxTransform:
     `new_w / frame_w` (or `new_h / frame_h`), which can differ from `scale`
     by up to `0.5 / frame_w`. The decode divides by `scale` regardless. This
     is exact -- zero disagreement -- at every frame size this task measured
-    (640x384 and 320x192, both integral), so it is unreachable today. A
+    (640x384, 320x192 and the portrait 192x320, all integral), so it is
+    unreachable today. A
     future frame size that isn't could reintroduce, in miniature, the exact
     kind of silent offset this task exists to prevent.
     """
