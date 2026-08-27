@@ -76,6 +76,17 @@ class LetterboxTransform:
     `scale` is isotropic -- the whole point of letterboxing is that both axes
     move together -- and `pad_x`/`pad_y` are the pixels of padding on ONE
     side, in model-input coordinates.
+
+    `scale` is the *requested* ratio, not necessarily the ratio the resize
+    actually achieved: `preprocess_letterbox` rounds `frame_w * scale` and
+    `frame_h * scale` to integer pixel dimensions before resizing, so when
+    that product isn't already integral, the true forward ratio is
+    `new_w / frame_w` (or `new_h / frame_h`), which can differ from `scale`
+    by up to `0.5 / frame_w`. The decode divides by `scale` regardless. This
+    is exact -- zero disagreement -- at every frame size this task measured
+    (640x384 and 320x192, both integral), so it is unreachable today. A
+    future frame size that isn't could reintroduce, in miniature, the exact
+    kind of silent offset this task exists to prevent.
     """
 
     scale: float
@@ -117,10 +128,10 @@ def preprocess_letterbox(rgb: np.ndarray) -> tuple[np.ndarray, LetterboxTransfor
 
 
 def _to_frame_px(
-    cx: float,
-    cy: float,
-    w: float,
-    h: float,
+    cx: "float | np.floating",
+    cy: "float | np.floating",
+    w: "float | np.floating",
+    h: "float | np.floating",
     frame_w: int,
     frame_h: int,
     transform: "LetterboxTransform | None",
@@ -131,6 +142,14 @@ def _to_frame_px(
     Cycle 4: normalised coordinates span the whole frame because the resize
     did too. With a transform, the model-pixel coordinates are un-padded and
     un-scaled first -- exactly `preprocess_letterbox`'s three steps backwards.
+
+    Accepts the numpy float32 scalars straight out of `pred_boxes[0]` rather
+    than forcing a `float()` cast at the call site: under NEP 50, float32
+    arithmetic against a Python `int`/`float` stays float32, but casting to
+    Python `float` first promotes every operation to float64 for the rest of
+    the expression. That promotion is invisible until you diff bytes against
+    the pre-letterbox decode, which needs to stay float32 end to end because
+    Cell 1 of the factorial is a byte-for-byte reproduction check.
     """
     if transform is None:
         x0, y0 = (cx - w / 2.0) * frame_w, (cy - h / 2.0) * frame_h
@@ -186,9 +205,7 @@ def postprocess(
         if cls is None or conf < score_threshold:
             continue
 
-        x0, y0, x1, y1 = _to_frame_px(
-            float(cx), float(cy), float(w), float(h), frame_w, frame_h, transform
-        )
+        x0, y0, x1, y1 = _to_frame_px(cx, cy, w, h, frame_w, frame_h, transform)
         if x1 <= x0 or y1 <= y0:
             continue  # degenerate after clamping
 

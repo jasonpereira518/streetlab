@@ -8,7 +8,6 @@ like a bad detector rather than a bug.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from perception.detector import (
     COCO_ID_TO_CLASS,
@@ -262,6 +261,13 @@ def test_the_letterbox_actually_pads_rather_than_stretching():
 def test_postprocess_without_a_transform_is_byte_identical_to_before():
     """The default path must not move. Cell 1 of the factorial is Phase 1's
     baseline re-run, and if this drifts the reproduction check is worthless.
+
+    Bare `==` against the exact pre-letterbox float32 values, not
+    `pytest.approx` -- `approx`'s default relative tolerance (1e-6, ~1.3e-4
+    px here) is over two orders of magnitude looser than the float32/float64
+    promotion this test exists to catch (~5e-7 px, from routing `cx`/`cy`/
+    `w`/`h` through a stray `float()` cast instead of leaving them float32).
+    `approx` would pass in that broken world; `==` does not.
     """
     logits = np.full((1, 1, 80), -20.0, dtype=np.float32)
     logits[0, 0, 2] = 8.0
@@ -270,10 +276,10 @@ def test_postprocess_without_a_transform_is_byte_identical_to_before():
     boxes = postprocess(logits, pred_boxes, FRAME_W, FRAME_H, score_threshold=0.3)
     assert len(boxes) == 1
     got = boxes[0]
-    assert got.x0 == pytest.approx(0.20 * FRAME_W)
-    assert got.y0 == pytest.approx(0.20 * FRAME_H)
-    assert got.x1 == pytest.approx(0.30 * FRAME_W)
-    assert got.y1 == pytest.approx(0.30 * FRAME_H)
+    assert got.x0 == 128.0
+    assert got.y0 == 76.80000305175781
+    assert got.x1 == 192.0
+    assert got.y1 == 115.20000457763672
 
 
 def test_the_letterbox_round_trip_holds_at_a_non_unit_scale():
@@ -292,6 +298,49 @@ def test_the_letterbox_round_trip_holds_at_a_non_unit_scale():
     assert transform.scale == 2.0, "320x192 into 640x640 must scale by 2x, not just pad"
     assert transform.pad_y == 128
     assert transform.pad_x == 0
+
+    (r0, r1), (c0, c1) = _hot_extent(x[0, 0])
+    in_h, in_w = MODEL_INPUT[1], MODEL_INPUT[0]
+    cx = ((c0 + c1 + 1) / 2.0) / in_w
+    cy = ((r0 + r1 + 1) / 2.0) / in_h
+    w = (c1 + 1 - c0) / in_w
+    h = (r1 + 1 - r0) / in_h
+
+    logits = np.full((1, 1, 80), -20.0, dtype=np.float32)
+    logits[0, 0, 2] = 8.0
+    pred_boxes = np.array([[[cx, cy, w, h]]], dtype=np.float32)
+
+    boxes = postprocess(
+        logits, pred_boxes, frame_w, frame_h, score_threshold=0.3,
+        transform=transform,
+    )
+    assert len(boxes) == 1
+    got = boxes[0]
+    assert got.cls == "car"
+
+    assert abs((got.x0 + got.x1) / 2.0 - (x0 + x1) / 2.0) <= 1.0
+    assert abs((got.y0 + got.y1) / 2.0 - (y0 + y1) / 2.0) <= 1.0
+    assert abs((got.x1 - got.x0) - (x1 - x0)) <= 2.0
+    assert abs((got.y1 - got.y0) - (y1 - y0)) <= 2.0
+
+
+def test_the_letterbox_round_trip_holds_with_pad_on_the_x_axis():
+    """`pad_x` is unreachable by every other test in this file: 640x384 and
+    320x192 are both landscape, so `pad_x == 0` in both, and a decode that
+    drops `- transform.pad_x` from the x lines passes the whole suite
+    without this test. A portrait 192x320 frame flips which axis carries the
+    padding (`scale = 2.0`, `pad_x = 128`, `pad_y = 0`), reaching the term
+    the other two frame sizes structurally cannot.
+    """
+    frame_w, frame_h = 192, 320
+    x0, y0, x1, y1 = 42, 74, 54, 86  # centre (48, 80) = 0.25W, 0.25H
+    rgb = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+    rgb[y0:y1, x0:x1] = 255
+
+    x, transform = preprocess_letterbox(rgb)
+    assert transform.scale == 2.0, "192x320 into 640x640 must scale by 2x, not just pad"
+    assert transform.pad_x == 128, "a portrait input pads columns, not rows"
+    assert transform.pad_y == 0
 
     (r0, r1), (c0, c1) = _hot_extent(x[0, 0])
     in_h, in_w = MODEL_INPUT[1], MODEL_INPUT[0]
