@@ -107,3 +107,6 @@ def test_the_default_model_is_still_the_quantized_one():
     assert DEFAULT_MODEL.sha256 == (
         "85703b0f56dbaceb89b21122e580fd11e11a879111fd727d0e9abdaf0e3620bf"
     )
+    assert DEFAULT_MODEL.url == (
+        "https://huggingface.co/onnx-community/rtdetr_r18vd/resolve/main/onnx/model_quantized.onnx"
+    )
