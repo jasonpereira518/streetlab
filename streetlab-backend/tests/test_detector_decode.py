@@ -8,12 +8,14 @@ like a bad detector rather than a bug.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from perception.detector import (
     COCO_ID_TO_CLASS,
     MODEL_INPUT,
     postprocess,
     preprocess,
+    preprocess_letterbox,
 )
 
 FRAME_W, FRAME_H = 640, 384
@@ -192,3 +194,125 @@ def test_preprocess_stretches_rather_than_letterboxes():
     assert np.isclose(plane[0].max(), 1.0), "top row padded: this is a letterbox"
     assert np.isclose(plane[-1].max(), 1.0), "bottom row padded: this is a letterbox"
     assert np.isclose(plane.min(), 1.0), "no pixel of a white frame may be dark"
+
+
+def test_a_marker_survives_the_letterbox_round_trip_at_the_same_place():
+    """The letterbox twin of the stretch round trip above.
+
+    `preprocess_letterbox` pads to preserve aspect, so normalised model
+    coordinates now include black bars that the frame knows nothing about.
+    `postprocess` must be handed the transform and undo it. Getting the
+    marker back where it started is the only check that catches a dropped
+    offset, a dropped scale, or the two axes swapped -- each of which
+    produces a tensor of exactly the right shape.
+    """
+    x0, y0, x1, y1 = 148, 84, 172, 108  # centre (160, 96) = (0.25W, 0.25H)
+    x, transform = preprocess_letterbox(_marker_frame(x0, y0, x1, y1))
+
+    (r0, r1), (c0, c1) = _hot_extent(x[0, 0])
+    in_h, in_w = MODEL_INPUT[1], MODEL_INPUT[0]
+    cx = ((c0 + c1 + 1) / 2.0) / in_w
+    cy = ((r0 + r1 + 1) / 2.0) / in_h
+    w = (c1 + 1 - c0) / in_w
+    h = (r1 + 1 - r0) / in_h
+
+    logits = np.full((1, 1, 80), -20.0, dtype=np.float32)
+    logits[0, 0, 2] = 8.0
+    pred_boxes = np.array([[[cx, cy, w, h]]], dtype=np.float32)
+
+    boxes = postprocess(
+        logits, pred_boxes, FRAME_W, FRAME_H, score_threshold=0.3,
+        transform=transform,
+    )
+    assert len(boxes) == 1
+    got = boxes[0]
+    assert got.cls == "car"
+
+    # Tighter than the stretch test's tolerance: at scale 1.0 there is no
+    # resampling at all on either axis, so only the marker's own edges blur.
+    assert abs((got.x0 + got.x1) / 2.0 - (x0 + x1) / 2.0) <= 1.0
+    assert abs((got.y0 + got.y1) / 2.0 - (y0 + y1) / 2.0) <= 1.0
+    assert abs((got.x1 - got.x0) - (x1 - x0)) <= 2.0
+    assert abs((got.y1 - got.y0) - (y1 - y0)) <= 2.0
+
+
+def test_the_letterbox_actually_pads_rather_than_stretching():
+    """The premise the round trip rests on, asserted directly.
+
+    A white frame letterboxed into a square input must come back with black
+    bars top and bottom and white everywhere between. The stretch path
+    produces a tensor of identical shape with no bars at all, which is why
+    shape assertions cannot tell the two apart.
+    """
+    white = np.full((FRAME_H, FRAME_W, 3), 255, dtype=np.uint8)
+    x, transform = preprocess_letterbox(white)
+    plane = x[0, 0]
+
+    assert transform.pad_y == 128, "640x384 into 640x640 pads 128 rows each side"
+    assert transform.pad_x == 0
+    assert transform.scale == 1.0
+
+    assert np.isclose(plane[0].max(), 0.0), "top row must be padding, not image"
+    assert np.isclose(plane[-1].max(), 0.0), "bottom row must be padding"
+    assert np.isclose(plane[transform.pad_y : MODEL_INPUT[1] - transform.pad_y].min(), 1.0), (
+        "every row between the bars is white frame and must stay white"
+    )
+
+
+def test_postprocess_without_a_transform_is_byte_identical_to_before():
+    """The default path must not move. Cell 1 of the factorial is Phase 1's
+    baseline re-run, and if this drifts the reproduction check is worthless.
+    """
+    logits = np.full((1, 1, 80), -20.0, dtype=np.float32)
+    logits[0, 0, 2] = 8.0
+    pred_boxes = np.array([[[0.25, 0.25, 0.1, 0.1]]], dtype=np.float32)
+
+    boxes = postprocess(logits, pred_boxes, FRAME_W, FRAME_H, score_threshold=0.3)
+    assert len(boxes) == 1
+    got = boxes[0]
+    assert got.x0 == pytest.approx(0.20 * FRAME_W)
+    assert got.y0 == pytest.approx(0.20 * FRAME_H)
+    assert got.x1 == pytest.approx(0.30 * FRAME_W)
+    assert got.y1 == pytest.approx(0.30 * FRAME_H)
+
+
+def test_the_letterbox_round_trip_holds_at_a_non_unit_scale():
+    """`/ transform.scale` is a no-op at 640x384: that frame's letterbox
+    scale is exactly 1.0, so a dropped division cannot fail there. A
+    320x192 frame (same 5:3 aspect, so `pad_y` is still 128) letterboxes at
+    `scale = 2.0`, which is the only way to put that division term where a
+    regression can actually reach it.
+    """
+    frame_w, frame_h = 320, 192
+    x0, y0, x1, y1 = 74, 42, 86, 54  # centre (80, 48) = 0.25W, 0.25H
+    rgb = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+    rgb[y0:y1, x0:x1] = 255
+
+    x, transform = preprocess_letterbox(rgb)
+    assert transform.scale == 2.0, "320x192 into 640x640 must scale by 2x, not just pad"
+    assert transform.pad_y == 128
+    assert transform.pad_x == 0
+
+    (r0, r1), (c0, c1) = _hot_extent(x[0, 0])
+    in_h, in_w = MODEL_INPUT[1], MODEL_INPUT[0]
+    cx = ((c0 + c1 + 1) / 2.0) / in_w
+    cy = ((r0 + r1 + 1) / 2.0) / in_h
+    w = (c1 + 1 - c0) / in_w
+    h = (r1 + 1 - r0) / in_h
+
+    logits = np.full((1, 1, 80), -20.0, dtype=np.float32)
+    logits[0, 0, 2] = 8.0
+    pred_boxes = np.array([[[cx, cy, w, h]]], dtype=np.float32)
+
+    boxes = postprocess(
+        logits, pred_boxes, frame_w, frame_h, score_threshold=0.3,
+        transform=transform,
+    )
+    assert len(boxes) == 1
+    got = boxes[0]
+    assert got.cls == "car"
+
+    assert abs((got.x0 + got.x1) / 2.0 - (x0 + x1) / 2.0) <= 1.0
+    assert abs((got.y0 + got.y1) / 2.0 - (y0 + y1) / 2.0) <= 1.0
+    assert abs((got.x1 - got.x0) - (x1 - x0)) <= 2.0
+    assert abs((got.y1 - got.y0) - (y1 - y0)) <= 2.0
