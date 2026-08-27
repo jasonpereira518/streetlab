@@ -57,7 +57,15 @@ from pathlib import Path
 
 import numpy as np
 
-from perception.detector import COCO_ID_TO_CLASS, build_session, decode_jpeg, postprocess, preprocess
+from perception.detector import (
+    COCO_ID_TO_CLASS,
+    LetterboxTransform,
+    build_session,
+    decode_jpeg,
+    postprocess,
+    preprocess,
+    preprocess_letterbox,
+)
 from perception.geometry import project_to_ground
 from perception.pipeline import Box2D
 from perception.scoring import GATE_M, Prediction, TruthObject
@@ -285,6 +293,14 @@ class FrameRecord:
     pixel_values: np.ndarray  # preprocessed input, cached so inference stays a single pass
     truth: list[TruthObject]
     truth_is_ego_street: list[bool]  # parallel to `truth`
+    # What preprocessing did to this frame, or None for the plain stretch.
+    # Per-frame rather than per-run even though this benchmark is uniformly
+    # 640x384: a future capture at a different size would otherwise decode
+    # against the wrong pad, silently, and the cost of storing it is one
+    # attribute. (Field order: dataclass fields with defaults must follow
+    # every field without one, so this sits after `truth_is_ego_street`
+    # rather than literally beside `pixel_values`.)
+    transform: LetterboxTransform | None = None
     # Filled in by `_run_inference`, after the ONNX session exists -- kept
     # `None` until then rather than run inference inside the loader, so
     # loading (I/O, decode, project) and inference (the timed step) stay
@@ -293,7 +309,9 @@ class FrameRecord:
     pred_boxes: np.ndarray | None = None  # (1, n_queries, 4) after inference, batch dim kept
 
 
-def _load_benchmark(benchmark_dir: Path, ego_x_max: float) -> list[FrameRecord]:
+def _load_benchmark(
+    benchmark_dir: Path, ego_x_max: float, preprocess_mode: str = "stretch"
+) -> list[FrameRecord]:
     """Load `labels.json`, run inference once per frame, and project every
     label to ground-plane world coordinates.
 
@@ -307,6 +325,17 @@ def _load_benchmark(benchmark_dir: Path, ego_x_max: float) -> list[FrameRecord]:
     whether that cutoff is actually valid for this data -- validity
     (`_ego_cutoff_is_valid`) is checked by the caller once all frames are
     loaded, since it needs the whole set's truth to evaluate.
+
+    `preprocess_mode` selects which of `perception.detector`'s two
+    preprocessing paths produces `pixel_values`: `"stretch"` (default) is
+    `preprocess`, what ships -- `postprocess` decodes it with `transform=
+    None`, byte-identical to Phase 1. `"letterbox"` is `preprocess_letterbox`,
+    which also returns the `LetterboxTransform` needed to undo its own pad;
+    `"stretch"` frames get `transform=None` instead, since there is no pad
+    to undo. This is why `preprocess` is called here, in the loader, and not
+    in `_run_inference`: the mode is a property of how each frame reaches
+    the model, decided once before inference, not a property of inference
+    itself.
     """
     labels = json.loads((benchmark_dir / "labels.json").read_text())
     cat_id_to_name: dict[int, str] = {c["id"]: c["name"] for c in labels["categories"]}
@@ -322,7 +351,10 @@ def _load_benchmark(benchmark_dir: Path, ego_x_max: float) -> list[FrameRecord]:
 
         jpeg_bytes = (benchmark_dir / image["file_name"]).read_bytes()
         rgb = decode_jpeg(jpeg_bytes)
-        pixel_values = preprocess(rgb)
+        if preprocess_mode == "letterbox":
+            pixel_values, transform = preprocess_letterbox(rgb)
+        else:
+            pixel_values, transform = preprocess(rgb), None
 
         truth: list[TruthObject] = []
         truth_is_ego_street: list[bool] = []
@@ -358,6 +390,7 @@ def _load_benchmark(benchmark_dir: Path, ego_x_max: float) -> list[FrameRecord]:
                 pixel_values=pixel_values,
                 truth=truth,
                 truth_is_ego_street=truth_is_ego_street,
+                transform=transform,
             )
         )
 
@@ -391,6 +424,20 @@ def _fmt_err(value: float | None) -> str:
     return "—" if value is None else f"{value:.2f}"
 
 
+def _peak_scores_for_frame(frame: FrameRecord) -> dict[DetectionClass, float]:
+    """Peak per-class vehicle score for one frame, off raw sigmoid scores.
+
+    Same math `report_peak_vehicle_scores` uses for its `per_class` column
+    below, factored out so `--save-scores`/`--baseline` (Step 3) read off
+    exactly the numbers the report prints, not a second, independently
+    written computation that could quietly drift from it.
+    """
+    scores = 1.0 / (1.0 + np.exp(-frame.logits))  # (n_queries, n_classes)
+    return {
+        cls: float(scores[:, _VEHICLE_COCO_ID[cls]].max()) for cls in VEHICLE_CLASSES
+    }
+
+
 def report_peak_vehicle_scores(frames: list[FrameRecord]) -> None:
     """Print the peak vehicle-class score per frame and across the whole
     set, read directly off raw sigmoid scores -- never off postprocess's
@@ -415,13 +462,10 @@ def report_peak_vehicle_scores(frames: list[FrameRecord]) -> None:
 
     for frame in frames:
         scores = 1.0 / (1.0 + np.exp(-frame.logits))  # (n_queries, n_classes)
-        per_class = {}
+        per_class = _peak_scores_for_frame(frame)
         for cls in VEHICLE_CLASSES:
-            coco_id = _VEHICLE_COCO_ID[cls]
-            peak = float(scores[:, coco_id].max())
-            per_class[cls] = peak
-            if peak > global_peak[cls][0]:
-                global_peak[cls] = (peak, frame.file_name)
+            if per_class[cls] > global_peak[cls][0]:
+                global_peak[cls] = (per_class[cls], frame.file_name)
 
         flat_idx = int(np.argmax(scores))
         top_query, top_cls_id = divmod(flat_idx, scores.shape[1])
@@ -503,6 +547,15 @@ def _predictions_for_threshold(
     lever from Finding 6. Threaded through so a second invocation with
     `--decode-mode per-class` reproduces that lever's numbers from this
     same committed script, rather than leaving them un-reproducible prose.
+
+    The `"argmax"` branch passes `frame.transform` through to `postprocess`.
+    For a `"stretch"`-loaded frame that is `None`, and `postprocess` with
+    `transform=None` is byte-identical to Phase 1's arithmetic -- so this
+    line does not change the default path. `_decode_per_class` is never
+    called on a letterbox-loaded frame: `parse_args` refuses
+    `--decode-mode per-class` together with `--preprocess letterbox` before
+    this function is ever reached, because that decode duplicates
+    `postprocess`'s box math and does not undo the letterbox pad.
     """
     per_frame: list[list[Prediction]] = []
     for frame in frames:
@@ -513,6 +566,7 @@ def _predictions_for_threshold(
                 frame.width,
                 frame.height,
                 threshold,
+                transform=frame.transform,
             )
         elif decode_mode == "per-class":
             boxes = _decode_per_class(
@@ -730,6 +784,106 @@ def sham_control(
         )
 
 
+def save_frame_scores(frames: list[FrameRecord], out_path: Path) -> None:
+    """Write this run's per-frame peak vehicle scores to `out_path`, for a
+    later `--baseline` run to compare against.
+
+    Shape: `{"frames": [{"file_name": ..., "peaks": {"car": ..., ...}}]}`.
+    Keyed on `file_name` (never a bare index) on both write and read here,
+    matching `compare_to_baseline` below -- see that function's docstring
+    for why an index is not safe to key on.
+    """
+    payload = {
+        "frames": [
+            {"file_name": frame.file_name, "peaks": _peak_scores_for_frame(frame)}
+            for frame in frames
+        ]
+    }
+    out_path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def compare_to_baseline(frames: list[FrameRecord], baseline_path: Path) -> None:
+    """Paired per-frame peak-score comparison against a saved run.
+
+    Only meaningful because both runs process byte-identical pixels: the
+    only variable is the processing, so a per-frame delta is a measurement
+    rather than a sample. Peak-over-the-set is a maximum, and a maximum is
+    the statistic one lucky frame moves -- Phase 1 nearly published a
+    headline that turned out to be frame selection. This is the guard.
+
+    Keyed on `file_name`, never on index: an index-keyed comparison
+    silently misaligns the moment the two runs load a different subset of
+    frames (a different `--benchmark`, a filtered future benchmark, ...)
+    and produces a plausible wrong number instead of an error. If the two
+    runs' `file_name` sets differ at all, this refuses to compare rather
+    than intersecting them and reporting on the overlap -- an intersection
+    would silently change what "the benchmark" means between the two runs
+    being compared.
+    """
+    saved = json.loads(baseline_path.read_text())
+    base = {f["file_name"]: f["peaks"] for f in saved["frames"]}
+    here = {f.file_name: _peak_scores_for_frame(f) for f in frames}
+
+    if set(base) != set(here):
+        only_base = sorted(set(base) - set(here))[:3]
+        only_here = sorted(set(here) - set(base))[:3]
+        raise SystemExit(
+            f"refusing to compare: the two runs cover different frames. "
+            f"baseline-only e.g. {only_base}; this-run-only e.g. {only_here}"
+        )
+
+    file_names = sorted(base)
+
+    print()
+    print("=" * 78)
+    print(f"PAIRED PER-FRAME DELTA vs BASELINE ({baseline_path})")
+    print("=" * 78)
+    print(
+        f"{len(file_names)} frames present in both runs, matched by "
+        "file_name. Deltas are this-run minus baseline. improved/worsened/"
+        "tied treats |delta| < 1e-6 as a tie, since these are floats. "
+        "'peak Δ' is the delta of the two runs' own set-wide maxima -- the "
+        "number the headline metric uses, and exactly the statistic one "
+        "lucky frame moves; median/mean Δ describe the other "
+        f"{len(file_names) - 1} frames, so a peak swing driven by one "
+        "frame can be told apart from a lever that moved the whole set."
+    )
+    print()
+    header = (
+        f"{'class':>10}  {'improved':>8}  {'worsened':>8}  {'tied':>6}  "
+        f"{'median Δ':>9}  {'mean Δ':>9}  {'peak Δ':>9}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for cls in VEHICLE_CLASSES:
+        deltas = [here[fn][cls] - base[fn][cls] for fn in file_names]
+        # abs(d) < 1e-6 is a tie; everything else buckets by sign, so the
+        # three counts always partition `deltas` exactly, including the
+        # boundary d == +-1e-6 itself (not < 1e-6, so not a tie).
+        tied = sum(1 for d in deltas if abs(d) < 1e-6)
+        improved = sum(1 for d in deltas if d >= 1e-6)
+        worsened = sum(1 for d in deltas if d <= -1e-6)
+
+        deltas_sorted = sorted(deltas)
+        n = len(deltas_sorted)
+        median = (
+            deltas_sorted[n // 2]
+            if n % 2
+            else (deltas_sorted[n // 2 - 1] + deltas_sorted[n // 2]) / 2.0
+        )
+        mean = sum(deltas) / n
+
+        peak_here = max(here[fn][cls] for fn in file_names)
+        peak_base = max(base[fn][cls] for fn in file_names)
+        peak_delta = peak_here - peak_base
+
+        print(
+            f"{cls:>10}  {improved:8d}  {worsened:8d}  {tied:6d}  "
+            f"{median:9.4f}  {mean:9.4f}  {peak_delta:9.4f}"
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="sweep_threshold.py",
@@ -802,7 +956,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "those numbers rather than trusting them as prose."
         ),
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--preprocess",
+        choices=("stretch", "letterbox"),
+        default="stretch",
+        help=(
+            "How frames reach the model. 'stretch' is what ships: the whole "
+            "640x384 frame is squared to 640x640, compressing it 1.67x "
+            "vertically. 'letterbox' preserves aspect and pads with black, and "
+            "the decode undoes the pad. Default is what ships, so the default "
+            "run reproduces Phase 1."
+        ),
+    )
+    parser.add_argument(
+        "--save-scores",
+        type=Path,
+        default=None,
+        help=(
+            "write this run's per-frame peak vehicle scores (the same "
+            "numbers PEAK VEHICLE-CLASS SCORES prints) as JSON to this "
+            "path, for a later run to compare against with --baseline."
+        ),
+    )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        help=(
+            "compare this run's per-frame peak vehicle scores against a "
+            "prior run saved with --save-scores, paired by file_name. "
+            "Refuses to compare if the two runs' frame sets differ at all "
+            "-- see compare_to_baseline's docstring."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    if args.decode_mode == "per-class" and args.preprocess == "letterbox":
+        parser.error(
+            "--decode-mode per-class does not support --preprocess letterbox: "
+            "_decode_per_class duplicates postprocess's box math and does not "
+            "undo the letterbox pad, so every box would be silently offset. "
+            "Phase 2's factorial uses the argmax decode."
+        )
+
+    return args
 
 
 def main() -> int:
@@ -814,6 +1011,9 @@ def main() -> int:
     if not (args.benchmark / "labels.json").exists():
         print(f"no labels.json under {args.benchmark}", file=sys.stderr)
         return 1
+    if args.baseline is not None and not args.baseline.exists():
+        print(f"--baseline not found: {args.baseline}", file=sys.stderr)
+        return 1
 
     print(f"model: {args.model}")
     print(f"benchmark: {args.benchmark}")
@@ -821,9 +1021,10 @@ def main() -> int:
     print(f"gate: {args.gate_m} m")
     print(f"ego-x-max: {args.ego_x_max} m")
     print(f"decode-mode: {args.decode_mode}")
+    print(f"preprocess: {args.preprocess}")
 
     print("loading benchmark and decoding frames ...")
-    frames = _load_benchmark(args.benchmark, args.ego_x_max)
+    frames = _load_benchmark(args.benchmark, args.ego_x_max, preprocess_mode=args.preprocess)
     print(f"loaded {len(frames)} frames, {sum(len(f.truth) for f in frames)} truth objects")
 
     ego_check = _ego_cutoff_is_valid(frames, args.ego_x_max)
@@ -850,6 +1051,14 @@ def main() -> int:
     }
 
     report_peak_vehicle_scores(frames)
+
+    if args.save_scores is not None:
+        save_frame_scores(frames, args.save_scores)
+        print(f"saved per-frame peak scores to {args.save_scores}")
+
+    if args.baseline is not None:
+        compare_to_baseline(frames, args.baseline)
+
     sweep(frames, thresholds, args.gate_m, predictions_by_threshold, ego_check)
     sham_control(frames, thresholds, args.gate_m, predictions_by_threshold)
 
