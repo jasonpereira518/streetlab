@@ -77,3 +77,33 @@ def test_evicting_to_budget_removes_the_least_recently_used(tmp_path):
     removed = cache.evict_to_budget()
     assert cache.path_for(SPEC) in removed
     assert cache.path_for(other).exists()
+
+
+def test_the_fp32_spec_is_the_same_architecture_at_full_precision():
+    """Phase 2 measures whether int8 quantization is what blinds the detector.
+
+    That comparison is only meaningful if the two checkpoints differ in
+    precision and nothing else -- a different architecture would confound
+    the one variable this cell exists to isolate.
+    """
+    from perception.model_cache import DEFAULT_MODEL, FP32_MODEL
+
+    assert FP32_MODEL.name != DEFAULT_MODEL.name
+    assert "rtdetr_r18vd" in FP32_MODEL.url, "must be the same checkpoint family"
+    assert FP32_MODEL.url.endswith("model.onnx"), "the unquantized file"
+    assert len(FP32_MODEL.sha256) == 64
+    assert FP32_MODEL.size_bytes > DEFAULT_MODEL.size_bytes, (
+        "fp32 weights are larger than int8; if this fails the URLs are swapped"
+    )
+
+
+def test_the_default_model_is_still_the_quantized_one():
+    """Phase 2 ships nothing. Adding a second spec must not change which
+    checkpoint the packaged app resolves.
+    """
+    from perception.model_cache import DEFAULT_MODEL
+
+    assert DEFAULT_MODEL.name == "rtdetr_r18vd_quantized"
+    assert DEFAULT_MODEL.sha256 == (
+        "85703b0f56dbaceb89b21122e580fd11e11a879111fd727d0e9abdaf0e3620bf"
+    )
