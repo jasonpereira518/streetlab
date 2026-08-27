@@ -281,10 +281,10 @@ class _Connection:
         """Label one already-decoded frame against simulation truth and hand
         it to the capture sink, if `--capture` attached one to this loop.
 
-        Both truth and heading come from the *recorded* snapshot at `cmd.t`
-        — `pose_history.at(cmd.t)` and `pose_history.headings_at(cmd.t)`
-        respectively — never from the world or `self._traffic` as they
-        stand *now*. Same rule `_score_ml` follows, and for the same
+        Truth, heading and extent all come from the *recorded* snapshot at
+        `cmd.t` — `pose_history.at(cmd.t)`, `headings_at(cmd.t)` and
+        `sizes_at(cmd.t)` respectively — never from the world or
+        `self._traffic` as they stand *now*. Same rule `_score_ml` follows, and for the same
         reason: by the time this frame arrived, the world has moved on,
         and reading live agent state here (as an earlier version of
         this method did, via a since-removed `Simulation.agent_headings`)
@@ -295,10 +295,14 @@ class _Connection:
         `()` — a snapshot that exists and is simply empty — is not this
         case; `PoseHistory.at` keeps the two apart on purpose (see its
         docstring), and an empty road is a label the benchmark needs, not
-        a frame to drop. `headings_at` cannot legitimately disagree with
-        `at` about whether an instant was recorded (both read the same
-        locked snapshot list) — the `or {}` below is a defensive fallback,
-        not a code path either is expected to take.
+        a frame to drop. Neither `headings_at` nor `sizes_at` can
+        legitimately disagree with `at` about whether an instant was
+        recorded (all three read the same locked snapshot list) — the
+        `or {}` fallbacks below are defensive, not code paths any of them
+        is expected to take. When `sizes_at` does come back empty,
+        `label_frame` falls back to the class prior and marks every box
+        `extent_from_truth=False` rather than failing the frame, so the
+        degradation is recorded in the output rather than invisible.
 
         Wrapped in one broad `except`, matching the never-raises discipline
         `_ingest_frame` already documents for the rest of this method: a
@@ -315,6 +319,7 @@ class _Connection:
             if truth is None:
                 return
             headings = self.loop.sim.pose_history.headings_at(cmd.t) or {}
+            sizes = self.loop.sim.pose_history.sizes_at(cmd.t) or {}
             frame = label_frame(
                 jpeg,
                 self.loop.next_capture_seq(),
@@ -324,6 +329,7 @@ class _Connection:
                 cmd.camera,
                 truth,
                 headings,
+                sizes,
             )
             sink.write(frame)
         except Exception:

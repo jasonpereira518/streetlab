@@ -645,16 +645,19 @@ class Simulation:
                 for a in self._traffic.agents
                 if math.hypot(a.state.x - ex, a.state.y - ey) <= MAX_RANGE_M
             ]
-        # `objects` and `headings` are built from the same filtered `agents`
-        # list, in the same pass, so a heading recorded under this `t` is
-        # guaranteed to describe the same instant as the position recorded
-        # alongside it -- see this method's docstring on why that pairing
-        # matters.
+        # `objects`, `headings` and `sizes` are built from the same filtered
+        # `agents` list, in the same pass, so a heading or extent recorded
+        # under this `t` is guaranteed to describe the same instant -- and
+        # the same agent -- as the position recorded alongside it. See this
+        # method's docstring on why that pairing matters, and
+        # `PoseHistory.record` on why extents ride along even though an
+        # agent's dimensions never change.
         objects = [
             TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y) for a in agents
         ]
         headings = {a.id: a.state.heading for a in agents}
-        self.pose_history.record(self.world.t, objects, headings)
+        sizes = {a.id: a.size for a in agents}
+        self.pose_history.record(self.world.t, objects, headings, sizes)
 
     # -- frame assembly ---------------------------------------------------- #
 

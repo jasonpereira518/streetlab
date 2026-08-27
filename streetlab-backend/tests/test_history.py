@@ -72,3 +72,39 @@ def test_recording_an_empty_world_is_not_the_same_as_not_recording():
     # treats these differently -- the first is a real zero-truth measurement.
     assert got == ()
     assert h.at(2.0) is None
+
+
+# --------------------------------------------------------------------------- #
+# Per-agent sizes travel in the same snapshot as positions and headings         #
+# --------------------------------------------------------------------------- #
+
+
+def test_sizes_round_trip_through_a_snapshot():
+    from schema import Size
+
+    h = PoseHistory()
+    car = Size(length=4.9, width=1.95, height=1.5)
+    h.record(1.0, (TruthObject(id="a", cls="car", x=1.0, y=2.0),),
+             {"a": 0.25}, {"a": car})
+    assert h.sizes_at(1.0) == {"a": car}
+
+
+def test_sizes_at_answers_none_for_an_instant_that_was_never_recorded():
+    """Same `None`-means-no-record contract as `at` and `headings_at`. An
+    unrecorded instant must not read back as "recorded, with no sizes" --
+    that would silently label every box from the class prior while looking
+    like a successful lookup."""
+    h = PoseHistory()
+    h.record(1.0, (TruthObject(id="a", cls="car", x=1.0, y=2.0),))
+    assert h.sizes_at(99.0) is None
+
+
+def test_a_caller_with_nothing_to_say_about_size_records_an_empty_mapping():
+    """`{}` and `None` stay distinguishable: every caller before Cycle 5's
+    capture wiring passes no sizes, and those instants must still answer
+    `{}` -- a real record holding no size information -- for any `t` that
+    `at` also answers for."""
+    h = PoseHistory()
+    h.record(1.0, (TruthObject(id="a", cls="car", x=1.0, y=2.0),))
+    assert h.at(1.0) is not None
+    assert h.sizes_at(1.0) == {}

@@ -33,7 +33,7 @@ from uuid import uuid4
 from perception.geometry import CLASS_SIZE
 from perception.projection import project_box
 from perception.scoring import TruthObject
-from schema import CameraParams, DetectionClass
+from schema import CameraParams, DetectionClass, Size
 
 # A clamped box narrower or shorter than this, in pixels, is dropped rather
 # than written out. Matches the reasoning in `test_a_box_smaller_than_the_
@@ -73,6 +73,20 @@ class LabelBox:
     # object can be tracked across frames downstream, same spirit as
     # `TruthObject.id` itself.
     track_id: str
+    # True when this box's extent came from the agent's own dimensions,
+    # False when it fell back to the `CLASS_SIZE` prior for its class.
+    #
+    # Not cosmetic. Every label in `contract/benchmark/` was written before
+    # per-agent sizes were threaded through, so every box in it is
+    # prior-derived: `sim/agents.py`'s two cars at 4.6 and 4.9 m long carry
+    # identical 4.5 m extents. Tolerable for a benchmark whose headline
+    # numbers are peak scores read off logits before any box math (see
+    # `docs/measurements/2026-08-26-cycle5-phase2-gates.md` §17); a
+    # per-class-constant error taught as truth the moment those labels
+    # become a training set. Recording the source per box is what lets a
+    # consumer tell the two apart instead of having to know which version
+    # of this file wrote it.
+    extent_from_truth: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +115,7 @@ def label_frame(
     camera: CameraParams,
     truth: Sequence[TruthObject],
     headings: Mapping[str, float],
+    sizes: Mapping[str, Size] | None = None,
 ) -> LabelledFrame:
     """Project every truth object into the frame and clamp to visible boxes.
 
@@ -109,10 +124,27 @@ def label_frame(
     `project_box` decides whether it has a box at all (`None` for behind-
     camera or nearer than `NEAR_PLANE_M`, per Task 1); this function decides
     only how much of that box survives being clamped to the frame.
+
+    `sizes` carries each agent's **own** dimensions, by id, from the same
+    recorded snapshot `headings` comes from -- never from live agent state,
+    for the reason `PoseHistory.headings_at` documents at length: an agent's
+    dimensions do not change, but reading them from a live list that a scene
+    swap may have replaced would pair this frame's positions with another
+    world's agents.
+
+    A missing id falls back to `CLASS_SIZE[obj.cls]`, the per-class prior,
+    and the resulting box records `extent_from_truth=False`. It falls back
+    rather than raising for the reason every other gap in this path does --
+    a capture failure must not take down a running sim -- but it does not
+    fall back *silently*: a prior-derived extent is a per-class-constant
+    error, and the flag is what makes a capture full of them detectable in
+    the output instead of only in the code that wrote it.
     """
+    sizes = sizes or {}
     boxes: list[LabelBox] = []
     for obj in truth:
-        size = CLASS_SIZE[obj.cls]
+        truth_size = sizes.get(obj.id)
+        size = truth_size if truth_size is not None else CLASS_SIZE[obj.cls]
         heading = headings.get(obj.id, 0.0)
         raw = project_box(obj.x, obj.y, heading, size, camera, width, height)
         if raw is None:
@@ -125,7 +157,10 @@ def label_frame(
         if (x1 - x0) < MIN_BOX_PX or (y1 - y0) < MIN_BOX_PX:
             continue
 
-        boxes.append(LabelBox(cls=obj.cls, x0=x0, y0=y0, x1=x1, y1=y1, track_id=obj.id))
+        boxes.append(LabelBox(
+            cls=obj.cls, x0=x0, y0=y0, x1=x1, y1=y1, track_id=obj.id,
+            extent_from_truth=truth_size is not None,
+        ))
 
     return LabelledFrame(
         seq=seq, t=t, width=width, height=height, jpeg=jpeg, boxes=boxes, camera=camera
@@ -234,6 +269,12 @@ class CaptureSink:
                 "bbox": [box.x0, box.y0, w, h],
                 "area": w * h,
                 "iscrowd": 0,
+                # Not a COCO field. Written anyway because a consumer of
+                # this file cannot otherwise tell a box sized from the
+                # agent's own dimensions from one sized by the class prior,
+                # and the difference is a systematic per-class-constant
+                # error in anything trained on it. See `LabelBox`.
+                "extent_from_truth": box.extent_from_truth,
             })
             self._next_annotation_id += 1
 

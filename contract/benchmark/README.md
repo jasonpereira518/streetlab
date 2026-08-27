@@ -41,10 +41,22 @@ Every box in `labels.json` comes from `perception/capture.py`'s
 adjusted by a human. Verifying this set meant looking at the *projection*,
 never correcting a box by eye — see "Visual verification" below.
 
+> **Fixed for future captures, 2026-08-27, and this set is not one of them.**
+> `label_frame` now takes each agent's own dimensions from the recorded
+> `PoseHistory` snapshot (`sizes_at`) and marks each box
+> `extent_from_truth: true/false` in `labels.json`. **These 60 frames were
+> captured before that change**, so every box below is still prior-derived
+> and this set's `labels.json` carries no `extent_from_truth` key at all —
+> read a missing key as `false`. The set stays frozen deliberately: it is
+> the before/after reference every Cycle 5 number is comparable against.
+> Everything in this section remains true *of this set*; only the tail
+> paragraph's "deferred to Phase 2" is superseded.
+
 **This is true of the box's centre (ground position) and class. It is not
-true of the box's extent (length/width/height).** `label_frame` builds
-every box from `size = CLASS_SIZE[obj.cls]`
-(`perception/capture.py:115`) — a fixed, per-class prior dictionary in
+true of the box's extent (length/width/height).** `label_frame` built
+every box in this set from `size = CLASS_SIZE[obj.cls]`
+(then `perception/capture.py:115`; the fallback branch of
+`perception/capture.py:147` today) — a fixed, per-class prior dictionary in
 `perception/geometry.py:58-66` that the module's own docstring calls
 "plausible box dimensions, not measurements of any specific object." The
 simulator's actual agents do not share that size: `sim/agents.py`'s
@@ -88,6 +100,23 @@ of re-deriving it from `CLASS_SIZE`, which is deferred to Phase 2 (see
 `docs/measurements/2026-08-22-cycle5-phase1-diagnosis.md`, open questions)
 specifically because it would invalidate this committed set, and this set
 is deliberately fixed as Phase 2's before/after reference.
+
+**Superseded 2026-08-27 — the fix landed, via the capture snapshot rather
+than `TruthObject`.** `PoseHistory.record` now carries a `sizes` mapping
+beside `headings`, built in the same pass from the same filtered agent
+list, and `label_frame` takes it as its `sizes` argument. `TruthObject`
+was left alone: it is what `perception/scoring.py` matches on, its own
+docstring records that scoring reads only class and position, and widening
+it would have rippled into every construction site for a field scoring
+must never consult.
+
+**A consumer generating a training set should require
+`extent_from_truth: true` on every annotation, and this set cannot satisfy
+that.** That is the intended behaviour, not a gap: these 60 frames are a
+scoring reference whose headline numbers are peak scores read off logits
+before any box math (see
+`docs/measurements/2026-08-26-cycle5-phase2-gates.md` §17), and they stay
+frozen. A training set needs a fresh capture.
 
 ## Known, deliberate label characteristics
 

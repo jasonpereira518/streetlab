@@ -32,6 +32,16 @@ was scaled, mirrored, or assigned the wrong class -- and nothing more. It
 is not, and was never, a check against the simulator's true per-agent
 size; a box built from the correct prior passes this test even though the
 prior itself is off by a few percent from the agent that actually rendered.
+
+**Still true of this set, no longer true of the code, as of 2026-08-27.**
+`label_frame` now takes per-agent extents from the recorded `PoseHistory`
+snapshot (`sizes_at`) and marks each box `extent_from_truth`. These 60
+frames predate that and stay frozen, so every box in them remains
+prior-derived -- which is exactly why the height check above still passes
+and must keep passing. `test_this_frozen_set_is_prior_derived_throughout`
+below pins that, so a regeneration of this set under the new code path
+fails loudly here rather than quietly changing what every Cycle 5 number
+was measured against.
 """
 
 from __future__ import annotations
@@ -214,3 +224,34 @@ def test_every_boxs_ground_point_sits_on_one_of_the_runs_lane_lines():
         checked += 1
     assert not off_lane, f"annotations off both lane lines: {off_lane}"
     assert checked >= 50, "too few annotations actually checked to mean anything"
+
+
+def test_this_frozen_set_is_prior_derived_throughout():
+    """Pins that this committed set predates the per-agent-extent fix.
+
+    `label_frame` now marks each box `extent_from_truth`, true when the
+    extent came from the agent's own dimensions. These 60 frames were
+    captured before that existed, so every annotation here must read as
+    prior-derived -- a missing key (this set) or an explicit `false`.
+
+    This is not a style check. `test_every_boxs_implied_height_matches_its_
+    class` above only passes *because* every box in this set was built from
+    `CLASS_SIZE`; regenerate the set under the current code and that test
+    starts failing for a reason that looks like corruption and is not. More
+    importantly, the set is the fixed before/after reference every Cycle 5
+    number is comparable against (`contract/benchmark/README.md`), so
+    replacing it silently would invalidate two phases of published
+    measurements. Failing here names that directly.
+    """
+    doc = json.loads((BENCH / "labels.json").read_text())
+    assert doc["annotations"], "an empty set cannot pin anything"
+    truth_derived = [
+        ann["id"] for ann in doc["annotations"] if ann.get("extent_from_truth", False)
+    ]
+    assert not truth_derived, (
+        f"{len(truth_derived)} annotation(s) claim a truth-derived extent "
+        f"(first: id {truth_derived[:3]}). This frozen set is prior-derived by "
+        "construction -- if it was regenerated, every Cycle 5 number measured "
+        "against it needs re-reading, and contract/benchmark/README.md needs "
+        "updating before this assertion is relaxed."
+    )

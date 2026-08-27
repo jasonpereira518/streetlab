@@ -421,3 +421,71 @@ def test_stdin_watchdog_finalizes_the_sink_before_exiting(monkeypatch, tmp_path)
     doc = json.loads((tmp_path / "labels.json").read_text())
     assert len(doc["images"]) == 1
     assert len(doc["annotations"]) == 1
+
+
+def test_a_captured_frame_is_labelled_with_the_agents_own_size(
+    ws_session_factory, tmp_path
+):
+    """The end-to-end version of `test_a_box_uses_the_agents_own_size_not_
+    the_class_prior`: not that `label_frame` *can* use a per-agent extent,
+    but that the running capture path actually hands it one.
+
+    Discriminating by construction. The recorded size is deliberately made
+    to differ from `CLASS_SIZE[cls]`, and the assertion is that the written
+    box matches the projection of the recorded size and does *not* match the
+    projection of the prior. Before sizes were threaded through
+    `PoseHistory`, this test's second assertion is the one that fails --
+    the box came out prior-shaped no matter what the agent's dimensions
+    were.
+    """
+    from perception.geometry import CLASS_SIZE
+    from schema import Size
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sink = CaptureSink(tmp_path / "out")
+        session, _sent = ws_session_factory(perception_pipeline=pipeline, capture_sink=sink)
+
+        frame = session.loop.await_frame(timeout=2.0)
+        assert frame is not None
+        agent = session.loop.sim._traffic.agents[0]
+
+        recorded_t = session.loop.sim.world.t + 10_000.0
+        truth_obj = TruthObject(id=agent.id, cls=agent.cls, x=20.0, y=0.0)
+        heading = 0.0
+        # Twice the prior's height, so the two projections cannot coincide.
+        big = Size(
+            length=CLASS_SIZE[agent.cls].length,
+            width=CLASS_SIZE[agent.cls].width,
+            height=CLASS_SIZE[agent.cls].height * 2.0,
+        )
+        session.loop.sim.pose_history.record(
+            recorded_t, (truth_obj,), {agent.id: heading}, {agent.id: big}
+        )
+
+        expected_truth = label_frame(
+            b"", 0, recorded_t, 640, 384, _CAMERA, (truth_obj,),
+            {agent.id: heading}, {agent.id: big},
+        ).boxes
+        expected_prior = label_frame(
+            b"", 0, recorded_t, 640, 384, _CAMERA, (truth_obj,),
+            {agent.id: heading},
+        ).boxes
+        assert expected_truth, "the fabricated truth must be visible to _CAMERA"
+        assert [(b.x0, b.y0, b.x1, b.y1) for b in expected_truth] != [
+            (b.x0, b.y0, b.x1, b.y1) for b in expected_prior
+        ], "a doubled height must move the box, or this test discriminates nothing"
+
+        asyncio.run(session._handle(json.dumps(_camera_payload(0, recorded_t))))
+
+        labels = sink.finalize()
+        doc = json.loads(labels.read_text())
+        assert len(doc["annotations"]) == 1
+        ann = doc["annotations"][0]
+        want = expected_truth[0]
+        assert ann["bbox"] == pytest.approx(
+            [want.x0, want.y0, want.x1 - want.x0, want.y1 - want.y0]
+        )
+        assert ann["extent_from_truth"] is True
+    finally:
+        pipeline.shutdown()

@@ -313,3 +313,114 @@ def test_the_periodic_rewrite_produces_exactly_what_finalize_would_at_that_point
     finalized_doc = json.loads(finalized_sink.finalize().read_text())
 
     assert periodic_doc == finalized_doc
+
+
+# --------------------------------------------------------------------------- #
+# Per-agent box extent (Phase 1 §9 item 6 / Phase 2 §17)                        #
+# --------------------------------------------------------------------------- #
+#
+# Until this section existed, `label_frame` sized every box from
+# `CLASS_SIZE[obj.cls]` -- a per-class *prior*, identical for every instance
+# of a class -- while `sim/agents.py` gives each agent its own dimensions
+# from `_PROFILES` (two cars at 4.6 x 1.9 x 1.45 and 4.9 x 1.95 x 1.50 are
+# both labelled 4.5 x 1.8 x 1.5). Harmless for a 60-frame benchmark whose
+# peak scores are read off logits before any box math; a systematically
+# mis-taught box the moment those labels become a training set.
+
+
+def _size(length: float, width: float, height: float):
+    from schema import Size
+
+    return Size(length=length, width=width, height=height)
+
+
+def test_a_box_uses_the_agents_own_size_not_the_class_prior():
+    """The whole defect, pinned.
+
+    Discriminating by construction: the assertion is not "a box exists" or
+    "the box is plausible" -- either would pass with the prior still in
+    place. It is that the box equals the projection of the agent's *own*
+    dimensions and differs from the projection of the class prior. A truth
+    size equal to the prior would make this test pass in the broken world,
+    so the fixture deliberately uses neither of the two cars in `_PROFILES`
+    whose height happens to match `CLASS_SIZE["car"]`.
+    """
+    from perception.geometry import CLASS_SIZE
+    from perception.projection import project_box
+
+    cam = camera()
+    truth_size = _size(4.9, 1.95, 2.40)  # taller than the 1.5 m prior
+    assert truth_size.height != CLASS_SIZE["car"].height, "fixture must differ from the prior"
+
+    expected = project_box(20.0, 0.0, math.pi, truth_size, cam, W, H)
+    prior = project_box(20.0, 0.0, math.pi, CLASS_SIZE["car"], cam, W, H)
+    assert expected is not None and prior is not None
+    assert expected != prior, "fixture must be able to tell the two apart"
+
+    frame = label_frame(JPEG, 1, 0.5, W, H, cam,
+                        [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+                        {"veh_00": math.pi},
+                        sizes={"veh_00": truth_size})
+    assert len(frame.boxes) == 1
+    b = frame.boxes[0]
+    assert (b.x0, b.y0, b.x1, b.y1) == pytest.approx(expected)
+    assert (b.x0, b.y0, b.x1, b.y1) != pytest.approx(prior)
+    assert b.extent_from_truth is True
+
+
+def test_a_missing_size_falls_back_to_the_class_prior_and_records_that_it_did():
+    """Capture must never take down a running sim over a bookkeeping gap --
+    the same rule `test_a_missing_heading_defaults_rather_than_raising`
+    states. But a silent fallback here would reintroduce the exact defect
+    this section exists to fix, invisibly, so the box records which source
+    its extent came from. A capture full of priors is then detectable in
+    the output rather than only in the code.
+    """
+    from perception.geometry import CLASS_SIZE
+    from perception.projection import project_box
+
+    cam = camera()
+    prior = project_box(20.0, 0.0, math.pi, CLASS_SIZE["car"], cam, W, H)
+    assert prior is not None
+
+    frame = label_frame(JPEG, 1, 0.5, W, H, cam,
+                        [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+                        {"veh_00": math.pi},
+                        sizes={})
+    assert len(frame.boxes) == 1
+    b = frame.boxes[0]
+    assert (b.x0, b.y0, b.x1, b.y1) == pytest.approx(prior)
+    assert b.extent_from_truth is False
+
+
+def test_sizes_omitted_entirely_behaves_like_an_empty_mapping():
+    """`sizes` defaults so the pre-Cycle-5 call shape keeps working, and the
+    default must be the honest one: prior-derived, and labelled as such."""
+    frame = label_frame(JPEG, 1, 0.5, W, H, camera(),
+                        [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+                        {"veh_00": math.pi})
+    assert len(frame.boxes) == 1
+    assert frame.boxes[0].extent_from_truth is False
+
+
+def test_the_written_annotation_carries_the_extent_source():
+    """A training-set consumer reads `labels.json`, not `LabelBox`. If the
+    flag stops at the dataclass it cannot be acted on downstream, which is
+    the only place it matters.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        sink = CaptureSink(root)
+        sink.write(label_frame(JPEG, 1, 0.5, W, H, camera(),
+                               [TruthObject(id="veh_00", cls="car", x=20.0, y=0.0)],
+                               {"veh_00": math.pi},
+                               sizes={"veh_00": _size(4.9, 1.95, 2.40)}))
+        sink.write(label_frame(JPEG, 2, 0.6, W, H, camera(),
+                               [TruthObject(id="veh_01", cls="car", x=22.0, y=0.0)],
+                               {"veh_01": math.pi},
+                               sizes={}))
+        sink.finalize()
+
+        doc = json.loads((root / "labels.json").read_text())
+        flags = [a["extent_from_truth"] for a in doc["annotations"]]
+        assert flags == [True, False], "both values must survive the round trip"

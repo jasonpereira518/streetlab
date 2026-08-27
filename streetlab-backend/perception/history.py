@@ -35,6 +35,7 @@ from collections import deque
 from typing import Mapping, Sequence
 
 from perception.scoring import TruthObject
+from schema import Size
 
 # Tolerance for matching a query time to a recorded one, in seconds. Frame
 # times are echoed back verbatim by the frontend, so any mismatch is float
@@ -43,7 +44,9 @@ from perception.scoring import TruthObject
 # instants.
 _TOL: float = 1e-6
 
-_Entry = tuple[float, tuple[TruthObject, ...], Mapping[str, float]]
+_Entry = tuple[
+    float, tuple[TruthObject, ...], Mapping[str, float], Mapping[str, Size]
+]
 
 
 class PoseHistory:
@@ -64,20 +67,33 @@ class PoseHistory:
         t: float,
         objects: Sequence[TruthObject],
         headings: Mapping[str, float] | None = None,
+        sizes: Mapping[str, Size] | None = None,
     ) -> None:
-        """Snapshot `objects` (and, optionally, their headings) as the truth
-        at time `t`.
+        """Snapshot `objects` (and, optionally, their headings and sizes) as
+        the truth at time `t`.
 
         Stores a copy -- `objects` is typically a list the simulation keeps
         mutating after this call returns, and holding a reference to it
-        would make history rewrite itself as the sim runs. `headings` is
-        `None` for a caller with nothing to say about orientation (every
-        caller before Cycle 5's capture wiring); stored as `{}` in that
-        case so `headings_at` always returns a mapping, never `None`, for
-        any instant `at` also answers for -- see that method's docstring.
+        would make history rewrite itself as the sim runs. `headings` and
+        `sizes` are `None` for a caller with nothing to say about
+        orientation or extent (every caller before Cycle 5's capture
+        wiring); stored as `{}` in that case so `headings_at`/`sizes_at`
+        always return a mapping, never `None`, for any instant `at` also
+        answers for -- see those methods' docstrings.
+
+        `sizes` rides here rather than being read from live agents for a
+        reason that is *not* the one motivating `headings`: an agent's
+        dimensions never change, so there is no drift to guard against.
+        What there is, is identity -- a scene swap replaces the agent list
+        wholesale, and an id that meant one vehicle when this snapshot was
+        taken can mean another by the time a frame for it arrives. Pairing
+        extents with the positions they belong to closes that, and costs
+        one dict per tick.
         """
         with self._lock:
-            self._entries.append((t, tuple(objects), dict(headings or {})))
+            self._entries.append(
+                (t, tuple(objects), dict(headings or {}), dict(sizes or {}))
+            )
 
     def at(self, t: float) -> tuple[TruthObject, ...] | None:
         """Return the snapshot recorded at time `t`, or `None` if there isn't one.
@@ -89,7 +105,7 @@ class PoseHistory:
         and score every detection as a false positive.
         """
         with self._lock:
-            for entry_t, objects, _headings in reversed(self._entries):
+            for entry_t, objects, _headings, _sizes in reversed(self._entries):
                 if abs(entry_t - t) <= _TOL:
                     return objects
         return None
@@ -110,9 +126,28 @@ class PoseHistory:
         `mean_pos_err_m` -- the whole reason this module exists.
         """
         with self._lock:
-            for entry_t, _objects, headings in reversed(self._entries):
+            for entry_t, _objects, headings, _sizes in reversed(self._entries):
                 if abs(entry_t - t) <= _TOL:
                     return headings
+        return None
+
+    def sizes_at(self, t: float) -> Mapping[str, Size] | None:
+        """Each object's own dimensions at time `t`, by id -- the sibling of
+        `at` and `headings_at`, with the same `None`-means-no-record
+        contract (see `at`'s docstring).
+
+        `label_frame` uses this to size a truth box. Without it, every box
+        is sized from `CLASS_SIZE`, a per-class prior identical for every
+        instance of a class -- fine for a benchmark read off logits, a
+        systematic per-class-constant error in a training set. The
+        `{}`-vs-`None` distinction matters for the same reason it does on
+        `at`: an unrecorded instant answering `{}` would look like a
+        successful lookup and silently fall the whole frame back to priors.
+        """
+        with self._lock:
+            for entry_t, _objects, _headings, sizes in reversed(self._entries):
+                if abs(entry_t - t) <= _TOL:
+                    return sizes
         return None
 
     def clear(self) -> None:
