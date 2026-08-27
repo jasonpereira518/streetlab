@@ -1972,6 +1972,15 @@ this one's:
   — `stop sign` at 0.6803 still outscores car at 0.4880. A broad de-quantization recalibration
   across the label space is a live competing explanation for the headline, and it is testable
   from data already pasted here (Section 17).
+
+  > **SETTLED 2026-08-27** — the competing explanation named in the last sentence is **refuted**:
+  > 70 of 80 classes fall under fp32 and the median class moves −0.0110, where a broad
+  > recalibration predicts the label space rises. What replaces it is narrower than
+  > "vehicle-specific": the effect is **selective**, car is among the ten risers but not the
+  > largest, and `stop sign` — the very class this paragraph cites — is the largest riser in the
+  > whole label space. "Moves classes in both directions" is now quantified: 10 up, 70 down.
+  > See [`2026-08-27-cycle5-fp32-class-specificity.md`](2026-08-27-cycle5-fp32-class-specificity.md).
+  > The paragraph above is left exactly as written.
 - **Letterboxing alone — the aspect fix without the precision swap — is not shown to be a
   *detection* lever, and is the only lever that moves the argmax discriminator.** Both halves are
   the record. On detection it clears the decision rule and fails everything else (Sections 12,
@@ -2034,6 +2043,18 @@ Stated in the same discipline as [P1 §10].
   property of the label space rather than of vehicles, and Section 16's "numerical precision is a
   real axis" inherits a much narrower reading. The ranking *order* would not move — the metric is
   peak car score and that number is what it is — but what the winner means would.
+
+  > **SETTLED 2026-08-27** — see
+  > [`2026-08-27-cycle5-fp32-class-specificity.md`](2026-08-27-cycle5-fp32-class-specificity.md).
+  > The re-run this bullet specifies was done, against a rule pre-committed before the dump
+  > existed. **The broad-recalibration reading is refuted: 70 of 80 classes *fall* under fp32,
+  > and the median class moves −0.0110.** Car clears a top-decile test under all three
+  > comparison sets (rank 4/80, 4/74, 2/23) and sits outside the others' IQR in each. But the
+  > effect is **selective rather than vehicle-specific** — `stop sign` rises 26× more than car
+  > on median delta (+0.3023 vs +0.0114) — so this bullet was right that the vehicle-specific
+  > reading was unsupported, and wrong about which way the evidence would fall. Section 16's
+  > "numerical precision is a real axis" is **strengthened**, not narrowed. The ranking does not
+  > move. The paragraph above is left exactly as written.
 
 - **A different choice of metric would swap the winner and the loser.** Ranked on median
   per-frame car Δ instead of peak, the order is cell 4 (+0.0825), cell 2 (+0.0452), cell 3

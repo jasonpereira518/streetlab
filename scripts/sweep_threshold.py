@@ -446,6 +446,28 @@ def _peak_scores_for_frame(frame: FrameRecord) -> dict[DetectionClass, float]:
     }
 
 
+def _all_class_peaks_for_frame(frame: FrameRecord) -> list[float]:
+    """Peak sigmoid score per class for one frame, for **all** classes the
+    checkpoint predicts -- not just the four vehicle ones.
+
+    `_peak_scores_for_frame` above answers "how hard does the model fire on
+    a vehicle here". This answers the question Phase 2 §17 left open and
+    could not settle from its own pasted output: **is the int8 -> fp32 lift
+    a vehicle effect or a label-space effect?** Section 13.6 could only
+    compare car against whichever single class happened to win each frame's
+    argmax, because the per-frame maximum was the only non-vehicle number
+    the report printed. Ranking car's lift against the other 79 classes'
+    needs every class's peak, so this returns the whole row.
+
+    Same reduction as `_peak_scores_for_frame` -- max over queries of the
+    per-class sigmoid -- deliberately, so car's entry here is bit-identical
+    to car's entry there and the two dumps cannot quietly disagree about
+    what "peak score" means.
+    """
+    scores = 1.0 / (1.0 + np.exp(-frame.logits))  # (n_queries, n_classes)
+    return [float(v) for v in scores.max(axis=0)]
+
+
 def report_peak_vehicle_scores(frames: list[FrameRecord]) -> None:
     """Print the peak vehicle-class score per frame and across the whole
     set, read directly off raw sigmoid scores -- never off postprocess's
@@ -832,6 +854,53 @@ def save_frame_scores(
     out_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def save_all_class_scores(
+    frames: list[FrameRecord],
+    out_path: Path,
+    *,
+    preprocess_mode: str,
+    model_path: Path,
+    benchmark_path: Path,
+) -> None:
+    """Write this run's per-frame peak score for **every** class to
+    `out_path`, so two runs can be compared across the whole label space
+    rather than across the four vehicle classes alone.
+
+    Shape: `{"preprocess": ..., "model": ..., "benchmark": ...,
+    "n_classes": ..., "class_names": [...], "frames": [{"file_name": ...,
+    "peaks": [<n_classes floats>]}]}`.
+
+    `class_names` is written out beside the scores because `COCO_80_NAMES`
+    is **best-effort** (see its comment): the ids are exact, read off the
+    model, and only the names are assumed. Recording the name table this
+    run actually used means a later reader can tell whether a name in the
+    analysis came from this table or from somewhere else, instead of having
+    to trust that the table never changed.
+
+    `n_classes` is recorded rather than inferred so a dump made against a
+    checkpoint with a different head width is self-describing and fails
+    loudly at comparison time instead of aligning two different label
+    spaces by position.
+
+    Keyed on `file_name` within `frames`, for the same reason
+    `save_frame_scores` is: an index-keyed pairing silently misaligns the
+    moment two runs load different frames, and produces a plausible wrong
+    number rather than an error.
+    """
+    payload = {
+        "preprocess": preprocess_mode,
+        "model": str(model_path),
+        "benchmark": str(benchmark_path),
+        "n_classes": int(frames[0].logits.shape[1]),
+        "class_names": list(COCO_80_NAMES),
+        "frames": [
+            {"file_name": frame.file_name, "peaks": _all_class_peaks_for_frame(frame)}
+            for frame in frames
+        ],
+    }
+    out_path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
 def compare_to_baseline(
     frames: list[FrameRecord],
     baseline_path: Path,
@@ -1103,6 +1172,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--save-all-class-scores",
+        type=Path,
+        default=None,
+        help=(
+            "write this run's per-frame peak score for EVERY class (not "
+            "just the four vehicle ones) as JSON to this path. Phase 2 "
+            "§17 left open whether the int8->fp32 lift is vehicle-specific "
+            "or a broad recalibration of the label space; that question "
+            "needs all 80 classes' scores, which --save-scores does not "
+            "carry. Independent of --save-scores/--baseline: this dump is "
+            "for cross-class analysis, those are for the paired per-frame "
+            "vehicle comparison."
+        ),
+    )
+    parser.add_argument(
         "--baseline",
         type=Path,
         default=None,
@@ -1146,6 +1230,16 @@ def main() -> int:
     if args.save_scores is not None and not args.save_scores.parent.exists():
         print(
             f"--save-scores directory does not exist: {args.save_scores.parent}",
+            file=sys.stderr,
+        )
+        return 1
+    if (
+        args.save_all_class_scores is not None
+        and not args.save_all_class_scores.parent.exists()
+    ):
+        print(
+            "--save-all-class-scores directory does not exist: "
+            f"{args.save_all_class_scores.parent}",
             file=sys.stderr,
         )
         return 1
@@ -1196,6 +1290,19 @@ def main() -> int:
             benchmark_path=args.benchmark,
         )
         print(f"saved per-frame peak scores to {args.save_scores}")
+
+    if args.save_all_class_scores is not None:
+        save_all_class_scores(
+            frames,
+            args.save_all_class_scores,
+            preprocess_mode=args.preprocess,
+            model_path=args.model,
+            benchmark_path=args.benchmark,
+        )
+        print(
+            f"saved per-frame all-class peak scores to {args.save_all_class_scores} "
+            f"({frames[0].logits.shape[1]} classes x {len(frames)} frames)"
+        )
 
     if args.baseline is not None:
         compare_to_baseline(
