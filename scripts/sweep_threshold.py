@@ -353,8 +353,16 @@ def _load_benchmark(
         rgb = decode_jpeg(jpeg_bytes)
         if preprocess_mode == "letterbox":
             pixel_values, transform = preprocess_letterbox(rgb)
-        else:
+        elif preprocess_mode == "stretch":
             pixel_values, transform = preprocess(rgb), None
+        else:
+            # Matches `_predictions_for_threshold`'s convention for the
+            # sibling `decode_mode` knob: an unknown mode raises rather
+            # than silently falling through to the default. Unreachable
+            # from the CLI (argparse's `choices` already rejects a typo),
+            # but a future caller of `_load_benchmark` that isn't argparse
+            # deserves the same guard.
+            raise ValueError(f"unknown preprocess_mode: {preprocess_mode!r}")
 
         truth: list[TruthObject] = []
         truth_is_ego_street: list[bool] = []
@@ -784,25 +792,49 @@ def sham_control(
         )
 
 
-def save_frame_scores(frames: list[FrameRecord], out_path: Path) -> None:
+def save_frame_scores(
+    frames: list[FrameRecord],
+    out_path: Path,
+    *,
+    preprocess_mode: str,
+    model_path: Path,
+    benchmark_path: Path,
+) -> None:
     """Write this run's per-frame peak vehicle scores to `out_path`, for a
     later `--baseline` run to compare against.
 
-    Shape: `{"frames": [{"file_name": ..., "peaks": {"car": ..., ...}}]}`.
-    Keyed on `file_name` (never a bare index) on both write and read here,
-    matching `compare_to_baseline` below -- see that function's docstring
-    for why an index is not safe to key on.
+    Shape: `{"preprocess": ..., "model": ..., "benchmark": ...,
+    "frames": [{"file_name": ..., "peaks": {"car": ..., ...}}]}`.
+
+    Phase 2's factorial runs four cells against this same 60-frame
+    benchmark (stretch/letterbox x int8/fp32), so `frames` alone --
+    the brief's literal shape -- is not enough to tell two saved runs
+    apart: the `file_name`-set guard in `compare_to_baseline` passes for
+    *every* pairing of the four cells, since they all load the same
+    frames. `preprocess`/`model`/`benchmark` are recorded as sibling keys
+    precisely so a saved file's own identity is inspectable and
+    `compare_to_baseline` can catch the one mix-up that is never
+    intentional: comparing a cell against itself.
+
+    Keyed on `file_name` (never a bare index) within `frames`, matching
+    `compare_to_baseline` below -- see that function's docstring for why
+    an index is not safe to key on.
     """
     payload = {
+        "preprocess": preprocess_mode,
+        "model": str(model_path),
+        "benchmark": str(benchmark_path),
         "frames": [
             {"file_name": frame.file_name, "peaks": _peak_scores_for_frame(frame)}
             for frame in frames
-        ]
+        ],
     }
     out_path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def compare_to_baseline(frames: list[FrameRecord], baseline_path: Path) -> None:
+def compare_to_baseline(
+    frames: list[FrameRecord], baseline_path: Path, *, preprocess_mode: str
+) -> None:
     """Paired per-frame peak-score comparison against a saved run.
 
     Only meaningful because both runs process byte-identical pixels: the
@@ -819,8 +851,43 @@ def compare_to_baseline(frames: list[FrameRecord], baseline_path: Path) -> None:
     than intersecting them and reporting on the overlap -- an intersection
     would silently change what "the benchmark" means between the two runs
     being compared.
+
+    A second, config-level version of that same failure mode exists here:
+    Phase 2 runs four cells (stretch/letterbox x int8/fp32) against this
+    *same* 60-frame benchmark, so the `file_name`-set guard above passes
+    for every pairing of the four, including a cell against itself or
+    against the wrong sibling. `save_frame_scores` now records
+    `preprocess`/`model`/`benchmark` alongside `frames` for exactly this
+    reason. This function refuses outright when the baseline's recorded
+    `preprocess` matches this run's -- comparing a cell against itself is
+    never what a paired comparison is for -- and prints both runs' full
+    provenance (preprocess/model/benchmark) so a model-only mismatch
+    (e.g. int8 vs fp32 under the same preprocessing) is visible to a
+    reader even though it isn't refused outright.
     """
     saved = json.loads(baseline_path.read_text())
+    base_preprocess = saved.get("preprocess")
+    base_model = saved.get("model")
+    base_benchmark = saved.get("benchmark")
+
+    if base_preprocess is None:
+        print(
+            "warning: baseline has no 'preprocess' provenance recorded "
+            "(saved by an older run of this script) -- cannot confirm "
+            "this comparison pairs two different cells rather than the "
+            "same one twice; proceeding, but treat the result with "
+            "caution",
+            file=sys.stderr,
+        )
+    elif base_preprocess == preprocess_mode:
+        raise SystemExit(
+            f"refusing to compare: baseline was saved with "
+            f"--preprocess {base_preprocess!r}, same as this run "
+            f"({preprocess_mode!r}). Comparing a cell against itself is "
+            "never what a paired comparison is for -- save a baseline "
+            "from the other preprocessing mode instead."
+        )
+
     base = {f["file_name"]: f["peaks"] for f in saved["frames"]}
     here = {f.file_name: _peak_scores_for_frame(f) for f in frames}
 
@@ -832,6 +899,24 @@ def compare_to_baseline(frames: list[FrameRecord], baseline_path: Path) -> None:
             f"baseline-only e.g. {only_base}; this-run-only e.g. {only_here}"
         )
 
+    # Every frame's `peaks` dict should carry all four vehicle classes --
+    # `save_frame_scores` always writes them together -- but a hand-edited
+    # or externally-produced baseline could be missing one. Check the key
+    # set up front so a malformed baseline fails with one clear message
+    # instead of printing a partial table and then raising `KeyError`
+    # mid-row (caught by review: a baseline missing 'bus' printed car and
+    # truck, then crashed on bus).
+    want_classes = set(VEHICLE_CLASSES)
+    for fn, peaks in base.items():
+        missing = want_classes - set(peaks)
+        if missing:
+            raise SystemExit(
+                f"refusing to compare: baseline frame {fn!r} is missing "
+                f"class(es) {sorted(missing)} from its 'peaks' -- baseline "
+                "file is malformed or was saved by an incompatible version "
+                "of this script."
+            )
+
     file_names = sorted(base)
 
     print()
@@ -839,14 +924,27 @@ def compare_to_baseline(frames: list[FrameRecord], baseline_path: Path) -> None:
     print(f"PAIRED PER-FRAME DELTA vs BASELINE ({baseline_path})")
     print("=" * 78)
     print(
+        f"baseline: preprocess={base_preprocess!r} model={base_model!r} "
+        f"benchmark={base_benchmark!r}"
+    )
+    print(
+        f"this run: preprocess={preprocess_mode!r} -- compare the "
+        "'model'/'benchmark' fields above against this run's own "
+        "'model:'/'benchmark:' lines printed earlier, to confirm the only "
+        "thing that differs between the two runs is preprocessing."
+    )
+    print(
         f"{len(file_names)} frames present in both runs, matched by "
         "file_name. Deltas are this-run minus baseline. improved/worsened/"
         "tied treats |delta| < 1e-6 as a tie, since these are floats. "
-        "'peak Δ' is the delta of the two runs' own set-wide maxima -- the "
-        "number the headline metric uses, and exactly the statistic one "
-        "lucky frame moves; median/mean Δ describe the other "
-        f"{len(file_names) - 1} frames, so a peak swing driven by one "
-        "frame can be told apart from a lever that moved the whole set."
+        "median Δ and mean Δ are computed over all "
+        f"{len(file_names)} per-frame deltas. 'peak Δ' is a different, "
+        "cross-frame quantity: the delta between each run's own set-wide "
+        "maximum for that class, which may sit on different frames in the "
+        "two runs -- it is the number the headline metric uses, and "
+        "exactly the statistic one lucky frame moves. Median/mean Δ are "
+        "what let a peak swing driven by one frame be told apart from a "
+        "lever that moved the whole set."
     )
     print()
     header = (
@@ -1014,6 +1112,17 @@ def main() -> int:
     if args.baseline is not None and not args.baseline.exists():
         print(f"--baseline not found: {args.baseline}", file=sys.stderr)
         return 1
+    # `--baseline` is checked up front because a bad path there is a
+    # pre-existing condition, cheap to catch before spending the run.
+    # `--save-scores` deserves the same treatment for the same reason: an
+    # unwritable output directory should fail before ~4s of inference, not
+    # after it, when `save_frame_scores` finally tries to write.
+    if args.save_scores is not None and not args.save_scores.parent.exists():
+        print(
+            f"--save-scores directory does not exist: {args.save_scores.parent}",
+            file=sys.stderr,
+        )
+        return 1
 
     print(f"model: {args.model}")
     print(f"benchmark: {args.benchmark}")
@@ -1053,11 +1162,17 @@ def main() -> int:
     report_peak_vehicle_scores(frames)
 
     if args.save_scores is not None:
-        save_frame_scores(frames, args.save_scores)
+        save_frame_scores(
+            frames,
+            args.save_scores,
+            preprocess_mode=args.preprocess,
+            model_path=args.model,
+            benchmark_path=args.benchmark,
+        )
         print(f"saved per-frame peak scores to {args.save_scores}")
 
     if args.baseline is not None:
-        compare_to_baseline(frames, args.baseline)
+        compare_to_baseline(frames, args.baseline, preprocess_mode=args.preprocess)
 
     sweep(frames, thresholds, args.gate_m, predictions_by_threshold, ego_check)
     sham_control(frames, thresholds, args.gate_m, predictions_by_threshold)
