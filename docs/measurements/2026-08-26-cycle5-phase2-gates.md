@@ -1266,7 +1266,7 @@ names the command that produced its number.
 | rank | cell | peak car | Δ vs cell 1 | ratio vs cell 1 | rule (§11) | **verdict** |
 |---|---|---:|---:|---:|:--:|---|
 | **1** | **3 — stretch, fp32** | **0.4880** | **+0.3008** | 0.4880 / 0.1872 = **2.61×** | clears | the strongest result two cycles have produced, and one frame from ordinary |
-| **2** | 4 — letterbox, fp32 | 0.3917 | +0.2045 | 0.3917 / 0.1872 = 2.09× | clears | a negative interaction: below cell 3 alone and below what 2 and 3 predict |
+| **2** | 4 — letterbox, fp32 | 0.3917 | +0.2045 | 0.3917 / 0.1872 = 2.09× | clears | the peak does not stack — below cell 3 alone and below the additive prediction — though per frame the two levers are close to additive |
 | **3** | 2 — letterbox, int8 | 0.2778 | +0.0906 | 0.2778 / 0.1872 = 1.48× | clears | peak lift is real; the secondary evidence contradicts reading it as detection |
 | — | 1 — stretch, int8 (shipped) | 0.1872 | — | — | baseline | reproduces Phase 1 exactly |
 
@@ -1321,16 +1321,19 @@ what a preprocessing artefact usually looks like.
 (Section 5) — a factor of 26 apart. The peak is substantially one frame, `000057.jpg`, which
 Section 4 names explicitly. `precision = 1.000` at 0.30 and 0.40 is computed from **tp=1, fp=0**:
 a single detection, not a distribution. The sham margin is exactly **one true positive** at four
-of its six detecting thresholds (0.40, 0.30, 0.10, 0.05 — see Section 13), including both
-thresholds where the sham control produces any matches of its own. And its motorcycle class
+of its six detecting thresholds (0.40, 0.30, 0.10, 0.05 — see Section 13.4), including two of
+the three thresholds where the sham control produces any matches of its own (0.10, real 5 vs 4,
+and 0.05, real 7 vs 6; at the third, 0.01, the margin is six). And its motorcycle class
 collapses: 3 frames improved against 57 worsened, median Δ −0.0143, peak Δ −0.0255 (Section 5).
-Truck and bus are flat (Section 13).
+Truck is **not** flat and is not a qualification either way — its peak rises 0.1105 → 0.1621
+(+0.0516, 1.47×), the second-largest peak move in the factorial — while bus is flat
+(0.1116 → 0.1099); both from Section 13.1.
 
 Ranked first because it moved the pre-committed metric furthest and is the only cell whose
 secondary evidence points the same way as its peak. Not ranked first because it demonstrated
 detection — it did not.
 
-### Rank 2 — cell 4 (letterbox, fp32): a negative interaction
+### Rank 2 — cell 4 (letterbox, fp32): the peak does not stack, the per-frame behaviour nearly does
 
 Cell 4 clears the rule (+0.2045, 49/60 frames improved) and has the **largest median per-frame
 car gain of any cell** (+0.0825, Section 5). But on the ranking metric it is dominated: 0.3917 is
@@ -1401,13 +1404,21 @@ as marginal.
 | bus        | 0.1116 | 0.1176 | 0.1099 | 0.1273 |
 | motorcycle | 0.0830 | 0.1128 | 0.0574 | 0.0743 |
 
-**Only car moves materially anywhere.** Against cell 3 — the ranked winner — truck's peak rises
-(0.1105 → 0.1621) while bus falls (0.1116 → 0.1099) and motorcycle falls (0.0830 → 0.0574); on
-the paired per-frame view, which is the one condition 2 uses, **three of the four classes move
-against cell 3**: truck 27 improved / 33 worsened, bus 34/26, motorcycle 3/57 (Section 5). Only
-bus improves on a majority of frames alongside car, and by a median of +0.0022. Every peak in
-this table except car's stays inside the 0.08–0.25 band [P1 §10] named as the shipped
-configuration's signature; the entire measured effect of this factorial lives in one class.
+**Car is the only class that moves materially in the ranked winner's favour, but it is not the
+only class that moves.** Against cell 3 the truck peak rises 0.1105 → 0.1621 (+0.0516, 1.47×) —
+the second-largest peak move in the factorial — while bus is flat (0.1116 → 0.1099) and
+motorcycle falls (0.0830 → 0.0574). On the paired per-frame view, which is the one condition 2
+uses, **two of the four classes move against cell 3**: truck 27 improved / 33 worsened and
+motorcycle 3 / 57. Bus improves on a bare majority (34 / 26) by a median of +0.0022, so on
+per-frame sign the split is two classes up and two down (Section 5).
+
+**One directional finding this table holds that the ranking does not reward.** Car's peak leaves
+the 0.08–0.25 band [P1 §10] named as the shipped configuration's signature — and motorcycle
+leaves it in the *other* direction, dropping below the band's floor under both fp32 cells
+(0.0830 → **0.0574** in cell 3 and **0.0743** in cell 4). Every other peak in the table stays
+inside the band. A precision swap that moves one class above the band and another below it is
+evidence *for* Section 16's "numerical precision is a real axis", not against it: a uniform
+preprocessing or scaling artefact would not push classes in opposite directions.
 
 ### 13.2 Paired per-frame car deltas (Section 5)
 
@@ -1479,7 +1490,11 @@ name and hash), not by any measurement. [P1 §9 item 7] records it in the same w
 Two near-misses are worth naming precisely, because at a glance the project looks like it had
 already checked:
 
-- `detector.py:128-130`'s comment measured an **fp16 variant's latency**, never its scores [P1 §8].
+- The `PROVIDER_ORDER` comment in `perception/detector.py` measured an **fp16 variant's latency**,
+  never its scores [P1 §8]. **[P1 §8] cites it as `detector.py:128-130`, which this branch
+  invalidated**: Task 1 inserted `preprocess_letterbox` above it, and the comment now sits at
+  `detector.py:230-232`. The other pointer in the same [P1 §8] paragraph, `model_cache.py:56-61`,
+  still lands correctly.
 - Cycle 4's fp32 comparison [`docs/measurements/2026-08-20-detector-comparison.md`, via P1 §8]
   was **RT-DETRv2 — a different architecture** — and reported only top-*class names*, never
   v1-versus-fp32 vehicle-class peaks.
@@ -1585,6 +1600,45 @@ int8-quantized checkpoint this phase measured, not a verified property of the ar
 it is not yet known whether it survives on fp32." It does not survive. Phase 1's own survival
 criterion failed on Phase 1's own pre-stated terms.
 
+**The same list holds two more conditions, and both are named here rather than passed over.**
+Quoting a phase's pre-stated criteria where they confirm a ranking and skipping the adjacent ones
+would defeat the purpose of writing them down in advance, which is the only reason they have any
+force.
+
+- **[P1 §10]: "A letterboxed re-run in which peak car score moves materially" — nominally met, on
+  the metric.** Letterbox alone moved peak car +0.0906, 1.48×, on 47 of 60 frames (Sections 4 and
+  5), and by the rule of Section 11 that is a pass. Phase 1 said such a result "would mean a real
+  part of 'zero vehicle detections' was a preprocessing defect rather than a domain gap, and the
+  fine-tuning brief would have to be rewritten around a pipeline that had never fed the model an
+  undistorted vehicle." **This document does not read it that way, and the reason is in the sham
+  control rather than in the peak:** cell 2's real true-positive count is zero-or-negative against
+  its largest sham offset at every threshold, erasing the one threshold where the baseline beat
+  chance (Section 13.4), while true positives fall 9 → 6 and false positives rise 3989 → 5671 at
+  0.01 (Section 13.3). A peak lift that removes the only threshold at which real matches were
+  distinguishable from chance is not the preprocessing-defect finding Phase 1 described. Stated
+  plainly, so a reader can disagree with the judgement rather than discover the criterion was
+  omitted: **the letterbox criterion is nominally met, and this report declines to treat it as met
+  in substance.** Whether that judgement should stand is exactly the kind of thing Phase 3 gets to
+  revisit, on this record.
+- **[P1 §10] and [P1 §9 item 8]: the native-640×640 recapture, and the fact that what was tested
+  here is a decode-side compensation.** Phase 1's third flip bullet says a native-640×640
+  recapture "would not itself flip the decision beyond what the letterbox test already would — it
+  is the same finding at a different price point — but if the letterbox test shows a material
+  effect, **this is the version Phase 2 should build** rather than shipping a permanent
+  decode-side pad-and-unpad step." Two facts belong in the record against that sentence. First,
+  what cell 2 and cell 4 tested **is** the decode-side version: `preprocess_letterbox` pads the
+  640×384 frame to a square and the pad offset is undone on decode, which is precisely the
+  complexity `_resize_stretch`'s docstring exists to avoid; rendering the detector camera natively
+  at 640×640 (`streetlab/src/three/detectorCamera.ts` currently chooses 640×384) would make the
+  resize a no-op with no offset to undo, for the price of a re-capture instead of a script flag
+  [P1 §8, alternative-render paragraph]. Second, **[P1 §9 item 8] carries that cause-level fix as
+  untested and unscheduled**, explicitly "Phase 2's to sequence against step 0's result, not this
+  phase's to choose between" — and step 0's result is now measured. Since the letterbox effect
+  measured here is a peak lift the sham evidence does not support, the premise of "this is the
+  version Phase 2 should build" is not cleanly satisfied. **That is a sequencing judgement and it
+  is Phase 3's to make on this evidence, not this phase's to make by omission.** Nothing is
+  scheduled here.
+
 The decision the evidence implies, in four parts:
 
 **1. Phase 1's fine-tuning ruling is not overturned.** Nothing measured here shows the detector
@@ -1620,13 +1674,25 @@ were not before, and the shape of the work that follows them is the next phase's
 this one's:
 
 - **Numerical precision is a real axis on this problem**, larger in effect than either cheap lever
-  Phase 1 measured and larger than the aspect stretch (Section 12).
-- **The aspect stretch, alone, is not a lever worth carrying.** It clears the decision rule and
-  fails everything else (Sections 12, 13.4). Ruling it out on evidence is exactly what [P1 §9
-  item 0] asked Phase 2 to do, and the answer is negative.
-- **The two do not stack.** Combining them undershoots fp32 alone by 0.0963 on peak car and
-  undershoots the additive prediction by 0.1869 (Section 7). Whatever comes next should not assume
-  it can take both.
+  Phase 1 measured and larger than letterboxing (Section 12). It moves classes in both directions
+  — car above [P1 §10]'s 0.08–0.25 band and motorcycle below it (Section 13.1) — which is what an
+  axis looks like and what a uniform artefact would not.
+- **Letterboxing alone — the aspect fix without the precision swap — is not a lever worth carrying
+  on this evidence.** It clears the decision rule and fails everything else (Sections 12, 13.4).
+  Note the referent: the *stretch* is cell 1, the shipped baseline, and cannot clear a rule
+  defined against itself; what was tested and is being ruled out is the letterboxed alternative to
+  it. Testing it at all is exactly what [P1 §9 item 0] asked Phase 2 to do, and the answer is
+  negative — with the nominal-versus-substantive distinction stated above, not buried here.
+- **The peak metric does not stack; the per-frame behaviour close to does — and these are two
+  different claims.** Cell 4's peak car undershoots cell 3 alone by 0.0963 and the additive
+  prediction by 0.1869 (Section 7). But Section 7's conclusion about *mechanism* runs the other
+  way: per frame the two levers combine "close to additively (not antagonistic)" — interaction
+  mean +0.0136, median +0.0193 — and the peak shortfall is an artifact of maximizing over 60
+  frames whose maxima sit on different frames. Cell 4 also holds the factorial's best median car
+  gain (+0.0825), the most frames improved (49/60), and the widest absolute sham margin (18 vs 7
+  at 0.01, Section 13.4). **Nothing measured here justifies discarding the combined
+  configuration.** What it justifies is not assuming the combined *peak* will be the sum of the
+  two peaks.
 
 **Phase 3 is planned against this document, not by it.** The ruling recorded here is what the
 numbers imply; the shape of the next phase's work is where that gets decided.
@@ -1651,9 +1717,12 @@ Stated in the same discipline as [P1 §10].
 
 **What would change the ranking:**
 
-- **A different choice of metric would reverse it entirely.** Ranked on median per-frame car Δ
-  instead of peak, the order is cell 4 (+0.0825), cell 2 (+0.0452), cell 3 (+0.0114) — the exact
-  inverse of Section 12 (Section 13.2). The peak metric was pre-committed by [P1 §2] and this
+- **A different choice of metric would swap the winner and the loser.** Ranked on median
+  per-frame car Δ instead of peak, the order is cell 4 (+0.0825), cell 2 (+0.0452), cell 3
+  (+0.0114), against Section 12's 3, 4, 2 (Section 13.2). The ranked winner becomes last and the
+  ranked last becomes second; cell 4 holds the middle under one metric and the top under the
+  other, so this is a swap of the two ends, not a full reversal of the order. The peak metric was
+  pre-committed by [P1 §2] and this
   report will not swap metrics after seeing the data, but a reader who thinks the median is the
   better metric is not making an unreasonable argument, and under it the ranked winner ranks last.
   What does *not* change under either metric is the sham-control evidence (Section 13.4), which
