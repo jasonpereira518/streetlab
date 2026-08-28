@@ -2076,6 +2076,17 @@ Stated in the same discipline as [P1 §10].
 - **A repeated-latency measurement with its own floor** (Section 6). It would not move the
   accuracy ranking, but it is the missing half of any shipping decision, and the ~48% same-config
   swing in Section 6's own table is the reason it cannot be skipped.
+
+  > **MEASURED 2026-08-27** — see
+  > [`2026-08-27-cycle5-latency-floor.md`](2026-08-27-cycle5-latency-floor.md). Twenty interleaved
+  > paired repeats put fp32 at **~1.28×** int8 per frame (slower in **20/20**; per-repeat ratio
+  > 1.21–1.36× over the last 12), **below** this document's 1.33–1.47× read off n=1 cells. The
+  > floor this section asked for is **22–34% same-config spread**, so Section 6's ~48% outlier was
+  > not an anomaly — it is what single-shot timings do here. On the criterion pre-committed for
+  > that measurement (disjoint run-median ranges) the configurations were **not separated**; the
+  > paired result is post-hoc and labelled so. Absolute milliseconds do not travel between
+  > sessions — int8's own median read 58.5 ms here and 70.0 ms there, same model, same frames.
+  > Still not a recommendation to ship fp32.
 - **Carrying `size` through the capture snapshot** [P1 §9 item 6]. The committed benchmark's box
   *extent* is a per-class prior, not the simulator's per-agent truth — a systematic ~0.5–1.5 px
   per-class-constant error on a 13.3 px median box height. Fixing it invalidates this benchmark
