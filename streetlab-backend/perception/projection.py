@@ -107,6 +107,34 @@ def project_point(
     return px, py
 
 
+def box_corners(
+    x: float, y: float, heading: float, size: Size
+) -> list[tuple[float, float, float]]:
+    """The eight world-space corners of an agent's 3D bounding box.
+
+    `length` runs along `heading`, `width` perpendicular to it, `z` from 0
+    (ground) to `height`. Factored out of `project_box` so
+    `perception/visibility.py` samples the *same* corners this module
+    projects -- two independent copies of this arithmetic would be free to
+    drift, and a visibility flag computed against different corners than the
+    box it describes is worse than no flag at all.
+    """
+    cos_h, sin_h = math.cos(heading), math.sin(heading)
+    half_l, half_w = size.length / 2.0, size.width / 2.0
+
+    corners: list[tuple[float, float, float]] = []
+    for dl in (-half_l, half_l):
+        for dw in (-half_w, half_w):
+            # `heading` is 0 at +x, CCW positive -- same convention as
+            # Pose.heading. "Along heading" is (cos_h, sin_h); "perpendicular"
+            # is the 90-degree CCW rotation of that, (-sin_h, cos_h).
+            corner_x = x + dl * cos_h - dw * sin_h
+            corner_y = y + dl * sin_h + dw * cos_h
+            for corner_z in (0.0, size.height):
+                corners.append((corner_x, corner_y, corner_z))
+    return corners
+
+
 def project_box(
     x: float,
     y: float,
@@ -148,24 +176,14 @@ def project_box(
     box that extends past the image edge, since whether and how to crop
     that is a decision for the caller, not this projection.
     """
-    cos_h, sin_h = math.cos(heading), math.sin(heading)
-    half_l, half_w = size.length / 2.0, size.width / 2.0
-
     pixels: list[tuple[float, float]] = []
-    for dl in (-half_l, half_l):
-        for dw in (-half_w, half_w):
-            # `heading` is 0 at +x, CCW positive -- same convention as
-            # Pose.heading. "Along heading" is (cos_h, sin_h); "perpendicular"
-            # is the 90-degree CCW rotation of that, (-sin_h, cos_h).
-            corner_x = x + dl * cos_h - dw * sin_h
-            corner_y = y + dl * sin_h + dw * cos_h
-            for corner_z in (0.0, size.height):
-                lx, _ly, _lz = _camera_local(corner_x, corner_y, corner_z, camera)
-                if lx < NEAR_PLANE_M:
-                    return None
-                pixel = project_point(corner_x, corner_y, corner_z, camera, frame_w, frame_h)
-                assert pixel is not None  # lx >= NEAR_PLANE_M > 0, so project_point must accept it
-                pixels.append(pixel)
+    for corner_x, corner_y, corner_z in box_corners(x, y, heading, size):
+        lx, _ly, _lz = _camera_local(corner_x, corner_y, corner_z, camera)
+        if lx < NEAR_PLANE_M:
+            return None
+        pixel = project_point(corner_x, corner_y, corner_z, camera, frame_w, frame_h)
+        assert pixel is not None  # lx >= NEAR_PLANE_M > 0, so project_point must accept it
+        pixels.append(pixel)
 
     xs = [p[0] for p in pixels]
     ys = [p[1] for p in pixels]
