@@ -5,17 +5,24 @@ recall figure in Cycle 5 has travelled beside it since. That number came
 from splitting truth on an `--ego-x-max` cutoff -- a fact about grid-merge
 seed 4, validated by a bimodality test, not a visibility computation. This
 script computes it directly from building geometry instead, and the two
-agreeing is a real cross-check: they share no arithmetic.
+agreeing is a real cross-check: they share no arithmetic. That said, both
+numbers are downstream of the same fixed scene (`grid-merge`, seed 4) --
+which places a building row specifically to occlude the cross street -- so
+exact-count agreement here is substantially more plausible by construction
+than it would be across two independent scenes.
 
-**This is a centre-ray approximation, and the difference matters.** The
-capture path samples 9 points per object because it knows each agent's
-heading and true size. The committed benchmark records neither -- only the
-2D box, its class, and the camera pose -- so this script back-projects each
-box's ground point (`geometry.project_to_ground`, the same inverse
-`tests/test_benchmark_set.py` already trusts) and tests a single sight line
-to the object's centre at half the class prior's height. A grazing
-occlusion that the 9-sample method would call partial reads here as a hard
-0 or 1. Reported as an approximation, never as the capture-time fraction.
+**This is an approximation, and the difference is not the sample count.**
+Both this script and the capture path call the same
+`visibility.visible_fraction`, which samples 9 points (8 box corners plus
+the centre) per object -- neither path tests a single ray. The capture path
+calls it with each agent's true, recorded size and heading. The committed
+benchmark records neither -- only the 2D box, its class, and the camera
+pose -- so this script back-projects each box's ground point
+(`geometry.project_to_ground`, the same inverse `tests/test_benchmark_set.py`
+already trusts) and calls `visible_fraction` with the *class-size prior*
+(`geometry.CLASS_SIZE`) standing in for the object's true extent, and a
+fixed heading of `0.0` standing in for its true, unrecorded orientation.
+Reported as an approximation, never as the capture-time fraction.
 
 `contract/benchmark/` is read and never written.
 
@@ -73,9 +80,14 @@ def main(argv: list[str] | None = None) -> int:
             unresolved += 1
             continue
         gx, gy = ground
-        # heading 0.0: with a centre-only sample the box orientation cannot
-        # change which single point is tested, so it is not a free parameter
-        # here the way it is at capture time.
+        # heading 0.0: the committed benchmark records no per-agent heading --
+        # only the 2D box, its class, and the camera pose -- so heading is
+        # unrecoverable here and some fixed value must stand in for it. 0.0
+        # is that choice, not a fact about the object. box_corners() rotates
+        # all 8 sampled corners with heading, so a different fixed value
+        # could move which corners are tested and, in principle, the
+        # resulting visible/hidden count; that effect is not quantified by
+        # this script.
         fraction = visible_fraction(gx, gy, 0.0, CLASS_SIZE[cls], camera, buildings)
         seen = is_visible(fraction)
         counts = per_class.setdefault(cls, [0, 0])
