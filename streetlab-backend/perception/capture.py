@@ -33,7 +33,8 @@ from uuid import uuid4
 from perception.geometry import CLASS_SIZE
 from perception.projection import project_box
 from perception.scoring import TruthObject
-from schema import CameraParams, DetectionClass, Size
+from perception.visibility import is_visible, visible_fraction
+from schema import Building, CameraParams, DetectionClass, Size
 
 # A clamped box narrower or shorter than this, in pixels, is dropped rather
 # than written out. Matches the reasoning in `test_a_box_smaller_than_the_
@@ -87,6 +88,17 @@ class LabelBox:
     # consumer tell the two apart instead of having to know which version
     # of this file wrote it.
     extent_from_truth: bool
+    # Share of the box's 9 sample points with an unobstructed sight line to
+    # the camera, and the boolean derived from it. Both are written: the
+    # fraction is the measurement, the boolean is a convenience whose
+    # threshold (`visibility.MIN_VISIBLE_FRACTION`) a consumer may disagree
+    # with and re-derive without re-capturing.
+    #
+    # An occluded box is still written. Dropping it here would destroy the
+    # only way to measure the benchmark's occlusion ceiling and would make
+    # the decision irreversible; filtering is the training consumer's job.
+    visible_fraction: float
+    visible: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +116,12 @@ class LabelledFrame:
     jpeg: bytes
     boxes: list[LabelBox]
     camera: CameraParams
+    # Number of buildings `label_frame` was given as the occluder set for
+    # this frame. Not a measurement of occlusion itself -- `n_occluders=0`
+    # is exactly as consistent with "an open scene" as with "the caller
+    # forgot to pass buildings" -- but it is what lets the second case be
+    # told apart from the first after the fact, from the file alone.
+    n_occluders: int = 0
 
 
 def label_frame(
@@ -116,6 +134,7 @@ def label_frame(
     truth: Sequence[TruthObject],
     headings: Mapping[str, float],
     sizes: Mapping[str, Size] | None = None,
+    buildings: Sequence[Building] = (),
 ) -> LabelledFrame:
     """Project every truth object into the frame and clamp to visible boxes.
 
@@ -139,6 +158,13 @@ def label_frame(
     fall back *silently*: a prior-derived extent is a per-class-constant
     error, and the flag is what makes a capture full of them detectable in
     the output instead of only in the code that wrote it.
+
+    `buildings` is the occluder set. An object hidden behind one still gets
+    a box -- the label file stays a superset so the occlusion ceiling
+    remains measurable -- but records `visible=False`. An empty `buildings`
+    marks everything visible, which is the honest answer for an empty
+    occluder set rather than a claim about the world; `CaptureSink` records
+    the count per frame so a capture taken without buildings is detectable.
     """
     sizes = sizes or {}
     boxes: list[LabelBox] = []
@@ -146,6 +172,7 @@ def label_frame(
         truth_size = sizes.get(obj.id)
         size = truth_size if truth_size is not None else CLASS_SIZE[obj.cls]
         heading = headings.get(obj.id, 0.0)
+        fraction = visible_fraction(obj.x, obj.y, heading, size, camera, buildings)
         raw = project_box(obj.x, obj.y, heading, size, camera, width, height)
         if raw is None:
             continue
@@ -160,10 +187,13 @@ def label_frame(
         boxes.append(LabelBox(
             cls=obj.cls, x0=x0, y0=y0, x1=x1, y1=y1, track_id=obj.id,
             extent_from_truth=truth_size is not None,
+            visible_fraction=fraction,
+            visible=is_visible(fraction),
         ))
 
     return LabelledFrame(
-        seq=seq, t=t, width=width, height=height, jpeg=jpeg, boxes=boxes, camera=camera
+        seq=seq, t=t, width=width, height=height, jpeg=jpeg, boxes=boxes, camera=camera,
+        n_occluders=len(buildings),
     )
 
 
@@ -252,6 +282,7 @@ class CaptureSink:
             "sim_t": frame.t,
             "seq": frame.seq,
             "camera": _camera_record(frame.camera),
+            "n_occluders": frame.n_occluders,
         })
 
         for box in frame.boxes:
@@ -275,6 +306,13 @@ class CaptureSink:
                 # and the difference is a systematic per-class-constant
                 # error in anything trained on it. See `LabelBox`.
                 "extent_from_truth": box.extent_from_truth,
+                # Not COCO fields. A consumer cannot otherwise tell a box on
+                # a vehicle hidden behind a building from one in the open,
+                # and training on the former teaches a detector to predict
+                # what it cannot see. The float is the measurement; the bool
+                # is derived at `visibility.MIN_VISIBLE_FRACTION`.
+                "visible": box.visible,
+                "visible_fraction": box.visible_fraction,
             })
             self._next_annotation_id += 1
 

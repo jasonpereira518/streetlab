@@ -424,3 +424,72 @@ def test_the_written_annotation_carries_the_extent_source():
         doc = json.loads((root / "labels.json").read_text())
         flags = [a["extent_from_truth"] for a in doc["annotations"]]
         assert flags == [True, False], "both values must survive the round trip"
+
+
+# --------------------------------------------------------------------------- #
+# Visibility (occlusion) threaded through capture into COCO                   #
+# --------------------------------------------------------------------------- #
+
+
+def _wall(x0: float, x1: float, y0: float, y1: float, height_m: float):
+    from schema import Building
+
+    return Building(id="b0", footprint=[(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+                    height_m=height_m, color="#8C8378", roof_color="#5E5850")
+
+
+def test_a_box_behind_a_building_is_labelled_but_flagged_hidden():
+    """The box is still written -- the label set stays a superset, so the
+    occlusion ceiling remains measurable and the threshold re-derivable.
+    What changes is that it is marked."""
+    frame = label_frame(JPEG, 1, 0.5, W, H, camera(),
+                        [TruthObject(id="veh_00", cls="car", x=30.0, y=0.0)],
+                        {"veh_00": math.pi},
+                        sizes={},
+                        buildings=[_wall(10.0, 20.0, -5.0, 5.0, 10.0)])
+    assert len(frame.boxes) == 1, "an occluded object still gets a box"
+    assert frame.boxes[0].visible_fraction == 0.0
+    assert frame.boxes[0].visible is False
+
+
+def test_a_box_with_no_building_in_the_way_is_flagged_visible():
+    frame = label_frame(JPEG, 1, 0.5, W, H, camera(),
+                        [TruthObject(id="veh_00", cls="car", x=30.0, y=0.0)],
+                        {"veh_00": math.pi},
+                        sizes={},
+                        buildings=[_wall(10.0, 20.0, 40.0, 50.0, 10.0)])
+    assert frame.boxes[0].visible_fraction == 1.0
+    assert frame.boxes[0].visible is True
+
+
+def test_buildings_omitted_means_no_known_occluders():
+    """Not a claim that nothing occludes -- the honest answer for an empty
+    occluder set. `n_occluders` on the image record is what makes a capture
+    taken without buildings detectable afterwards."""
+    frame = label_frame(JPEG, 1, 0.5, W, H, camera(),
+                        [TruthObject(id="veh_00", cls="car", x=30.0, y=0.0)],
+                        {"veh_00": math.pi})
+    assert frame.boxes[0].visible_fraction == 1.0
+
+
+def test_the_written_annotation_carries_both_visibility_fields():
+    """A training consumer reads labels.json, not LabelBox. Both the float
+    and the derived boolean must survive, or the threshold is not
+    re-derivable downstream."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        sink = CaptureSink(root)
+        blocker = _wall(10.0, 20.0, -5.0, 5.0, 10.0)
+        sink.write(label_frame(JPEG, 1, 0.5, W, H, camera(),
+                               [TruthObject(id="veh_00", cls="car", x=30.0, y=0.0)],
+                               {"veh_00": math.pi}, sizes={}, buildings=[blocker]))
+        sink.write(label_frame(JPEG, 2, 0.6, W, H, camera(),
+                               [TruthObject(id="veh_01", cls="car", x=30.0, y=0.0)],
+                               {"veh_01": math.pi}, sizes={}, buildings=[]))
+        sink.finalize()
+
+        doc = json.loads((root / "labels.json").read_text())
+        anns = doc["annotations"]
+        assert [a["visible"] for a in anns] == [False, True]
+        assert [a["visible_fraction"] for a in anns] == [0.0, 1.0]
+        assert [img["n_occluders"] for img in doc["images"]] == [1, 0]

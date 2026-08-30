@@ -310,6 +310,12 @@ class _Connection:
         degrade to a log line, not take the socket down — the pipeline
         submission above has already happened by the time this runs, so a
         capture-only failure must not un-happen it.
+
+        Buildings come from the *live* scene rather than the snapshot, which
+        is safe for the one reason that matters: a scene swap clears
+        `pose_history`, so `at(cmd.t)` returns `None` and the frame is
+        dropped before it can be labelled against another world's geometry.
+        Footprint rings are far too large to copy into every snapshot.
         """
         sink = self.loop.capture_sink
         if sink is None:
@@ -320,6 +326,7 @@ class _Connection:
                 return
             headings = self.loop.sim.pose_history.headings_at(cmd.t) or {}
             sizes = self.loop.sim.pose_history.sizes_at(cmd.t) or {}
+            buildings = self.loop.sim.scene.description.buildings
             frame = label_frame(
                 jpeg,
                 self.loop.next_capture_seq(),
@@ -330,6 +337,7 @@ class _Connection:
                 truth,
                 headings,
                 sizes,
+                buildings,
             )
             sink.write(frame)
         except Exception:

@@ -489,3 +489,54 @@ def test_a_captured_frame_is_labelled_with_the_agents_own_size(
         assert ann["extent_from_truth"] is True
     finally:
         pipeline.shutdown()
+
+
+def test_a_captured_frame_carries_visibility_from_the_live_scene(
+    ws_session_factory, tmp_path
+):
+    """Not that `label_frame` can flag visibility, but that the running
+    capture path hands it the scene's real buildings.
+
+    Discriminating by construction: the fabricated truth is placed at a
+    position the scene's own buildings actually occlude, and the assertion
+    is on the flag rather than on the box's existence. With buildings not
+    threaded through, `visible` comes back True for every annotation.
+
+    `ws_session_factory`'s default scenario (`grid-loop`, `SCENARIOS[0]`)
+    does have buildings -- `SyntheticGrid._buildings` places them over every
+    block of the full 3x3 grid regardless of which scenario's route is
+    active, so the default scenario needed no substitution here.
+    """
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sink = CaptureSink(tmp_path / "out")
+        session, _sent = ws_session_factory(perception_pipeline=pipeline, capture_sink=sink)
+
+        frame = session.loop.await_frame(timeout=2.0)
+        assert frame is not None
+        buildings = session.loop.sim.scene.description.buildings
+        assert buildings, "this scenario must have buildings, or the test proves nothing"
+
+        agent = session.loop.sim._traffic.agents[0]
+        recorded_t = session.loop.sim.world.t + 10_000.0
+
+        # Place the object dead centre inside the first building's footprint,
+        # at a range _CAMERA can see: hidden by construction.
+        xs = [p[0] for p in buildings[0].footprint]
+        ys = [p[1] for p in buildings[0].footprint]
+        hidden_x = sum(xs) / len(xs)
+        hidden_y = sum(ys) / len(ys)
+        truth_obj = TruthObject(id=agent.id, cls=agent.cls, x=hidden_x, y=hidden_y)
+        session.loop.sim.pose_history.record(
+            recorded_t, (truth_obj,), {agent.id: 0.0}, {agent.id: agent.size}
+        )
+
+        asyncio.run(session._handle(json.dumps(_camera_payload(0, recorded_t))))
+
+        doc = json.loads(sink.finalize().read_text())
+        assert doc["images"][0]["n_occluders"] == len(buildings)
+        for ann in doc["annotations"]:
+            assert ann["visible"] is False
+            assert ann["visible_fraction"] == 0.0
+    finally:
+        pipeline.shutdown()
