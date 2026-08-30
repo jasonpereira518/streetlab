@@ -2077,8 +2077,8 @@ Stated in the same discipline as [P1 §10].
   accuracy ranking, but it is the missing half of any shipping decision, and the ~48% same-config
   swing in Section 6's own table is the reason it cannot be skipped.
 
-  > **MEASURED 2026-08-27** — see
-  > [`2026-08-27-cycle5-latency-floor.md`](2026-08-27-cycle5-latency-floor.md). Twenty interleaved
+  > **MEASURED 2026-08-28** — see
+  > [`2026-08-28-cycle5-latency-floor.md`](2026-08-28-cycle5-latency-floor.md). Twenty interleaved
   > paired repeats put fp32 at **~1.28×** int8 per frame (slower in **20/20**; per-repeat ratio
   > 1.21–1.36× over the last 12), **below** this document's 1.33–1.47× read off n=1 cells. The
   > floor this section asked for is **22–34% same-config spread**, so Section 6's ~48% outlier was

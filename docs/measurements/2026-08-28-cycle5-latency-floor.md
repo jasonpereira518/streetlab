@@ -1,6 +1,6 @@
 # What fp32 actually costs per frame, with a floor under it
 
-**Date:** 2026-08-27
+**Date:** 2026-08-28
 **Supplies:** [Phase 2 report](2026-08-26-cycle5-phase2-gates.md) §6 and §16.1 part 3 — the half of the fp32 shipping decision that was never measured
 **Costs:** two repeated timing runs against the frozen benchmark. No new capture, no new download, no change to `contract/benchmark/`.
 
