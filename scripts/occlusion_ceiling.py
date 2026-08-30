@@ -108,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     ceiling = (total - hidden) / total if total else None
     print(f"\nmeasured recall ceiling: "
           + ("—" if ceiling is None else f"{ceiling:.4f}")
-          + "   (share of annotations with an unobstructed centre sight line)")
+          + "   (share of annotations visible under the 9-sample,"
+          + " prior-size, fixed-heading test)")
     print("Phase 1's cutoff-derived estimate for this set: 46/84 visible = 0.5476")
     return 0
 
