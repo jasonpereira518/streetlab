@@ -28,9 +28,21 @@ from pathlib import Path
 
 
 def build_manifest(
-    labels_path: Path, *, scenario: str, seed: int, command: str, commit: str
+    labels_path: Path, *, scenario: str, seed: int, command: str, commit: str,
+    note: str = "",
 ) -> dict:
-    """Summarise a capture's `labels.json` into a committable record."""
+    """Summarise a capture's `labels.json` into a committable record.
+
+    `note` is free-text commentary -- a caveat, a warning that a capture is
+    throwaway, anything a future reader needs but that is not a fact about
+    the labels themselves. It exists precisely so that kind of text does
+    NOT get smuggled into `command`: `command` has to stay the literal,
+    copy-pasteable invocation that produced the capture, or the manifest
+    stops being provenance and becomes a paraphrase. `verify_manifest`
+    deliberately does not check `note` -- it is commentary, not a claim
+    about `labels.json`, so a changed note can never be the thing that
+    makes a manifest look stale.
+    """
     raw = labels_path.read_bytes()
     doc = json.loads(raw)
     names = {c["id"]: c["name"] for c in doc["categories"]}
@@ -49,6 +61,7 @@ def build_manifest(
         "scenario": scenario,
         "seed": seed,
         "command": command,
+        "note": note,
         "commit": commit,
         "frames": len(doc["images"]),
         "annotations": len(doc["annotations"]),
@@ -64,7 +77,8 @@ def verify_manifest(manifest: dict, labels_path: Path) -> list[str]:
     """Problems found comparing `manifest` against the labels it describes.
 
     Returns an empty list when clean. Never raises on a mismatch -- the
-    caller decides whether a stale manifest is fatal.
+    caller decides whether a stale manifest is fatal. `note` is deliberately
+    not part of this comparison -- see `build_manifest`'s docstring.
     """
     problems: list[str] = []
     raw = labels_path.read_bytes()
@@ -94,12 +108,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--command", required=True, help="the exact capture command used")
+    parser.add_argument("--note", default="", help="free-text commentary, NOT part of the "
+                                                     "runnable command")
     parser.add_argument("--commit", required=True, help="code commit the capture ran at")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
     manifest = build_manifest(args.labels, scenario=args.scenario, seed=args.seed,
-                              command=args.command, commit=args.commit)
+                              command=args.command, commit=args.commit, note=args.note)
     args.out.write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest, indent=2))
     if 0 in manifest["n_occluders"]:

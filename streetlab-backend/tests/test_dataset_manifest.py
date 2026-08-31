@@ -58,3 +58,23 @@ def test_verify_catches_a_manifest_describing_different_labels(tmp_path):
     assert problems, "a changed labels.json must be caught"
     assert any("sha256" in s for s in problems)
     assert any("annotations" in s for s in problems)
+
+
+def test_note_is_carried_verbatim_and_excluded_from_verification(tmp_path):
+    """`note` is commentary, not provenance: it must round-trip exactly, but
+    a note-only difference between two manifests of the same labels.json
+    must never make `verify_manifest` call the manifest stale -- only
+    `command` is the runnable fact worth protecting that way."""
+    p = _labels(tmp_path)
+    m = build_manifest(p, scenario="grid-loop", seed=1, command="uv run streetlab serve",
+                       commit="abc1234", note="THROWAWAY: do not train on this")
+    assert m["note"] == "THROWAWAY: do not train on this"
+    assert verify_manifest(m, p) == []
+
+    m_no_note = build_manifest(p, scenario="grid-loop", seed=1, command="uv run streetlab serve",
+                               commit="abc1234")
+    assert m_no_note["note"] == ""
+    # Same labels.json, differing only in `note` -- verifying one manifest
+    # against the labels the other describes must still be clean.
+    assert verify_manifest(m_no_note, p) == []
+    assert verify_manifest(m, p) == []
