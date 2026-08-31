@@ -1,0 +1,19 @@
+{
+  "scenario": "grid-loop",
+  "seed": 1,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-loop --seed 1 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-loop-seed1",
+  "commit": "2a44dcf",
+  "frames": 383,
+  "annotations": 150,
+  "visible": 5,
+  "per_class": {
+    "car": 150
+  },
+  "per_class_visible": {
+    "car": 5
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "12bde9deb015e02b986c20563531960d578b58c7583204520a4fcc79ba11e0bb"
+}
