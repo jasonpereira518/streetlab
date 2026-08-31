@@ -130,21 +130,141 @@ threshold  precision  recall(all)  mean_err_m    tp     fp    fn
 | fine-tuned (throwaway overfit) | **0.8354** | 67 / 6 / 37 |
 
 **GATE: PASS.** 0.3198 → 0.8354, a **2.61×** rise on the frames the model memorised.
+Not on the first attempt: the brief's default `lr 1e-4` **lost** to the pretrained
+baseline (peak 0.2002). Read [§7](#7-what-the-installed-transformers-actually-supports)
+before quoting this number — it records both runs and why the winning recipe is not
+reusable.
 
 Three readings beyond the peak, because a single peak is one frame:
 
 1. **The peak agrees across two runtimes.** `finetune_detector.py` prints its own
    post-training peak in torch (0.8354); the ONNX sweep, a separate runtime on a
    separate graph, prints 0.8354. The export carried the fine-tune across intact.
-2. **It memorised exactly the boxes it was given.** 67 true positives at threshold
-   0.50 is precisely the number of `visible AND extent_from_truth` boxes in the
-   capture; 37 false negatives is precisely the number of boxes filtered out as
-   hidden. The 107 frames with no usable box were trained as negatives and the
-   model fires on almost none of them (6 fp across 174 frames).
-3. **The sham control separates.** Real 67 tp vs sham 30 / 5 / 0 at the +10 / +20 /
-   +30 frame offsets. The +10 sham is high because this capture contains long runs
-   of frames at an identical `sim_t` (the ego is stopped), so a 10-frame shift often
-   lands on a near-identical scene; by +30 the sham is zero.
+
+2. **Of the 67 matched annotations, 66 are `visible=true` and 1 is `visible=false`.**
+   This is measured, not inferred from the count — see below.
+
+3. **The sham control separates.** Verbatim, from the same run as the sweep table
+   above:
+
+```
+==============================================================================
+SHAM CONTROL (same predictions, scored against a shifted frame's truth)
+==============================================================================
+real tp is the same total_tp column as the sweep above. sham tp scores the identical per-frame predictions against truth from a different frame (174-frame circular offset), gate and threshold held fixed. A sham count near or above the real one means the real matches are not distinguishable from chance.
+
+threshold   real tp   sham(+10)   sham(+20)   sham(+30)
+-------------------------------------------------------
+     0.50        67          30           5           0
+     0.40        67          30           5           0
+     0.30        67          30           5           0
+     0.20        67          30           5           0
+     0.10        67          30           5           0
+     0.05        68          30           5           0
+     0.01        72          34           6           2
+```
+
+   The +10 sham is high (30 against a real 67) and that is a property of the
+   capture, not of the model: the 174 frames carry only **70 distinct `sim_t`
+   values**, with runs of 34, 25, 21 and 17 consecutive frames sharing one instant
+   (the ego is stopped). A 10-frame shift therefore often lands on a scene that is
+   literally identical, so `sham(+10)` is not a clean control here. `sham(+20)` (5)
+   and `sham(+30)` (0) are, and they separate cleanly.
+
+```
+cd streetlab-backend && uv run python -c "
+import json, itertools
+d = json.load(open('/tmp/streetlab-capture/grid-merge-seed7-throwaway/labels.json'))
+ts = [i['sim_t'] for i in sorted(d['images'], key=lambda i: i['seq'])]
+runs = [len(list(g)) for _, g in itertools.groupby(ts)]
+print('frames:', len(ts)); print('distinct sim_t:', len(set(ts)))
+print('longest run of identical sim_t:', max(runs))
+print('runs of length >= 10:', sorted((n for n in runs if n >= 10), reverse=True))"
+```
+```
+frames: 174
+distinct sim_t: 70
+longest run of identical sim_t: 34
+runs of length >= 10: [34, 25, 21, 17]
+```
+
+### What the 67 true positives actually matched — measured, not assumed
+
+An earlier draft of this document said the model "memorised exactly the boxes it was
+given", on the grounds that 67 true positives equals the capture's 67
+`visible AND extent_from_truth` annotations. **That did not follow.**
+`perception/scoring.py::_match` pairs a prediction to a truth on a 3.0 m distance
+gate, not on the annotation's identity, so a tp count of 67 is equally consistent
+with (say) 62 visible plus 5 hidden boxes claimed by proximity. The equal counts were
+a hint, not a result.
+
+`scripts/tp_visibility_split.py` measures it: it drives `sweep_threshold.py`'s own
+loader, inference pass, decode and matcher (imported, not reimplemented, so the
+attribution cannot disagree with the sweep's own numbers), records which truth **id**
+each match claimed, and splits those ids by the label's own `visible` flag.
+
+```
+cd streetlab-backend && uv run python ../scripts/tp_visibility_split.py \
+  --model /tmp/p3a-finetuned.onnx \
+  --benchmark /tmp/streetlab-capture/grid-merge-seed7-throwaway --threshold 0.50
+```
+```
+model: /tmp/p3a-finetuned.onnx
+benchmark: /tmp/streetlab-capture/grid-merge-seed7-throwaway
+threshold: 0.5   gate: 3.0 m   preprocess: stretch
+loaded 174 frames, 104 truth objects
+inference: 11.34s total
+
+======================================================================
+TRUE POSITIVES ATTRIBUTED TO ANNOTATIONS (threshold 0.5)
+======================================================================
+                        visible=true  visible=false  not recorded  total
+------------------------------------------------------------------------
+matched (tp)                      66              1             0     67
+unmatched (fn)                     1             36             0     37
+whole set                         67             37             0    104
+
+predictions at this threshold: 73  (fp = 6)
+
+The tp count and the visible count are NOT the same set. Read the table above, not the count.
+```
+
+**The measured split is 66 visible + 1 hidden, and one visible annotation went
+unmatched.** The two sets are *nearly* the same, and they are not the same. The
+honest claim is therefore the smaller one:
+
+> Of the 67 annotations the overfit matched at threshold 0.50, **66 of 67 (98.5%)**
+> are boxes it was trained on and **1 is a box the visibility filter excluded**;
+> **66 of the 67** boxes it was trained on were recovered, and **36 of 37** hidden
+> boxes were correctly not matched.
+
+The same script run against the **pretrained** baseline reproduces that side of the
+sweep table exactly (0 tp, 0 fp, 104 fn), which is the cross-check that the
+attribution path and the sweep are reading the same predictions:
+
+```
+cd streetlab-backend && uv run python ../scripts/tp_visibility_split.py \
+  --model /tmp/p3a-pretrained-v2.onnx \
+  --benchmark /tmp/streetlab-capture/grid-merge-seed7-throwaway --threshold 0.50
+```
+```
+                        visible=true  visible=false  not recorded  total
+------------------------------------------------------------------------
+matched (tp)                       0              0             0      0
+unmatched (fn)                    67             37             0    104
+whole set                         67             37             0    104
+
+predictions at this threshold: 0  (fp = 0)
+
+No annotation was matched at this threshold; there is no set to attribute.
+```
+
+That is still a strong memorisation result and it is still what the gate needed. It
+is not the identity the count appeared to promise, and the difference matters: the
+one hidden box that was matched is a real false attribution of a real prediction,
+and a document that had asserted 67/0 would have hidden it. This project has twice
+had to retract published claims that stated more than the computation showed; this
+is the third such claim caught, this time before publication.
 
 This is what a working loop looks like, and nothing more than that. It is **not**
 evidence that fine-tuning generalises — see [§8](#8-the-3a-checkpoint-is-throwaway).
@@ -202,27 +322,44 @@ are similar; their **usable-box** rates differ by more than two orders of magnit
 | `grid-loop` seed 1 | 383 | 150 | **5** | 66 s | 348.2 | **4.55** |
 | `grid-arterial` seed 1 | 249 | 99 | **0** | 236 s | 63.3 | **0.00** |
 
-Verbatim sanity-check output for each (from the capture task):
+Sanity-check counts for all three, recomputed here directly off each capture's
+committed-manifest `labels.json` in one command. (The capture task's own transcript
+for `grid-loop` was cut one line short — its `visible AND truth-sized 5`, which the
+table above quotes, was reported only as prose. Rather than restore a line into a
+block labelled verbatim, all three are re-measured below by the same code, so every
+number in the table has a transcript under it.)
 
 ```
-frames 174 annotations 104     # grid-merge seed 7
-n_occluders values [64]
-visible 67 hidden 37
-truth-sized 104
-visible AND truth-sized 67
+cd streetlab-backend && uv run python - <<'PY'
+import json
+for name in ("grid-merge-seed7-throwaway", "grid-loop-seed1", "grid-arterial-seed1"):
+    d = json.load(open(f"/tmp/streetlab-capture/{name}/labels.json"))
+    a = d["annotations"]
+    print(f"{name}: frames {len(d['images'])} annotations {len(a)}")
+    print(f"  n_occluders values {sorted(set(i.get('n_occluders') for i in d['images']))}")
+    print(f"  visible {sum(1 for x in a if x.get('visible') is True)}"
+          f" hidden {sum(1 for x in a if x.get('visible') is False)}")
+    print(f"  truth-sized {sum(1 for x in a if x.get('extent_from_truth') is True)}")
+    print(f"  visible AND truth-sized "
+          f"{sum(1 for x in a if x.get('visible') is True and x.get('extent_from_truth') is True)}")
+PY
 ```
 ```
-frames 383 annotations 150     # grid-loop seed 1
-n_occluders values [64]
-visible 5 hidden 145
-truth-sized 150
-```
-```
-frames 249 annotations 99      # grid-arterial seed 1
-n_occluders values [64]
-visible 0 hidden 99
-truth-sized 99
-visible AND truth-sized 0
+grid-merge-seed7-throwaway: frames 174 annotations 104
+  n_occluders values [64]
+  visible 67 hidden 37
+  truth-sized 104
+  visible AND truth-sized 67
+grid-loop-seed1: frames 383 annotations 150
+  n_occluders values [64]
+  visible 5 hidden 145
+  truth-sized 150
+  visible AND truth-sized 5
+grid-arterial-seed1: frames 249 annotations 99
+  n_occluders values [64]
+  visible 0 hidden 99
+  truth-sized 99
+  visible AND truth-sized 0
 ```
 
 `n_occluders` is a constant 64 in all three, so this is not a repeat of the
@@ -391,7 +528,11 @@ resulting weights should not inherit this recipe.
 
 `--epochs 25` rather than the brief's 40: at ~13.2 s/epoch measured, 40 epochs plus
 load and evaluation would have run into this project's 600 s no-progress watchdog.
-Stated here rather than changed silently.
+Stated here rather than changed silently. `finetune_detector.py`'s `--epochs` default
+and its docstring example were both moved to 25 to match, so the default, the example
+and this published run are one number rather than three. The `--lr` default is left at
+the conservative 1e-4 — the value measured losing above — with the docstring example
+carrying `--lr 5e-4` and the reason, since neither value is a recipe to inherit.
 
 ---
 
@@ -401,8 +542,9 @@ Stated here rather than changed silently.
 
 - It is a **deliberate overfit** on **one seed of one scenario**, scored on **its own
   training frames**. There is no held-out set anywhere in this measurement. The
-  0.918 precision and 0.644 recall in §1 are memorisation scores; the correct
-  expectation for their generalisation is *nothing*.
+  0.918 precision and 0.644 recall in §1 are memorisation scores — and even on its
+  own training data it missed one box it was trained on and matched one it was told
+  to ignore. The correct expectation for their generalisation is *nothing*.
 - Its training data is 67 boxes, **all `car`** (§4), and its `truck`/`bus`/
   `motorcycle` scores got *worse* than pretrained.
 - The capture it was trained on is named `grid-merge-seed7-throwaway` and its

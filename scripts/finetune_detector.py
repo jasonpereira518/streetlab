@@ -7,7 +7,16 @@ guards below deliberately import neither, so they are testable offline.
 
     cd streetlab-backend
     uv run --with torch --with 'transformers>=4.47' --with scipy \\
-      ../scripts/finetune_detector.py --dataset <dir> --out <dir> --epochs 30
+      ../scripts/finetune_detector.py --dataset <dir> --out <dir> \\
+      --epochs 25 --lr 5e-4
+
+That example is exactly the Phase 3a run (see
+`docs/measurements/2026-08-30-cycle5-phase3a-loop.md`), including `--lr 5e-4`,
+which the `--lr` default deliberately is NOT: Phase 3a measured the 1e-4
+default losing to the pretrained model on its own training frames, and
+measured 5e-4 winning but converging unstably. Neither is a recipe to inherit,
+so the default stays at the conservative value and the example carries the
+value that reproduces the published number.
 
 `scipy` is in that list because RT-DETRv2's loss needs it and says so only
 at the first backward pass: `transformers.loss.loss_rt_detr`'s Hungarian
@@ -312,7 +321,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dataset", type=Path, required=True,
                         help="capture directory containing labels.json and frames/")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--epochs", type=int, default=40)
+    # 25, not the 40 an earlier draft defaulted to: at the ~13.2 s/epoch this
+    # script measures on a 174-frame capture on MPS, 40 epochs plus model load
+    # and the post-training evaluation pass runs past this project's 600s
+    # no-progress watchdog. 25 is what Phase 3a actually ran and what the
+    # docstring's example shows -- the default, the example and the published
+    # measurement are deliberately the same number.
+    parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0,
