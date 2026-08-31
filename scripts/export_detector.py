@@ -104,6 +104,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="overwrite the output path if a file already exists there",
     )
+    parser.add_argument(
+        "--checkpoint",
+        default=CHECKPOINT,
+        help=(
+            "model to export: a Hugging Face hub id or a local directory "
+            f"saved by scripts/finetune_detector.py (default: {CHECKPOINT}). "
+            "The signature assertion below runs identically either way -- a "
+            "fine-tuned checkpoint with a different num_labels or query "
+            "count is exactly what it exists to catch."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -192,8 +203,8 @@ def main(argv: list[str] | None = None) -> int:
             out = self.model(pixel_values=pixel_values, return_dict=True)
             return out.logits, out.pred_boxes
 
-    print(f"loading {CHECKPOINT} ...")
-    model = RTDetrV2ForObjectDetection.from_pretrained(CHECKPOINT)
+    print(f"loading {args.checkpoint} ...")
+    model = RTDetrV2ForObjectDetection.from_pretrained(args.checkpoint)
     model.eval()
     wrapped = _ExportWrapper(model)
 
