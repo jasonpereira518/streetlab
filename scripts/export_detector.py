@@ -7,7 +7,16 @@ module scope, and neither is a `[project.dependencies]` entry -- nothing in
 runtime. Run it by hand, supplying the extra packages ad hoc:
 
     cd streetlab-backend
-    uv run --with torch --with 'transformers>=4.47' ../scripts/export_detector.py
+    uv run --with torch --with 'transformers>=4.47' --with onnx \\
+      ../scripts/export_detector.py
+
+`onnx` joins that list for the same reason `dynamo=False` is pinned below:
+the legacy TorchScript exporter this script deliberately uses serialises
+through the `onnx` package, and torch does not vendor it. Omitting it fails
+late -- after the model loads and the graph traces -- with
+`torch.onnx.OnnxExporterError: Module onnx is not installed!`. Like torch
+and transformers, it is an ad-hoc dev install and never a
+`[project.dependencies]` entry.
 
 The produced graph has exactly:
   - one input  "pixel_values"  float32 [1, 3, 640, 640]
@@ -61,11 +70,12 @@ MIN_TRANSFORMERS_VERSION = "4.47"
 DEFAULT_OUTPUT = Path("rtdetr_v2_r18vd.onnx")
 
 INSTALL_HINT = (
-    "torch and transformers are required to run an export but are not "
-    "installed. They are dev-only tools for this script and are never "
-    "added to [project.dependencies], so install them ad hoc:\n\n"
+    "torch, transformers and onnx are required to run an export but at "
+    "least one is not installed. They are dev-only tools for this script "
+    "and are never added to [project.dependencies], so install them ad "
+    "hoc:\n\n"
     f"    uv run --with torch --with 'transformers>={MIN_TRANSFORMERS_VERSION}' "
-    "scripts/export_detector.py\n"
+    "--with onnx scripts/export_detector.py\n"
 )
 
 
@@ -76,7 +86,7 @@ def _upgrade_hint(installed_version: str) -> str:
         f"-- that support was added in transformers {MIN_TRANSFORMERS_VERSION}. "
         "Upgrade it ad hoc:\n\n"
         f"    uv run --with torch --with 'transformers>={MIN_TRANSFORMERS_VERSION}' "
-        "scripts/export_detector.py\n"
+        "--with onnx scripts/export_detector.py\n"
     )
 
 
