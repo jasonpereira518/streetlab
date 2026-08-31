@@ -317,12 +317,13 @@ overall" conceals a 0% ceiling for trucks.
 
 ## 3. Capture yield — the finding this phase did not expect
 
-Three captures were taken looking for a Phase 3a training set. Their **frame** rates
-span 7.9× (497.1 down to 63.3/min); their **usable-box** rates span more than two
-orders of magnitude, from 191.4/min to exactly zero — and the ordering is not the
-same, which is the whole point.
-"Usable" means `visible AND extent_from_truth`, which is what
-`finetune_detector.py` will actually train on.
+Three captures were taken looking for a Phase 3a training set. **How many frames a
+capture produced says almost nothing about how many usable boxes it yielded, and the
+two do not even rank the same way:** `grid-loop` captured the **most** frames of the
+three (383) and yielded **5** usable boxes, while `grid-merge` captured the **fewest**
+(174) and yielded **67**. Both of those are transcripted counts, below. "Usable" means
+`visible AND extent_from_truth`, which is what `finetune_detector.py` will actually
+train on.
 
 | capture | frames | annotations | usable boxes | wall clock † | frames/min † | **usable boxes/min** † |
 |---|---|---|---|---|---|---|
@@ -331,8 +332,9 @@ same, which is the whole point.
 | `grid-arterial` seed 1 | 249 | 99 | **0** | 236 s ‡ | 63.3 ‡ | **0.00** |
 
 † estimate, not a measurement — derived from file-mtime spans, no transcript (below).
-‡ inflated by a known environment artifact; see the caveat below. The 0.00 is not
-affected: it is zero at any wall clock.
+‡ distorted by a known environment artifact: the wall clock is stretched, so the
+frames/min derived from it is correspondingly **too low**. See the caveat below. The
+0.00 is not affected: it is zero at any wall clock.
 
 **Where each column comes from — the two halves of that table have very different
 provenance, and only one of them has a transcript.**
@@ -352,9 +354,10 @@ manifests carry no timing field, and re-deriving them today would only re-read t
 same mtimes. They are published as recorded, labelled as estimates rather than
 measurements.
 
-**`grid-arterial`'s 63.3 frames/min is known to be inflated and must not be read as a
-scenario property.** The capture task recorded that this session's background-command
-execution had multi-tens-of-seconds to multi-minute lag, so the kill signal ending
+**`grid-arterial`'s 63.3 frames/min is known to be too low — depressed by an
+environment artifact — and must not be read as a scenario property.** The capture
+task recorded that this session's background-command execution had
+multi-tens-of-seconds to multi-minute lag, so the kill signal ending
 that capture landed well after the last frame was written — stretching its wall clock
 and depressing its frames/min specifically. Treat 63.3 with materially more skepticism
 than `grid-loop`'s 348.2, which had a much tighter kill-to-observed-count gap. This is
