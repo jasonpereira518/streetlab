@@ -291,7 +291,7 @@ annotations: 84
 --------------------------------
        total        46       38
 
-measured recall ceiling: 0.5476   (share of annotations with an unobstructed centre sight line)
+measured recall ceiling: 0.5476   (share of annotations visible under the 9-sample, prior-size, fixed-heading test)
 Phase 1's cutoff-derived estimate for this set: 46/84 visible = 0.5476
 ```
 
@@ -299,8 +299,14 @@ Phase 1's cutoff-derived estimate for this set: 46/84 visible = 0.5476
 0.5476 (46/84).** They agree exactly — not only to four decimals but on the
 identical visible/hidden counts — from two methods that share no arithmetic: Phase 1
 split truth on an `--ego-x-max` world-x cutoff validated by a bimodality test, while
-`occlusion_ceiling.py` back-projects each box to a ground point and traces a real
-sight line against the scenario's 64 buildings.
+`occlusion_ceiling.py` back-projects each box to a ground point and traces real
+sight lines against the scenario's 64 buildings — nine of them per annotation (the
+eight box corners plus the centre), at a prior size and a fixed heading. It is not a
+single centre-ray test, and this document originally said it was: that wording was
+removed from the script itself over two fix rounds in Task 3 for being a
+misdescription of the method, and reinstating it under a **verbatim** label was this
+document's error, not the script's. The block above is the script's current output,
+re-run for this fix.
 
 **Caveat, stated plainly:** both numbers are downstream of the same purpose-built
 scene. This is a strong cross-check of two *methods*, not independent evidence about
@@ -312,22 +318,51 @@ overall" conceals a 0% ceiling for trucks.
 ## 3. Capture yield — the finding this phase did not expect
 
 Three captures were taken looking for a Phase 3a training set. Their **frame** rates
-are similar; their **usable-box** rates differ by more than two orders of magnitude.
+span 7.9× (497.1 down to 63.3/min); their **usable-box** rates span more than two
+orders of magnitude, from 191.4/min to exactly zero — and the ordering is not the
+same, which is the whole point.
 "Usable" means `visible AND extent_from_truth`, which is what
 `finetune_detector.py` will actually train on.
 
-| capture | frames | annotations | usable boxes | wall clock | frames/min | **usable boxes/min** |
+| capture | frames | annotations | usable boxes | wall clock † | frames/min † | **usable boxes/min** † |
 |---|---|---|---|---|---|---|
 | `grid-merge` seed 7 | 174 | 104 | **67** | 21 s | 497.1 | **191.4** |
 | `grid-loop` seed 1 | 383 | 150 | **5** | 66 s | 348.2 | **4.55** |
-| `grid-arterial` seed 1 | 249 | 99 | **0** | 236 s | 63.3 | **0.00** |
+| `grid-arterial` seed 1 | 249 | 99 | **0** | 236 s ‡ | 63.3 ‡ | **0.00** |
 
-Sanity-check counts for all three, recomputed here directly off each capture's
-committed-manifest `labels.json` in one command. (The capture task's own transcript
-for `grid-loop` was cut one line short — its `visible AND truth-sized 5`, which the
-table above quotes, was reported only as prose. Rather than restore a line into a
-block labelled verbatim, all three are re-measured below by the same code, so every
-number in the table has a transcript under it.)
+† estimate, not a measurement — derived from file-mtime spans, no transcript (below).
+‡ inflated by a known environment artifact; see the caveat below. The 0.00 is not
+affected: it is zero at any wall clock.
+
+**Where each column comes from — the two halves of that table have very different
+provenance, and only one of them has a transcript.**
+
+The **frames**, **annotations** and **usable boxes** columns are recomputed below,
+directly off each capture's `labels.json`, by one runnable command. (The capture
+task's own transcript for `grid-loop` was cut one line short — its
+`visible AND truth-sized 5`, which the table quotes, was reported only as prose.
+Rather than restore a line into a block labelled verbatim, all three are re-measured
+here by the same code.)
+
+The **wall clock** column — and therefore the **frames/min** and **usable boxes/min**
+columns derived from it — has **no transcript, and none can be produced now**. Those
+figures are first-frame-to-last-frame file-mtime spans read off the capture
+directories during the capture task; they were never a committed measurement, the
+manifests carry no timing field, and re-deriving them today would only re-read the
+same mtimes. They are published as recorded, labelled as estimates rather than
+measurements.
+
+**`grid-arterial`'s 63.3 frames/min is known to be inflated and must not be read as a
+scenario property.** The capture task recorded that this session's background-command
+execution had multi-tens-of-seconds to multi-minute lag, so the kill signal ending
+that capture landed well after the last frame was written — stretching its wall clock
+and depressing its frames/min specifically. Treat 63.3 with materially more skepticism
+than `grid-loop`'s 348.2, which had a much tighter kill-to-observed-count gap. This is
+an environment artifact, not a fact about arterial routes.
+
+**None of that touches §3's conclusion.** `grid-arterial` produced **0 usable boxes**;
+its usable-boxes/min is 0.00 at any wall clock whatsoever, and the yield argument
+below rests on that zero and on `grid-loop`'s 5, neither of which is a timing figure.
 
 ```
 cd streetlab-backend && uv run python - <<'PY'
@@ -372,10 +407,11 @@ is exactly `0.0` on all 99 of its annotations. Only `grid-merge` puts another ve
 near the ego with a clear line of sight.
 
 **Consequence for Phase 3b: size the capture budget in usable boxes, not frames.**
-A frames/minute figure is nearly uninformative here — the worst-yielding capture in
-the table produced more frames than the best-yielding one and zero usable boxes.
-Any Phase 3b coverage plan expressed in frames, minutes, or scenarios-run is
-measuring the wrong thing.
+A frame count is nearly uninformative here — the worst-yielding capture in the table
+produced **more frames** than the best-yielding one (249 against 174) and **zero**
+usable boxes. That comparison is between two frame *counts*, which are transcripted,
+and does not depend on the estimated timing columns at all. Any Phase 3b coverage
+plan expressed in frames, minutes, or scenarios-run is measuring the wrong thing.
 
 ---
 
@@ -573,9 +609,13 @@ stage of that chain is now exercised by something other than a hope.
 
 What Phase 3b should be planned against, from what this phase measured:
 
-1. **Budget in usable boxes, not frames or minutes** (§3). Yield varies 0.00 →
-   191.4 usable boxes/minute across three captures of the same map whose frame rates
-   are within 8× of each other. A plan denominated in frames is not a plan.
+1. **Budget in usable boxes, not frames or minutes** (§3). Across three captures of
+   the same map, usable boxes run **67, 5 and 0** — while frame counts run 174, 383
+   and 249, i.e. the *worst* yield came from the *second largest* capture. The
+   per-minute forms of those figures (191.4 → 4.55 → 0.00) are estimates built on
+   untranscripted mtime spans, and `grid-arterial`'s in particular is distorted by a
+   known environment artifact (§3), so plan against the box counts, which are
+   measured. A plan denominated in frames is not a plan either way.
 2. **Fix the class imbalance at the capture layer** (§4). 626 frames produced zero
    non-car vehicles. Either the scenarios must be changed to put trucks and buses in
    front of the ego, or Phase 3b must state up front that it trains and evaluates
