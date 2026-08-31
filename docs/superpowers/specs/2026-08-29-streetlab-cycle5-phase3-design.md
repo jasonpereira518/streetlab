@@ -71,6 +71,17 @@ artifact with a number attached will otherwise be mistaken for evidence later.
 
 ### Phase 3b — scale and measure
 
+> **AMENDED 2026-08-31 — every Phase 3b passage in this spec is superseded by
+> [`2026-08-31-streetlab-cycle5-phase3b-amendment.md`](2026-08-31-streetlab-cycle5-phase3b-amendment.md).**
+> Phase 3a measured this spec's Phase 3b coverage plan as unbuildable: captured at their
+> shipped settings, `grid-loop` yielded 5 usable boxes from 383 frames and `grid-arterial`
+> yielded 0 from 249. Yield is governed by agent spacing (`route_length / (traffic + 1)`),
+> and the amendment raises density deliberately behind a new `--traffic` override, gated by
+> a yield checkpoint. It also corrects this spec's decision rule, whose 0.4880 baseline is
+> a **v1** number against **v2** cells. Everything this spec says about Phase 3a is history
+> and stands as written; the Phase 3b passages below are left intact as the record of what
+> was planned before 3a reported.
+
 Multi-scenario, multi-seed capture; `contract/benchmark-v2/` as a committed held-out set; visibility
 back-computed for the frozen benchmark; the real training run; export; four-cell measurement; the
 report; README roadmap row to **Built**.
