@@ -1,0 +1,19 @@
+{
+  "scenario": "grid-merge",
+  "seed": 7,
+  "command": "THROWAWAY Phase 3a training capture, NOT the frozen grid-merge benchmark and NOT usable for Phase 3b: uv run streetlab serve --port 8765 --scenario grid-merge --seed 7 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-merge-seed7-throwaway",
+  "commit": "46360a2",
+  "frames": 174,
+  "annotations": 104,
+  "visible": 67,
+  "per_class": {
+    "car": 104
+  },
+  "per_class_visible": {
+    "car": 67
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "5112b2f661e039cb512372362dad2a461bee6a4b773e3ed2b97abe5cadfbe797"
+}
