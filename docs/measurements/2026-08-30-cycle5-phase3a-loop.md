@@ -402,12 +402,57 @@ grid-arterial-seed1: frames 249 annotations 99
 
 `n_occluders` is a constant 64 in all three, so this is not a repeat of the
 occluder-wiring failure caught earlier in the phase — the geometry was live in every
-capture. The difference is route layout. `ScriptedTraffic` assigns one agent per
-route while the ego drives a different one, so on `grid-loop` the ego laps one block
-of a 3×3 grid while the traffic runs the others, and on `grid-arterial` the traffic
-sits 67 m or more behind two building rows for the entire run — `visible_fraction`
-is exactly `0.0` on all 99 of its annotations. Only `grid-merge` puts another vehicle
-near the ego with a clear line of sight.
+capture. The difference is **agent spacing**.
+
+> **Correction, 2026-08-31.** An earlier revision of this paragraph said
+> `ScriptedTraffic` "assigns one agent per route while the ego drives a different
+> one". That is false, and the source says so outright:
+> `map/scene_build.py::_agent_routes`'s docstring is titled *"Traffic shares the
+> ego's lane, all of it"* and its body is `return [ego_route] * scenario.traffic`.
+> The claim was a controller's inference from the observed distances, published
+> without being checked against the code it described. The measured explanation
+> below replaces it. The distances and yields it was invented to explain are
+> unchanged — only the mechanism was wrong.
+
+Every agent drives the ego's own route, so proximity is governed by how far apart
+they are spread along it. `ScriptedTraffic` spaces them evenly, at
+`route_length / (traffic + 1)`, and both terms are scenario constants:
+
+```bash
+cd streetlab-backend && uv run python -c "
+from map.scene_build import SyntheticGrid
+g = SyntheticGrid()
+for s in g.scenarios():
+    b = g.build(s.id)
+    L, n = b.ego_route.length_m, b.traffic_count
+    same = all(r is b.ego_route or r.length_m == L for r in b.agent_routes)
+    print(f'{s.id:16s} {L:8.1f} {n:7d} {L/(n+1):10.1f}   agents_on_ego_route={same}')
+"
+```
+
+```
+grid-loop           295.2       3       73.8   agents_on_ego_route=True
+grid-arterial       615.2       5      102.5   agents_on_ego_route=True
+grid-signals        295.2       4       59.0   agents_on_ego_route=True
+grid-merge          295.2       6       42.2   agents_on_ego_route=True
+grid-night          615.2       4      123.0   agents_on_ego_route=True
+```
+
+Yield tracks that last column monotonically across the three captures actually
+taken — 42.2 m → 67 usable, 73.8 m → 5, 102.5 m → 0 — and the mechanism is visible
+in the geometry: a 295.2 m block loop has straight legs of roughly 74 m, so an agent
+42 m ahead is still on the ego's own straight, while one 74–102 m ahead is past a
+corner with the block's buildings between. That is exactly the 67.3 m two-blocker
+case the diagnostic found on `grid-arterial`, where `visible_fraction` is `0.0` on
+all 99 annotations.
+
+**This reading is predictive, and the prediction is untested.** On it,
+`grid-signals` (59.0 m) should land between `grid-merge` and `grid-loop`, and
+`grid-night` (123.0 m) should yield near zero. Neither was captured, so both are
+predictions rather than results. Phase 3b can therefore estimate a scenario's yield
+before spending a capture on it — and, more usefully, `traffic` is a scenario
+constant that could be raised to close the spacing deliberately, rather than hunting
+for a scenario that happens to be dense.
 
 **Consequence for Phase 3b: size the capture budget in usable boxes, not frames.**
 A frame count is nearly uninformative here — the worst-yielding capture in the table
