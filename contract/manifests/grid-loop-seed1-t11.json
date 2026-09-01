@@ -3,10 +3,11 @@
   "seed": 1,
   "command": "uv run streetlab serve --port 8765 --scenario grid-loop --seed 1 --traffic 11 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-loop-seed1-t11",
   "note": "Phase 3b checkpoint capture at --traffic 11 (24.6 m spacing). Same scenario and seed as Phase 3a's traffic=3 capture, so density is the only variable. Yield 0.79 usable/frame (158/200), gate was >= 0.30 -- PASS. Ego stopped (<0.5 m/s) in only 2.5% of frames -- not a jam. Per-class usable: car 140, truck 18 -- NOT all-car, but bus and motorcycle from _PROFILES still did not appear in this 200-frame window. Kept as training data.",
-  "commit": "e139dd0",
+  "commit": "a31d307",
   "frames": 200,
   "annotations": 232,
   "visible": 158,
+  "usable": 158,
   "per_class": {
     "car": 191,
     "truck": 36,
@@ -14,6 +15,10 @@
     "motorcycle": 1
   },
   "per_class_visible": {
+    "car": 140,
+    "truck": 18
+  },
+  "per_class_usable": {
     "car": 140,
     "truck": 18
   },

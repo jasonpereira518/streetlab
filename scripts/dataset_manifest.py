@@ -42,6 +42,17 @@ def build_manifest(
     deliberately does not check `note` -- it is commentary, not a claim
     about `labels.json`, so a changed note can never be the thing that
     makes a manifest look stale.
+
+    `visible` and `usable` answer different questions and both are kept.
+    `visible` answers "could this box be seen" -- it is what the occlusion
+    ceiling measures, and it is exactly `ann["visible"]`. `usable` answers
+    "may this box be trained on": training additionally requires a
+    truth-derived extent, because a box sized from `CLASS_SIZE`'s per-class
+    prior teaches the model that constant, not the agent's real extent, so
+    `usable` is `visible AND extent_from_truth`. A manifest written before
+    this field existed carries no `usable` / `per_class_usable` key at all
+    -- that is a fact about when it was written, not a defect in it, and
+    those older manifests are not rewritten to add it.
     """
     raw = labels_path.read_bytes()
     doc = json.loads(raw)
@@ -49,13 +60,19 @@ def build_manifest(
 
     per_class: Counter[str] = Counter()
     per_class_visible: Counter[str] = Counter()
+    per_class_usable: Counter[str] = Counter()
     visible = 0
+    usable = 0
     for ann in doc["annotations"]:
         cls = names[ann["category_id"]]
         per_class[cls] += 1
-        if ann.get("visible", False):
+        is_visible = ann.get("visible", False)
+        if is_visible:
             per_class_visible[cls] += 1
             visible += 1
+        if is_visible and ann.get("extent_from_truth", False):
+            per_class_usable[cls] += 1
+            usable += 1
 
     return {
         "scenario": scenario,
@@ -66,8 +83,10 @@ def build_manifest(
         "frames": len(doc["images"]),
         "annotations": len(doc["annotations"]),
         "visible": visible,
+        "usable": usable,
         "per_class": dict(per_class),
         "per_class_visible": dict(per_class_visible),
+        "per_class_usable": dict(per_class_usable),
         "n_occluders": sorted({img.get("n_occluders", 0) for img in doc["images"]}),
         "labels_sha256": hashlib.sha256(raw).hexdigest(),
     }
@@ -79,6 +98,10 @@ def verify_manifest(manifest: dict, labels_path: Path) -> list[str]:
     Returns an empty list when clean. Never raises on a mismatch -- the
     caller decides whether a stale manifest is fatal. `note` is deliberately
     not part of this comparison -- see `build_manifest`'s docstring.
+
+    `usable` is only checked when the manifest has one: a manifest written
+    before that field existed is not stale for lacking it, per
+    `build_manifest`'s docstring.
     """
     problems: list[str] = []
     raw = labels_path.read_bytes()
@@ -98,6 +121,23 @@ def verify_manifest(manifest: dict, labels_path: Path) -> list[str]:
         problems.append(
             f"frames differ: manifest {manifest['frames']}, file {len(fresh['images'])}"
         )
+    if "usable" in manifest:
+        names = {c["id"]: c["name"] for c in fresh["categories"]}
+        fresh_usable = 0
+        fresh_per_class_usable: Counter[str] = Counter()
+        for ann in fresh["annotations"]:
+            if ann.get("visible", False) and ann.get("extent_from_truth", False):
+                fresh_usable += 1
+                fresh_per_class_usable[names[ann["category_id"]]] += 1
+        if fresh_usable != manifest["usable"]:
+            problems.append(
+                f"usable differs: manifest {manifest['usable']}, file {fresh_usable}"
+            )
+        if dict(fresh_per_class_usable) != manifest.get("per_class_usable", {}):
+            problems.append(
+                f"per_class_usable differs: manifest {manifest.get('per_class_usable', {})}, "
+                f"file {dict(fresh_per_class_usable)}"
+            )
     return problems
 
 
