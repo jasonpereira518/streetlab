@@ -1,4 +1,4 @@
-"""Fine-tune RT-DETRv2 on a StreetLab capture. Dev-only.
+"""Fine-tune RT-DETRv2 on one or more StreetLab captures. Dev-only.
 
 `torch` and `transformers` are imported inside `train()`, never at module
 scope, and neither is a `[project.dependencies]` entry -- nothing in
@@ -7,16 +7,27 @@ guards below deliberately import neither, so they are testable offline.
 
     cd streetlab-backend
     uv run --with torch --with 'transformers>=4.47' --with scipy \\
-      ../scripts/finetune_detector.py --dataset <dir> --out <dir> \\
-      --epochs 25 --lr 5e-4
+      ../scripts/finetune_detector.py \\
+      --dataset /tmp/streetlab-capture/grid-arterial-seed1-t24 \\
+      --dataset /tmp/streetlab-capture/grid-night-seed1-t24 \\
+      --out /tmp/p3b-checkpoint --epochs 12 --lr 3e-4
 
-That example is exactly the Phase 3a run (see
-`docs/measurements/2026-08-30-cycle5-phase3a-loop.md`), including `--lr 5e-4`,
-which the `--lr` default deliberately is NOT: Phase 3a measured the 1e-4
-default losing to the pretrained model on its own training frames, and
-measured 5e-4 winning but converging unstably. Neither is a recipe to inherit,
-so the default stays at the conservative value and the example carries the
-value that reproduces the published number.
+`--dataset` is repeatable and the captures are concatenated. **Which captures
+you pass decides which classes exist**, so the combined per-class counts are
+printed before the first step rather than inferred from the results: a
+`--traffic 11` capture is ~90% `car` with a handful of `truck`, while a
+`--traffic 24` capture carries substantial `bus` and `motorcycle` too. Each
+capture is guarded and filtered on its own, so one bad capture names itself
+instead of poisoning an otherwise clean set.
+
+Nothing about `--epochs` or `--lr` is inheritable across phases. Phase 3a
+measured its own default `1e-4` *losing* to the pretrained model on its own
+training frames, and measured `5e-4` winning but converging unstably; Phase
+3b re-probed all four of `1e-4 / 3e-4 / 5e-4 / 1e-3` on the combined
+1,867-frame set and picked from that probe. The defaults below are starting
+points to probe from, not a recipe. See
+`docs/measurements/2026-08-30-cycle5-phase3a-loop.md` and this cycle's Phase
+3b report.
 
 `scipy` is in that list because RT-DETRv2's loss needs it and says so only
 at the first backward pass: `transformers.loss.loss_rt_detr`'s Hungarian
@@ -100,6 +111,33 @@ def filter_annotations(doc: dict) -> dict:
     return {**doc, "annotations": kept}
 
 
+def class_counts(doc: dict) -> dict[str, int]:
+    """Per-category-name annotation counts for an (already filtered) doc."""
+    names = {c["id"]: c["name"] for c in doc.get("categories", [])}
+    counts: dict[str, int] = {}
+    for ann in doc.get("annotations", []):
+        name = names.get(ann["category_id"], f"category_id {ann['category_id']}")
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def combined_class_counts(docs: list[dict]) -> dict[str, int]:
+    """Per-class totals across every dataset, highest count first.
+
+    Printed before the first training step on purpose. Class coverage here is
+    a property of *which captures were passed*, not of the model: the low
+    traffic-density captures carry essentially no `bus` or `motorcycle`, so a
+    set assembled from those alone trains two classes. That has to be visible
+    in the log at the top of the run rather than inferred afterwards from the
+    scores of classes that were never in the data.
+    """
+    totals: dict[str, int] = {}
+    for doc in docs:
+        for name, n in class_counts(doc).items():
+            totals[name] = totals.get(name, 0) + n
+    return dict(sorted(totals.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def coco_to_model_targets(
     doc: dict, dataset: Path
 ) -> tuple[list[Path], list[list[int]], list[list[tuple[float, float, float, float]]]]:
@@ -169,8 +207,7 @@ def coco_to_model_targets(
 
 
 def train(
-    doc: dict,
-    dataset: Path,
+    datasets: list[tuple[Path, dict]],
     out: Path,
     epochs: int,
     checkpoint: str,
@@ -182,8 +219,9 @@ def train(
 
     `Trainer` would bring an `accelerate` dependency, a `TrainingArguments`
     surface, and its own collator/device/logging conventions, all to run
-    ~1300 steps of a throwaway overfit. Every one of those is a place for
-    this measurement to differ from what actually runs at inference time.
+    a few thousand steps of a fine-tune whose weights are never shipped.
+    Every one of those is a place for this measurement to differ from what
+    actually runs at inference time.
     The loop below is ~30 lines and its every step is visible.
 
     Preprocessing is `perception.detector.preprocess` itself -- imported,
@@ -209,13 +247,23 @@ def train(
         f"num_queries={model.config.num_queries} "
         f"num_denoising={model.config.num_denoising}"
     )
-    print(
-        "NOTE: this is Phase 3a. The checkpoint produced here is a deliberate "
-        "overfit on one seed of one scenario. It exists to prove the loop "
-        "runs end to end and is NOT a quality result."
-    )
 
-    paths, classes, boxes = coco_to_model_targets(doc, dataset)
+    paths: list[Path] = []
+    classes: list[list[int]] = []
+    boxes: list[list[tuple[float, float, float, float]]] = []
+    for dataset, doc in datasets:
+        # Per dataset, not over a merged doc: `image_id` is only unique
+        # within one capture's `labels.json`, and `file_name` is relative to
+        # that capture's own directory. Merging the docs first would silently
+        # cross-attach one capture's boxes to another's frames.
+        d_paths, d_classes, d_boxes = coco_to_model_targets(doc, dataset)
+        print(
+            f"  {dataset.name}: {len(d_paths)} frames, "
+            f"{sum(len(c) for c in d_classes)} boxes"
+        )
+        paths += d_paths
+        classes += d_classes
+        boxes += d_boxes
     n_frames = len(paths)
     n_boxes = sum(len(c) for c in classes)
     n_positive = sum(1 for c in classes if c)
@@ -229,11 +277,12 @@ def train(
 
     # Decode every frame once, up front, and hold them as uint8 640x640x3
     # (~1.2 MB each) rather than as the float32 model tensors they become
-    # (~4.9 MB each). At 174 frames that is the difference between ~210 MB
-    # and ~860 MB resident, and the float conversion is trivial next to a
+    # (~4.9 MB each). Across the twelve-capture set (1,867 frames) that is
+    # the difference between ~2.3 GB and ~9.2 GB resident -- the second does
+    # not fit on this laptop -- and the float conversion is trivial next to a
     # forward pass. Re-decoding the JPEGs every epoch instead would make
     # the loop I/O-bound for no benefit -- the frames never change.
-    print("decoding and preprocessing frames once ...")
+    print(f"decoding and preprocessing {n_frames} frames once ...", flush=True)
     cached: list[np.ndarray] = []
     for path in paths:
         # preprocess() returns 1x3x640x640 float32 in [0,1]; store the
@@ -294,23 +343,38 @@ def train(
     # involved at all. If the exported graph later disagrees with this, the
     # export is the suspect, not the training -- and without this number
     # there would be no way to tell those two apart.
+    # Every class that was actually trained, not just `car`: with the
+    # --traffic 24 captures in the set, `bus` and `motorcycle` carry hundreds
+    # of boxes each, and reporting only `car` would hide whichever of them the
+    # run failed to move.
+    from perception.detector import COCO_ID_TO_CLASS
+
+    trained_ids = sorted({c for frame in classes for c in frame})
     model.eval()
-    peaks: list[float] = []
+    peaks = {cid: 0.0 for cid in trained_ids}
     with torch.no_grad():
         for i in range(n_frames):
             pixel_values = torch.from_numpy(
                 cached[i][None].astype(np.float32) / 255.0
             ).to(device)
             logits = model(pixel_values=pixel_values).logits[0]
-            peaks.append(float(torch.sigmoid(logits[:, 2]).max()))
-    print(f"post-training peak `car` (COCO id 2) sigmoid, in torch: {max(peaks):.4f}")
+            for cid in trained_ids:
+                peaks[cid] = max(peaks[cid], float(torch.sigmoid(logits[:, cid]).max()))
+            if (i + 1) % 250 == 0:
+                print(f"  evaluated {i + 1}/{n_frames} frames", flush=True)
+    for cid in trained_ids:
+        print(
+            f"post-training peak `{COCO_ID_TO_CLASS[cid]}` (COCO id {cid}) "
+            f"sigmoid, in torch: {peaks[cid]:.4f}"
+        )
 
     out.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(out)
     print(f"saved checkpoint to {out}")
     print(
-        "This checkpoint is THROWAWAY. Do not register it as a ModelSpec, do "
-        "not commit it, and do not quote its scores as detector quality."
+        "Weights are NOT committed and no ModelSpec is registered here. The "
+        "peaks above are read on training frames; quote quality only from a "
+        "score against the held-out benchmark."
     )
     return 0
 
@@ -318,16 +382,19 @@ def train(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="finetune_detector.py", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dataset", type=Path, required=True,
-                        help="capture directory containing labels.json and frames/")
+    parser.add_argument("--dataset", type=Path, action="append", required=True,
+                        metavar="DIR", dest="datasets",
+                        help="capture directory containing labels.json and frames/. "
+                             "Repeat to train on several captures concatenated.")
     parser.add_argument("--out", type=Path, required=True)
-    # 25, not the 40 an earlier draft defaulted to: at the ~13.2 s/epoch this
-    # script measures on a 174-frame capture on MPS, 40 epochs plus model load
-    # and the post-training evaluation pass runs past this project's 600s
-    # no-progress watchdog. 25 is what Phase 3a actually ran and what the
-    # docstring's example shows -- the default, the example and the published
-    # measurement are deliberately the same number.
-    parser.add_argument("--epochs", type=int, default=25)
+    # No default survives a change of dataset size. Phase 3a ran 25 epochs on
+    # 174 frames at ~13.2 s/epoch; the twelve-capture set is 1,867 frames at
+    # roughly ~145 s/epoch, so 25 epochs is ~1 hour and cannot run in the
+    # foreground under this project's 600s no-progress watchdog at all. The
+    # default below is small enough to be honest about that: pick the schedule
+    # from the frame count and the measured per-epoch cost, background the run,
+    # and state the number you chose.
+    parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0,
@@ -337,24 +404,50 @@ def main(argv: list[str] | None = None) -> int:
                         help="run the dataset guards and exit, importing no torch")
     args = parser.parse_args(argv)
 
-    doc = json.loads((args.dataset / "labels.json").read_text())
-    filtered = filter_annotations(doc)
-    print(f"{len(doc['annotations'])} annotations -> {len(filtered['annotations'])} "
-          f"after filtering to visible AND truth-sized")
-
-    problems = dataset_problems(filtered)
-    if problems:
-        print("\nREFUSING to train on this dataset:", file=sys.stderr)
-        for p in problems:
-            print(f"  - {p}", file=sys.stderr)
+    # Guarded and filtered one capture at a time. A merged doc would report
+    # "N annotations lack `visible`" without saying which capture they came
+    # from, and one bad capture would condemn the whole set anonymously.
+    datasets: list[tuple[Path, dict]] = []
+    refused = False
+    for dataset in args.datasets:
+        doc = json.loads((dataset / "labels.json").read_text())
+        filtered = filter_annotations(doc)
+        print(f"{dataset}: {len(doc['annotations'])} annotations -> "
+              f"{len(filtered['annotations'])} after filtering to visible AND "
+              f"truth-sized")
+        problems = dataset_problems(filtered)
+        if problems:
+            print(f"\nREFUSING to train on {dataset}:", file=sys.stderr)
+            for p in problems:
+                print(f"  - {p}", file=sys.stderr)
+            refused = True
+            continue
+        datasets.append((dataset, filtered))
+    if refused:
         return 1
+
+    totals = combined_class_counts([doc for _, doc in datasets])
+    total_frames = sum(len(doc["images"]) for _, doc in datasets)
+    total_boxes = sum(totals.values())
+    print(
+        f"\ncombined training set: {len(datasets)} capture(s), "
+        f"{total_frames} frames, {total_boxes} usable boxes"
+    )
+    for name, n in totals.items():
+        print(f"  {name:12s} {n:6d}  ({100.0 * n / total_boxes:5.1f}%)")
+    missing = [c for c in ("car", "truck", "bus", "motorcycle") if c not in totals]
+    if missing:
+        print(
+            f"  NOTE: no {', '.join(missing)} in this set. Those classes are "
+            "NOT trained here and any score for them is the pretrained model's."
+        )
+    print()
 
     if args.check_only:
         print("dataset guards passed")
         return 0
     return train(
-        filtered,
-        args.dataset,
+        datasets,
         args.out,
         args.epochs,
         args.checkpoint,

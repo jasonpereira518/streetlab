@@ -9,7 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from finetune_detector import dataset_problems, filter_annotations  # noqa: E402
+from finetune_detector import (  # noqa: E402
+    combined_class_counts,
+    dataset_problems,
+    filter_annotations,
+)
 
 
 def _doc(anns):
@@ -63,3 +67,27 @@ def test_filtering_leaves_nothing_it_would_refuse():
     about what a usable dataset is."""
     doc = _doc([_ann(1), _ann(2, visible=False), _ann(3, extent=False)])
     assert dataset_problems(filter_annotations(doc)) == []
+
+
+def test_combined_counts_sum_across_datasets():
+    """Phase 3b concatenates captures, so the counts printed before the first
+    step must be the sum over all of them, not the last one's."""
+    a = _doc([_ann(1), _ann(2)])
+    b = _doc([_ann(3)])
+    b["categories"] = [{"id": 1, "name": "car"}, {"id": 2, "name": "bus"}]
+    b["annotations"].append({**_ann(4), "category_id": 2})
+    assert combined_class_counts([a, b]) == {"car": 3, "bus": 1}
+
+
+def test_combined_counts_see_only_what_survives_filtering():
+    """A hidden or prior-sized box must not be counted as coverage for its
+    class: a set whose only `bus` box is filtered away trains no bus."""
+    doc = _doc([_ann(1), {**_ann(2, visible=False), "category_id": 2}])
+    doc["categories"] = [{"id": 1, "name": "car"}, {"id": 2, "name": "bus"}]
+    assert combined_class_counts([filter_annotations(doc)]) == {"car": 1}
+
+
+def test_combined_counts_are_ordered_by_size():
+    doc = _doc([_ann(1), {**_ann(2), "category_id": 2}, {**_ann(3), "category_id": 2}])
+    doc["categories"] = [{"id": 1, "name": "car"}, {"id": 2, "name": "bus"}]
+    assert list(combined_class_counts([doc])) == ["bus", "car"]
