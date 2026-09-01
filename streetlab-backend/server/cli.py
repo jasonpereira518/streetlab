@@ -76,9 +76,15 @@ MODEL_CACHE_BUDGET_BYTES = 128 * 1024 * 1024
 DETECTOR_SCORE_THRESHOLD = 0.5
 
 
-def scene_source_for(source: str) -> SceneSource:
-    """Pick a world. The seam that makes real map data a one-flag change."""
-    return default_source() if source == "osm" else SyntheticGrid()
+def scene_source_for(source: str, traffic: int | None = None) -> SceneSource:
+    """Pick a world. The seam that makes real map data a one-flag change.
+
+    `traffic` overrides the synthetic scenarios' agent counts, for Phase 3b's
+    captures. It is meaningless for `osm` -- `OsmSceneSource` builds its agent
+    routes from the ingested graph -- so callers must reject that combination
+    before reaching here rather than have it silently ignored.
+    """
+    return default_source() if source == "osm" else SyntheticGrid(traffic)
 
 
 def model_cache_dir() -> Path:
@@ -209,6 +215,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--scenario", default=None)
     serve.add_argument("--seed", type=int, default=0)
+    serve.add_argument(
+        "--traffic",
+        type=int,
+        default=None,
+        help=(
+            "override the scenario's agent count (synthetic scenarios only). "
+            "Agents are spaced route_length/(traffic+1) along the ego's own "
+            "route, so raising this is how a capture gets vehicles close "
+            "enough to label. Omit to use each scenario's shipped count."
+        ),
+    )
     serve.add_argument("--sim-hz", type=float, default=1 / DEFAULT_DT)
     serve.add_argument("--tick-hz", type=float, default=60.0)
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
@@ -285,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scenarios":
         return _scenarios()
     if args.command == "serve":
+        if args.traffic is not None and args.source == "osm":
+            parser.error(
+                "--traffic applies to synthetic scenarios only; OsmSceneSource "
+                "builds its agent routes from the ingested graph and would ignore it"
+            )
         return _serve(args)
     if args.command == "build":
         return _build(args)
@@ -419,7 +441,7 @@ def _serve(args) -> int:
 
     try:
         sim = Simulation(
-            scene_source_for(args.source),
+            scene_source_for(args.source, args.traffic),
             args.scenario,
             seed=args.seed,
             dt=1 / args.sim_hz,

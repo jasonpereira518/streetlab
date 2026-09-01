@@ -178,7 +178,9 @@ def test_serve_reports_a_clean_error_when_the_source_cannot_build(monkeypatch, c
         def scenarios(self):
             raise GeocodeError("simulated geocode failure")
 
-    monkeypatch.setattr(cli, "scene_source_for", lambda source: BrokenSource())
+    monkeypatch.setattr(
+        cli, "scene_source_for", lambda source, traffic=None: BrokenSource()
+    )
 
     code = cli.main(["serve", "--source", "osm", "--port", "0"])
     out = capsys.readouterr().out
@@ -240,7 +242,9 @@ def test_serve_shuts_down_the_perception_pipeline_when_the_source_cannot_build(
         def scenarios(self):
             raise GeocodeError("simulated geocode failure")
 
-    monkeypatch.setattr(cli, "scene_source_for", lambda source: BrokenSource())
+    monkeypatch.setattr(
+        cli, "scene_source_for", lambda source, traffic=None: BrokenSource()
+    )
     shutdown_calls = _spy_on_pipeline_shutdown(monkeypatch)
 
     code = cli.main(["serve", "--source", "osm", "--port", "0", "--perception", "ml"])
