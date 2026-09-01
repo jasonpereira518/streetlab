@@ -1,0 +1,33 @@
+{
+  "scenario": "grid-arterial",
+  "seed": 1,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-arterial --seed 1 --traffic 24 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-arterial-seed1-t24",
+  "note": "Phase 3b training capture (Task 3, row 3/11). usable/frame 2.6711 (406/152) -- highest yield of the phase so far. Per-class usable: car 193, truck 75, bus 68, motorcycle 70 -- FIRST capture where bus and motorcycle clear the visible+extent_from_truth filter. Ego below 0.5 m/s in 20.5% of frames (below the 50% jam threshold but notably higher than grid-loop's ~3%), median speed 3.07 m/s, nearest vehicle median 9.8 m -- denser and closer than grid-loop, consistent with an arterial packed with traffic=24.",
+  "commit": "f83bc84",
+  "frames": 152,
+  "annotations": 598,
+  "visible": 406,
+  "usable": 406,
+  "per_class": {
+    "car": 290,
+    "truck": 108,
+    "bus": 105,
+    "motorcycle": 95
+  },
+  "per_class_visible": {
+    "car": 193,
+    "truck": 75,
+    "bus": 68,
+    "motorcycle": 70
+  },
+  "per_class_usable": {
+    "car": 193,
+    "truck": 75,
+    "bus": 68,
+    "motorcycle": 70
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "485b9ab9751b1bbb99993f453a78380782fe7497063b91265c370ba539053425"
+}
