@@ -41,12 +41,14 @@
 #   maxwait_s   seconds to poll before giving up and stopping anyway
 #               (default 480)
 #
-# Stops the backend with `kill -INT` (never `-TERM`): a prior phase
-# measured that TERM leaves labels.json stale mid-write, while INT reaches
-# `finalize()`. Verifies labels.json's image count against frames on disk
-# before exiting, and fails loudly (nonzero exit, clear message) if they
-# disagree -- a silent mismatch would poison a manifest built from this
-# capture.
+# Stops the backend with `kill -INT` first, escalating to `-TERM` only if
+# it has not exited 20s later: a prior phase measured that TERM leaves
+# labels.json stale mid-write, while INT reaches `finalize()`, so INT is
+# always tried first and given the chance to shut down cleanly -- TERM is
+# a last-resort fallback for a hung process, not the normal path. Verifies
+# labels.json's image count against frames on disk before exiting, and
+# fails loudly (nonzero exit, clear message) if they disagree -- a silent
+# mismatch would poison a manifest built from this capture.
 set -uo pipefail
 
 SCENARIO="${1:?scenario required}"
@@ -130,7 +132,7 @@ while true; do
   elapsed=$((elapsed+5))
 done
 
-echo "=== stopping backend with kill -INT (never -TERM: TERM leaves labels.json stale) ==="
+echo "=== stopping backend with kill -INT first (TERM leaves labels.json stale; INT reaches finalize()) ==="
 kill -INT "$BACKEND_PID" 2>/dev/null
 for i in $(seq 1 20); do
   kill -0 "$BACKEND_PID" 2>/dev/null || break
