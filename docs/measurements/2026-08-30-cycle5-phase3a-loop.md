@@ -618,6 +618,27 @@ and this published run are one number rather than three. The `--lr` default is l
 the conservative 1e-4 — the value measured losing above — with the docstring example
 carrying `--lr 5e-4` and the reason, since neither value is a recipe to inherit.
 
+> **Correction, 2026-09-02.** The paragraph above was true when written and is
+> now stale in both halves. Cycle 5 Phase 3b changed `finetune_detector.py`'s
+> `--epochs` default from 25 to **8** and its docstring example to
+> `--epochs 8 --lr 1e-4`, so neither the default nor the example is 25 any
+> more, and "the default, the example and this published run are one number"
+> no longer describes the file. The sentence is left standing rather than
+> edited: it recorded a real decision at a real date, and rewriting a
+> published measurement to match a later phase is the thing this document set
+> refuses to do.
+>
+> The number was re-derived, not overridden. 3a ran 174 frames = **44
+> steps/epoch**; 3b's twelve-capture set is 1,867 frames = **467
+> steps/epoch**, so the same nominal learning rate travels ~10.6x further per
+> epoch and the 3a schedule does not transfer. 3b re-probed all four rates on
+> its own set, chose `1e-4` (3a's `5e-4` diverged on 467 steps/epoch), and
+> published a **20-epoch** run at that rate. Its default stays at the probe
+> size of 8 deliberately, so the extension is chosen from an observed
+> trajectory rather than inherited — which means 3b's default, example and
+> published run are *not* one number, and `finetune_detector.py`'s docstring
+> now says why. See this cycle's Phase 3b report.
+
 ---
 
 ## 8. The 3a checkpoint is throwaway

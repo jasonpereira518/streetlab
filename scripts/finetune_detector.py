@@ -10,15 +10,34 @@ guards below deliberately import neither, so they are testable offline.
       ../scripts/finetune_detector.py \\
       --dataset /tmp/streetlab-capture/grid-arterial-seed1-t24 \\
       --dataset /tmp/streetlab-capture/grid-night-seed1-t24 \\
-      --out /tmp/p3b-checkpoint --epochs 12 --lr 3e-4
+      --out /tmp/p3b-checkpoint --epochs 8 --lr 1e-4
 
 `--dataset` is repeatable and the captures are concatenated. **Which captures
 you pass decides which classes exist**, so the combined per-class counts are
-printed before the first step rather than inferred from the results: a
-`--traffic 11` capture is ~90% `car` with a handful of `truck`, while a
-`--traffic 24` capture carries substantial `bus` and `motorcycle` too. Each
-capture is guarded and filtered on its own, so one bad capture names itself
-instead of poisoning an otherwise clean set.
+printed before the first step rather than inferred from the results. Measured
+on Phase 3b's twelve captures (`contract/manifests/grid-*-t*.json`, field
+`per_class_usable`): the six `grid-loop` / `grid-signals` captures are
+88.0-93.8% `car` with almost all of the remainder `truck` -- one `bus` box
+across all six and no `motorcycle` at all -- while the six `grid-arterial` /
+`grid-night` captures are 46.4-52.2% `car` and carry every `motorcycle` box
+in the set.
+
+Those counts are a property of **those captures**, and this docstring
+deliberately does not attribute them to the `--traffic` value. Across these
+twelve captures the traffic value is perfectly confounded with three things
+that move with it: route length (615.2 m for arterial/night against 295.2 m
+for loop/signals), scenario identity, and the per-class agent count --
+`sim/agents.py::_PROFILES[i % 6]` gives `--traffic 24` four bus and four
+motorcycle agents against `--traffic 11`'s two and one. Nothing in this data
+separates those four, so "raise `--traffic` to get buses" is not a claim this
+file is entitled to make. The weaker wording is the correct one, and this
+paragraph exists so that it stays that way: the causal version has been
+written into this project and retracted three times already. The practical
+consequence is unchanged and is the whole point -- read the printed counts,
+because class coverage follows the captures you passed.
+
+Each capture is guarded and filtered on its own, so one bad capture names
+itself instead of poisoning an otherwise clean set.
 
 Nothing about `--epochs` or `--lr` is inheritable across phases. Phase 3a
 measured its own default `1e-4` *losing* to the pretrained model on its own
@@ -28,6 +47,16 @@ training frames, and measured `5e-4` winning but converging unstably; Phase
 points to probe from, not a recipe. See
 `docs/measurements/2026-08-30-cycle5-phase3a-loop.md` and this cycle's Phase
 3b report.
+
+Phase 3a moved the `--epochs` default, this docstring's example and its own
+published run to a single number so the three could not drift. Two of the
+three are unified here: the example above **is** the default, and it is the
+command that actually ran -- the eight-epoch `1e-4` probe that won Phase 3b's
+rate comparison. The third cannot join them. Phase 3b's published run is
+`--epochs 20 --lr 1e-4`, and the default stays at the probe size on purpose,
+because this phase's method is to probe short and then extend from the
+observed trajectory. A default of 20 would ship the extension as the starting
+point and quietly re-create the inheritance the paragraph above forbids.
 
 `scipy` is in that list because RT-DETRv2's loss needs it and says so only
 at the first backward pass: `transformers.loss.loss_rt_detr`'s Hungarian
@@ -125,11 +154,19 @@ def combined_class_counts(docs: list[dict]) -> dict[str, int]:
     """Per-class totals across every dataset, highest count first.
 
     Printed before the first training step on purpose. Class coverage here is
-    a property of *which captures were passed*, not of the model: the low
-    traffic-density captures carry essentially no `bus` or `motorcycle`, so a
-    set assembled from those alone trains two classes. That has to be visible
-    in the log at the top of the run rather than inferred afterwards from the
-    scores of classes that were never in the data.
+    a property of *which captures were passed*, not of the model: measured on
+    Phase 3b's set, the six `grid-loop` / `grid-signals` captures carry one
+    `bus` box between them and no `motorcycle`, so a set assembled from those
+    alone trains two of the four classes. That has to be visible in the log at
+    the top of the run rather than inferred afterwards from the scores of
+    classes that were never in the data.
+
+    Named as captures rather than as a `--traffic` value deliberately. Those
+    captures also differ in route length, scenario and per-class agent count,
+    all perfectly correlated with their traffic setting across the twelve
+    captures measured, so the observed composition cannot be attributed to the
+    flag. See this module's docstring; the causal version of this sentence has
+    been retracted three times.
     """
     totals: dict[str, int] = {}
     for doc in docs:
@@ -206,6 +243,40 @@ def coco_to_model_targets(
     return paths, classes, boxes
 
 
+def targets_for_datasets(
+    datasets: list[tuple[Path, dict]],
+) -> tuple[list[Path], list[list[int]], list[list[tuple[float, float, float, float]]]]:
+    """Convert each capture **on its own** and concatenate the three lists.
+
+    This function is the whole reason `train()` does not merge the docs first,
+    and it lives at module scope, torch-free, so that invariant is reachable by
+    a test instead of only by a 3-hour training run.
+
+    `image_id` is unique only *within* one capture's `labels.json`, and
+    `file_name` is relative to that capture's own directory. Merge the docs and
+    call `coco_to_model_targets` once and both facts break at the same time:
+    every capture's boxes attach to every other capture's frame of the same id,
+    and every path is resolved against one directory. Neither failure raises.
+    The frame count stays right, every path still exists on disk, and the only
+    visible symptom is a box total that is silently wrong -- which is why
+    `tests/test_finetune_guards.py` asserts the per-frame counts and the
+    per-frame directories rather than the totals.
+    """
+    paths: list[Path] = []
+    classes: list[list[int]] = []
+    boxes: list[list[tuple[float, float, float, float]]] = []
+    for dataset, doc in datasets:
+        d_paths, d_classes, d_boxes = coco_to_model_targets(doc, dataset)
+        print(
+            f"  {dataset.name}: {len(d_paths)} frames, "
+            f"{sum(len(c) for c in d_classes)} boxes"
+        )
+        paths += d_paths
+        classes += d_classes
+        boxes += d_boxes
+    return paths, classes, boxes
+
+
 def train(
     datasets: list[tuple[Path, dict]],
     out: Path,
@@ -248,22 +319,9 @@ def train(
         f"num_denoising={model.config.num_denoising}"
     )
 
-    paths: list[Path] = []
-    classes: list[list[int]] = []
-    boxes: list[list[tuple[float, float, float, float]]] = []
-    for dataset, doc in datasets:
-        # Per dataset, not over a merged doc: `image_id` is only unique
-        # within one capture's `labels.json`, and `file_name` is relative to
-        # that capture's own directory. Merging the docs first would silently
-        # cross-attach one capture's boxes to another's frames.
-        d_paths, d_classes, d_boxes = coco_to_model_targets(doc, dataset)
-        print(
-            f"  {dataset.name}: {len(d_paths)} frames, "
-            f"{sum(len(c) for c in d_classes)} boxes"
-        )
-        paths += d_paths
-        classes += d_classes
-        boxes += d_boxes
+    # Per dataset, not over a merged doc -- see `targets_for_datasets`, which
+    # holds that invariant at module scope so a test can reach it.
+    paths, classes, boxes = targets_for_datasets(datasets)
     n_frames = len(paths)
     n_boxes = sum(len(c) for c in classes)
     n_positive = sum(1 for c in classes if c)
@@ -343,10 +401,11 @@ def train(
     # involved at all. If the exported graph later disagrees with this, the
     # export is the suspect, not the training -- and without this number
     # there would be no way to tell those two apart.
-    # Every class that was actually trained, not just `car`: with the
-    # --traffic 24 captures in the set, `bus` and `motorcycle` carry hundreds
-    # of boxes each, and reporting only `car` would hide whichever of them the
-    # run failed to move.
+    # Every class that was actually trained, not just `car`: with Phase 3b's
+    # grid-arterial / grid-night captures in the set, `bus` and `motorcycle`
+    # carry hundreds of boxes each, and reporting only `car` would hide
+    # whichever of them the run failed to move. Named as captures, not as a
+    # --traffic value, for the reason the module docstring gives.
     from perception.detector import COCO_ID_TO_CLASS
 
     trained_ids = sorted({c for frame in classes for c in frame})
@@ -388,9 +447,12 @@ def main(argv: list[str] | None = None) -> int:
                              "Repeat to train on several captures concatenated.")
     parser.add_argument("--out", type=Path, required=True)
     # No default survives a change of dataset size. Phase 3a ran 25 epochs on
-    # 174 frames at ~13.2 s/epoch; the twelve-capture set is 1,867 frames at
-    # roughly ~145 s/epoch, so 25 epochs is ~1 hour and cannot run in the
-    # foreground under this project's 600s no-progress watchdog at all. The
+    # 174 frames at ~13.2 s/epoch; the twelve-capture set is 1,867 frames at a
+    # measured median of 163.2 s/epoch (seventeen of the twenty epochs of the
+    # published run fell in a 150.8-170.0 s band; the other three ran 14-27x
+    # that under unrelated machine load and are not a property of the job), so
+    # 25 epochs is ~1.1 hours and cannot run in the foreground under this
+    # project's 600s no-progress watchdog at all. The
     # default below is small enough to be honest about that: pick the schedule
     # from the frame count and the measured per-epoch cost, background the run,
     # and state the number you chose.
