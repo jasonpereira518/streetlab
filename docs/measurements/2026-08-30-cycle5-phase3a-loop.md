@@ -637,7 +637,7 @@ carrying `--lr 5e-4` and the reason, since neither value is a recipe to inherit.
 > size of 8 deliberately, so the extension is chosen from an observed
 > trajectory rather than inherited — which means 3b's default, example and
 > published run are *not* one number, and `finetune_detector.py`'s docstring
-> now says why. See this cycle's Phase 3b report.
+> now says why. See [this cycle's Phase 3b report](2026-09-02-cycle5-phase3b-finetune.md).
 
 ---
 

@@ -35,7 +35,8 @@ real effect to keep a null tidy fails that rule as badly as inflating one:
 - **The class ranking moved, decisively.** The pretrained cells rank one of the four
   scored vehicle classes first in **0 of 152** held-out frames — `stop sign`, `vase`,
   `umbrella` and `traffic light` win instead — while the fine-tuned cells do so in
-  **147 of 152**, with false positives on `benchmark-v2` at threshold 0.01 falling
+  **147 of 152** (fp32) and **146 of 152** (int8), with false positives on
+  `benchmark-v2` at threshold 0.01 falling
   about **9×** — 4,504 → 481 at fp32 ([§9](#9-two-things-the-rule-does-not-measure)). Neither
   pre-committed condition measures ranking or false positives. This is reported and
   **excluded from the verdict**; it is not grounds for softening it.
@@ -276,6 +277,13 @@ epoch   6/8  mean loss   10.8053  (1045.4s elapsed)
 epoch   7/8  mean loss   10.5501  (1201.2s elapsed)
 epoch   8/8  mean loss   10.2372  (1353.8s elapsed)
 training finished in 1353.8s on mps
+  evaluated 250/1867 frames
+  evaluated 500/1867 frames
+  evaluated 750/1867 frames
+  evaluated 1000/1867 frames
+  evaluated 1250/1867 frames
+  evaluated 1500/1867 frames
+  evaluated 1750/1867 frames
 post-training peak `car` (COCO id 2) sigmoid, in torch: 0.2496
 post-training peak `motorcycle` (COCO id 3) sigmoid, in torch: 0.1820
 post-training peak `bus` (COCO id 5) sigmoid, in torch: 0.2538
@@ -295,6 +303,13 @@ epoch   6/8  mean loss   11.3514  (1044.1s elapsed)
 epoch   7/8  mean loss   11.1661  (1235.2s elapsed)
 epoch   8/8  mean loss   10.8929  (1425.5s elapsed)
 training finished in 1425.5s on mps
+  evaluated 250/1867 frames
+  evaluated 500/1867 frames
+  evaluated 750/1867 frames
+  evaluated 1000/1867 frames
+  evaluated 1250/1867 frames
+  evaluated 1500/1867 frames
+  evaluated 1750/1867 frames
 post-training peak `car` (COCO id 2) sigmoid, in torch: 0.1875
 post-training peak `motorcycle` (COCO id 3) sigmoid, in torch: 0.1365
 post-training peak `bus` (COCO id 5) sigmoid, in torch: 0.2171
@@ -314,6 +329,13 @@ epoch   6/8  mean loss   11.9638  (1140.8s elapsed)
 epoch   7/8  mean loss   12.1873  (1318.8s elapsed)
 epoch   8/8  mean loss   15.1895  (1498.1s elapsed)
 training finished in 1498.1s on mps
+  evaluated 250/1867 frames
+  evaluated 500/1867 frames
+  evaluated 750/1867 frames
+  evaluated 1000/1867 frames
+  evaluated 1250/1867 frames
+  evaluated 1500/1867 frames
+  evaluated 1750/1867 frames
 post-training peak `car` (COCO id 2) sigmoid, in torch: 0.2586
 post-training peak `motorcycle` (COCO id 3) sigmoid, in torch: 0.2060
 post-training peak `bus` (COCO id 5) sigmoid, in torch: 0.3021
@@ -337,6 +359,13 @@ epoch   6/8  mean loss   17.2341  (2171.0s elapsed)
 epoch   7/8  mean loss   18.0379  (2335.0s elapsed)
 epoch   8/8  mean loss   16.6462  (2491.1s elapsed)
 training finished in 2491.1s on mps
+  evaluated 250/1867 frames
+  evaluated 500/1867 frames
+  evaluated 750/1867 frames
+  evaluated 1000/1867 frames
+  evaluated 1250/1867 frames
+  evaluated 1500/1867 frames
+  evaluated 1750/1867 frames
 post-training peak `car` (COCO id 2) sigmoid, in torch: 0.1935
 post-training peak `motorcycle` (COCO id 3) sigmoid, in torch: 0.1550
 post-training peak `bus` (COCO id 5) sigmoid, in torch: 0.2005
@@ -502,7 +531,62 @@ Paired per capture, so n is held fixed at 1,867 in both arms — this is the tes
 computed from the dumps above:
 
 ```
-$ python3 <reader over the two dumps: max per capture per class, then a sign test>
+$ cat /tmp/p3b/readers/sign_test.py
+#!/usr/bin/env python3
+"""Paired per-capture sign test between two all-80 dumps.
+
+argv: <dump-a.json> <dump-b.json>   (a = earlier checkpoint, b = later)
+Each dump is sweep_threshold.py::save_all_class_scores output: a frame list of
+{"file_name": "<capture>/frames/NNNNNN.jpg", "peaks": [80 floats]}.
+Capture identity is the first path segment of file_name.
+"""
+import json, sys
+from math import comb
+from statistics import median
+
+CLASSES = [("car", 2), ("moto", 3), ("bus", 5), ("truck", 7)]
+
+
+def per_capture_peaks(path):
+    d = json.load(open(path))
+    out = {}
+    for fr in d["frames"]:
+        cap = fr["file_name"].split("/")[0]
+        row = out.setdefault(cap, [float("-inf")] * d["n_classes"])
+        for i, v in enumerate(fr["peaks"]):
+            if v > row[i]:
+                row[i] = v
+    return out
+
+
+def two_sided_sign_p(k, n):
+    """Exact two-sided binomial test against p=0.5, by summing both tails
+    at or beyond the observed deviation from n/2."""
+    obs = abs(k - n / 2)
+    tot = sum(comb(n, i) for i in range(n + 1) if abs(i - n / 2) >= obs)
+    return tot / 2 ** n
+
+
+a, b = per_capture_peaks(sys.argv[1]), per_capture_peaks(sys.argv[2])
+caps = sorted(a)
+assert caps == sorted(b), "the two dumps do not cover the same captures"
+n = len(caps)
+la, lb = sys.argv[1], sys.argv[2]
+tag_a = "8 epochs" if "ep8" in la else ("pretrained" if "pretrained" in la else la)
+tag_b = "20 epochs" if "ep20" in lb else lb
+print(f"paired per-capture sign test, {tag_a} -> {tag_b} (n={n} captures):")
+ratios = {}
+for name, cid in CLASSES:
+    fell = sum(1 for c in caps if b[c][cid] < a[c][cid])
+    p = two_sided_sign_p(fell, n)
+    print(f"  {name:<5}  fell in {fell:2d}/{n}   two-sided p = {p:.5f}")
+    ratios[name] = [b[c][cid] / a[c][cid] for c in caps]
+for name in ("car", "bus"):
+    r = ratios[name]
+    print(f"per-capture ratio 20ep/8ep:  {name} min {min(r):.2f} "
+          f"median {median(r):.2f} max {max(r):.2f}")
+
+$ python3 /tmp/p3b/readers/sign_test.py /tmp/p3b/all80-ep8.json /tmp/p3b/all80-ep20.json
 paired per-capture sign test, 8 epochs -> 20 epochs (n=12 captures):
   car    fell in 12/12   two-sided p = 0.00049
   moto   fell in  5/12   two-sided p = 0.77441
@@ -530,12 +614,60 @@ by moving capacity between classes?* This is Phase 1's own instrument
 lift **selective**, with 70 of 80 classes falling and 10 rising.
 
 ```
-$ python3 <reader over the three dumps: peak-over-set per class, both directions>
+$ cat /tmp/p3b/readers/peak_all80.py
+#!/usr/bin/env python3
+"""Peak-over-set for all 80 COCO columns, in both comparison directions.
+
+argv: <ep8.json> <ep20.json> <pretrained.json>
+Median is the conventional one: for an even count, the mean of the two middle
+values (statistics.median), matching sign_test.py above.
+"""
+import json, sys
+from statistics import median
+
+VEHICLES = (2, 3, 5, 7)
+
+
+def peaks(path):
+    d = json.load(open(path))
+    n = d["n_classes"]
+    out = [float("-inf")] * n
+    for fr in d["frames"]:
+        for i, v in enumerate(fr["peaks"]):
+            if v > out[i]:
+                out[i] = v
+    return out, d["class_names"], len(d["frames"])
+
+
+ep8, names, nfr = peaks(sys.argv[1])
+ep20, _, _ = peaks(sys.argv[2])
+pre, _, _ = peaks(sys.argv[3])
+
+print(f"peak-over-set of {nfr} frames, all {len(names)} COCO columns")
+for label, base in (("8 epochs -> 20 epochs", ep8), ("pretrained -> 20 epochs", pre)):
+    rose = [i for i in range(len(names)) if ep20[i] > base[i]]
+    fell = [i for i in range(len(names)) if ep20[i] < base[i]]
+    same = [i for i in range(len(names)) if ep20[i] == base[i]]
+    r = [ep20[i] / base[i] for i in range(len(names))]
+    print()
+    print(f"{label}: {len(fell)} of {len(names)} fell, {len(rose)} rose, "
+          f"{len(same)} unchanged")
+    print("  rose: " + ", ".join(
+        f"{names[i]}({i}) {base[i]:.4f}->{ep20[i]:.4f} {ep20[i]/base[i]:.3f}x"
+        for i in rose))
+    print(f"  ratio over all {len(names)}: min {min(r):.3f}x  "
+          f"median {median(r):.3f}x  max {max(r):.3f}x")
+    for i in VEHICLES:
+        print(f"  {names[i]+'('+str(i)+')':>15}  {base[i]:.4f} -> {ep20[i]:.4f}  "
+              f"({ep20[i]/base[i]:.3f}x)")
+
+$ python3 /tmp/p3b/readers/peak_all80.py /tmp/p3b/all80-ep8.json \
+    /tmp/p3b/all80-ep20.json /tmp/p3b/all80-pretrained.json
 peak-over-set of 1867 frames, all 80 COCO columns
 
 8 epochs -> 20 epochs: 75 of 80 fell, 5 rose, 0 unchanged
   rose: motorbike(3) 0.1820->0.2162 1.188x, stop sign(11) 0.0289->0.0336 1.163x, cat(15) 0.0122->0.0168 1.377x, tvmonitor(62) 0.0127->0.0149 1.170x, scissors(76) 0.0070->0.0119 1.714x
-  ratio over all 80: min 0.130x  median 0.399x  max 1.714x
+  ratio over all 80: min 0.130x  median 0.395x  max 1.714x
            car(2)  0.2496 -> 0.1457  (0.584x)
      motorbike(3)  0.1820 -> 0.2162  (1.188x)
            bus(5)  0.2538 -> 0.1529  (0.602x)
@@ -550,12 +682,53 @@ pretrained -> 20 epochs: 79 of 80 fell, 1 rose, 0 unchanged
          truck(7)  0.6904 -> 0.1545  (0.224x)
 ```
 
+**The median above is the conventional one** — for an even count, the mean of the two
+middle values, which is what `statistics.median` returns and what the sign test earlier
+in this section uses. An earlier draft of this block printed `0.399x` for 8 → 20 by
+taking the *upper* of the two middle elements of 80 instead; the conventional figure is
+`0.395x`, and the reader above is the one that produced the number now printed. **The
+load-bearing figure is unaffected**: the pretrained → 20-epoch median is `0.0224` on
+both conventions, so the `0.022x` quoted below and in §7 reproduces either way, and no
+argument in this document turns on which convention is used.
+
 A peak is one number per class; the per-frame median is 1,867. `class_specificity.py`
 counts "fall" as `n_classes − rising`, which folds an exact zero into "fall", so the
 80/80 is checked strictly before being quoted:
 
 ```
-$ python3 <reader: per-class median of the per-frame delta, counted strictly>
+$ cat /tmp/p3b/readers/perframe_median.py
+#!/usr/bin/env python3
+"""Per-class median of the per-frame delta, counted strictly.
+
+argv: <ep8.json> <ep20.json> <pretrained.json>
+class_specificity.py counts "fall" as n_classes - rising, which folds an exact
+zero into "fall". This counts the three outcomes separately and never infers one
+from the others. Frames are paired by file_name, not by position.
+"""
+import json, sys
+from statistics import median
+
+
+def load(path):
+    d = json.load(open(path))
+    return ({fr["file_name"]: fr["peaks"] for fr in d["frames"]}, d["n_classes"])
+
+
+ep8, n = load(sys.argv[1])
+ep20, _ = load(sys.argv[2])
+pre, _ = load(sys.argv[3])
+for label, base in (("8->20", ep8), ("pre->20", pre)):
+    keys = sorted(base)
+    assert keys == sorted(ep20), "frame sets differ"
+    meds = [median([ep20[k][c] - base[k][c] for k in keys]) for c in range(n)]
+    neg = sum(1 for m in meds if m < 0)
+    zero = sum(1 for m in meds if m == 0)
+    pos = sum(1 for m in meds if m > 0)
+    print(f"{label} strictly negative: {neg} exactly zero: {zero} "
+          f"positive: {pos} max: {max(meds):.6f}")
+
+$ python3 /tmp/p3b/readers/perframe_median.py /tmp/p3b/all80-ep8.json \
+    /tmp/p3b/all80-ep20.json /tmp/p3b/all80-pretrained.json
 8->20 strictly negative: 80 exactly zero: 0 positive: 0 max: -0.000105
 pre->20 strictly negative: 80 exactly zero: 0 positive: 0 max: -0.002961
 ```
@@ -658,7 +831,58 @@ uv run python ../scripts/sweep_threshold.py \
 in shape:
 
 ```
-$ python3 <jitter reader> /tmp/p3b-t7/all80-v2-C-r1.json /tmp/p3b-t7/all80-v2-C-r2.json
+$ cat /tmp/p3b/readers/jitter.py
+#!/usr/bin/env python3
+"""Diff two all-80 dumps of the same model on the same benchmark.
+
+argv: <run1.json> <run2.json>
+No matching, no scoring, no ranking -- neither sweep_threshold.py --baseline nor
+class_specificity.py will compare a model against itself, so this does the one
+thing needed: paired per-frame, per-class subtraction at full float precision.
+"""
+import json, sys
+
+VEH = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+
+
+def load(path):
+    d = json.load(open(path))
+    return d, {fr["file_name"]: fr["peaks"] for fr in d["frames"]}
+
+
+d1, r1 = load(sys.argv[1])
+d2, r2 = load(sys.argv[2])
+assert d1["model"] == d2["model"] and d1["benchmark"] == d2["benchmark"]
+assert d1["preprocess"] == d2["preprocess"]
+keys = sorted(r1)
+assert keys == sorted(r2), "frame sets differ"
+n = d1["n_classes"]
+names = d1["class_names"]
+
+print(f"model:     {d1['model']}")
+print(f"benchmark: {d1['benchmark']}  preprocess: {d1['preprocess']}")
+print(f"{len(keys)} frames x {n} classes = {len(keys) * n} paired peak values")
+print()
+peak1 = [max(r1[k][c] for k in keys) for c in range(n)]
+peak2 = [max(r2[k][c] for k in keys) for c in range(n)]
+worst = [max(abs(r1[k][c] - r2[k][c]) for k in keys) for c in range(n)]
+print("per-class jitter, the four vehicle classes:")
+print(" id  class        peak run1  peak run2   |d peak|  max |d| any frame|")
+for c, label in VEH.items():
+    print(f"{c:3d}  {label:<13}{peak1[c]:9.4f}  {peak2[c]:9.4f}  "
+          f"{abs(peak1[c]-peak2[c]):9.4f}  {worst[c]:18.4f}")
+print()
+dp = [abs(peak1[c] - peak2[c]) for c in range(n)]
+amax = max(range(n), key=lambda c: worst[c])
+pmax = max(range(n), key=lambda c: dp[c])
+print(f"across all {n} classes:")
+print(f"  classes whose peak-over-set differs at all: {sum(1 for x in dp if x)}")
+print(f"  classes with any nonzero per-frame delta:   {sum(1 for x in worst if x)}")
+print(f"  largest |delta| anywhere: {worst[amax]:.10f} (class {amax} = {names[amax]})")
+print(f"  largest |delta peak-over-set|: {dp[pmax]:.10f} (class {pmax} = {names[pmax]})")
+
+$ python3 /tmp/p3b/readers/jitter.py /tmp/p3b-t7/all80-v2-C-r1.json \
+    /tmp/p3b-t7/all80-v2-C-r2.json
 model:     /tmp/p3b-finetuned.onnx
 benchmark: ../contract/benchmark-v2  preprocess: stretch
 92 frames x 80 classes = 7360 paired peak values
@@ -1240,13 +1464,16 @@ working. **This is a genuine result.**
    twice under two names.
 3. **The pretrained controls behave sanely through the identical path** — peak `car`
    0.3858 / 0.4124 on the anchor, 20 and 32 true positives at 0.01.
-4. **Two completely independent read paths agree to four decimals.** Torch, straight off
-   the checkpoint, and ONNX through `torch.onnx.export` → `onnxruntime` →
-   `sweep_threshold.py`, both give `0.7305` pretrained and `0.1457` fine-tuned on the
-   twelve training captures — and, on re-verification, agree on all four classes
-   (pretrained 0.7305 / 0.5419 / 0.1987 / 0.0609; fine-tuned 0.1457 / 0.1494 / 0.0921 /
-   0.1645). This is the strongest evidence in the document that §6's low numbers are the
-   checkpoint's and not the pipeline's.
+4. **Two completely independent read paths agree on every one of the twelve training
+   captures.** Torch, straight off the checkpoint, and ONNX through
+   `torch.onnx.export` → `onnxruntime` → `sweep_threshold.py` both give peak `car`
+   `0.7305` pretrained and `0.1457` fine-tuned as the maximum over the twelve — and the
+   agreement is not only set-wide. Capture by capture, all twelve match digit for digit,
+   on all four scored classes, for both models: **96 paired peaks, none of which
+   disagree**, at the four decimal places either side is quoted to anywhere in this
+   report. The comparison is printed in full in
+   [§8](#8-the-train-vs-held-out-gap-the-guard-fires). This is the strongest evidence in
+   the document that §6's low numbers are the checkpoint's and not the pipeline's.
 5. **The fine-tuned output is structured, not noise** — §9's ranking result, and 7 true
    positives on v2 at 0.01 carrying a sham of 0/0/0. A broken decode or a scrambled
    label space would not produce that.
@@ -1314,9 +1541,105 @@ denominators and are not interchangeable.)
 same twelve captures **in torch**, straight off the checkpoint: pretrained `0.7305`,
 20-epoch fine-tune `0.1457`. This table, produced by a completely different route — HF
 checkpoint → `torch.onnx.export` → `onnxruntime` → `sweep_threshold.py` — returns
-`0.7305` and `0.1457`. On re-verification the agreement holds on all four classes, not
-just `car`. Two independent read paths agreeing to four decimals is why §7's "this is a
-result, not a broken pipeline" is more than an assertion.
+`0.7305` and `0.1457`. **The agreement is per capture, not merely set-wide**, and it
+holds on all four scored classes for both models — 96 paired peaks, none of which
+disagree:
+
+```
+$ cat /tmp/p3b/readers/crosscheck.py
+#!/usr/bin/env python3
+"""Torch-vs-ONNX agreement, per capture, on the twelve training captures.
+
+argv: <dump-dir> <log-dir>
+torch = the all-80 dumps read straight off the HF checkpoints.
+onnx  = the `Peak across the whole benchmark` block of the 48 step4-train logs,
+        i.e. torch.onnx.export -> onnxruntime -> sweep_threshold.py.
+Compared at the 4 decimal places the ONNX logs print, which is the whole
+precision either side is quoted to anywhere in this report.
+"""
+import json, re, sys
+from pathlib import Path
+
+CAPS = ["grid-loop-seed1-t11", "grid-loop-seed2-t11", "grid-loop-seed3-t11",
+        "grid-signals-seed1-t11", "grid-signals-seed2-t11", "grid-signals-seed3-t11",
+        "grid-arterial-seed1-t24", "grid-arterial-seed2-t24", "grid-arterial-seed3-t24",
+        "grid-night-seed1-t24", "grid-night-seed2-t24", "grid-night-seed3-t24"]
+NAME2ID = {"car": 2, "motorcycle": 3, "bus": 5, "truck": 7}
+IDS = (2, 3, 5, 7)
+
+
+def torch_side(dump):
+    d = json.load(open(dump))
+    out = {}
+    for fr in d["frames"]:
+        row = out.setdefault(fr["file_name"].split("/")[0], {c: 0.0 for c in IDS})
+        for c in IDS:
+            row[c] = max(row[c], fr["peaks"][c])
+    return out
+
+
+def onnx_side(logdir, cell):
+    out = {}
+    for cap in CAPS:
+        blk = Path(logdir, f"step4-train-{cell}-{cap}.log").read_text() \
+            .split("Peak across the whole benchmark, per vehicle class:")[1] \
+            .split("\n\n")[0]
+        out[cap] = {NAME2ID[m.group(1)]: float(m.group(2)) for m in
+                    re.finditer(r"\s*(car|truck|bus|motorcycle)\s*:\s*([0-9.]+)", blk)}
+    return out
+
+
+dumps, logs = sys.argv[1], sys.argv[2]
+pt, pa = torch_side(f"{dumps}/all80-pretrained.json"), onnx_side(logs, "A")
+ft, fc = torch_side(f"{dumps}/all80-ep20.json"), onnx_side(logs, "C")
+print("peak sigmoid per capture, at the 4 dp the ONNX logs print")
+print("torch = HF checkpoint direct;  onnx = torch.onnx.export -> onnxruntime -> "
+      "sweep_threshold.py")
+print()
+print(f"{'':<26}{'pretrained vs cell A':>22}{'20 epochs vs cell C':>24}")
+print(f"{'capture':<26}{'car torch':>11}{'car onnx':>11}"
+      f"{'car torch':>13}{'car onnx':>11}   4-class")
+car_ok = all_ok = 0
+for cap in CAPS:
+    agree = sum(1 for pair in ((pt, pa), (ft, fc)) for c in IDS
+                if f"{pair[0][cap][c]:.4f}" == f"{pair[1][cap][c]:.4f}")
+    car_ok += (f"{pt[cap][2]:.4f}" == f"{pa[cap][2]:.4f}") and \
+              (f"{ft[cap][2]:.4f}" == f"{fc[cap][2]:.4f}")
+    all_ok += agree == 8
+    print(f"{cap:<26}{pt[cap][2]:11.4f}{pa[cap][2]:11.4f}"
+          f"{ft[cap][2]:13.4f}{fc[cap][2]:11.4f}   {agree}/8 agree")
+print()
+print(f"peak car agrees on {car_ok} of {len(CAPS)} captures for both models; "
+      f"all four scored classes")
+print(f"agree on {all_ok} of {len(CAPS)} captures for both models.")
+
+$ python3 /tmp/p3b/readers/crosscheck.py /tmp/p3b /tmp/p3b-t7
+peak sigmoid per capture, at the 4 dp the ONNX logs print
+torch = HF checkpoint direct;  onnx = torch.onnx.export -> onnxruntime -> sweep_threshold.py
+
+                            pretrained vs cell A     20 epochs vs cell C
+capture                     car torch   car onnx    car torch   car onnx   4-class
+grid-loop-seed1-t11            0.3844     0.3844       0.1392     0.1392   8/8 agree
+grid-loop-seed2-t11            0.6992     0.6992       0.0982     0.0982   8/8 agree
+grid-loop-seed3-t11            0.5352     0.5352       0.1137     0.1137   8/8 agree
+grid-signals-seed1-t11         0.6632     0.6632       0.0828     0.0828   8/8 agree
+grid-signals-seed2-t11         0.7305     0.7305       0.0884     0.0884   8/8 agree
+grid-signals-seed3-t11         0.6624     0.6624       0.0880     0.0880   8/8 agree
+grid-arterial-seed1-t24        0.5581     0.5581       0.1002     0.1002   8/8 agree
+grid-arterial-seed2-t24        0.3986     0.3986       0.1428     0.1428   8/8 agree
+grid-arterial-seed3-t24        0.6641     0.6641       0.1287     0.1287   8/8 agree
+grid-night-seed1-t24           0.6083     0.6083       0.1037     0.1037   8/8 agree
+grid-night-seed2-t24           0.5424     0.5424       0.1394     0.1394   8/8 agree
+grid-night-seed3-t24           0.4058     0.4058       0.1457     0.1457   8/8 agree
+
+peak car agrees on 12 of 12 captures for both models; all four scored classes
+agree on 12 of 12 captures for both models.
+```
+
+A set-wide maximum could in principle agree by coincidence over which single frame
+carries it. Twelve per-capture maxima agreeing on four classes through two read paths
+that share no inference code cannot, and that is why §7's "this is a result, not a
+broken pipeline" is more than an assertion.
 
 **A ratio of peaks is weak evidence and only that.** The pretrained control, which
 trained on none of these frames, is already 1.89× and 2.58× higher on the same two
@@ -1341,7 +1664,119 @@ would announce itself — and it indexes the sweep's columns by the header row's
 names rather than by position.
 
 ```
-$ python3 <reader over the 48 step4-train logs and the 8 step3 argmax logs>
+$ cat /tmp/p3b/readers/curve.py
+#!/usr/bin/env python3
+"""The §8 curve: sweep + sham, summed over the twelve training captures and read
+straight off the eight held-out logs.
+
+argv: <log-dir>   (expects step4-train-<cell>-<capture>.log x48 and
+                   step3-<cell>-<set>-argmax.log x8)
+
+Nothing is re-executed: these are the same logs §6 and §8 already quote. The
+sweep table's columns are indexed by the header row's own names, because the
+held-out logs carry a recall(ego) column the training logs do not. Per capture
+and per threshold the sweep's tp is asserted equal to the sham block's real tp
+-- a mis-parse announces itself there rather than silently.
+"""
+import re, sys
+from pathlib import Path
+
+CELLS = [("A", "A pretrained fp32"), ("B", "B pretrained int8"),
+         ("C", "C fine-tuned fp32"), ("D", "D fine-tuned int8")]
+CAPS = ["grid-loop-seed1-t11", "grid-loop-seed2-t11", "grid-loop-seed3-t11",
+        "grid-signals-seed1-t11", "grid-signals-seed2-t11", "grid-signals-seed3-t11",
+        "grid-arterial-seed1-t24", "grid-arterial-seed2-t24", "grid-arterial-seed3-t24",
+        "grid-night-seed1-t24", "grid-night-seed2-t24", "grid-night-seed3-t24"]
+TRAIN_T = [0.50, 0.40, 0.30, 0.20, 0.10, 0.05, 0.01]
+HELD_T = [0.10, 0.05, 0.01]
+HDR = (f"{'cell / threshold':<25}{'tp':>9}{'fp':>9}{'precision':>12}"
+       f"{'sham+10':>9}{'sham+20':>9}{'sham+30':>9}")
+
+
+def parse(path):
+    """-> (frames, truth, benchmark, {threshold: (tp, fp, s10, s20, s30)})"""
+    text = Path(path).read_text().splitlines()
+    frames = truth = None
+    bench = None
+    sweep, sham = {}, {}
+    mode = None
+    names = None
+    for line in text:
+        if line.startswith("benchmark: "):
+            bench = line.split(": ", 1)[1].strip()
+        m = re.match(r"loaded (\d+) frames, (\d+) truth objects", line)
+        if m:
+            frames, truth = int(m.group(1)), int(m.group(2))
+        if line.startswith("THRESHOLD SWEEP"):
+            mode, names = "sweep", None
+            continue
+        if line.startswith("SHAM CONTROL"):
+            mode, names = "sham", None
+            continue
+        if mode == "sweep" and line.lstrip().startswith("threshold"):
+            names = line.split()          # by name, never by position
+            continue
+        if mode == "sham" and line.lstrip().startswith("threshold"):
+            names = ["threshold", "real_tp", "s10", "s20", "s30"]
+            continue
+        if names and re.match(r"\s+0\.\d+\s", line):
+            row = dict(zip(names, line.split()))
+            t = float(row["threshold"])
+            if mode == "sweep":
+                sweep[t] = (int(row["tp"]), int(row["fp"]))
+            else:
+                sham[t] = (int(row["real_tp"]), int(row["s10"]),
+                           int(row["s20"]), int(row["s30"]))
+    out = {}
+    for t, (tp, fp) in sweep.items():
+        real, s10, s20, s30 = sham[t]
+        assert real == tp, f"{path} @ {t}: sweep tp {tp} != sham real tp {real}"
+        out[t] = (tp, fp, s10, s20, s30)
+    return frames, truth, bench, out
+
+
+def prec(tp, fp):
+    return f"{tp / (tp + fp):.3f}" if tp + fp else "—"
+
+
+def row(label, t, v):
+    tp, fp, s10, s20, s30 = v
+    return (f"{label:<19}@ {t:.2f}{tp:9d}{fp:9d}{prec(tp, fp):>12}"
+            f"{s10:9d}{s20:9d}{s30:9d}")
+
+
+d = Path(sys.argv[1])
+train = {}
+frames = truth = 0
+for cell, _ in CELLS:
+    acc = {t: [0, 0, 0, 0, 0] for t in TRAIN_T}
+    for cap in CAPS:
+        f, tr, _, res = parse(d / f"step4-train-{cell}-{cap}.log")
+        if cell == "A":
+            frames, truth = frames + f, truth + tr
+        for t in TRAIN_T:
+            for i, x in enumerate(res[t]):
+                acc[t][i] += x
+    train[cell] = acc
+
+print(f"== TRAINING CAPTURES, all twelve summed ({frames} frames, "
+      f"{truth} raw truth boxes) ==")
+print(HDR)
+for cell, label in CELLS:
+    for t in TRAIN_T:
+        print(row(label, t, train[cell][t]))
+
+for tag in ("anchor", "v2"):
+    held = {c: parse(d / f"step3-{c}-{tag}-argmax.log") for c, _ in CELLS}
+    bench = held["A"][2].split("/", 1)[1] if "/" in held["A"][2] else held["A"][2]
+    print()
+    print(f"== HELD OUT: {bench} ==")
+    print(HDR)
+    for cell, label in CELLS:
+        for t in HELD_T:
+            print(row(label, t, held[cell][3][t]))
+
+$ python3 /tmp/p3b/readers/curve.py /tmp/p3b-t7
 == TRAINING CAPTURES, all twelve summed (1867 frames, 4959 raw truth boxes) ==
 cell / threshold                tp       fp   precision  sham+10  sham+20  sham+30
 A pretrained fp32  @ 0.50        4       24       0.143        0        0        0
@@ -1546,7 +1981,29 @@ Tallied against the four scored vehicle classes — `car(2)`, `motorbike(3)`, `b
 `truck(7)`:
 
 ```
-$ python3 <reader summing the tallies above, VEHICLE = {car(2), motorbike(3), bus(5), truck(7)}>
+$ cat /tmp/p3b/readers/vehicle_first.py
+#!/usr/bin/env python3
+"""How often the argmax over all 80 columns is one of the four scored vehicle
+classes, over the same eight held-out logs the tally block above reads.
+
+argv: <log-dir>
+The peak table's last column is `top-any-class`, printed as `<name>(<id>)=<score>`
+per frame; only the id is used, since sweep_threshold.py's COCO_80_NAMES marks
+its names best-effort outside {0,1,2,3,5,7}.
+"""
+import re, sys
+from pathlib import Path
+
+VEHICLE = {2, 3, 5, 7}          # car, motorbike, bus, truck
+d = Path(sys.argv[1])
+for tag in ("anchor", "v2"):
+    for cell in "ABCD":
+        ids = [int(m.group(1)) for m in re.finditer(
+            r"\(\s*(\d+)\)=\d", Path(d / f"step3-{cell}-{tag}-argmax.log").read_text())]
+        hit = sum(1 for i in ids if i in VEHICLE)
+        print(f"cell {cell} {tag:<10}vehicle-first{hit:4d} of {len(ids):3d}")
+
+$ python3 /tmp/p3b/readers/vehicle_first.py /tmp/p3b-t7
 cell A anchor    vehicle-first   0 of  60
 cell B anchor    vehicle-first   0 of  60
 cell C anchor    vehicle-first  59 of  60
