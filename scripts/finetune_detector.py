@@ -50,9 +50,10 @@ points to probe from, not a recipe. See
 
 Phase 3a moved the `--epochs` default, this docstring's example and its own
 published run to a single number so the three could not drift. Two of the
-three are unified here: the example above **is** the default, and it is the
-command that actually ran -- the eight-epoch `1e-4` probe that won Phase 3b's
-rate comparison. The third cannot join them. Phase 3b's published run is
+three are unified here: the example above **is** the default, and these are
+the hyperparameters that actually ran -- the eight-epoch `1e-4` probe that
+won Phase 3b's rate comparison. The command itself is not the one that ran:
+that probe passed twelve `--dataset` flags, not two. The third cannot join them. Phase 3b's published run is
 `--epochs 20 --lr 1e-4`, and the default stays at the probe size on purpose,
 because this phase's method is to probe short and then extend from the
 observed trajectory. A default of 20 would ship the extension as the starting
