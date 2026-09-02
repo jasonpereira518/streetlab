@@ -16,7 +16,15 @@ another choice to defend and another way for the two sides to differ.
 
 Dev-only. `onnxruntime.quantization` is imported inside `main()`.
 
-    cd streetlab-backend && uv run python ../scripts/quantize_detector.py \\
+`--with onnx` is not optional, and the example below carries it for that reason.
+`onnxruntime` is a project dependency but does not vendor `onnx`, while
+`onnxruntime.quantization` imports `onnx` unconditionally at its own module scope
+(via `calibrate.py`) -- so a plain `uv run` dies with `ModuleNotFoundError: No
+module named 'onnx'` the instant `main()` reaches that import, before any
+quantization logic runs. `onnx` is supplied ad hoc rather than added to
+`[project.dependencies]`, like `torch` and `transformers`.
+
+    cd streetlab-backend && uv run --with onnx python ../scripts/quantize_detector.py \\
       --input /tmp/p3b-finetuned.onnx --output /tmp/p3b-finetuned-int8.onnx
 """
 

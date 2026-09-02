@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 
-from perception.geometry import CLASS_SIZE
-from schema import Size
 from tests.conftest import BENCHMARK_DIR
 
 BENCH = BENCHMARK_DIR.parent / "benchmark-v2"
