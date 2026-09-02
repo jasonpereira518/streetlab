@@ -32,7 +32,7 @@ motorcycle agents against `--traffic 11`'s two and one. Nothing in this data
 separates those four, so "raise `--traffic` to get buses" is not a claim this
 file is entitled to make. The weaker wording is the correct one, and this
 paragraph exists so that it stays that way: the causal version has been
-written into this project and retracted **five** times already, in five
+written into this project and retracted **six** times already, in six
 different shapes -- the Phase 3b report's section 13 enumerates them all.
 The practical consequence is unchanged and is the whole point -- read the
 printed counts, because class coverage follows the captures you passed.
@@ -168,7 +168,7 @@ def combined_class_counts(docs: list[dict]) -> dict[str, int]:
     all perfectly correlated with their traffic setting across the twelve
     captures measured, so the observed composition cannot be attributed to the
     flag. See this module's docstring; the causal version of this sentence has
-    been retracted five times.
+    been retracted six times.
     """
     totals: dict[str, int] = {}
     for doc in docs:

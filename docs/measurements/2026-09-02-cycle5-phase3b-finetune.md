@@ -2106,13 +2106,15 @@ per-class agent count are perfectly correlated across this set; **nothing here i
 which is responsible**, and the report does not claim raised density caused it. The
 correct statement is the descriptive one: the Phase 3b training set is not 100% car.
 
-This project has retracted a causal claim on this exact axis **five** times: once after
+This project has retracted a causal claim on this exact axis **six** times: once after
 it was written back into a committed docstring following its retraction from a report,
-and once in a committed manifest note that outlived both of the reviews which fixed the
-same claim elsewhere. The weaker wording is the right one and
+and twice in committed manifest notes that outlived the reviews which fixed the same
+claim elsewhere. The weaker wording is the right one and
 `scripts/finetune_detector.py` now says why at all three sites that used to claim
-otherwise. All five, and the shape each took, are enumerated in
-[§13](#13-where-this-leaves-cycle-5) — the count is a finding, not an aside.
+otherwise. All six, and the shape each took, are enumerated in
+[§13](#13-where-this-leaves-cycle-5) — the count is a finding, not an aside, which is
+why this paragraph said **five** until the sweep that fixed instance 5 turned up a
+sixth nobody had found.
 
 **The practical consequence, which is unaffected:** six of the twelve captures carry the
 large majority of the usable `bus` and `motorcycle` boxes and the other six contribute
@@ -2261,13 +2263,16 @@ What a Cycle 6 would have to start from, in the order this phase's evidence rank
    phase measured, on the training side and held out alike. A localisation-aware read — does the pretrained model's 0.7305 sit
    on an actual car? — would separate them, and Cycle 4 Phase 3's zero-vehicle-detections
    result makes "confidently wrong" a live possibility rather than a hypothetical.
-6. **The `--traffic` attribution came back five times on this branch alone, and nothing
-   guards against a sixth** (§10). Every recurrence was caught by a human review, but
-   the last two only by the whole-branch review, after three earlier ones had already
-   been fixed — and every one took a different surface form. An automated lint was
-   considered for exactly this and **ruled against**: a regex broad enough to match all
-   five fires on ordinary descriptive prose, and a warning people learn to ignore is
-   worse than none. The evidence is recorded here instead, so Cycle 6 decides with it
+6. **The `--traffic` attribution came back six times on this branch alone, and nothing
+   guards against a seventh** (§10). Every recurrence was caught by a human review — but
+   read *which* review, because that is the section's sharpest evidence: three were
+   caught by per-task reviews, a fourth and fifth only by the whole-branch review that
+   ran after all eight tasks had been individually approved, and the **sixth only by the
+   targeted sweep the fifth prompted** — a review of a fix, looking for exactly this.
+   Per-task review did not suffice, whole-branch review did not suffice, and every one
+   took a different surface form. An automated lint was considered for exactly this and
+   **ruled against**: a regex broad enough to match all six fires on ordinary
+   descriptive prose, and a warning people learn to ignore is worse than none. The evidence is recorded here instead, so Cycle 6 decides with it
    rather than from the memory of whoever is left:
 
    | # | where it appeared | what shape it took |
@@ -2276,7 +2281,8 @@ What a Cycle 6 would have to start from, in the order this phase's evidence rank
    | 2 | `scripts/finetune_detector.py` | three committed docstring/comment sites — "a `--traffic 11` capture is ~90% car" — written *back into code* after 1 had been retracted from the report |
    | 3 | Task 7's report draft | a sentence saying raised density diversified the training distribution; caught by its own author before submission |
    | 4 | `contract/manifests/grid-arterial-seed1-t24.json` | a committed manifest note — "denser … consistent with an arterial packed with traffic=24" — written at capture time, and outliving both reviews that fixed the claim elsewhere |
-   | 5 | §2 of this report | a braking-rate aside — "more braking events under denser traffic" — the only one of the five *not* inside a sentence that withdraws it, and contradicted by §11.1's own printout some 1,900 lines below it |
+   | 5 | §2 of this report | a braking-rate aside — "more braking events under denser traffic" — live published prose, in no withdrawing sentence, and contradicted by §11.1's own printout some 1,900 lines below it |
+   | 6 | `contract/manifests/grid-night-seed1-t24.json` | a second committed manifest note — "matching grid-arterial's pattern at the same traffic=24" — co-occurrence framed as shared cause, also in no withdrawing sentence, and found **only** by the sweep that fixed 5 |
 
    What recurs is not a phrase but a reasoning error: treating `--traffic` as the
    explanatory variable in a set where it is perfectly correlated with route length,
