@@ -32,7 +32,7 @@ from map.geocode import GeocodeError, NominatimGeocoder
 from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource, default_source
 from map.overpass import HttpxFetcher, OverpassClient, OverpassError
-from map.scene_build import SceneSource, SyntheticGrid
+from map.scene_build import SceneSource, SyntheticGrid, TrafficOverrideError
 from perception.capture import CaptureSink
 from perception.detector import OnnxDetector, build_session
 from perception.model_cache import DEFAULT_MODEL, ModelCache
@@ -47,7 +47,20 @@ log = logging.getLogger("streetlab.cli")
 # SyntheticGrid. Caught wherever `Simulation(...)` or `OsmSceneSource.build`
 # runs so a DNS failure or an Overpass outage prints one clean line instead
 # of a raw traceback.
-_SOURCE_ERRORS = (KeyError, GeocodeError, OverpassError, NoDrivableRoad)
+#
+# TrafficOverrideError is here because `scene_source_for` constructs
+# SyntheticGrid *inside* those same try blocks, after
+# `perception_pipeline_for` has already allocated a live ThreadPoolExecutor.
+# Leaving it out did not merely print a traceback for `--traffic -1`: it
+# skipped the `pipeline.shutdown()` on the except path, so the one rejection
+# this flag can raise leaked a thread pool every time it fired.
+_SOURCE_ERRORS = (
+    KeyError,
+    GeocodeError,
+    OverpassError,
+    NoDrivableRoad,
+    TrafficOverrideError,
+)
 
 MPS_TO_MPH = 2.236936292054402
 DEFAULT_PORT = 8765

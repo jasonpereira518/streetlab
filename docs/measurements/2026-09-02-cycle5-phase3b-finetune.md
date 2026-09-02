@@ -167,11 +167,20 @@ exiting.
 | 10 | grid-night | 2 | 24 | 151 | 639 | 446 | 2.9536 | car 233, truck 73, moto 74, bus 66 |
 | 11 | grid-night | 3 | 24 | 153 | 582 | 398 | 2.6013 | car 205, truck 77, moto 45, bus 71 |
 
-**Floor 0.8431, ceiling 2.9536.** Nothing came near the 0.30 gate, let alone below it.
+**Floor 0.7900, ceiling 2.9536 over all twelve rows above.** The floor is row 0, the
+checkpoint capture, kept rather than re-taken. Over the *eleven* captures taken in this
+task the floor is **0.8431** (row 4) — the figure the README quotes against "eleven more
+followed" — while the ceiling is 2.9536 on either basis. Two bases, one word, and both
+are stated here so that neither can be read as the other. Nothing came near the 0.30
+gate, let alone below it.
+
 Every ego-stopped percentage stayed under the 50% jam threshold, though the six
 `--traffic 24` captures sit systematically higher (19.1–27.3%) than the six
-`--traffic 11` ones (2.5–4%) — more braking events under denser traffic, recorded as a
-real difference between the two tiers rather than folded into the yield number.
+`--traffic 11` ones (2.5–4.0%) — a real difference between the two tiers, recorded
+rather than folded into the yield number. What produces it is not separable here: the
+two tiers differ in traffic value, route length and scenario identity together, and
+their designed agent spacing is identical
+([§11.1](#11-limitations-of-this-phases-own-method)).
 
 All twelve manifests are committed under `contract/manifests/`; the capture directories
 themselves are not. Recombined by the trainer's own guards:
@@ -213,7 +222,10 @@ program, from each capture's own `labels.json`:
 ```
 $ python3 -c "
 import json
-names = ['grid-loop-seed1-t11', ... , 'grid-night-seed3-t24']
+names = ['grid-loop-seed1-t11', 'grid-loop-seed2-t11', 'grid-loop-seed3-t11',
+         'grid-signals-seed1-t11', 'grid-signals-seed2-t11', 'grid-signals-seed3-t11',
+         'grid-arterial-seed1-t24', 'grid-arterial-seed2-t24', 'grid-arterial-seed3-t24',
+         'grid-night-seed1-t24', 'grid-night-seed2-t24', 'grid-night-seed3-t24']
 tot = {}
 for n in names:
     d = json.load(open(f'contract/manifests/{n}.json'))
@@ -468,6 +480,12 @@ saved checkpoint to /tmp/p3b-checkpoint
 Weights are NOT committed and no ModelSpec is registered here. The peaks above are read on training frames; quote quality only from a score against the held-out benchmark.
 EXIT 0 lr=1e-4 epochs=20
 ```
+
+(Verbatim from `/tmp/p3b/full-1e-4-e20.log` from `20 epochs x 467 steps` onward, with
+**one** elision: a single `Writing model shards:` tqdm progress line, which sits between
+the `truck` peak and `saved checkpoint`. Every other line in the block is byte-identical
+to the log, and the lines above `20 epochs x 467 steps` — the dataset guards, the device
+line and the per-capture frame counts — are §2's block, not dropped.)
 
 **Monotone across all twenty epochs** — no epoch in which the loss rises, the property
 `5e-4` and `1e-3` both failed — falling 13.6673 → 7.7427, the lowest loss anything in
@@ -1076,6 +1094,14 @@ would have cost more than the thinness does. It is adequate for the decision rul
 near-trivial "tp > 0 at 0.50" condition and inadequate for per-class quality claims.
 **The frozen anchor carries the comparative weight in this document.**
 
+Its manifest is `contract/manifests/benchmark-v2.json`, written by
+`scripts/dataset_manifest.py` from the committed `labels.json` and carrying that file's
+`labels_sha256` (`a7978a44…`). This set is the phase's one capture committed *in full*,
+so for a while it was also the only one without a manifest — the twelve training
+captures, which are **not** committed, all had one. That asymmetry was backwards: the
+manifest is what makes a capture's counts checkable against its labels by a second
+program, and it costs one small JSON file whether or not the frames are in git.
+
 ### Peak vehicle-class score, per cell, per set
 
 Read off the raw sigmoid matrix before any threshold or decode, so these are identical
@@ -1599,19 +1625,22 @@ print()
 print(f"{'':<26}{'pretrained vs cell A':>22}{'20 epochs vs cell C':>24}")
 print(f"{'capture':<26}{'car torch':>11}{'car onnx':>11}"
       f"{'car torch':>13}{'car onnx':>11}   4-class")
-car_ok = all_ok = 0
+car_ok = all_ok = pairs_ok = 0
 for cap in CAPS:
     agree = sum(1 for pair in ((pt, pa), (ft, fc)) for c in IDS
                 if f"{pair[0][cap][c]:.4f}" == f"{pair[1][cap][c]:.4f}")
     car_ok += (f"{pt[cap][2]:.4f}" == f"{pa[cap][2]:.4f}") and \
               (f"{ft[cap][2]:.4f}" == f"{fc[cap][2]:.4f}")
     all_ok += agree == 8
+    pairs_ok += agree
     print(f"{cap:<26}{pt[cap][2]:11.4f}{pa[cap][2]:11.4f}"
           f"{ft[cap][2]:13.4f}{fc[cap][2]:11.4f}   {agree}/8 agree")
 print()
 print(f"peak car agrees on {car_ok} of {len(CAPS)} captures for both models; "
       f"all four scored classes")
 print(f"agree on {all_ok} of {len(CAPS)} captures for both models.")
+pairs = len(CAPS) * len(IDS) * 2
+print(f"that is {pairs_ok} of {pairs} paired peaks agreeing, {pairs - pairs_ok} disagreeing.")
 
 $ python3 /tmp/p3b/readers/crosscheck.py /tmp/p3b /tmp/p3b-t7
 peak sigmoid per capture, at the 4 dp the ONNX logs print
@@ -1634,6 +1663,7 @@ grid-night-seed3-t24           0.4058     0.4058       0.1457     0.1457   8/8 a
 
 peak car agrees on 12 of 12 captures for both models; all four scored classes
 agree on 12 of 12 captures for both models.
+that is 96 of 96 paired peaks agreeing, 0 disagreeing.
 ```
 
 A set-wide maximum could in principle agree by coincidence over which single frame
@@ -2076,10 +2106,13 @@ per-class agent count are perfectly correlated across this set; **nothing here i
 which is responsible**, and the report does not claim raised density caused it. The
 correct statement is the descriptive one: the Phase 3b training set is not 100% car.
 
-This project has retracted a causal claim on this exact axis four times, once after it
-was written back into a committed docstring following its retraction from a report. The
-weaker wording is the right one and `scripts/finetune_detector.py` now says why at all
-three sites that used to claim otherwise.
+This project has retracted a causal claim on this exact axis **five** times: once after
+it was written back into a committed docstring following its retraction from a report,
+and once in a committed manifest note that outlived both of the reviews which fixed the
+same claim elsewhere. The weaker wording is the right one and
+`scripts/finetune_detector.py` now says why at all three sites that used to claim
+otherwise. All five, and the shape each took, are enumerated in
+[§13](#13-where-this-leaves-cycle-5) — the count is a finding, not an aside.
 
 **The practical consequence, which is unaffected:** six of the twelve captures carry the
 large majority of the usable `bus` and `motorcycle` boxes and the other six contribute
@@ -2228,6 +2261,30 @@ What a Cycle 6 would have to start from, in the order this phase's evidence rank
    phase measured, on the training side and held out alike. A localisation-aware read — does the pretrained model's 0.7305 sit
    on an actual car? — would separate them, and Cycle 4 Phase 3's zero-vehicle-detections
    result makes "confidently wrong" a live possibility rather than a hypothetical.
+6. **The `--traffic` attribution came back five times on this branch alone, and nothing
+   guards against a sixth** (§10). Every recurrence was caught by a human review, but
+   the last two only by the whole-branch review, after three earlier ones had already
+   been fixed — and every one took a different surface form. An automated lint was
+   considered for exactly this and **ruled against**: a regex broad enough to match all
+   five fires on ordinary descriptive prose, and a warning people learn to ignore is
+   worse than none. The evidence is recorded here instead, so Cycle 6 decides with it
+   rather than from the memory of whoever is left:
+
+   | # | where it appeared | what shape it took |
+   |---|---|---|
+   | 1 | Task 3's report draft | a report sentence — bus/motorcycle yield "splits by `--traffic` value, not scenario" |
+   | 2 | `scripts/finetune_detector.py` | three committed docstring/comment sites — "a `--traffic 11` capture is ~90% car" — written *back into code* after 1 had been retracted from the report |
+   | 3 | Task 7's report draft | a sentence saying raised density diversified the training distribution; caught by its own author before submission |
+   | 4 | `contract/manifests/grid-arterial-seed1-t24.json` | a committed manifest note — "denser … consistent with an arterial packed with traffic=24" — written at capture time, and outliving both reviews that fixed the claim elsewhere |
+   | 5 | §2 of this report | a braking-rate aside — "more braking events under denser traffic" — the only one of the five *not* inside a sentence that withdraws it, and contradicted by §11.1's own printout some 1,900 lines below it |
+
+   What recurs is not a phrase but a reasoning error: treating `--traffic` as the
+   explanatory variable in a set where it is perfectly correlated with route length,
+   scenario identity and per-class agent count — and where the two tiers were in fact
+   built to **identical** 24.6 m spacing (§11.1), so linear density is the one
+   explanation the design rules out. A guard that tested *that* property — no
+   set-level outcome attributed to one of four bundled factors — would be worth more
+   than any text match.
 
 ---
 

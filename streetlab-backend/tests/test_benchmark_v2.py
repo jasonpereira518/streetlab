@@ -11,18 +11,22 @@ from __future__ import annotations
 
 import json
 
+from sim.agents import _PROFILES
 from tests.conftest import BENCHMARK_DIR
 
 BENCH = BENCHMARK_DIR.parent / "benchmark-v2"
 
-# From `sim/agents.py`'s `_PROFILES`: (cls, length, width, height, speed_mult).
-# The height spread per class is what this set's boxes must fall inside --
-# a fixed per-class value would mean the prior leaked back in.
+# Read out of `sim/agents.py`'s `_PROFILES` -- (cls, length, width, height,
+# speed_mult) -- rather than hand-copied from it. The height spread per class
+# is what this set's boxes must fall inside; a fixed per-class value would
+# mean the prior leaked back in. A copied table would still say 1.45/1.50/1.42
+# the day someone changed a profile, and the guard would go on passing against
+# heights the simulation no longer produces. Same reasoning as this file's
+# import of `_camera_from_record` below: one definition, free to change, never
+# free to drift.
 _PROFILE_HEIGHTS: dict[str, list[float]] = {
-    "car": [1.45, 1.50, 1.42],
-    "truck": [3.10],
-    "bus": [3.30],
-    "motorcycle": [1.30],
+    cls: [height for c, _length, _width, height, _mult in _PROFILES if c == cls]
+    for cls in {profile[0] for profile in _PROFILES}
 }
 
 

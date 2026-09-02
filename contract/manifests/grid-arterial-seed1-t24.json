@@ -2,7 +2,7 @@
   "scenario": "grid-arterial",
   "seed": 1,
   "command": "uv run streetlab serve --port 8765 --scenario grid-arterial --seed 1 --traffic 24 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-arterial-seed1-t24",
-  "note": "Phase 3b training capture (Task 3, row 3/11). usable/frame 2.6711 (406/152) -- highest yield of the phase so far. Per-class usable: car 193, truck 75, bus 68, motorcycle 70 -- FIRST capture where bus and motorcycle clear the visible+extent_from_truth filter. Ego below 0.5 m/s in 20.5% of frames (below the 50% jam threshold but notably higher than grid-loop's ~3%), median speed 3.07 m/s, nearest vehicle median 9.8 m -- denser and closer than grid-loop, consistent with an arterial packed with traffic=24.",
+  "note": "Phase 3b training capture (Task 3, row 3/11). usable/frame 2.6711 (406/152) -- highest yield of the phase so far. Per-class usable: car 193, truck 75, bus 68, motorcycle 70 -- FIRST capture where bus and motorcycle clear the visible+extent_from_truth filter. Ego below 0.5 m/s in 20.5% of frames (below the 50% jam threshold but notably higher than grid-loop's ~3%), median speed 3.07 m/s, nearest vehicle median 9.8 m -- closer than grid-loop, which is measured. What produces that is NOT separable here: this capture differs from grid-loop's in traffic value, route length and scenario identity together, and the two tiers' designed spacing is the same 24.6 m, so it is not attributable to traffic=24.",
   "commit": "f83bc84",
   "frames": 152,
   "annotations": 598,

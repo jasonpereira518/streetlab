@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from map.scene_build import SCENARIOS, SyntheticGrid
+from map.scene_build import SCENARIOS, SyntheticGrid, TrafficOverrideError
+from server import cli
 
 
 def test_without_an_override_every_scenario_keeps_its_shipped_count():
@@ -46,6 +47,59 @@ def test_an_override_of_zero_is_legal_and_empties_the_road():
 def test_a_negative_override_is_refused():
     with pytest.raises(ValueError, match="traffic"):
         SyntheticGrid(traffic_override=-1)
+
+
+def test_the_refusal_is_a_valueerror_so_existing_callers_still_read_it():
+    """`TrafficOverrideError` exists so `cli._SOURCE_ERRORS` can name this
+    rejection without catching every unrelated `ValueError` under a scene
+    build. It must stay a `ValueError` subclass: anything that only knows the
+    stdlib type -- including the test above -- must keep working."""
+    with pytest.raises(TrafficOverrideError):
+        SyntheticGrid(traffic_override=-1)
+    assert issubclass(TrafficOverrideError, ValueError)
+
+
+def test_serve_refuses_a_negative_override_without_a_traceback(capsys):
+    """The sibling rejection -- `--traffic` with `--source osm` -- exits
+    cleanly through `parser.error`. This one reached `SyntheticGrid.__init__`
+    and raised out of `main()`, printing a raw traceback at a user. Fails if
+    the exception escapes at all, because an escaping exception never reaches
+    these assertions."""
+    code = cli.main(["serve", "--traffic", "-1", "--port", "0"])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert out.strip().startswith("error:")
+    assert "traffic override must be >= 0, got -1" in out
+    assert "Traceback" not in out
+
+
+def test_serve_shuts_down_the_perception_pipeline_when_the_override_is_refused(
+    capsys, monkeypatch
+):
+    """The half of this that is not cosmetic. `perception_pipeline_for` runs
+    BEFORE `Simulation(...)`, so by the time the override is rejected a live
+    `ThreadPoolExecutor` already exists. The teardown that guarantees it is
+    reclaimed lives on the `except _SOURCE_ERRORS` path -- an exception that
+    is not in that tuple walks straight past it and leaks the pool.
+
+    Reuses `test_cli_osm.py`'s spy rather than a second copy: it wraps the
+    real `shutdown`, so a spied run still leaves no live thread behind."""
+    from tests.test_cli_osm import _spy_on_pipeline_shutdown
+
+    shutdown_calls = _spy_on_pipeline_shutdown(monkeypatch)
+
+    code = cli.main(
+        ["serve", "--traffic", "-1", "--port", "0", "--perception", "ml"]
+    )
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert out.strip().startswith("error:")
+    assert len(shutdown_calls) == 1, (
+        "the pipeline's ThreadPoolExecutor was never shut down on the "
+        "--traffic rejection path"
+    )
 
 
 def test_the_override_does_not_change_the_ego_route_or_buildings():

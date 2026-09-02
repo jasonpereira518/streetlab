@@ -211,6 +211,19 @@ _BUILDING_COLORS = (
 )
 
 
+class TrafficOverrideError(ValueError):
+    """`--traffic` was given a value no scene can be built from.
+
+    A `ValueError` subclass so `SyntheticGrid(-1)` still reads as one to any
+    caller that only knows the stdlib type, and a named class so
+    `server/cli.py`'s `_SOURCE_ERRORS` can catch exactly this without also
+    swallowing every unrelated `ValueError` raised anywhere under a scene
+    build. Without it the CLI printed a raw traceback for `--traffic -1` --
+    and, worse, skipped the `PerceptionPipeline.shutdown()` that the error
+    path exists to guarantee, leaking a live `ThreadPoolExecutor`.
+    """
+
+
 class SyntheticGrid:
     """A deterministic 3x3 street grid. Same input, same city, every time."""
 
@@ -225,7 +238,9 @@ class SyntheticGrid:
         demo and the packaged app are untouched.
         """
         if traffic_override is not None and traffic_override < 0:
-            raise ValueError(f"traffic override must be >= 0, got {traffic_override}")
+            raise TrafficOverrideError(
+                f"traffic override must be >= 0, got {traffic_override}"
+            )
         self._traffic_override = traffic_override
 
     def _traffic_for(self, scenario: _Scenario) -> int:

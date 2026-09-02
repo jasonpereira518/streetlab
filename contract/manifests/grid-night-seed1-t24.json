@@ -2,7 +2,7 @@
   "scenario": "grid-night",
   "seed": 1,
   "command": "uv run streetlab serve --port 8765 --scenario grid-night --seed 1 --traffic 24 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-night-seed1-t24",
-  "note": "Phase 3b training capture (Task 3, row 9/11). usable/frame 2.8543 (431/151). Per-class usable: car 200, truck 80, bus 74, motorcycle 77 -- all four classes usable, matching grid-arterial's pattern at the same traffic=24. Ego below 0.5 m/s in 20.0% of frames, median speed 3.30 m/s, nearest vehicle median 10.5 m -- density/closeness numbers close to grid-arterial's.",
+  "note": "Phase 3b training capture (Task 3, row 9/11). usable/frame 2.8543 (431/151). Per-class usable: car 200, truck 80, bus 74, motorcycle 77 -- all four classes usable, matching grid-arterial's pattern (a co-occurrence across two scenarios, not an effect attributable to any one of the factors that vary with them). Ego below 0.5 m/s in 20.0% of frames, median speed 3.30 m/s, nearest vehicle median 10.5 m -- density/closeness numbers close to grid-arterial's.",
   "commit": "7c4c246",
   "frames": 151,
   "annotations": 609,

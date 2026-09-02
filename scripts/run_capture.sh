@@ -41,6 +41,22 @@
 #   maxwait_s   seconds to poll before giving up and stopping anyway
 #               (default 480)
 #
+# Environment:
+#   DETECTOR_MODEL   path to the .onnx detector. Defaults to the author's
+#                    weights-cache path, which is the one every Phase 3b
+#                    capture actually used -- but it is a default, not a
+#                    constant, so this script runs on a machine that is not
+#                    that laptop. `streetlab serve --detector-model` resolves
+#                    the shipped model through the cache when the path is
+#                    omitted entirely; this script always passes one, so point
+#                    DETECTOR_MODEL at your own cache to reproduce a capture.
+#
+# Cleanup is scoped to THIS repo. `pkill -f` for Vite matches the frontend's
+# own absolute `node_modules/.bin/vite` path rather than the bare string
+# "vite", because a bare match kills any unrelated Vite dev server on the
+# machine -- and there routinely is one. The `npm run dev` parent is killed
+# by PID; this pkill exists only to reap the vite child it spawns.
+#
 # Stops the backend with `kill -INT` first, escalating to `-TERM` only if
 # it has not exited 20s later: a prior phase measured that TERM leaves
 # labels.json stale mid-write, while INT reaches `finalize()`, so INT is
@@ -62,7 +78,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$REPO_ROOT/streetlab-backend"
 FRONTEND_DIR="$REPO_ROOT/streetlab"
 LOGDIR=/tmp/streetlab-capture
-DETECTOR_MODEL="/Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx"
+DETECTOR_MODEL="${DETECTOR_MODEL:-/Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx}"
 
 mkdir -p "$LOGDIR"
 rm -rf "$CAPTURE_DIR"
@@ -71,7 +87,7 @@ mkdir -p "$CAPTURE_DIR"
 echo "=== cleaning up any stale processes from a prior run ==="
 pkill -f "streetlab serve" 2>/dev/null
 pkill -f "drive_capture" 2>/dev/null
-pkill -f "vite" 2>/dev/null
+pkill -f "$FRONTEND_DIR/node_modules/.bin/vite" 2>/dev/null
 sleep 2
 
 echo "=== starting backend: scenario=$SCENARIO seed=$SEED traffic=$TRAFFIC -> $CAPTURE_DIR ==="
@@ -148,7 +164,7 @@ kill "$DRIVER_PID" 2>/dev/null
 kill "$VITE_PID" 2>/dev/null
 sleep 1
 pkill -f "drive_capture" 2>/dev/null
-pkill -f "vite" 2>/dev/null
+pkill -f "$FRONTEND_DIR/node_modules/.bin/vite" 2>/dev/null
 
 DISK_FRAMES=$(ls "$CAPTURE_DIR/frames" 2>/dev/null | wc -l | tr -d ' ')
 LABEL_IMAGES=$(python3 -c "import json; print(len(json.load(open('$CAPTURE_DIR/labels.json'))['images']))" 2>/dev/null || echo -1)
