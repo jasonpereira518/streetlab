@@ -1,7 +1,8 @@
 """RT-DETR pre/postprocessing, plus the ONNX session that drives them.
 
-The pure functions (`preprocess`, `postprocess`, the class map) need no
-model file and no `onnxruntime` import, so tests can pin their decoding
+The pure functions (`preprocess`, `preprocess_letterbox`, `LetterboxTransform`,
+`postprocess`, the class map) need no model file and no `onnxruntime`
+import, so tests can pin their decoding
 decisions without weights: sigmoid (not softmax) scores, normalised
 `cxcywh` boxes, and a class map keyed by integer id (not by this
 checkpoint's VOC-style label strings).
@@ -15,6 +16,7 @@ probing, just tensor math.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Callable
 
@@ -68,22 +70,128 @@ def preprocess(rgb: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(chw[np.newaxis, ...], dtype=np.float32)
 
 
+@dataclass(frozen=True, slots=True)
+class LetterboxTransform:
+    """What `preprocess_letterbox` did to a frame, so decoding can undo it.
+
+    `scale` is isotropic -- the whole point of letterboxing is that both axes
+    move together -- and `pad_x`/`pad_y` are the pixels of padding on ONE
+    side, in model-input coordinates.
+
+    `scale` is the *requested* ratio, not necessarily the ratio the resize
+    actually achieved: `preprocess_letterbox` rounds `frame_w * scale` and
+    `frame_h * scale` to integer pixel dimensions before resizing, so when
+    that product isn't already integral, the true forward ratio is
+    `new_w / frame_w` (or `new_h / frame_h`), which can differ from `scale`
+    by up to `0.5 / frame_w`. The decode divides by `scale` regardless. This
+    is exact -- zero disagreement -- at every frame size this task measured
+    (640x384, 320x192 and the portrait 192x320, all integral), so it is
+    unreachable today. A
+    future frame size that isn't could reintroduce, in miniature, the exact
+    kind of silent offset this task exists to prevent.
+    """
+
+    scale: float
+    pad_x: int
+    pad_y: int
+
+
+def preprocess_letterbox(rgb: np.ndarray) -> tuple[np.ndarray, LetterboxTransform]:
+    """`H×W×3` uint8 RGB -> `1×3×640×640` float32, aspect preserved by padding.
+
+    The alternative to `preprocess`'s plain stretch, which squares a 640x384
+    frame by compressing it 1.67x vertically -- so a car 20 px wide and 9 px
+    tall reaches the model as 20 x 15, a shape no COCO car has. This path
+    scales both axes together and pads the remainder instead.
+
+    Padding is black. `do_pad` is false for this checkpoint, so there is no
+    canonical fill value to inherit; black is what an unrendered frame region
+    already contained, and it is what a reader will assume.
+
+    Returns the transform alongside the tensor because `postprocess` cannot
+    decode a letterboxed box without it -- the normalised coordinates now
+    include bars the frame knows nothing about.
+    """
+    frame_h, frame_w = rgb.shape[:2]
+    target_w, target_h = MODEL_INPUT
+    scale = min(target_w / frame_w, target_h / frame_h)
+    new_w = round(frame_w * scale)
+    new_h = round(frame_h * scale)
+    pad_x = (target_w - new_w) // 2
+    pad_y = (target_h - new_h) // 2
+
+    resized = Image.fromarray(rgb).resize((new_w, new_h), resample=Image.BILINEAR)
+    canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+    canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = np.asarray(resized)
+
+    chw = canvas.astype(np.float32).transpose(2, 0, 1) / 255.0
+    tensor = np.ascontiguousarray(chw[np.newaxis, ...], dtype=np.float32)
+    return tensor, LetterboxTransform(scale=scale, pad_x=pad_x, pad_y=pad_y)
+
+
+def _to_frame_px(
+    cx: "float | np.floating",
+    cy: "float | np.floating",
+    w: "float | np.floating",
+    h: "float | np.floating",
+    frame_w: int,
+    frame_h: int,
+    transform: "LetterboxTransform | None",
+) -> tuple[float, float, float, float]:
+    """Normalised model `cxcywh` -> frame-pixel corners, clamped.
+
+    With no transform this is the plain stretch mapping, unchanged from
+    Cycle 4: normalised coordinates span the whole frame because the resize
+    did too. With a transform, the model-pixel coordinates are un-padded and
+    un-scaled first -- exactly `preprocess_letterbox`'s three steps backwards.
+
+    Accepts the numpy float32 scalars straight out of `pred_boxes[0]` rather
+    than forcing a `float()` cast at the call site: under NEP 50, float32
+    arithmetic against a Python `int`/`float` stays float32, but casting to
+    Python `float` first promotes every operation to float64 for the rest of
+    the expression. That promotion is invisible until you diff bytes against
+    the pre-letterbox decode, which needs to stay float32 end to end because
+    Cell 1 of the factorial is a byte-for-byte reproduction check.
+    """
+    if transform is None:
+        x0, y0 = (cx - w / 2.0) * frame_w, (cy - h / 2.0) * frame_h
+        x1, y1 = (cx + w / 2.0) * frame_w, (cy + h / 2.0) * frame_h
+    else:
+        model_w, model_h = MODEL_INPUT
+        mx0, mx1 = (cx - w / 2.0) * model_w, (cx + w / 2.0) * model_w
+        my0, my1 = (cy - h / 2.0) * model_h, (cy + h / 2.0) * model_h
+        x0 = (mx0 - transform.pad_x) / transform.scale
+        x1 = (mx1 - transform.pad_x) / transform.scale
+        y0 = (my0 - transform.pad_y) / transform.scale
+        y1 = (my1 - transform.pad_y) / transform.scale
+    return (
+        float(np.clip(x0, 0.0, frame_w)),
+        float(np.clip(y0, 0.0, frame_h)),
+        float(np.clip(x1, 0.0, frame_w)),
+        float(np.clip(y1, 0.0, frame_h)),
+    )
+
+
 def postprocess(
     logits: np.ndarray,
     pred_boxes: np.ndarray,
     frame_w: int,
     frame_h: int,
     score_threshold: float,
+    transform: "LetterboxTransform | None" = None,
 ) -> list[Box2D]:
     """Decode one model output (`logits`, `pred_boxes`, batch size 1) into
     frame-pixel `Box2D`s.
 
     RT-DETR emits independent per-class logits, not a softmax distribution,
     and one query per object with no built-in NMS -- so scoring is sigmoid
-    and there is no suppression pass here. Boxes are normalised `cxcywh`;
-    because the resize was a plain stretch of the whole frame, normalised
-    coordinates map straight back to `frame_w`/`frame_h` with no letterbox
-    offset to undo.
+    and there is no suppression pass here. Boxes are normalised `cxcywh`.
+    When `transform` is `None` (the `preprocess` caller), the resize was a
+    plain stretch of the whole frame, so normalised coordinates map straight
+    back to `frame_w`/`frame_h` with no letterbox offset to undo. When
+    `transform` is given (the `preprocess_letterbox` caller), the normalised
+    coordinates include padding bars the frame never contained, and it is
+    undone here before mapping to frame pixels.
     """
     scores = 1.0 / (1.0 + np.exp(-logits[0]))  # (n_queries, n_classes)
     best_cls_ids = np.argmax(scores, axis=-1)
@@ -99,10 +207,7 @@ def postprocess(
         if cls is None or conf < score_threshold:
             continue
 
-        x0 = float(np.clip((cx - w / 2.0) * frame_w, 0.0, frame_w))
-        y0 = float(np.clip((cy - h / 2.0) * frame_h, 0.0, frame_h))
-        x1 = float(np.clip((cx + w / 2.0) * frame_w, 0.0, frame_w))
-        y1 = float(np.clip((cy + h / 2.0) * frame_h, 0.0, frame_h))
+        x0, y0, x1, y1 = _to_frame_px(cx, cy, w, h, frame_w, frame_h, transform)
         if x1 <= x0 or y1 <= y0:
             continue  # degenerate after clamping
 

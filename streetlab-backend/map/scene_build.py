@@ -211,8 +211,46 @@ _BUILDING_COLORS = (
 )
 
 
+class TrafficOverrideError(ValueError):
+    """`--traffic` was given a value no scene can be built from.
+
+    A `ValueError` subclass so `SyntheticGrid(-1)` still reads as one to any
+    caller that only knows the stdlib type, and a named class so
+    `server/cli.py`'s `_SOURCE_ERRORS` can catch exactly this without also
+    swallowing every unrelated `ValueError` raised anywhere under a scene
+    build. Without it the CLI printed a raw traceback for `--traffic -1` --
+    and, worse, skipped the `PerceptionPipeline.shutdown()` that the error
+    path exists to guarantee, leaking a live `ThreadPoolExecutor`.
+    """
+
+
 class SyntheticGrid:
     """A deterministic 3x3 street grid. Same input, same city, every time."""
+
+    def __init__(self, traffic_override: int | None = None) -> None:
+        """`traffic_override` replaces every scenario's own agent count.
+
+        Exists for Phase 3b's captures: yield is governed by agent spacing,
+        `route_length / (traffic + 1)`, and at shipped densities most
+        scenarios put the nearest vehicle past a corner behind the block
+        (see `docs/measurements/2026-08-30-cycle5-phase3a-loop.md`). `None`
+        -- the default -- leaves every scenario exactly as it ships, so the
+        demo and the packaged app are untouched.
+        """
+        if traffic_override is not None and traffic_override < 0:
+            raise TrafficOverrideError(
+                f"traffic override must be >= 0, got {traffic_override}"
+            )
+        self._traffic_override = traffic_override
+
+    def _traffic_for(self, scenario: _Scenario) -> int:
+        """The one resolved agent count for this build.
+
+        Read by BOTH `BuiltScene.traffic_count` (which reaches the frontend
+        through `SceneDescription`) and `_agent_routes` (which builds the
+        actual agents). Resolving it once is what keeps them from disagreeing.
+        """
+        return scenario.traffic if self._traffic_override is None else self._traffic_override
 
     def scenarios(self) -> list[ScenarioSummary]:
         return [self._summary(s) for s in SCENARIOS]
@@ -220,6 +258,7 @@ class SyntheticGrid:
     def build(self, scenario_id: str) -> BuiltScene:
         scenario = self._find(scenario_id)
         rng = Random(_seed(scenario.id))
+        traffic = self._traffic_for(scenario)
 
         ego_route = self._block_route(scenario.block)
         description = SceneDescription(
@@ -248,10 +287,10 @@ class SyntheticGrid:
         return BuiltScene(
             description=description,
             ego_route=ego_route,
-            agent_routes=self._agent_routes(scenario, ego_route),
+            agent_routes=self._agent_routes(scenario, ego_route, traffic),
             signal_groups=self._signal_groups(),
             speed_limit_mps=self._route_speed_limit(scenario.block),
-            traffic_count=scenario.traffic,
+            traffic_count=traffic,
             control_points=self._control_points(ego_route),
             lanes=derive_lanes(ego_route, description.roads),
         )
@@ -342,7 +381,9 @@ class SyntheticGrid:
         used += [s for s in EW_STREETS if s.at in (y0, y1)]
         return min((s.speed_mph for s in used), default=25) * MPH
 
-    def _agent_routes(self, scenario: _Scenario, ego_route: Route) -> list[Route]:
+    def _agent_routes(
+        self, scenario: _Scenario, ego_route: Route, traffic: int
+    ) -> list[Route]:
         """Traffic shares the ego's lane, all of it.
 
         Every third agent used to drive `block_route.offset(LANE_W)`, the lane
@@ -362,8 +403,11 @@ class SyntheticGrid:
 
         Cycle 3 replaces the scripted followers with IDM/MOBIL agents, but the
         route seam stays as it is.
+
+        `traffic` is passed in rather than read off `scenario` so this and
+        `BuiltScene.traffic_count` cannot diverge under an override.
         """
-        return [ego_route] * scenario.traffic
+        return [ego_route] * traffic
 
     # -- intersections ----------------------------------------------------- #
 

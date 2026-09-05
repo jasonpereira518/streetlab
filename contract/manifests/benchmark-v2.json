@@ -1,0 +1,27 @@
+{
+  "scenario": "grid-merge",
+  "seed": 11,
+  "command": "cd streetlab-backend && uv run streetlab serve --port 8765 --scenario grid-merge --seed 11 --traffic 6 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/benchmark-v2",
+  "note": "held-out test set v2, native density (traffic=6, grid-merge shipped default), NOT the frozen anchor (seed 4) or Phase 3a throwaway (seed 7)",
+  "commit": "dcef5156dbb30ab03b91fb0b84870d51ccd5b46f",
+  "frames": 92,
+  "annotations": 46,
+  "visible": 26,
+  "usable": 26,
+  "per_class": {
+    "car": 34,
+    "motorcycle": 12
+  },
+  "per_class_visible": {
+    "car": 14,
+    "motorcycle": 12
+  },
+  "per_class_usable": {
+    "car": 14,
+    "motorcycle": 12
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "a7978a4434ac0769bd0d9df2ed381f699ae44f83ffcddeed56f1deebd3eb2dfb"
+}

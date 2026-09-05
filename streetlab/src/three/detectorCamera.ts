@@ -275,13 +275,28 @@ export function createDetectorCamera(
       // false is what tells the `finally` not to call setRenderTarget with a
       // value that was never actually obtained.
       let previous: ReturnType<typeof renderer.getRenderTarget> | null = null;
+      // WebGPURenderer only runs its tone-mapping + color-space output pass
+      // when the active render target IS the renderer's designated "output"
+      // target (`isOutputTarget`, defined as `_renderTarget === _outputRenderTarget
+      // || _renderTarget === null`); see three's Renderer.js `_getFrameBufferTarget()`.
+      // The canvas satisfies this because `_renderTarget` is null there, but
+      // `target` never does on its own — so without this, every capture skipped
+      // `renderer.toneMapping`/`toneMappingExposure` AND the sRGB encode entirely,
+      // handing back raw scene-linear bytes that read as near-black once written
+      // into a JPEG. Declaring `target` as the output target for the duration of
+      // the render makes the offscreen pass go through exactly the same
+      // tonemap + encode the visible canvas gets, so the detector sees the scene
+      // at the same exposure the user does.
+      let previousOutput: ReturnType<typeof renderer.getOutputRenderTarget> | null = null;
       let acquiredPrevious = false;
       // Whether the early restore below already ran, so `finally` knows
       // whether it still owes a restore or would just be repeating one.
       let restoredEarly = false;
       try {
         previous = renderer.getRenderTarget();
+        previousOutput = renderer.getOutputRenderTarget();
         acquiredPrevious = true;
+        renderer.setOutputRenderTarget(target);
         renderer.setRenderTarget(target);
         targetBusy = true;
         await renderer.renderAsync(scene, camera);
@@ -299,6 +314,15 @@ export function createDetectorCamera(
         // render() while it reads true, independent of how long that window
         // actually is.
         renderer.setRenderTarget(previous);
+        // `previousOutput` is always `null` in this app (Renderer.tsx's main
+        // view never calls setOutputRenderTarget), but restoring the read
+        // value rather than hardcoding `null` means this stays correct if
+        // that ever changes. Left dangling, it would silently corrupt the
+        // *next* canvas frame too: `_getFrameBufferTarget()` keys its cached
+        // intermediate buffer on `_outputRenderTarget || _canvasTarget`, so a
+        // stale 640x384 detector target there would hand the main view's own
+        // tonemap pass a buffer sized for the wrong viewport.
+        renderer.setOutputRenderTarget(previousOutput);
         restoredEarly = true;
         targetBusy = false;
 
@@ -362,12 +386,37 @@ export function createDetectorCamera(
         // release unconditionally, and the restore failure is logged, not
         // swallowed.
         if (acquiredPrevious && !restoredEarly) {
+          // Each restore gets its OWN try/catch, deliberately not one try
+          // wrapping both: the original single-try version let a thrown
+          // setRenderTarget (the device-lost case this whole block exists
+          // for) skip setOutputRenderTarget entirely, since a throw jumps
+          // straight past the rest of the try body. That left
+          // `_outputRenderTarget` pointed at this detector's 640x384 target
+          // indefinitely — worse than the dangling `_renderTarget` this
+          // block was written to guard against, since `_getFrameBufferTarget()`
+          // keys its cached intermediate buffer on `_outputRenderTarget ||
+          // _canvasTarget` (see the comment above `setOutputRenderTarget`
+          // earlier in this function): the *next* canvas frame's own tonemap
+          // pass would silently pick up a buffer sized for the wrong
+          // viewport. Splitting the try means a lost GPU device that keeps
+          // failing setRenderTarget still gets setOutputRenderTarget's
+          // restore attempted and logged independently.
           try {
             renderer.setRenderTarget(previous);
           } catch (err) {
             console.warn(
               '[streetlab] detector camera: failed to restore render target; ' +
                 'a subsequent main-view render may draw into the wrong target',
+              err,
+            );
+          }
+          try {
+            renderer.setOutputRenderTarget(previousOutput);
+          } catch (err) {
+            console.warn(
+              '[streetlab] detector camera: failed to restore output render target; ' +
+                'a subsequent main-view render may use a tonemap buffer sized for ' +
+                'the wrong viewport',
               err,
             );
           }

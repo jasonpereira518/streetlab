@@ -28,6 +28,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
+from perception.capture import label_frame
 from perception.frames import CameraFrame
 from schema import PROTOCOL_VERSION, CameraFrameCmd, SceneDescription, StateUpdate, format_issues
 from sim.loop import CommandOutcome, SimLoop, make_ack
@@ -235,6 +236,18 @@ class _Connection:
         `StateUpdate` (`frames_received`/`frames_dropped`), not from a reply to
         this message — so failure here is a log line, never an exception that
         would take down the socket.
+
+        `--capture` (Cycle 5) piggybacks on this same decode rather than
+        opening a second path to the wire: `_capture_frame` below is only
+        ever reached once a frame has already cleared validation and base64
+        decoding for the pipeline. It does NOT gain its own bypass of the
+        `perception_pipeline is None` check just above — that guard, and the
+        frontend's matching `perception !== null` gate in `Renderer.tsx`,
+        are what keep a plain `streetlab serve` (no `--perception ml`) from
+        paying for an offscreen render, GPU readback, JPEG encode and
+        ~0.5 MB/s over the socket for nobody. `--capture` without
+        `--perception ml` is diagnosed loudly at startup instead — see
+        `capture_sink_for` in `server/cli.py`.
         """
         pipeline = self.loop.sim.perception_pipeline
         if pipeline is None:
@@ -261,6 +274,74 @@ class _Connection:
                 received_ms=time.perf_counter() * 1000.0,
             )
         )
+
+        self._capture_frame(cmd, jpeg)
+
+    def _capture_frame(self, cmd: CameraFrameCmd, jpeg: bytes) -> None:
+        """Label one already-decoded frame against simulation truth and hand
+        it to the capture sink, if `--capture` attached one to this loop.
+
+        Truth, heading and extent all come from the *recorded* snapshot at
+        `cmd.t` — `pose_history.at(cmd.t)`, `headings_at(cmd.t)` and
+        `sizes_at(cmd.t)` respectively — never from the world or
+        `self._traffic` as they stand *now*. Same rule `_score_ml` follows, and for the same
+        reason: by the time this frame arrived, the world has moved on,
+        and reading live agent state here (as an earlier version of
+        this method did, via a since-removed `Simulation.agent_headings`)
+        would silently orient a box by a heading the frame's instant never
+        actually had. `None` from `at` means no snapshot exists for this
+        instant (older than the buffer, or a scene swap cleared it), and
+        the frame is skipped rather than labelled against the wrong world.
+        `()` — a snapshot that exists and is simply empty — is not this
+        case; `PoseHistory.at` keeps the two apart on purpose (see its
+        docstring), and an empty road is a label the benchmark needs, not
+        a frame to drop. Neither `headings_at` nor `sizes_at` can
+        legitimately disagree with `at` about whether an instant was
+        recorded (all three read the same locked snapshot list) — the
+        `or {}` fallbacks below are defensive, not code paths any of them
+        is expected to take. When `sizes_at` does come back empty,
+        `label_frame` falls back to the class prior and marks every box
+        `extent_from_truth=False` rather than failing the frame, so the
+        degradation is recorded in the output rather than invisible.
+
+        Wrapped in one broad `except`, matching the never-raises discipline
+        `_ingest_frame` already documents for the rest of this method: a
+        capture failure (a bad truth lookup, a full disk, whatever) must
+        degrade to a log line, not take the socket down — the pipeline
+        submission above has already happened by the time this runs, so a
+        capture-only failure must not un-happen it.
+
+        Buildings come from the *live* scene rather than the snapshot, which
+        is safe for the one reason that matters: a scene swap clears
+        `pose_history`, so `at(cmd.t)` returns `None` and the frame is
+        dropped before it can be labelled against another world's geometry.
+        Footprint rings are far too large to copy into every snapshot.
+        """
+        sink = self.loop.capture_sink
+        if sink is None:
+            return
+        try:
+            truth = self.loop.sim.pose_history.at(cmd.t)
+            if truth is None:
+                return
+            headings = self.loop.sim.pose_history.headings_at(cmd.t) or {}
+            sizes = self.loop.sim.pose_history.sizes_at(cmd.t) or {}
+            buildings = self.loop.sim.scene.description.buildings
+            frame = label_frame(
+                jpeg,
+                self.loop.next_capture_seq(),
+                cmd.t,
+                cmd.width,
+                cmd.height,
+                cmd.camera,
+                truth,
+                headings,
+                sizes,
+                buildings,
+            )
+            sink.write(frame)
+        except Exception:
+            log.exception("capture failed for frame t=%.3f; dropping", cmd.t)
 
 
 async def _serve(ws: WebSocket, loop: SimLoop, tick_hz: float, clients: dict[str, int]) -> None:

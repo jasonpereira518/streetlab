@@ -61,6 +61,27 @@ DEFAULT_MODEL = ModelSpec(
 )
 
 
+# The same rtdetr_r18vd checkpoint at full precision. NOT the default and not
+# shipped: Cycle 5 Phase 2 measures whether post-training int8 quantization is
+# what blinds the detector on 9-20 px targets, and that comparison needs the
+# unquantized weights of the SAME architecture -- a different model would
+# confound the one variable the cell isolates. Cycle 4 measured an fp16
+# variant's latency but never its scores, and its fp32 test was RT-DETRv2, a
+# different architecture reporting only top-class names.
+# Resolved through this same cache -- `ModelCache.ensure(FP32_MODEL,
+# fetch_weights)` -- by the Phase 2 measurement script, exactly like
+# DEFAULT_MODEL: the hash below is what proves the measured cell ran on
+# these exact bytes, not on whatever happened to be at the URL that day.
+# Hash and size verified by download on 2026-08-26; see
+# docs/measurements/2026-08-26-cycle5-phase2-gates.md for the command.
+FP32_MODEL = ModelSpec(
+    name="rtdetr_r18vd_fp32",
+    url="https://huggingface.co/onnx-community/rtdetr_r18vd/resolve/main/onnx/model.onnx",
+    sha256="11843b02455cc24009aed24d4c40db721b1093be5ccd6bbe7b9c441abb1d0558",
+    size_bytes=82_572_357,
+)
+
+
 def _sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as f:

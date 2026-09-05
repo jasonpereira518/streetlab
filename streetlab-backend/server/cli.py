@@ -32,7 +32,8 @@ from map.geocode import GeocodeError, NominatimGeocoder
 from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource, default_source
 from map.overpass import HttpxFetcher, OverpassClient, OverpassError
-from map.scene_build import SceneSource, SyntheticGrid
+from map.scene_build import SceneSource, SyntheticGrid, TrafficOverrideError
+from perception.capture import CaptureSink
 from perception.detector import OnnxDetector, build_session
 from perception.model_cache import DEFAULT_MODEL, ModelCache
 from perception.pipeline import Detector, PerceptionPipeline, StubDetector
@@ -46,7 +47,20 @@ log = logging.getLogger("streetlab.cli")
 # SyntheticGrid. Caught wherever `Simulation(...)` or `OsmSceneSource.build`
 # runs so a DNS failure or an Overpass outage prints one clean line instead
 # of a raw traceback.
-_SOURCE_ERRORS = (KeyError, GeocodeError, OverpassError, NoDrivableRoad)
+#
+# TrafficOverrideError is here because `scene_source_for` constructs
+# SyntheticGrid *inside* those same try blocks, after
+# `perception_pipeline_for` has already allocated a live ThreadPoolExecutor.
+# Leaving it out did not merely print a traceback for `--traffic -1`: it
+# skipped the `pipeline.shutdown()` on the except path, so the one rejection
+# this flag can raise leaked a thread pool every time it fired.
+_SOURCE_ERRORS = (
+    KeyError,
+    GeocodeError,
+    OverpassError,
+    NoDrivableRoad,
+    TrafficOverrideError,
+)
 
 MPS_TO_MPH = 2.236936292054402
 DEFAULT_PORT = 8765
@@ -75,9 +89,15 @@ MODEL_CACHE_BUDGET_BYTES = 128 * 1024 * 1024
 DETECTOR_SCORE_THRESHOLD = 0.5
 
 
-def scene_source_for(source: str) -> SceneSource:
-    """Pick a world. The seam that makes real map data a one-flag change."""
-    return default_source() if source == "osm" else SyntheticGrid()
+def scene_source_for(source: str, traffic: int | None = None) -> SceneSource:
+    """Pick a world. The seam that makes real map data a one-flag change.
+
+    `traffic` overrides the synthetic scenarios' agent counts, for Phase 3b's
+    captures. It is meaningless for `osm` -- `OsmSceneSource` builds its agent
+    routes from the ingested graph -- so callers must reject that combination
+    before reaching here rather than have it silently ignored.
+    """
+    return default_source() if source == "osm" else SyntheticGrid(traffic)
 
 
 def model_cache_dir() -> Path:
@@ -155,6 +175,43 @@ def perception_pipeline_for(args) -> PerceptionPipeline | None:
     return PerceptionPipeline(build_detector(args.detector_model))
 
 
+def capture_sink_for(args) -> CaptureSink | None:
+    """The `CaptureSink` `--capture <dir>` asks for, or `None` for a plain run.
+
+    Only `serve` defines `--capture` (see Amendment 1 on this task: `run`
+    builds a bare `Simulation` with no WebSocket and no `_ingest_frame`, so a
+    capture directory there would accept the flag and produce an empty
+    `labels.json` -- worse than not offering it), so `getattr` rather than
+    `args.capture` directly, since `args` from `run` has no such attribute.
+
+    Warns rather than staying silent when `--capture` is given without
+    `--perception ml`: capture rides two independent gates it does not
+    control -- `perception_pipeline is None` short-circuits `_ingest_frame`
+    before any frame is even decoded, and the frontend never sends a
+    `camera_frame` at all while `perception` is null in `useSimStore` (see
+    `_ingest_frame` in `server/ws_server.py` and the `Renderer.tsx` comment
+    it references). Neither gate lives here, and neither should move to
+    accommodate this -- ML-off users should not pay for an offscreen render,
+    GPU readback, JPEG encode and ~0.5 MB/s over the socket that would be
+    discarded on arrival. So the only thing left to do is say so loudly:
+    without this, a mistyped command line looks identical to a working one
+    until someone notices `DIR` never got anything written to it.
+    """
+    directory = getattr(args, "capture", None)
+    if directory is None:
+        return None
+    if args.perception != "ml":
+        log.warning(
+            "--capture %s given without --perception ml: no camera frame will "
+            "ever reach the sink (perception_pipeline gates decoding in "
+            "_ingest_frame, and the frontend only streams frames once an ML "
+            "pipeline is attached), so %s will stay empty for the whole run",
+            directory,
+            directory,
+        )
+    return CaptureSink(Path(directory))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="streetlab", description="StreetLab simulation backend."
@@ -171,6 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--scenario", default=None)
     serve.add_argument("--seed", type=int, default=0)
+    serve.add_argument(
+        "--traffic",
+        type=int,
+        default=None,
+        help=(
+            "override the scenario's agent count (synthetic scenarios only). "
+            "Agents are spaced route_length/(traffic+1) along the ego's own "
+            "route, so raising this is how a capture gets vehicles close "
+            "enough to label. Omit to use each scenario's shipped count."
+        ),
+    )
     serve.add_argument("--sim-hz", type=float, default=1 / DEFAULT_DT)
     serve.add_argument("--tick-hz", type=float, default=60.0)
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
@@ -182,6 +250,18 @@ def build_parser() -> argparse.ArgumentParser:
         "detector pipeline and reports it (shadow mode)",
     )
     serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
+    serve.add_argument(
+        "--capture",
+        default=None,
+        metavar="DIR",
+        help="write a COCO-format labelled capture (frames/ + labels.json) to DIR, "
+        "built from simulation truth, never from annotation; requires "
+        "--perception ml -- capture rides the same ML pipeline that gates frame "
+        "decoding in _ingest_frame and the frontend's perception-attached gate "
+        "in Renderer.tsx, so without --perception ml no camera_frame ever "
+        "reaches the sink and DIR stays empty for the whole run. Not available "
+        "on `run`, which has no WebSocket and so no frames to capture at all.",
+    )
 
     run_ = sub.add_parser("run", help="drive a scenario headlessly and log the reactions")
     run_.add_argument("--scenario", default=None)
@@ -235,6 +315,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scenarios":
         return _scenarios()
     if args.command == "serve":
+        if args.traffic is not None and args.source == "osm":
+            parser.error(
+                "--traffic applies to synthetic scenarios only; OsmSceneSource "
+                "builds its agent routes from the ingested graph and would ignore it"
+            )
         return _serve(args)
     if args.command == "build":
         return _build(args)
@@ -314,17 +399,39 @@ def _bind(host: str, port: int) -> socket.socket:
     return sock
 
 
-def _start_stdin_watchdog() -> None:
+def _start_stdin_watchdog(sink: CaptureSink | None) -> None:
     """Exit the moment the parent's stdin pipe closes.
 
     Tauri gives this process a piped stdin; when the app dies the pipe
     closes, the blocking read returns EOF, and the process exits itself. This
     is the layer that survives a ``SIGKILL`` of the parent app — no Rust
     teardown hook runs in that case, so nothing else would catch it.
+
+    This path used to call ``os._exit(0)`` directly, which wins the race
+    against ``_serve``'s own ``finally`` and its ``sink.finalize()`` --
+    every JPEG already on disk survives (each `write()` call is its own
+    file), but every annotation, which lives only in `CaptureSink`'s memory
+    until `finalize()` runs, is lost. That is not a `SIGTERM`-specific
+    problem: this watchdog fires on *any* parent-death path, which is the
+    common case when this process runs under a supervisor rather than a
+    terminal -- and the failure looks exactly like success, since the
+    frames directory is still there. Finalizing here, before the exit,
+    closes that gap for a cooperative parent death; `CaptureSink.write`'s
+    own periodic rewrite (see its docstring) is the other half of this
+    guarantee, for a kill that skips even this thread (`SIGKILL` of this
+    process itself, not just its parent).
     """
 
     def _watch() -> None:
         sys.stdin.read()
+        if sink is not None:
+            try:
+                sink.finalize()
+            except Exception:
+                # Losing labels.json is bad; taking down the exit path
+                # entirely because finalize() hit a full disk or similar
+                # would be worse -- log and still exit.
+                log.exception("capture sink finalize failed during stdin-watchdog shutdown")
         os._exit(0)
 
     threading.Thread(target=_watch, daemon=True, name="stdin-watchdog").start()
@@ -340,19 +447,25 @@ def _serve(args) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     pipeline = perception_pipeline_for(args)
+    # Built before `Simulation` so its warning (if any) appears before the
+    # scene build's own log lines -- a user staring at a wall of startup
+    # output is more likely to see a mistake called out first.
+    sink = capture_sink_for(args)
 
     try:
         sim = Simulation(
-            scene_source_for(args.source),
+            scene_source_for(args.source, args.traffic),
             args.scenario,
             seed=args.seed,
             dt=1 / args.sim_hz,
             perception_pipeline=pipeline,
+            capture=sink is not None,
         )
     except _SOURCE_ERRORS as exc:
         # The pipeline's worker thread already exists by this point -- if
         # construction fails there is no later `finally` to reach, so it is
-        # torn down here instead of leaking a live `ThreadPoolExecutor`.
+        # torn down here instead of leaking a live `ThreadPoolExecutor`. `sink`
+        # never had `write` called on it, so there is nothing worth flushing.
         if pipeline is not None:
             pipeline.shutdown()
         print(f"error: {exc}")
@@ -362,7 +475,7 @@ def _serve(args) -> int:
     sock = _bind(args.host, port)
     real_port = sock.getsockname()[1]
 
-    loop = SimLoop(sim, hz=args.sim_hz)
+    loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
     app = create_app(loop, tick_hz=args.tick_hz)
 
     print(
@@ -372,7 +485,7 @@ def _serve(args) -> int:
     )
     print(f"Point the frontend at:  ?backend=ws://{args.host}:{real_port}", file=sys.stderr)
 
-    _start_stdin_watchdog()
+    _start_stdin_watchdog(sink)
 
     ready = {
         "ws": f"ws://{args.host}:{real_port}",
@@ -389,6 +502,27 @@ def _serve(args) -> int:
         # lifespan: process teardown, not a per-request concern.
         if pipeline is not None:
             pipeline.shutdown()
+        # The *final, authoritative* write of `labels.json` happens here --
+        # `CaptureSink` accumulates every COCO record in memory and
+        # `finalize()` (idempotent -- see its docstring) flushes the
+        # complete, correct set. This `finally` is reached by `SIGINT`
+        # (confirmed empirically: uvicorn's own graceful shutdown) and by
+        # `.run()` simply returning. It is *not* reached by `SIGKILL`, nor
+        # by the stdin watchdog's exit path when the parent (not this
+        # process) dies -- both were observed, before this task's fix, to
+        # lose every annotation while leaving the JPEGs on disk under
+        # `frames/`, because they bypass this `finally` entirely (no Python
+        # frame to unwind). Plain `SIGTERM` to *this* process was also
+        # observed, in this environment, to exit without reaching here --
+        # `_start_stdin_watchdog` now finalizes the sink itself before its
+        # own `os._exit(0)`, which closes that gap for any parent-death or
+        # signal path that races the watchdog rather than this `finally`.
+        # `CaptureSink.write`'s periodic rewrite (see its docstring) is the
+        # last line of defence, for a `SIGKILL` of this process itself,
+        # which no userspace code -- this `finally`, the watchdog, nothing
+        # -- can ever run code in response to.
+        if sink is not None:
+            sink.finalize()
     return 0
 
 

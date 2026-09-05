@@ -1,0 +1,17 @@
+{
+  "scenario": "grid-arterial",
+  "seed": 1,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-arterial --seed 1 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-arterial-seed1",
+  "commit": "d0f2da2",
+  "frames": 249,
+  "annotations": 99,
+  "visible": 0,
+  "per_class": {
+    "car": 99
+  },
+  "per_class_visible": {},
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "c429382c8a5d9f91102d0ad8406c559a3ce3521af19715304a07ac7126d75da7"
+}

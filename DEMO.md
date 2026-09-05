@@ -244,7 +244,13 @@ yet.
   agents follow their routes regardless of what the ego does.
 - A perception model that works (Cycle 5) — Cycle 4's detector is real and
   runs real inference (see above), but it's COCO-pretrained and untuned for
-  this renderer's geometry, and it detects zero vehicles here. Fine-tuning
-  on sim-generated data is Cycle 5's job, not this one's.
+  this renderer's geometry, and it detects zero vehicles here. That
+  zero-detections result survives every configuration Cycle 5 Phase 2
+  tested; the *causal* half of the sentence is what narrowed. The shipped
+  weights are **int8-quantized**, and unquantized fp32 weights of the same
+  architecture more than double the peak car score on a 60-frame benchmark
+  — so "untuned for this geometry" was, for two cycles, measured only on
+  quantized weights nobody had compared against. Fine-tuning on
+  sim-generated data is Cycle 5's job, not this one's.
 - Code signing or notarization — the built `.app` is unsigned, fine for local
   use but not for distributing to another machine.

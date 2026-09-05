@@ -33,6 +33,11 @@ describe('capture() render target restore', () => {
       setRenderTarget: (t: unknown) => {
         setCalls.push(t);
       },
+      // No-ops: this suite only exercises the render-target restore path.
+      // See the `capture() output target restore` suite below for the
+      // corresponding output-target coverage.
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: async () => {
         throw new Error('simulated GPU readback failure');
@@ -67,6 +72,8 @@ describe('capture() render target restore', () => {
         return originalTarget;
       },
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: async () => {
         throw new Error('simulated GPU readback failure');
@@ -109,6 +116,8 @@ describe('capture() renderTargetBusy timing', () => {
     const renderer = {
       getRenderTarget: () => originalTarget,
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {
         // capture() switches the target synchronously before its first
         // `await`, so by the time this runs, the flag the render loop reads
@@ -147,6 +156,8 @@ describe('capture() renderTargetBusy timing', () => {
     const renderer = {
       getRenderTarget: () => originalTarget,
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: async () => {
         busyAtReadbackStart.push(detector.renderTargetBusy());
@@ -187,6 +198,8 @@ describe('capture() renderTargetBusy timing', () => {
           throw new Error('simulated device-lost on restore');
         }
       },
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       // Distinct from the restore failure on purpose: if some future change
       // ever let capture() reach readback despite the restore throwing, this
@@ -230,6 +243,8 @@ describe('capture() readback timeout', () => {
     const renderer = {
       getRenderTarget: () => originalTarget,
       setRenderTarget: () => {},
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: () => {
         readbackCalls += 1;
@@ -299,6 +314,8 @@ describe('capture() readback timeout', () => {
       setRenderTarget: (t: unknown) => {
         setRenderTargetCalls.push(t);
       },
+      getOutputRenderTarget: () => null,
+      setOutputRenderTarget: () => {},
       renderAsync: async () => {},
       readRenderTargetPixelsAsync: () => {
         readbackCallCount += 1;
@@ -344,5 +361,102 @@ describe('capture() readback timeout', () => {
       vi.useRealTimers();
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe('capture() output target restore', () => {
+  // Coverage promised by the comment in the first suite above, and the place
+  // Finding 4 (task-6 review) pins the ordering bug it found: the original
+  // restore code shared one `try` for both `setRenderTarget` and
+  // `setOutputRenderTarget`, so a throw from the first (a lost GPU device,
+  // the same failure mode the existing "releases both guards" test induces)
+  // skipped the second entirely — leaving `_outputRenderTarget` pointed at
+  // the detector's 640x384 target indefinitely. That corrupts the *next*
+  // canvas frame's own tonemap pass (`_getFrameBufferTarget()` keys its
+  // cached intermediate buffer on `_outputRenderTarget || _canvasTarget`),
+  // not just this capture.
+  it('declares the detector target as the output target for the render, then restores it', async () => {
+    const originalTarget = { name: 'main-view-target' };
+    const originalOutputTarget = { name: 'main-view-output-target' };
+    const setOutputCalls: unknown[] = [];
+
+    const renderer = {
+      getRenderTarget: () => originalTarget,
+      setRenderTarget: () => {},
+      getOutputRenderTarget: () => originalOutputTarget,
+      setOutputRenderTarget: (t: unknown) => {
+        setOutputCalls.push(t);
+      },
+      renderAsync: async () => {},
+      readRenderTargetPixelsAsync: async () => {
+        throw new Error('simulated GPU readback failure');
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    const detector = createDetectorCamera(scene, renderer, 'webgpu');
+
+    await expect(detector.capture()).rejects.toThrow('simulated GPU readback failure');
+
+    // Declared as the output target for the render, then restored to
+    // whatever the main view had — never left pointed at the detector's
+    // own target.
+    expect(setOutputCalls.length).toBe(2);
+    expect(setOutputCalls[0]).not.toBe(originalOutputTarget);
+    expect(setOutputCalls[1]).toBe(originalOutputTarget);
+  });
+
+  it('still restores the output target when restoring the render target throws (the ordering bug)', async () => {
+    // Mirrors the existing "releases both guards even when the restore
+    // itself throws" test in the render-target suite above, but asserts the
+    // property that test could not: with the ordering bug, setRenderTarget
+    // throwing on restore meant setOutputRenderTarget's restore was never
+    // even attempted, since both lived in one `try`. This test would have
+    // failed against that code (setOutputCalls would stay at length 1 —
+    // only the initial switch, no restore) and passes against the fix
+    // (each restore now has its own try/catch).
+    const originalTarget = { name: 'main-view-target' };
+    const originalOutputTarget = { name: 'main-view-output-target' };
+    let setRenderTargetCalls = 0;
+    const setOutputCalls: unknown[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const renderer = {
+      getRenderTarget: () => originalTarget,
+      setRenderTarget: () => {
+        setRenderTargetCalls += 1;
+        // First call switches to the detector's own target and succeeds;
+        // every restore attempt after that (early, then finally's fallback)
+        // fails, simulating a lost device — identical setup to the
+        // render-target suite's own device-lost test.
+        if (setRenderTargetCalls > 1) {
+          throw new Error('simulated device-lost on restore');
+        }
+      },
+      getOutputRenderTarget: () => originalOutputTarget,
+      setOutputRenderTarget: (t: unknown) => {
+        setOutputCalls.push(t);
+      },
+      renderAsync: async () => {},
+      readRenderTargetPixelsAsync: async () => {
+        throw new Error('should not be reached — restore fails first');
+      },
+    } as unknown as THREE.WebGPURenderer;
+
+    const scene = {} as THREE.Scene;
+    const detector = createDetectorCamera(scene, renderer, 'webgpu');
+
+    await expect(detector.capture()).rejects.toThrow('simulated device-lost on restore');
+
+    // The render-target restore failed (that's the point of this test), but
+    // the output-target restore must still have been attempted and must
+    // still have succeeded — proving the two restores are independent.
+    expect(setOutputCalls.length).toBe(2);
+    expect(setOutputCalls[0]).not.toBe(originalOutputTarget);
+    expect(setOutputCalls[1]).toBe(originalOutputTarget);
+    expect(detector.renderTargetBusy()).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+
+    warnSpy.mockRestore();
   });
 });
