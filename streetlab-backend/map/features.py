@@ -448,18 +448,91 @@ def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
     return lights
 
 
+#: Depth of a marked crossing, measured ALONG the road it interrupts. Marked
+#: crossings run 6-10 ft; 3.0 m sits in that range and is what a signalised
+#: junction usually gets.
+CROSSING_DEPTH_M = 3.0
+
+#: `crossing:markings` -> the wire's paint style. OSM's "zebra" is the broad
+#: bars running with traffic that the US calls continental; "lines" is the pair
+#: of transverse lines and nothing between them.
+_MARKING_STYLE = {
+    "zebra": "continental",
+    "ladder": "ladder",
+    "lines": "transverse",
+    "dashes": "transverse",
+    "dots": "transverse",
+    "surface": "continental",
+    "yes": "continental",
+}
+
+
+def _crossing_style(tags: dict[str, str]) -> str | None:
+    """How a crossing is painted, or None when it is not painted at all.
+
+    `crossing:markings` is the specific answer and the extract carries it on
+    274 of its 370 crossings; `crossing` is the fallback. Both can say there is
+    no paint -- `crossing:markings=no` and `crossing=unmarked` -- and 64 of the
+    370 do. An unmarked crossing is a real thing on a real street, and drawing
+    a zebra over it is inventing a road marking that is not there.
+    """
+    markings = tags.get("crossing:markings", "").strip().lower()
+    if markings == "no":
+        return None
+    if markings in _MARKING_STYLE:
+        return _MARKING_STYLE[markings]
+    crossing = tags.get("crossing", "").strip().lower()
+    if crossing == "unmarked":
+        return None
+    return "continental"
+
+
 def build_crosswalks(graph: OsmGraph, origin: LatLon) -> list[Crosswalk]:
-    return [
-        Crosswalk(
-            id=f"osm_cw_{node.id}",
-            center=to_local(node.lat, node.lon, origin),
-            heading=0.0,
-            width_m=4.0,
-            length_m=7.2,
-            style="continental",
+    """One painted crossing per marked `highway=crossing` node.
+
+    A crossing node sits ON the way it crosses, so the road under it supplies
+    both things the node itself cannot say: which way pedestrians walk -- square
+    to the street, not due east, which is what every one of these used to be --
+    and how far, which is that street's own carriageway width rather than a
+    fixed 7.2 m that was wrong on 102 of the extract's 370.
+    """
+    owner = _ways_by_node(graph)
+    walks, roadless = [], 0
+    for node in _tagged_nodes(graph, "highway", "crossing"):
+        style = _crossing_style(node.tags)
+        if style is None:
+            continue
+        placed = None
+        # Lowest way id when a node is shared, so the same extract always
+        # builds the same scene.
+        for way in sorted(owner.get(node.id, ()), key=lambda w: w.id):
+            geometry = _way_geometry(graph, way, node.id, origin)
+            if geometry is None:
+                continue
+            points, index = geometry
+            tangent = _tangent_at(points, index)
+            if tangent is None:
+                continue
+            placed = (points[index], tangent, _carriageway_half_width_m(way.tags))
+            break
+        if placed is None:
+            roadless += 1
+            continue
+        at, tangent, half_width = placed
+        walks.append(
+            Crosswalk(
+                id=f"osm_cw_{node.id}",
+                center=at,
+                # Pedestrians walk ACROSS: the street's own direction, square.
+                heading=math.atan2(tangent[0], -tangent[1]),
+                width_m=CROSSING_DEPTH_M,
+                length_m=half_width * 2,
+                style=style,
+            )
         )
-        for node in _tagged_nodes(graph, "highway", "crossing")
-    ]
+    if roadless:
+        log.debug("dropped %d crossing(s) with no drivable way under them", roadless)
+    return walks
 
 
 def junction_of(light_id: str) -> str:

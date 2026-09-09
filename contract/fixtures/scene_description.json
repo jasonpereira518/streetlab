@@ -1,6 +1,6 @@
 {
   "type": "scene_description",
-  "protocol": 5,
+  "protocol": 6,
   "scene_id": "synthetic-grid:grid-merge",
   "scenario_id": "grid-merge",
   "name": "Hyde Street Merge",
@@ -37,7 +37,8 @@
       "speed_limit_mps": 11.176,
       "oneway": false,
       "center_marking": "broken_yellow",
-      "has_sidewalk": true
+      "sidewalk_left": true,
+      "sidewalk_right": true
     },
     {
       "id": "st_hyde",
@@ -59,7 +60,8 @@
       "speed_limit_mps": 15.6464,
       "oneway": false,
       "center_marking": "double_yellow",
-      "has_sidewalk": true
+      "sidewalk_left": true,
+      "sidewalk_right": true
     },
     {
       "id": "st_leavenworth",
@@ -81,7 +83,8 @@
       "speed_limit_mps": 11.176,
       "oneway": false,
       "center_marking": "broken_yellow",
-      "has_sidewalk": true
+      "sidewalk_left": true,
+      "sidewalk_right": true
     },
     {
       "id": "st_pine",
@@ -103,7 +106,8 @@
       "speed_limit_mps": 11.176,
       "oneway": false,
       "center_marking": "broken_yellow",
-      "has_sidewalk": true
+      "sidewalk_left": true,
+      "sidewalk_right": true
     },
     {
       "id": "st_california",
@@ -125,7 +129,8 @@
       "speed_limit_mps": 15.6464,
       "oneway": false,
       "center_marking": "double_yellow",
-      "has_sidewalk": true
+      "sidewalk_left": true,
+      "sidewalk_right": true
     },
     {
       "id": "st_sacramento",
@@ -147,7 +152,8 @@
       "speed_limit_mps": 11.176,
       "oneway": false,
       "center_marking": "broken_yellow",
-      "has_sidewalk": true
+      "sidewalk_left": true,
+      "sidewalk_right": true
     }
   ],
   "buildings": [
@@ -1690,6 +1696,50 @@
   ],
   "crosswalks": [
     {
+      "id": "cw_-80_-80_n",
+      "center": [
+        -80.0,
+        -74.4
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_-80_-80_s",
+      "center": [
+        -80.0,
+        -85.6
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_-80_-80_e",
+      "center": [
+        -74.4,
+        -80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_-80_-80_w",
+      "center": [
+        -85.6,
+        -80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
       "id": "cw_-80_0_n",
       "center": [
         -80.0,
@@ -1731,6 +1781,50 @@
       "heading": 1.5707963267948966,
       "width_m": 4.0,
       "length_m": 14.4,
+      "style": "continental"
+    },
+    {
+      "id": "cw_-80_80_n",
+      "center": [
+        -80.0,
+        85.6
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_-80_80_s",
+      "center": [
+        -80.0,
+        74.4
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_-80_80_e",
+      "center": [
+        -74.4,
+        80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_-80_80_w",
+      "center": [
+        -85.6,
+        80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
       "style": "continental"
     },
     {
@@ -1866,6 +1960,50 @@
       "style": "continental"
     },
     {
+      "id": "cw_80_-80_n",
+      "center": [
+        80.0,
+        -74.4
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_80_-80_s",
+      "center": [
+        80.0,
+        -85.6
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_80_-80_e",
+      "center": [
+        85.6,
+        -80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_80_-80_w",
+      "center": [
+        74.4,
+        -80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
       "id": "cw_80_0_n",
       "center": [
         80.0,
@@ -1907,6 +2045,50 @@
       "heading": 1.5707963267948966,
       "width_m": 4.0,
       "length_m": 14.4,
+      "style": "continental"
+    },
+    {
+      "id": "cw_80_80_n",
+      "center": [
+        80.0,
+        85.6
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_80_80_s",
+      "center": [
+        80.0,
+        74.4
+      ],
+      "heading": 0.0,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_80_80_e",
+      "center": [
+        85.6,
+        80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
+      "style": "continental"
+    },
+    {
+      "id": "cw_80_80_w",
+      "center": [
+        74.4,
+        80.0
+      ],
+      "heading": 1.5707963267948966,
+      "width_m": 4.0,
+      "length_m": 7.2,
       "style": "continental"
     }
   ],

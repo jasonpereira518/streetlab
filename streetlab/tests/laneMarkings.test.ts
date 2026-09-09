@@ -188,7 +188,8 @@ describe('lane markings follow the US convention', () => {
       speed_limit_mps: 13.4,
       oneway: true,
       center_marking: 'none',
-      has_sidewalk: true,
+      sidewalk_left: true,
+      sidewalk_right: true,
     };
     const painted = marks({ ...osmScene(), roads: [road], crosswalks: [], buildings: [] });
     const h = half(road); // 5.4 m
@@ -228,7 +229,8 @@ describe('lane markings follow the US convention', () => {
       speed_limit_mps: 13.4,
       oneway: true,
       center_marking: 'none',
-      has_sidewalk: true,
+      sidewalk_left: true,
+      sidewalk_right: true,
     };
     const painted = marks({ ...osmScene(), roads: [road], crosswalks: [], buildings: [] });
     const h = half(road);
@@ -247,5 +249,72 @@ describe('lane markings follow the US convention', () => {
     // MUTCD 3A.05: 10 ft of line, 30 ft of gap.
     expect(DASH_M).toBeCloseTo(3.05, 2);
     expect(GAP_M).toBeCloseTo(9.14, 2);
+  });
+});
+
+describe('crossing styles are painted as they are on the road', () => {
+  /**
+   * Three real markings, three different pictures:
+   *   continental - broad bars running WITH traffic, spaced across the road,
+   *                 and nothing at the edges;
+   *   ladder      - those bars plus a transverse rail at each edge;
+   *   transverse  - the two rails alone, with nothing between them.
+   * The renderer used to draw continental bars whatever the style said, so the
+   * `style` field on the wire changed nothing a user could see.
+   */
+  function bandsFor(style: 'continental' | 'ladder' | 'transverse') {
+    const scene: SceneDescription = {
+      ...osmScene(),
+      roads: [],
+      buildings: [],
+      trees: [],
+      stop_signs: [],
+      traffic_lights: [],
+      street_signs: [],
+      crosswalks: [
+        {
+          id: 'cw',
+          center: [0, 0],
+          heading: 0, // pedestrians walk due east
+          width_m: 3.0,
+          length_m: 7.2,
+          style,
+        },
+      ],
+    };
+    const world = buildWorld(scene);
+    const mesh = world.root.getObjectByName('crosswalks') as THREE.Mesh;
+    const pos = mesh.geometry.getAttribute('position');
+    // Walking direction is +x; the bars run along z (i.e. with the traffic).
+    let along = 0;
+    let across = 0;
+    for (let i = 0; i < pos.count; i += 3) {
+      const tri: Array<[number, number]> = [];
+      for (let k = 0; k < 3; k++) tri.push([pos.getX(i + k), -pos.getZ(i + k)]);
+      const ex = extent(tri, 1, 0);
+      const ey = extent(tri, 0, 1);
+      if (ex > ey) along++;
+      else across++;
+    }
+    // Two triangles per quad.
+    return { rails: along / 2, bars: across / 2 };
+  }
+
+  it('paints continental as bars with no rails', () => {
+    const { bars, rails } = bandsFor('continental');
+    expect(bars).toBeGreaterThan(3);
+    expect(rails).toBe(0);
+  });
+
+  it('paints a ladder as bars between two rails', () => {
+    const { bars, rails } = bandsFor('ladder');
+    expect(bars).toBeGreaterThan(3);
+    expect(rails).toBe(2);
+  });
+
+  it('paints transverse as two rails and nothing between', () => {
+    const { bars, rails } = bandsFor('transverse');
+    expect(rails).toBe(2);
+    expect(bars).toBe(0);
   });
 });

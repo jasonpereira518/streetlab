@@ -125,7 +125,8 @@ function buildRoads(): Road[] {
       // double solid once there is more than one lane each way. Mirrors
       // `_center_marking` in the backend's `map/lanes.py`.
       center_marking: s.lanes > 1 ? 'double_yellow' : 'broken_yellow',
-      has_sidewalk: true,
+      sidewalk_left: true,
+      sidewalk_right: true,
     };
   });
 }

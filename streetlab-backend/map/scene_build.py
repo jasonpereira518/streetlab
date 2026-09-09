@@ -383,7 +383,8 @@ class SyntheticGrid:
                     # Yellow divides opposing traffic; see `_center_marking`
                     # in `map/lanes.py` for the rule both sources follow.
                     center_marking="double_yellow" if s.lanes > 1 else "broken_yellow",
-                    has_sidewalk=True,
+                    sidewalk_left=True,
+                    sidewalk_right=True,
                 )
             )
         return roads
@@ -591,8 +592,10 @@ class SyntheticGrid:
     def _crosswalks(self) -> list[Crosswalk]:
         walks = []
         for ns, ew in self._intersections():
-            if not self._is_signalised(ns, ew):
-                continue
+            # Every junction here is controlled -- signalised or all-way stop --
+            # and both kinds get painted crossings. Restricting these to the
+            # signalised corners left the four-way stops with none, which is
+            # not how a stop-controlled junction is marked.
             cx, cy = ns.at, ew.at
             tag = f"{int(cx)}_{int(cy)}"
             # Crossing the north-south carriageway: pedestrians walk east-west.

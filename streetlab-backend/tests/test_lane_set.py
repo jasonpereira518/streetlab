@@ -524,7 +524,7 @@ def test_the_ego_offset_is_measured_against_its_own_direction_of_travel(ego_y, e
         centerline=[(0.0, 0.0), (400.0, 0.0)],
         lanes_forward=2, lanes_backward=2, lane_width_m=LANE_W,
         speed_limit_mps=15.0, oneway=False, center_marking="double_yellow",
-        has_sidewalk=True,
+        sidewalk_left=True, sidewalk_right=True,
     )
     route = Route([(10.0, ego_y), (390.0, ego_y)], closed=False)
     lanes = derive_lanes(route, [road])

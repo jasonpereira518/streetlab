@@ -163,7 +163,7 @@ def _straight_road(road_id: str, y: float, limit_mps: float) -> Road:
         speed_limit_mps=limit_mps,
         oneway=False,
         center_marking="dashed_white",
-        has_sidewalk=True,
+        sidewalk_left=True, sidewalk_right=True,
     )
 
 
@@ -260,13 +260,13 @@ def test_nearest_road_along_indexes_the_road_governing_each_segment():
             id="a", name="A St", road_class="arterial",
             centerline=[(0.0, 0.0), (100.0, 0.0)], lanes_forward=2, lanes_backward=2,
             lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
-            center_marking="double_yellow", has_sidewalk=True,
+            center_marking="double_yellow", sidewalk_left=True, sidewalk_right=True,
         ),
         Road(
             id="b", name="B St", road_class="residential",
             centerline=[(0.0, 200.0), (100.0, 200.0)], lanes_forward=1, lanes_backward=1,
             lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
-            center_marking="solid_white", has_sidewalk=True,
+            center_marking="solid_white", sidewalk_left=True, sidewalk_right=True,
         ),
     ]
     route = Route([(10.0, 1.0), (50.0, 1.0), (90.0, 1.0)], closed=False)
@@ -283,7 +283,7 @@ def test_nearest_road_along_reports_none_beyond_the_match_radius():
             id="a", name="A St", road_class="arterial",
             centerline=[(0.0, 0.0), (100.0, 0.0)], lanes_forward=2, lanes_backward=2,
             lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
-            center_marking="double_yellow", has_sidewalk=True,
+            center_marking="double_yellow", sidewalk_left=True, sidewalk_right=True,
         ),
     ]
     far = _LIMIT_MAX_MATCH_M + 20.0
@@ -306,13 +306,13 @@ def test_the_forward_lane_count_is_reported_per_segment():
             id="wide", name="Wide St", road_class="arterial",
             centerline=[(0.0, 0.0), (50.0, 0.0)], lanes_forward=2, lanes_backward=2,
             lane_width_m=3.6, speed_limit_mps=15.6, oneway=False,
-            center_marking="double_yellow", has_sidewalk=True,
+            center_marking="double_yellow", sidewalk_left=True, sidewalk_right=True,
         ),
         Road(
             id="narrow", name="Narrow St", road_class="residential",
             centerline=[(50.0, 0.0), (100.0, 0.0)], lanes_forward=1, lanes_backward=1,
             lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
-            center_marking="solid_white", has_sidewalk=True,
+            center_marking="solid_white", sidewalk_left=True, sidewalk_right=True,
         ),
     ]
     route = Route([(10.0, 0.5), (40.0, 0.5), (90.0, 0.5)], closed=False)
@@ -355,7 +355,7 @@ def test_speed_limits_and_lane_counts_fill_a_mid_route_gap_from_the_predecessor(
         id="only", name="Only St", road_class="residential",
         centerline=[(0.0, 0.0), (40.0, 0.0)], lanes_forward=2, lanes_backward=1,
         lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
-        center_marking="dashed_white", has_sidewalk=True,
+        center_marking="dashed_white", sidewalk_left=True, sidewalk_right=True,
     )
     route = Route([(5.0, 0.0), (35.0, 0.0), (35.0, 400.0), (5.0, 400.0)], closed=False)
 
@@ -377,7 +377,7 @@ def test_speed_limits_and_lane_counts_patch_a_leading_unmatched_run():
         id="only", name="Only St", road_class="residential",
         centerline=[(0.0, 0.0), (40.0, 0.0)], lanes_forward=2, lanes_backward=1,
         lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
-        center_marking="dashed_white", has_sidewalk=True,
+        center_marking="dashed_white", sidewalk_left=True, sidewalk_right=True,
     )
     route = Route([(5.0, 400.0), (35.0, 400.0), (35.0, 0.0), (5.0, 0.0)], closed=False)
 

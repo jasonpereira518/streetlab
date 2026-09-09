@@ -53,3 +53,45 @@ def test_an_unrecognised_value_falls_back_rather_than_dropping_the_pavement():
 def test_has_sidewalk_is_true_when_either_side_has_one():
     assert has_sidewalk({"sidewalk": "right"}, "residential") is True
     assert has_sidewalk({"sidewalk": "no"}, "residential") is False
+
+
+# --------------------------------------------------------------------------- #
+# The per-side answer reaching the wire                                        #
+# --------------------------------------------------------------------------- #
+
+
+def _road(tags: dict[str, str]):
+    from map.lanes import build_roads
+    from map.osm_model import parse_overpass
+    from map.projection import LatLon
+
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7940, "lon": -122.4156},
+            {"type": "node", "id": 2, "lat": 37.7950, "lon": -122.4156},
+            {"type": "way", "id": 9, "nodes": [1, 2], "tags": {"name": "Test St", **tags}},
+        ]}
+    )
+    roads = build_roads(graph, LatLon(lat=37.7945, lon=-122.4156))
+    assert len(roads) == 1
+    return roads[0]
+
+
+def test_a_road_carries_its_pavement_sides_onto_the_wire():
+    """`sidewalk=right` means a pavement on one side, and the renderer needs
+    to be told which -- a single boolean made it draw both.
+
+    16 of the Nob Hill extract's 264 drivable ways say exactly this.
+    """
+    road = _road({"highway": "residential", "sidewalk": "right"})
+    assert (road.sidewalk_left, road.sidewalk_right) == (False, True)
+
+
+def test_a_road_with_pavements_both_sides_says_so():
+    road = _road({"highway": "residential", "sidewalk": "both"})
+    assert (road.sidewalk_left, road.sidewalk_right) == (True, True)
+
+
+def test_a_service_alley_gets_no_pavement_on_either_side():
+    road = _road({"highway": "service"})
+    assert (road.sidewalk_left, road.sidewalk_right) == (False, False)

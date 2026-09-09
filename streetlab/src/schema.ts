@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -86,7 +86,14 @@ export const RoadSchema = z.object({
   oneway: z.boolean(),
   /** Marking drawn on the centre divider. */
   center_marking: LaneMarkingSchema,
-  has_sidewalk: z.boolean(),
+  /**
+   * Which side of the way carries a pavement, in the way's own node order
+   * (+lateral is the left of travel). A single boolean could not express
+   * `sidewalk=right`, which 16 of the Nob Hill extract's 264 drivable ways
+   * say, so the renderer drew a pavement OSM says is not there.
+   */
+  sidewalk_left: z.boolean(),
+  sidewalk_right: z.boolean(),
 });
 
 export const BuildingSchema = z.object({

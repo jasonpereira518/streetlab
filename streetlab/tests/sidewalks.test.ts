@@ -93,3 +93,72 @@ describe('pavement never covers the carriageway', () => {
     });
   });
 });
+
+describe('pavement is drawn only on the sides that have one', () => {
+  /**
+   * 16 of the extract's 264 ways say `sidewalk=right`. While the wire carried
+   * a single `has_sidewalk` boolean the renderer had no way to know which side
+   * that was, and laid a pavement down the one OSM says is not there.
+   */
+  function sidesOf(left: boolean, right: boolean): { left: number; right: number } {
+    const scene: SceneDescription = {
+      ...osmScene(),
+      buildings: [],
+      trees: [],
+      crosswalks: [],
+      stop_signs: [],
+      traffic_lights: [],
+      street_signs: [],
+      roads: [
+        {
+          id: 'r',
+          name: 'One Sided St',
+          road_class: 'residential',
+          centerline: [
+            [0, -60],
+            [0, 60],
+          ],
+          lanes_forward: 1,
+          lanes_backward: 1,
+          lane_width_m: 3.6,
+          speed_limit_mps: 11.2,
+          oneway: false,
+          center_marking: 'broken_yellow',
+          sidewalk_left: left,
+          sidewalk_right: right,
+        },
+      ],
+    };
+    const world = buildWorld(scene);
+    const walk = world.root.getObjectByName('sidewalks') as THREE.Mesh;
+    const pos = walk.geometry.getAttribute('position');
+    let west = 0;
+    let east = 0;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      if (x < -0.5) west++;
+      else if (x > 0.5) east++;
+    }
+    // Travel is north, so the driver's left is WEST -- `offsetAt` puts
+    // +lateral at (-ty, +tx), which for a northbound tangent is -x.
+    return { left: west, right: east };
+  }
+
+  it('draws both when both sides have one', () => {
+    const both = sidesOf(true, true);
+    expect(both.left).toBeGreaterThan(0);
+    expect(both.right).toBeGreaterThan(0);
+  });
+
+  it('draws only the right when only the right has one', () => {
+    const only = sidesOf(false, true);
+    expect(only.right).toBeGreaterThan(0);
+    expect(only.left).toBe(0);
+  });
+
+  it('draws only the left when only the left has one', () => {
+    const only = sidesOf(true, false);
+    expect(only.left).toBeGreaterThan(0);
+    expect(only.right).toBe(0);
+  });
+});

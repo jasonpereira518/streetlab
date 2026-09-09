@@ -115,6 +115,11 @@ def test_traffic_lights_and_stop_signs_come_from_tagged_nodes():
             {"type": "node", "id": 5, "lat": 37.7948, "lon": -122.4159},
             _street(500, [4, 1, 5]),
             _street(501, [4, 2, 5]),
+            # The crossing needs a road under it too: which way pedestrians
+            # walk and how far are both read off the street being crossed, so
+            # a crossing node floating on its own is dropped rather than
+            # guessed at (it used to become a due-east 7.2 m band).
+            _street(502, [4, 3, 5]),
         ]}
     )
     assert [t.id for t in build_traffic_lights(graph, ORIGIN)] == [
@@ -452,7 +457,12 @@ def test_counts_on_the_real_fixture_match_verified_osm_tag_counts(graph):
     assert len(build_traffic_lights(graph, ORIGIN)) == 162
     assert len({t.id for t in build_traffic_lights(graph, ORIGIN)}) == 162
     assert len(build_stop_signs(graph, ORIGIN)) == 145
-    assert len(build_crosswalks(graph, ORIGIN)) == 370
+    # Crossings are no longer one-per-node either, for a different reason:
+    # 64 of the 370 are UNPAINTED in the data (`crossing=unmarked` or
+    # `crossing:markings=no`) and painting a zebra over them invents a road
+    # marking that is not on the street, and one more has no drivable way
+    # under it to take a direction or a width from. 370 - 64 - 1 = 305.
+    assert len(build_crosswalks(graph, ORIGIN)) == 305
 
 
 def test_trees_are_deterministic_across_runs(graph):

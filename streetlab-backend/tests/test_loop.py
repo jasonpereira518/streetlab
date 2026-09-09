@@ -546,7 +546,7 @@ class _FixedLaneSet:
             centerline=[(0.0, 0.0), (100.0, 0.0)],
             lanes_forward=count, lanes_backward=count, lane_width_m=LANE_W,
             speed_limit_mps=15.0, oneway=False, center_marking="double_yellow",
-            has_sidewalk=True,
+            sidewalk_left=True, sidewalk_right=True,
         )
 
     def count_at(self, s: float) -> int:

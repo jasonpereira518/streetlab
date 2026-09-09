@@ -80,6 +80,8 @@ const DOUBLE_GAP_M = 0.2;
 const EDGE_INSET_M = 0.28;
 /** Stop bar depth, along the direction of travel. 12-24 in. */
 const STOP_BAR_M = 0.5;
+/** The transverse rail at each edge of a ladder or transverse crossing. */
+const CROSSING_RAIL_W = 0.2;
 
 /** How far the printed face floats in front of the plate, to avoid z-fighting. */
 const FACE_PROUD = PLATE_T / 2 + 0.01;
@@ -481,11 +483,12 @@ export function buildWorld(scene: SceneDescription): World {
 
     stripe(surface, line, { from: 0, to: line.length }, 0, half * 2, yRoad, col);
 
-    if (!road.has_sidewalk) return;
     // No arc-length holes any more: where a pavement has to stop is decided by
     // the carriageways it actually meets, not by an interval computed from one
     // crossing road's half-width as if the two streets met at a right angle.
     for (const side of [1, -1]) {
+      // +1 is the left of travel, matching `sidewalk:left` in OSM.
+      if (!(side === 1 ? road.sidewalk_left : road.sidewalk_right)) continue;
       pavedStrip(
         paving,
         line,
@@ -503,7 +506,7 @@ export function buildWorld(scene: SceneDescription): World {
   // Pavement wrapping each junction, so the strips either side of it join up.
   const aprons = new Map<string, { at: Vec2; r0: number; r1: number }>();
   scene.roads.forEach((road, i) => {
-    if (!road.has_sidewalk) return;
+    if (!road.sidewalk_left && !road.sidewalk_right) return;
     const hx = carriagewayHalfWidth(road);
     for (const c of crossings[i]) {
       const key = `${c.at[0].toFixed(2)}:${c.at[1].toFixed(2)}`;
@@ -642,35 +645,51 @@ export function buildWorld(scene: SceneDescription): World {
   const walks = new MeshBuilder();
   for (const xw of scene.crosswalks) {
     const [cx, cy] = xw.center;
+    // Pedestrians walk along `heading`; the band is `width_m` deep measured
+    // across that, which is the direction the traffic runs.
     const dx = Math.cos(xw.heading);
     const dy = Math.sin(xw.heading);
-    // Perpendicular: the direction the striped band is thick in.
     const px = -dy;
     const py = dx;
-    const bars = Math.max(2, Math.round(xw.length_m / 1.1));
-    const barW = (xw.length_m / bars) * 0.58;
-    for (let b = 0; b < bars; b++) {
-      const t = (b + 0.5) / bars - 0.5;
-      const along = t * xw.length_m;
-      const corners: [Vec2, Vec2, Vec2, Vec2] = [
-        [
-          cx + dx * (along - barW / 2) + px * (xw.width_m / 2),
-          cy + dy * (along - barW / 2) + py * (xw.width_m / 2),
-        ],
-        [
-          cx + dx * (along + barW / 2) + px * (xw.width_m / 2),
-          cy + dy * (along + barW / 2) + py * (xw.width_m / 2),
-        ],
-        [
-          cx + dx * (along + barW / 2) - px * (xw.width_m / 2),
-          cy + dy * (along + barW / 2) - py * (xw.width_m / 2),
-        ],
-        [
-          cx + dx * (along - barW / 2) - px * (xw.width_m / 2),
-          cy + dy * (along - barW / 2) - py * (xw.width_m / 2),
-        ],
-      ];
-      walks.flatQuad(corners, Y.crosswalk, C.crosswalk);
+    const quad = (
+      from: number,
+      to: number,
+      halfDepth: number,
+    ): [Vec2, Vec2, Vec2, Vec2] => [
+      [cx + dx * from + px * halfDepth, cy + dy * from + py * halfDepth],
+      [cx + dx * to + px * halfDepth, cy + dy * to + py * halfDepth],
+      [cx + dx * to - px * halfDepth, cy + dy * to - py * halfDepth],
+      [cx + dx * from - px * halfDepth, cy + dy * from - py * halfDepth],
+    ];
+
+    // Bars run WITH the traffic and are spaced across the road. Continental
+    // and ladder have them; transverse is the two edge rails alone.
+    if (xw.style !== 'transverse') {
+      const bars = Math.max(2, Math.round(xw.length_m / 1.1));
+      const barW = (xw.length_m / bars) * 0.58;
+      for (let b = 0; b < bars; b++) {
+        const along = ((b + 0.5) / bars - 0.5) * xw.length_m;
+        walks.flatQuad(
+          quad(along - barW / 2, along + barW / 2, xw.width_m / 2),
+          Y.crosswalk,
+          C.crosswalk,
+        );
+      }
+    }
+
+    // Rails run ACROSS the road at each edge of the band. A ladder has them
+    // around its bars; a transverse crossing is nothing but them.
+    if (xw.style !== 'continental') {
+      for (const side of [1, -1]) {
+        const at = side * (xw.width_m / 2 - CROSSING_RAIL_W / 2);
+        const corners: [Vec2, Vec2, Vec2, Vec2] = [
+          [cx - dx * (xw.length_m / 2) + px * (at + CROSSING_RAIL_W / 2), cy - dy * (xw.length_m / 2) + py * (at + CROSSING_RAIL_W / 2)],
+          [cx + dx * (xw.length_m / 2) + px * (at + CROSSING_RAIL_W / 2), cy + dy * (xw.length_m / 2) + py * (at + CROSSING_RAIL_W / 2)],
+          [cx + dx * (xw.length_m / 2) + px * (at - CROSSING_RAIL_W / 2), cy + dy * (xw.length_m / 2) + py * (at - CROSSING_RAIL_W / 2)],
+          [cx - dx * (xw.length_m / 2) + px * (at - CROSSING_RAIL_W / 2), cy - dy * (xw.length_m / 2) + py * (at - CROSSING_RAIL_W / 2)],
+        ];
+        walks.flatQuad(corners, Y.crosswalk, C.crosswalk);
+      }
     }
   }
   const walkMat = flatMaterial();

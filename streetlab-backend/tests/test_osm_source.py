@@ -58,7 +58,7 @@ def _road(limit_mph: float, length_m: float, i: int) -> Road:
         centerline=[(0.0, 0.0), (float(length_m), 0.0)],
         lanes_forward=1, lanes_backward=1, lane_width_m=3.6,
         speed_limit_mps=limit_mph * MPH, oneway=False,
-        center_marking="solid_white", has_sidewalk=True,
+        center_marking="solid_white", sidewalk_left=True, sidewalk_right=True,
     )
 
 
@@ -210,7 +210,7 @@ def test_speed_limit_counts_the_full_multi_segment_centerline(source):
         centerline=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (300.0, 100.0)],
         lanes_forward=1, lanes_backward=1, lane_width_m=3.6,
         speed_limit_mps=35 * MPH, oneway=False,
-        center_marking="solid_white", has_sidewalk=True,
+        center_marking="solid_white", sidewalk_left=True, sidewalk_right=True,
     )
     stubs = [_road(15, 50, i) for i in range(5)]
     assert source._speed_limit([bent, *stubs]) == pytest.approx(35 * MPH)
@@ -296,7 +296,7 @@ def test_bounds_also_contain_building_and_tree_points_outside_the_road_network(s
         speed_limit_mps=11.176,
         oneway=False,
         center_marking="solid_white",
-        has_sidewalk=True,
+        sidewalk_left=True, sidewalk_right=True,
     )
     ego_route = Route([(0.0, 0.0), (10.0, 0.0), (5.0, 5.0)], closed=True)
     far_building = Building(

@@ -20,7 +20,7 @@ from shapely.geometry import LinearRing, LineString
 
 from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import has_sidewalk, is_oneway, lane_counts, road_class, speed_limit_mps, street_name
+from map.tags import is_oneway, lane_counts, road_class, sidewalk_sides, speed_limit_mps, street_name
 from schema import Road
 from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
 
@@ -101,6 +101,7 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
             continue
 
         forward, backward = lane_counts(way.tags, cls)
+        sides = sidewalk_sides(way.tags, cls)
         oneway = is_oneway(way.tags)
         roads.append(
             Road(
@@ -114,7 +115,8 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
                 speed_limit_mps=speed_limit_mps(way.tags, cls),
                 oneway=oneway,
                 center_marking=_center_marking(cls, oneway, forward, backward),
-                has_sidewalk=has_sidewalk(way.tags, cls),
+                sidewalk_left=sides[0],
+                sidewalk_right=sides[1],
             )
         )
     if dropped:

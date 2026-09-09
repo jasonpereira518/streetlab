@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -106,7 +106,11 @@ class Road(Wire):
     oneway: bool
     # Marking drawn on the centre divider.
     center_marking: LaneMarking
-    has_sidewalk: bool
+    # Which side of the way carries a pavement, in the way's own node order.
+    # A single boolean could not express `sidewalk=right`, which 16 of the Nob
+    # Hill extract's 264 drivable ways say, so the renderer drew both.
+    sidewalk_left: bool = True
+    sidewalk_right: bool = True
 
 
 class Building(Wire):
