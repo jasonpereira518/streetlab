@@ -21,7 +21,14 @@ from random import Random
 from typing import Protocol, runtime_checkable
 
 from map.lanes import derive_lanes, project_control_points
-from map.placement import KERB_CLEARANCE_M, faces_the_route, facing, kerb_offset
+from map.placement import (
+    KERB_CLEARANCE_M,
+    SIDEWALK_W_M,
+    TREE_VERGE_M,
+    faces_the_route,
+    facing,
+    kerb_offset,
+)
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -85,7 +92,10 @@ MAP_EXTENT = 130.0
 LANE_W = 3.6
 # Centre of the rightmost forward lane, measured from the carriageway centreline.
 EGO_LANE_INSET = LANE_W * 0.5
-SIDEWALK_W = 2.4
+# Shared with the renderers through `map.placement`. This used to say 2.4
+# while `world.ts` drew 2.8, so every building here was set back less far
+# than the pavement it was set back from.
+SIDEWALK_W = SIDEWALK_W_M
 # Corner radius for the driven route.
 #
 # Bounded by geometry, not comfort. Rounding a right angle pulls the path
@@ -370,7 +380,9 @@ class SyntheticGrid:
                     lane_width_m=LANE_W,
                     speed_limit_mps=s.speed_mph * MPH,
                     oneway=False,
-                    center_marking="double_yellow" if s.lanes > 1 else "solid_white",
+                    # Yellow divides opposing traffic; see `_center_marking`
+                    # in `map/lanes.py` for the rule both sources follow.
+                    center_marking="double_yellow" if s.lanes > 1 else "broken_yellow",
                     has_sidewalk=True,
                 )
             )
@@ -697,7 +709,7 @@ class SyntheticGrid:
     def _trees(self, rng: Random) -> list[Tree]:
         trees = []
         for s in STREETS:
-            verge = s.half_width + SIDEWALK_W * 0.6
+            verge = s.half_width + TREE_VERGE_M
             for side in (-1.0, 1.0):
                 pos = -MAP_EXTENT + 14.0
                 while pos < MAP_EXTENT - 14.0:

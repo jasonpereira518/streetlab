@@ -251,7 +251,7 @@ class OsmSceneSource:
         buildings = build_buildings(graph, origin)
         crosswalks = build_crosswalks(graph, origin)
         stop_signs = build_stop_signs(graph, origin)
-        trees = build_trees(graph, origin)
+        trees = build_trees(graph, origin, buildings)
 
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,

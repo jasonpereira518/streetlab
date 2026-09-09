@@ -11,8 +11,14 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
-it('is protocol 4', () => {
-  expect(PROTOCOL_VERSION).toBe(4);
+it('is protocol 5', () => {
+  // Bumped from 4 when `LaneMarking` gained `broken_yellow` and
+  // `solid_yellow`. A new enum value is additive for a NEW client reading an
+  // OLD server, but an old client rejects the new value on every frame -- and
+  // `wsClient` refuses a handshake whose protocol it does not recognise, which
+  // turns that into one clear message instead of a silent parse failure per
+  // frame. Both sides ship together, so the bump costs nothing here.
+  expect(PROTOCOL_VERSION).toBe(5);
 });
 
 it('accepts load_location with and without a radius', () => {

@@ -60,6 +60,9 @@ from random import Random
 from map.lanes import LANE_W, drivable_ways
 from map.placement import (
     KERB_CLEARANCE_M,
+    MIN_CLEAR_WALK_M,
+    SIDEWALK_W_M,
+    TREE_VERGE_M,
     facing,
     escape_offsets,
     kerb_offset,
@@ -67,7 +70,7 @@ from map.placement import (
 )
 from map.osm_model import OsmGraph, OsmNode, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import lane_counts, road_class
+from map.tags import has_sidewalk, lane_counts, road_class
 from schema import Building, Crosswalk, StopSign, TrafficLight, Tree
 
 log = logging.getLogger("streetlab.map")
@@ -553,6 +556,14 @@ def _new_tree(id_: str, position: tuple[float, float], seed: str) -> Tree:
 # actually constructed).
 _TREE_MIN_SPACING_M = 8.0
 
+#: Grid cell for the building lookup index, in metres.
+_CELL_M = 40.0
+
+#: A canopy never shrinks below this, however tight the planting. Two trees
+#: closer together than twice this still touch -- a sapling is a better
+#: answer there than a canopy the schema would reject for being <= 0.
+_MIN_CANOPY_M = 0.6
+
 
 def _carriageway_half_width_m(tags: dict[str, str]) -> float:
     """Half the total carriageway width -- centreline to kerb -- for a way."""
@@ -562,20 +573,17 @@ def _carriageway_half_width_m(tags: dict[str, str]) -> float:
 
 
 def _verge_offset_m(tags: dict[str, str]) -> float:
-    """Distance from a way's centreline to plant a verge tree, clear of the
-    carriageway.
+    """Distance from a way's centreline to plant a verge tree.
 
-    A fixed offset put a tree inside any road wider than one lane each way --
-    on the real fixture, California St, Pine St and Broadway (each carrying
-    >= 4 total lanes, a 7.2 m carriageway half-width) would plant trees 1.6 m
-    inside the road surface. The offset is derived from the way's own lane
-    count instead, and floored at the old constant (`LANE_W + 2.0` = 5.6 m,
-    which is exactly a one-lane-each-way road's 3.6 m half-width plus a 2 m
-    verge margin) so the common one-lane-each-way street keeps today's
-    spacing rather than pulling its trees in closer than before.
+    `TREE_VERGE_M` past that way's own kerb -- in the verge strip against the
+    carriageway, which is where street trees actually stand and which leaves
+    the walking room on the building side of the trunk. It used to be a 2 m
+    margin floored at 5.6 m, which planted every trunk most of the way across
+    the footway: measured, 532 of 806 trees stood in the walking band, and on
+    a one-lane-each-way street the floor pushed the trunk 2 m out, past the
+    middle of a 2.8 m pavement.
     """
-    verge_margin_m = 2.0
-    return max(_carriageway_half_width_m(tags) + verge_margin_m, LANE_W + 2.0)
+    return _carriageway_half_width_m(tags) + TREE_VERGE_M
 
 
 def _point_to_segment_distance(
@@ -610,18 +618,67 @@ def _inside_any_carriageway(
     return False
 
 
+def _footprint_index(
+    buildings: list[Building],
+) -> dict[tuple[int, int], list[list[tuple[float, float]]]]:
+    """Building rings bucketed into a coarse grid, for cheap point lookups.
+
+    ~790 tree candidates against 2224 footprints is 1.8 M ring tests done
+    naively, and every candidate only ever falls in one bucket.
+    """
+    index: dict[tuple[int, int], list[list[tuple[float, float]]]] = defaultdict(list)
+    for building in buildings:
+        xs = [p[0] for p in building.footprint]
+        ys = [p[1] for p in building.footprint]
+        for cell_x in range(int(min(xs) // _CELL_M), int(max(xs) // _CELL_M) + 1):
+            for cell_y in range(int(min(ys) // _CELL_M), int(max(ys) // _CELL_M) + 1):
+                index[(cell_x, cell_y)].append(building.footprint)
+    return index
+
+
+def _inside_ring(point: tuple[float, float], ring: list[tuple[float, float]]) -> bool:
+    """Ray-casting point-in-polygon, on a ring that is not closed."""
+    x, y = point
+    hit = False
+    for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
+        if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
+            hit = not hit
+    return hit
+
+
+def _inside_any_building(point: tuple[float, float], index) -> bool:
+    cell = (int(point[0] // _CELL_M), int(point[1] // _CELL_M))
+    return any(_inside_ring(point, ring) for ring in index.get(cell, ()))
+
+
 def _procedural_verge_trees(
-    graph: OsmGraph, origin: LatLon, avoid: list[tuple[float, float]]
+    graph: OsmGraph,
+    origin: LatLon,
+    avoid: list[tuple[float, float]],
+    buildings: list[Building],
 ) -> list[Tree]:
     """Trees along the verges of drivable ways, filling in where OSM has none.
 
-    `avoid` is the set of already-placed tagged-tree positions; a candidate
-    within `_TREE_MIN_SPACING_M` of one is dropped rather than doubling up on
-    the same spot with visibly overlapping canopies. A candidate is also
-    dropped if it falls inside *any* drivable way's carriageway, not only the
-    way it was generated against -- see `_inside_any_carriageway`.
+    A candidate is dropped when it:
+
+    * is within `_TREE_MIN_SPACING_M` of an already-placed tree -- tagged
+      (`avoid`) OR one of these, which was never checked before and left six
+      pairs of canopies interpenetrating, the worst by 3.16 m;
+    * falls inside *any* drivable way's carriageway, not only the way it was
+      generated against (see `_inside_any_carriageway`);
+    * falls inside a building. 144 of 806 trees used to, because nothing here
+      had ever looked at a footprint -- a verge tree on a narrow street simply
+      planted itself through the wall behind the pavement.
+
+    Ways with no pavement get no street trees at all: there is no verge to
+    plant them in, and kerbing every service alley filled the scene with
+    trees nobody put there.
     """
-    ways = drivable_ways(graph)
+    ways = [
+        way
+        for way in drivable_ways(graph)
+        if has_sidewalk(way.tags, road_class(way.tags) or "residential")
+    ]
     # Each way's local points and half-width, computed once and reused both
     # as the outer loop's own geometry and as every other candidate's
     # cross-way carriageway check -- a brute-force all-pairs scan, not a
@@ -635,6 +692,11 @@ def _procedural_verge_trees(
         for way in ways
     ]
 
+    footprints = _footprint_index(buildings)
+    # Grows as trees are placed, so each candidate is spaced against every
+    # tree already standing, tagged or procedural.
+    taken = list(avoid)
+
     trees: list[Tree] = []
     for way, (points, _half_width) in zip(ways, ways_geometry):
         offset = _verge_offset_m(way.tags)
@@ -646,10 +708,13 @@ def _procedural_verge_trees(
             for side in (-1.0, 1.0):
                 px = a[0] + ux * length * 0.5 - uy * side * offset
                 py = a[1] + uy * length * 0.5 + ux * side * offset
-                if any(math.dist((px, py), p) < _TREE_MIN_SPACING_M for p in avoid):
+                if any(math.dist((px, py), p) < _TREE_MIN_SPACING_M for p in taken):
                     continue
                 if _inside_any_carriageway((px, py), ways_geometry):
                     continue
+                if _inside_any_building((px, py), footprints):
+                    continue
+                taken.append((px, py))
                 trees.append(
                     _new_tree(
                         f"osm_tv_{way.id}_{i}_{int(side)}",
@@ -660,7 +725,9 @@ def _procedural_verge_trees(
     return trees
 
 
-def build_trees(graph: OsmGraph, origin: LatLon) -> list[Tree]:
+def build_trees(
+    graph: OsmGraph, origin: LatLon, buildings: list[Building]
+) -> list[Tree]:
     """Tagged trees where OSM has them, plus procedural fill along drivable ways.
 
     OSM's tagged tree coverage is sparse rather than complete -- on the real
@@ -677,4 +744,45 @@ def build_trees(graph: OsmGraph, origin: LatLon) -> list[Tree]:
         for node in _tagged_nodes(graph, "natural", "tree")
     ]
     tagged_positions = [t.position for t in tagged]
-    return tagged + _procedural_verge_trees(graph, origin, tagged_positions)
+    return _fit_canopies(
+        tagged + _procedural_verge_trees(graph, origin, tagged_positions, buildings)
+    )
+
+
+def _fit_canopies(trees: list[Tree]) -> list[Tree]:
+    """Shrink canopies until no two interpenetrate.
+
+    The procedural fill spaces its own trees, but OSM's tagged ones are placed
+    exactly where surveyed and are not ours to move -- and real street trees
+    are planted 4-5 m apart, closer than two of our invented 1.8-3.4 m canopy
+    radii will fit. Three pairs on the Nob Hill extract overlapped for exactly
+    that reason, the worst by 0.90 m.
+
+    So the radius gives, not the position. Capping every tree at half the
+    distance to its nearest neighbour is what makes that safe for every pair
+    at once: if `r_a <= d/2` and `r_b <= d/2` then `r_a + r_b <= d`, whatever
+    the two radii started as. It also reads correctly -- a tightly planted row
+    has smaller crowns than a tree standing on its own.
+    """
+    if len(trees) < 2:
+        return trees
+    order = sorted(range(len(trees)), key=lambda i: trees[i].position[0])
+    room = [math.inf] * len(trees)
+    for a in range(len(order)):
+        ia = order[a]
+        for b in range(a + 1, len(order)):
+            ib = order[b]
+            dx = trees[ib].position[0] - trees[ia].position[0]
+            # Sorted by x, so once the x gap alone exceeds the room already
+            # found there is nothing closer further along.
+            if dx >= room[ia] * 2 and dx >= _TREE_MIN_SPACING_M:
+                break
+            half = math.dist(trees[ia].position, trees[ib].position) / 2
+            room[ia] = min(room[ia], half)
+            room[ib] = min(room[ib], half)
+    return [
+        tree
+        if room[i] >= tree.canopy_radius_m
+        else tree.model_copy(update={"canopy_radius_m": round(max(room[i], _MIN_CANOPY_M), 3)})
+        for i, tree in enumerate(trees)
+    ]

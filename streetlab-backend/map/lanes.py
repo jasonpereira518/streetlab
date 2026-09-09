@@ -20,7 +20,7 @@ from shapely.geometry import LinearRing, LineString
 
 from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import is_oneway, lane_counts, road_class, speed_limit_mps, street_name
+from map.tags import has_sidewalk, is_oneway, lane_counts, road_class, speed_limit_mps, street_name
 from schema import Road
 from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
 
@@ -68,6 +68,25 @@ def _is_degenerate(points: list[tuple[float, float]]) -> bool:
     return all(abs(x - x0) < _MIN_ROAD_EXTENT_M and abs(y - y0) < _MIN_ROAD_EXTENT_M for x, y in points)
 
 
+def _center_marking(cls: str, oneway: bool, forward: int, backward: int) -> str:
+    """The line down the middle of a carriageway, by the US rule.
+
+    Colour first (MUTCD 3A.05): a line between OPPOSING directions is yellow,
+    never white. `solid_white` used to be handed to every two-way street with
+    one lane each way -- 175 of this extract's 264 roads -- which is the mark
+    for separating traffic going the SAME way.
+
+    Pattern second: broken yellow where passing is permitted, which is the
+    ordinary two-lane two-way street; double solid yellow once there is more
+    than one lane each way, where passing across the centre is not on offer.
+    A one-way carriageway has no opposing traffic to divide, and an alley is
+    not marked at all.
+    """
+    if oneway or backward == 0 or cls == "service":
+        return "none"
+    return "double_yellow" if forward > 1 or backward > 1 else "broken_yellow"
+
+
 def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
     """Every drivable way as a wire `Road`, in local metres."""
     roads: list[Road] = []
@@ -94,10 +113,8 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
                 lane_width_m=LANE_W,
                 speed_limit_mps=speed_limit_mps(way.tags, cls),
                 oneway=oneway,
-                center_marking="none" if oneway else (
-                    "double_yellow" if forward > 1 else "solid_white"
-                ),
-                has_sidewalk=cls != "service",
+                center_marking=_center_marking(cls, oneway, forward, backward),
+                has_sidewalk=has_sidewalk(way.tags, cls),
             )
         )
     if dropped:

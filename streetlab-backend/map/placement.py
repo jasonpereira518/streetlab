@@ -29,6 +29,24 @@ Vec2 = tuple[float, float]
 #: enough that it does not read as standing in a front garden.
 KERB_CLEARANCE_M = 1.2
 
+#: Width of the pavement drawn beside a kerbed road. Matches the renderers --
+#: `world.ts` and `mockCity.ts` both use 2.8 -- so a setback computed here and
+#: a pavement drawn there agree. `scene_build.py` used to say 2.4 while the
+#: renderer drew 2.8, which left every synthetic building standing 0.4 m
+#: inside its own pavement.
+SIDEWALK_W_M = 2.8
+
+#: Where a street tree's trunk goes: this far beyond the kerb, in the verge
+#: strip, NOT in the middle of the footway. Street trees sit in pits against
+#: the kerb in reality, and putting the trunk there is also what leaves the
+#: walking room on the building side of it.
+TREE_VERGE_M = 0.9
+
+#: How much of the pavement has to stay clear to walk on, past the widest
+#: trunk. `TREE_VERGE_M` plus the largest trunk radius (0.30) must leave at
+#: least this much of `SIDEWALK_W_M`.
+MIN_CLEAR_WALK_M = 1.5
+
 
 def right_of(travel: Vec2) -> Vec2:
     """The driver's right-hand side, for traffic travelling `travel`.

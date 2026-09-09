@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -79,7 +79,18 @@ class Size(Wire):
 
 SignalPhase = Literal["red", "yellow", "green", "flashing_yellow", "off"]
 RoadClass = Literal["arterial", "collector", "residential", "service"]
-LaneMarking = Literal["none", "dashed_white", "solid_white", "double_yellow"]
+# US convention (MUTCD 3A.05): yellow separates OPPOSING directions and marks
+# the left edge of a one-way roadway; white separates same-direction lanes and
+# marks the right edge. The colour carries the meaning, so both patterns of
+# each colour are on the wire rather than one stand-in for the pair.
+LaneMarking = Literal[
+    "none",
+    "dashed_white",
+    "solid_white",
+    "broken_yellow",
+    "solid_yellow",
+    "double_yellow",
+]
 
 
 class Road(Wire):

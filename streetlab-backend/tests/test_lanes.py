@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from typing import get_args
+
 from map.lanes import (
     build_roads,
     build_route_graph,
@@ -14,7 +16,7 @@ from map.lanes import (
 )
 from map.osm_model import parse_overpass
 from map.projection import LatLon, to_latlon
-from schema import Road
+from schema import LaneMarking, Road
 from sim.route import Route
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
@@ -120,7 +122,10 @@ def test_a_sliver_between_two_near_coincident_nodes_is_dropped():
 
 
 def test_center_marking_is_always_a_valid_lane_marking(graph):
-    valid = {"none", "dashed_white", "solid_white", "double_yellow"}
+    # Read off the wire type rather than restated, so a new marking value
+    # cannot leave this test quietly asserting against a stale set --
+    # which is exactly what it did when `broken_yellow` arrived.
+    valid = set(get_args(LaneMarking))
     for road in build_roads(graph, ORIGIN):
         assert road.center_marking in valid
 

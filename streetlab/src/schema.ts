@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -58,10 +58,18 @@ export const RoadClassSchema = z.enum([
   'service',
 ]);
 
+/**
+ * US convention (MUTCD 3A.05): yellow separates OPPOSING directions and marks
+ * the left edge of a one-way roadway; white separates same-direction lanes and
+ * marks the right edge. The colour carries the meaning, so both patterns of
+ * each colour are on the wire rather than one standing in for the pair.
+ */
 export const LaneMarkingSchema = z.enum([
   'none',
   'dashed_white',
   'solid_white',
+  'broken_yellow',
+  'solid_yellow',
   'double_yellow',
 ]);
 

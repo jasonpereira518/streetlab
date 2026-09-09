@@ -174,7 +174,7 @@ def test_trees_have_valid_geometry_on_the_real_fixture(graph):
     behaviour was flagged rather than hidden, and is fixed here now that this
     area is already being edited for the two findings below.
     """
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     assert trees
     for t in trees:
         assert t.height_m > 0
@@ -274,20 +274,25 @@ def test_procedural_verge_trees_supplement_sparse_tagged_coverage(graph):
     tagged_count = len(_tagged_nodes(graph, "natural", "tree"))
     assert tagged_count == 43  # pins the fixture's real, sparse OSM coverage
 
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     tagged = [t for t in trees if t.id.startswith("osm_tr_")]
     procedural = [t for t in trees if t.id.startswith("osm_tv_")]
     assert len(tagged) == 43
     # Verified directly against the fixture: the unfiltered verge fallback
-    # would place 798 trees -- almost 20x the tagged count, which is the
+    # offers 798 candidates -- almost 20x the tagged count, which is the
     # whole point of making it additive rather than an either/or fallback.
-    # Of those 798: 8 land within `_TREE_MIN_SPACING_M` of a tagged tree and
-    # are dropped by the dedup filter (see
-    # `test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree`),
-    # and a further 27 land inside some *other* drivable way's carriageway
-    # and are dropped by the cross-way clearance check (see
-    # `test_procedural_verge_trees_clear_the_carriageway`), leaving 763.
-    assert len(procedural) == 763
+    # Measured, of those 798:
+    #   124 are on ways with no pavement to plant a tree in, and never get
+    #       offered at all (`has_sidewalk`),
+    #    71 land within `_TREE_MIN_SPACING_M` of a tree already standing --
+    #       tagged or one of these (see
+    #       `test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree`
+    #       and `test_no_two_canopies_grow_through_each_other`),
+    #     8 land inside some drivable way's carriageway (see
+    #       `test_procedural_verge_trees_clear_the_carriageway`),
+    #    30 land inside a building footprint,
+    # leaving 565.
+    assert len(procedural) == 565
 
 
 def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
@@ -304,7 +309,7 @@ def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
             {"type": "way", "id": 10, "nodes": [2, 3], "tags": {"highway": "residential"}},
         ]}
     )
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     assert any(t.id == "osm_tr_1" for t in trees)
     assert any(t.id.startswith("osm_tv_10_") for t in trees)
 
@@ -380,9 +385,12 @@ def test_procedural_verge_trees_clear_the_carriageway(graph):
     # Broadway all qualify).
     assert any(half_width >= LANE_W + 2.0 for _, _, half_width in ways_geometry)
 
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     procedural = [t for t in trees if t.id.startswith("osm_tv_")]
-    assert len(procedural) == 763  # sanity: this is the real, filtered set
+    # Sanity: the real, filtered set. Was 763 before verge trees were checked
+    # against building footprints (144 stood inside one), spaced against each
+    # other, and confined to ways that actually carry a pavement.
+    assert len(procedural) == 565
 
     for t in procedural:
         for name, points, half_width in ways_geometry:
@@ -418,7 +426,7 @@ def test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree():
             {"type": "way", "id": 10, "nodes": [1, 2], "tags": {"highway": "residential"}},
         ]}
     )
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     tagged_ids = [t.id for t in trees if t.id.startswith("osm_tr_")]
     procedural_ids = [t.id for t in trees if t.id.startswith("osm_tv_")]
     assert tagged_ids == ["osm_tr_3"]
@@ -451,6 +459,6 @@ def test_trees_are_deterministic_across_runs(graph):
     """All tree placement/jitter must be seeded from OSM ids via sha256, not
     Python's per-process-salted `hash()` -- otherwise the same fixture would
     build a different forest on every launch."""
-    first = [t.model_dump() for t in build_trees(graph, ORIGIN)]
-    second = [t.model_dump() for t in build_trees(graph, ORIGIN)]
+    first = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
+    second = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
     assert first == second
