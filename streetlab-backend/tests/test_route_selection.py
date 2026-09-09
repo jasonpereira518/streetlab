@@ -5,22 +5,26 @@ import time
 from pathlib import Path
 
 import pytest
-from shapely.geometry import LinearRing
+from shapely.geometry import LinearRing, LineString
 
 from map.lanes import (
     LANE_W,
     MAX_LOOP_M,
     MIN_LOOP_M,
     NoDrivableRoad,
+    NoRouteFound,
     Edge,
     RouteGraph,
+    _astar,
     _find_loop,
+    _find_line_crossing,
     _find_ring_crossing,
-    _nearest_junction,
+    nearest_junction,
     _out_and_back,
     build_route_graph,
     remove_self_intersections,
     select_ego_route,
+    select_route_to_destination,
 )
 from map.osm_model import parse_overpass
 from map.projection import LatLon
@@ -165,7 +169,7 @@ def test_find_loop_rejects_an_immediate_uturn_as_a_fake_cycle():
     only way to tell the two apart, so this test does that on purpose.
     """
     rg = build_route_graph(_dead_end_graph(), ORIGIN)
-    start = _nearest_junction(rg, (0.0, 0.0))
+    start = nearest_junction(rg, (0.0, 0.0))
     assert _find_loop(rg, start) is None
 
 
@@ -198,7 +202,7 @@ def test_find_loop_treats_two_distinct_ways_as_a_real_loop_not_a_uturn():
     a loop is found here if and only if the two ways' edges are told apart.
     """
     rg = build_route_graph(_couplet_graph(), ORIGIN)
-    start = _nearest_junction(rg, (0.0, 0.0))
+    start = nearest_junction(rg, (0.0, 0.0))
     loop = _find_loop(rg, start)
     assert loop is not None
     # Out one way (the direct 352 m carriageway) and back the other (the
@@ -266,10 +270,10 @@ def test_out_and_back_handles_a_single_edge_stem():
     bare endpoints (which `select_ego_route` then rejects as too degenerate
     to offset). This is exactly the shape `_dead_end_graph` produces, and is
     also the smallest input `_out_and_back` can ever legally receive --
-    `_nearest_junction` never selects a node with zero edges.
+    `nearest_junction` never selects a node with zero edges.
     """
     rg = build_route_graph(_dead_end_graph(), ORIGIN)
-    start = _nearest_junction(rg, (0.0, 0.0))
+    start = nearest_junction(rg, (0.0, 0.0))
     points = _out_and_back(rg, start)
     assert len(points) >= 3
     assert len({p for p in points}) >= 2  # not every "distinct" point collapsed to one
@@ -582,3 +586,133 @@ def test_remove_self_intersections_is_a_noop_on_an_already_simple_route():
     """
     square = Route([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], closed=True)
     assert remove_self_intersections(square).points == square.points
+
+
+# --------------------------------------------------------------------------- #
+# Point-to-point destination routing                                          #
+# --------------------------------------------------------------------------- #
+
+
+def _diamond_graph() -> RouteGraph:
+    """Junctions 1 and 4 connected two ways: a short path through 2 (100 m
+    total) and a much longer one through 3 (400 m total) -- a shortest-path
+    search must prefer the former, a search that just finds *a* path would
+    not necessarily.
+    """
+    points = {1: (0.0, 0.0), 2: (50.0, 0.0), 3: (0.0, -100.0), 4: (100.0, 0.0)}
+    rg = RouteGraph()
+    rg.points = dict(points)
+
+    def link(a: int, b: int, length: float) -> None:
+        rg.adjacency.setdefault(a, []).append(
+            Edge(to=b, polyline=[points[a], points[b]], length_m=length, class_rank=1)
+        )
+        rg.adjacency.setdefault(b, []).append(
+            Edge(to=a, polyline=[points[b], points[a]], length_m=length, class_rank=1)
+        )
+
+    link(1, 2, 50.0)
+    link(2, 4, 50.0)
+    link(1, 3, 200.0)
+    link(3, 4, 200.0)
+    return rg
+
+
+def _disconnected_graph() -> RouteGraph:
+    """Two separate two-node components -- nothing connects 1 to 3."""
+    points = {1: (0.0, 0.0), 2: (50.0, 0.0), 3: (500.0, 500.0), 4: (550.0, 500.0)}
+    rg = RouteGraph()
+    rg.points = dict(points)
+    rg.adjacency[1] = [Edge(to=2, polyline=[points[1], points[2]], length_m=50.0, class_rank=1)]
+    rg.adjacency[2] = [Edge(to=1, polyline=[points[2], points[1]], length_m=50.0, class_rank=1)]
+    rg.adjacency[3] = [Edge(to=4, polyline=[points[3], points[4]], length_m=50.0, class_rank=1)]
+    rg.adjacency[4] = [Edge(to=3, polyline=[points[4], points[3]], length_m=50.0, class_rank=1)]
+    return rg
+
+
+def test_astar_prefers_the_shorter_of_two_paths():
+    rg = _diamond_graph()
+    points = _astar(rg, 1, 4)
+    assert points is not None
+    # The short path runs 1 -> 2 -> 4; the long one detours through 3.
+    assert points == [(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)]
+
+
+def test_astar_returns_none_when_no_path_connects_the_two_junctions():
+    rg = _disconnected_graph()
+    assert _astar(rg, 1, 3) is None
+
+
+def test_select_route_to_destination_returns_an_open_route_on_the_square_grid():
+    rg = build_route_graph(_square_graph(), ORIGIN)
+    # Opposite corners of the ~200 m square.
+    route = select_route_to_destination(rg, (0.0, 0.0), (0.0018 * 111_320, 0.0018 * 111_320))
+    assert route.closed is False
+    assert route.length_m > 0
+    assert all(math.isfinite(x) and math.isfinite(y) for x, y in route.points)
+
+
+def test_select_route_to_destination_raises_when_start_and_destination_coincide():
+    rg = build_route_graph(_square_graph(), ORIGIN)
+    with pytest.raises(NoRouteFound):
+        select_route_to_destination(rg, (0.0, 0.0), (0.0, 0.0))
+
+
+def test_select_route_to_destination_raises_when_no_path_connects_the_extract():
+    rg = _disconnected_graph()
+    with pytest.raises(NoRouteFound):
+        select_route_to_destination(rg, (0.0, 0.0), (525.0, 500.0))
+
+
+def test_select_route_to_destination_on_the_real_fixture_reaches_a_distant_junction():
+    """Route from the fixture's own local origin to the junction the loop
+    search itself would otherwise lap forever -- proving point-to-point
+    routing reaches a real, distant destination on real OSM geometry, not
+    just a hand-built toy graph."""
+    graph = parse_overpass(json.loads(FIXTURE.read_text()))
+    rg = build_route_graph(graph, ORIGIN)
+    far_junction = max(rg.points, key=lambda j: math.dist(rg.points[j], (0.0, 0.0)))
+    route = select_route_to_destination(rg, (0.0, 0.0), rg.points[far_junction])
+    assert route.closed is False
+    assert route.length_m > 0
+
+
+# --------------------------------------------------------------------------- #
+# Self-intersection repair on open polylines                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_remove_self_intersections_repairs_an_open_polyline_spike():
+    """The open-route sibling of `test_splice_keeps_the_long_arc...` above: a
+    straight run with a hook near the middle that crosses back over itself,
+    as `Route.offset()` can produce at a sharp turn on a point-to-point route.
+    """
+    points = [
+        (0.0, 0.0),
+        (100.0, 0.0),
+        (100.0, 100.0),
+        (50.0, -5.0),  # hook: this segment crosses segment 0 (points[0]->points[1])
+        (50.0, 10.0),
+        (200.0, 0.0),
+    ]
+    route = Route(points, closed=False)
+    assert not LineString(points).is_simple  # the fixture actually self-intersects
+
+    repaired = remove_self_intersections(route)
+    assert repaired.closed is False
+    assert LineString(repaired.points).is_simple
+    assert math.isfinite(repaired.length_m)
+    # Start and end are untouched by the splice; only the interior hook is cut.
+    assert repaired.points[0] == points[0]
+    assert repaired.points[-1] == points[-1]
+
+
+def test_remove_self_intersections_is_a_noop_on_an_already_simple_open_route():
+    line = Route([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)], closed=False)
+    assert remove_self_intersections(line).points == line.points
+
+
+def test_find_line_crossing_ignores_adjacent_segments():
+    # Two segments sharing an endpoint are not a "crossing" in any useful
+    # sense -- only non-adjacent segments should ever be reported.
+    assert _find_line_crossing([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]) is None

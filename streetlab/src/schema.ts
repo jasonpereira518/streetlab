@@ -352,6 +352,7 @@ export const ManeuverSchema = z.enum([
   'lane_change_right',
   'stop',
   'yield',
+  'arrived',
 ]);
 
 export const PlanSchema = z.object({
@@ -460,6 +461,9 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
     cmd: z.literal('load_location'),
     query: z.string().min(1),
     radius_m: z.number().positive().optional(),
+    /** A second address to route TO. Absent means "drive an auto-discovered
+     * loop near `query`", exactly as before this existed. */
+    destination: z.string().min(1).optional(),
   }),
   cmd({
     cmd: z.literal('set_param'),

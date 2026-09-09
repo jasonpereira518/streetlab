@@ -10,10 +10,12 @@ import math
 
 import pytest
 
+from map.lanes import arrival_control_point
 from map.scene_build import SyntheticGrid
 from plan.behavior import STOP_MARGIN_M, STOP_ZONE_M, BehaviorState
-from plan.control import CenterlineFollower, PlanLimits, Planner
+from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner
 from schema import Plan
+from sim.route import Route
 from sim.vehicle import BicycleModel, VehicleState
 
 
@@ -568,3 +570,38 @@ def test_the_lap_test_still_holds_with_the_rate_limit(built, limits):
             break
     assert travelled > route.length_m
     assert worst < 1.8, f"ego wandered {worst:.2f} m off the centreline"
+
+
+def test_planner_reports_arrived_and_holds_at_an_open_routes_end():
+    """End-to-end through `CenterlineFollower` + `BehaviorFSM` together, not
+    just the FSM in isolation (`tests/test_behavior.py`'s job): a point-to-
+    point route's synthesised arrival point produces the wire-facing
+    "arrived" maneuver and a zero target speed once the car actually gets
+    there, and never releases afterward -- unlike a stop sign's dwell.
+    """
+    route = Route([(0.0, 0.0), (60.0, 0.0)], closed=False)
+    arrival = arrival_control_point(route)
+    limits = PlanLimits(speed_limit_mps=15.0, speed_cap_mps=15.0)
+    planner = CenterlineFollower()
+    model = BicycleModel()
+    ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=10.0)
+    dt = 1 / 60
+    t = 0.0
+    result = None
+    for _ in range(3000):  # generous ceiling; the car must settle well before this
+        result = planner.plan(ego, route, [], limits, PlanContext(t=t, dt=dt, control_points=[arrival]))
+        ego = model.step(ego, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=dt)
+        t += dt
+        if result.plan.maneuver == "arrived" and ego.speed_mps < 0.05:
+            break
+    else:
+        pytest.fail("never settled at the arrival point")
+    assert result.plan.target_speed_mps == 0.0
+
+    # Continuing to step must never release it -- there is nowhere left to go.
+    for _ in range(600):
+        result = planner.plan(ego, route, [], limits, PlanContext(t=t, dt=dt, control_points=[arrival]))
+        ego = model.step(ego, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=dt)
+        t += dt
+        assert result.plan.maneuver == "arrived"
+        assert result.plan.target_speed_mps == 0.0

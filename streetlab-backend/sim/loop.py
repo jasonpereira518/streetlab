@@ -28,6 +28,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
+from map.lanes import ARRIVAL_CONTROL_ID
+from map.osm_source import describe_build_failure
 from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.capture import CaptureSink
 from perception.history import PoseHistory
@@ -36,6 +38,7 @@ from perception.pipeline import PerceptionPipeline
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
+from plan.behavior import BehaviorState
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
     Ack,
@@ -219,6 +222,12 @@ class Simulation:
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
         # itself in.
         self._build_sink: Callable[[Callable[[], BuiltScene]], None] | None = None
+        # Latches once per scene so a point-to-point trip's `trip_complete`
+        # fires exactly once, at the moment the ego actually settles into
+        # STOP at the route's own end -- not on every tick it stays there
+        # afterwards. Reset alongside everything else scene-scoped in
+        # `_reset_dynamics`.
+        self._trip_complete_emitted = False
         self._load(scenario_id or source.scenarios()[0].id)
 
     # -- lifecycle --------------------------------------------------------- #
@@ -261,6 +270,7 @@ class Simulation:
         # right above, so a stale entry could otherwise collide with a
         # genuinely new one.
         self.pose_history.clear()
+        self._trip_complete_emitted = False
         # Seeded at t = 0.0 right after the clear, because `state_update()` is
         # legitimately callable before any `step()` -- and because `world.t`
         # restarts at 0.0 above on every reset and scene swap, not just at
@@ -321,6 +331,7 @@ class Simulation:
 
         self._guard_world()
         result = self._plan(dt)
+        self._check_trip_complete()
         self.world.ego = self._model.step(
             self.world.ego,
             accel_mps2=result.accel_mps2,
@@ -754,10 +765,11 @@ class Simulation:
         if self._build_sink is None:
             return CommandOutcome(ok=False, message="no build executor attached")
 
-        query, radius = command.query, command.radius_m
-        self._build_sink(lambda: builder(query, radius))
-        self._emit("location_requested", f"building {query}")
-        return CommandOutcome(ok=True, message=f"building {query}")
+        query, radius, destination = command.query, command.radius_m, command.destination
+        self._build_sink(lambda: builder(query, radius, destination=destination))
+        label = f"{query} → {destination}" if destination else query
+        self._emit("location_requested", f"building {label}")
+        return CommandOutcome(ok=True, message=f"building {label}")
 
     def _cmd_set_param(self, command) -> CommandOutcome:
         if command.key not in DEFAULT_PARAMS:
@@ -810,6 +822,26 @@ class Simulation:
         self.world.events.append(
             SimEvent(t=round(self.world.t, 3), level=level, code=code, message=message)
         )
+
+    def _check_trip_complete(self) -> None:
+        """Emit `trip_complete` once the ego actually settles into STOP at an
+        open route's own end -- not merely once it is nearby or slowing down,
+        which would fire just as readily for a car stopped at a red light a
+        block short of its destination. `fsm` is duck-typed the same way
+        `reset` is elsewhere in this class: a user-supplied planner with no
+        `.fsm` at all simply never reports arrival, same as before this
+        existed.
+        """
+        if self._trip_complete_emitted:
+            return
+        fsm = getattr(self._planner, "fsm", None)
+        if (
+            fsm is not None
+            and fsm.state is BehaviorState.STOP
+            and fsm.target_id == ARRIVAL_CONTROL_ID
+        ):
+            self._emit("trip_complete", "arrived at destination")
+            self._trip_complete_emitted = True
 
 
 # --------------------------------------------------------------------------- #
@@ -1347,16 +1379,24 @@ class SimLoop:
             try:
                 scene = build()
             except Exception as exc:
+                # Full detail goes to the server log; `describe_build_failure`
+                # narrows what actually reaches a client to a plain sentence
+                # -- a raw httpx/Nominatim exception string means nothing to
+                # someone who just typed an address.
                 log.warning("scene build failed: %s", exc)
                 self._events.put(
                     SimEvent(
                         t=round(self.sim.t, 3),
                         level="warn",
                         code="location_failed",
-                        message=str(exc),
+                        message=describe_build_failure(exc),
                     )
                 )
                 return
+            for code, message in scene.build_notes:
+                self._events.put(
+                    SimEvent(t=round(self.sim.t, 3), level="info", code=code, message=message)
+                )
             with self._lock:
                 self._pending_scene = scene
 

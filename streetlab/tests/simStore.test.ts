@@ -93,3 +93,94 @@ describe('perception change-gate', () => {
     expect(useSimStore.getState().perception?.frames_received).toBe(1);
   });
 });
+
+describe('location error and trip completion', () => {
+  it('surfaces a location_failed event as locationError and clears locationPending', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    useSimStore.setState({ locationPending: 'Nonexistent Place' });
+
+    h.emit({
+      ...base,
+      seq: base.seq + 1,
+      t: base.t + 0.1,
+      events: [
+        { t: base.t, level: 'warn', code: 'location_failed', message: "Couldn't find that address." },
+      ],
+    });
+
+    const s = useSimStore.getState();
+    expect(s.locationPending).toBeNull();
+    expect(s.locationError).toBe("Couldn't find that address.");
+  });
+
+  it('clears a stale locationError as soon as loadLocation is called again', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.setState({ locationError: 'stale error' });
+    useSimStore.getState().loadLocation('Somewhere else');
+    expect(useSimStore.getState().locationError).toBeNull();
+  });
+
+  it('clears locationError on a successful scene_description', () => {
+    const h = createHarness();
+    useSimStore.setState({ locationError: 'stale error' });
+    h.emitScene();
+    expect(useSimStore.getState().locationError).toBeNull();
+  });
+
+  it('sets tripComplete when a trip_complete event arrives, and not before', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    expect(useSimStore.getState().tripComplete).toBe(false);
+
+    h.emit({
+      ...base,
+      seq: base.seq + 1,
+      t: base.t + 0.1,
+      events: [{ t: base.t, level: 'info', code: 'trip_complete', message: 'arrived at destination' }],
+    });
+
+    expect(useSimStore.getState().tripComplete).toBe(true);
+  });
+
+  it('clears tripComplete on the next loadLocation call', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.setState({ tripComplete: true });
+    useSimStore.getState().loadLocation('Somewhere else');
+    expect(useSimStore.getState().tripComplete).toBe(false);
+  });
+
+  it('clears tripComplete on the next loadScenario call', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.setState({ tripComplete: true });
+    useSimStore.getState().loadScenario('grid-loop');
+    expect(useSimStore.getState().tripComplete).toBe(false);
+  });
+});
+
+describe('loadLocation with a destination', () => {
+  it('sends both fields and shows a combined pending label', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().loadLocation('Nob Hill', "Fisherman's Wharf");
+
+    expect(useSimStore.getState().locationPending).toBe("Nob Hill → Fisherman's Wharf");
+    const sent = h.sent.find((c) => c.cmd === 'load_location');
+    expect(sent).toMatchObject({ query: 'Nob Hill', destination: "Fisherman's Wharf" });
+  });
+
+  it('omits destination entirely when left blank, unchanged from before it existed', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().loadLocation('Nob Hill', '');
+
+    expect(useSimStore.getState().locationPending).toBe('Nob Hill');
+    const sent = h.sent.find((c) => c.cmd === 'load_location');
+    expect(sent).not.toHaveProperty('destination');
+  });
+});

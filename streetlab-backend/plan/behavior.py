@@ -453,7 +453,8 @@ class BehaviorFSM:
             if self._may_proceed(target, signals):
                 self.state = BehaviorState.CREEP
                 return BehaviorDecision(BehaviorState.CREEP, CREEP_MPS, "yield", target)
-            return BehaviorDecision(BehaviorState.STOP, 0.0, "stop", target)
+            maneuver = "arrived" if target.kind == "arrival" else "stop"
+            return BehaviorDecision(BehaviorState.STOP, 0.0, maneuver, target)
 
         if not self._must_stop(target, signals, distance, ego):
             # Rolling through. Latched only once the car is past the point of
@@ -471,7 +472,7 @@ class BehaviorFSM:
             # Zero out STOP_MARGIN_M early -- see its docstring -- so the
             # tracker's own lag overshoots toward the line rather than past it.
             math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance - STOP_MARGIN_M, 0.0)),
-            "stop",
+            "arrived" if target.kind == "arrival" else "stop",
             target,
         )
 
@@ -581,7 +582,7 @@ class BehaviorFSM:
         distance: float,
         ego: VehicleState,
     ) -> bool:
-        if target.kind == "stop_sign":
+        if target.kind in ("stop_sign", "arrival"):
             return True
         phase = self._phase(target, signals)
         if phase == "red":
@@ -639,6 +640,8 @@ class BehaviorFSM:
     def _may_proceed(
         self, target: ControlPoint, signals: Mapping[str, SignalState]
     ) -> bool:
+        if target.kind == "arrival":
+            return False  # the trip's own end: holds forever, by design
         if target.kind == "stop_sign":
             return self.dwell_s >= STOP_DWELL_S
         return self._phase(target, signals) not in ("red", "yellow")

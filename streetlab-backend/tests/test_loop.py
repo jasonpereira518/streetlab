@@ -177,7 +177,7 @@ class _StubbedLocationSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None):
         return self._grid.build("grid-loop")
 
 
@@ -199,7 +199,7 @@ class _FailingLoadSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None):
         raise NoDrivableRoad(f"no drivable junctions in this extract: {query}")
 
 
@@ -1269,7 +1269,7 @@ class _SlowLocationSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None):
         time.sleep(1.5)
         return self._grid.build("grid-arterial")
 

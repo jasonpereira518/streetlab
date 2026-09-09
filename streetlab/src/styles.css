@@ -656,6 +656,12 @@ canvas {
 .location-search {
   padding: 10px var(--pad-panel);
   border-bottom: 1px solid var(--c-border, #e4e9f0);
+  /* Two stacked inputs (start + destination) rather than the single field's
+     former default block flow -- inputs are inline-block by default and
+     would otherwise sit side by side. */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .location-search input {
@@ -696,9 +702,21 @@ canvas {
 }
 
 .location-pending {
-  margin: 6px 0 0;
+  margin: 0;
   font-size: 11px;
   color: var(--c-text-faint, #9aa7b6);
+}
+
+.location-error {
+  margin: 0;
+  font-size: 11px;
+  color: #b3363a;
+}
+
+.location-trip-complete {
+  margin: 0;
+  font-size: 11px;
+  color: #15803d;
 }
 
 .scenario-list {

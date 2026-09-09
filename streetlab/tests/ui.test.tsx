@@ -225,7 +225,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Nob Hill' } });
     fireEvent.submit(box.closest('form')!);
 
@@ -250,7 +250,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: '   ' } });
     fireEvent.submit(box.closest('form')!);
 
@@ -271,7 +271,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Nonexistent Place' } });
     fireEvent.submit(box.closest('form')!);
     expect(useSimStore.getState().locationPending).toBe('Nonexistent Place');
@@ -306,7 +306,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Anywhere' } });
     fireEvent.submit(box.closest('form')!);
     expect(useSimStore.getState().locationPending).toBe('Anywhere');
@@ -343,7 +343,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Somewhere Real' } });
     fireEvent.submit(box.closest('form')!);
 
@@ -361,7 +361,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Nob Hill' } });
     const form = box.closest('form')!;
     fireEvent.submit(form);
@@ -418,7 +418,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: '1600 Amphitheatre Parkway' } });
     fireEvent.submit(box.closest('form')!);
     expect(useSimStore.getState().locationPending).toBe('1600 Amphitheatre Parkway');

@@ -8,9 +8,19 @@ from pathlib import Path
 import pytest
 
 from map.cache import BundledExtracts, DiskCache
-from map.geocode import GeocodeError, Place, StubGeocoder
-from map.lanes import NoDrivableRoad
-from map.osm_source import ATTRIBUTION, BUNDLED, LocationSpec, OsmSceneSource, default_source
+from map.geocode import GeocodeError, GeocodeNotFound, GeocodeUnavailable, Place, StubGeocoder
+from map.lanes import NoDrivableRoad, NoRouteFound
+from map.osm_source import (
+    ATTRIBUTION,
+    BUNDLED,
+    MAX_BUILDINGS,
+    MAX_TRIP_SPAN_M,
+    LocationSpec,
+    OsmSceneSource,
+    TripTooLong,
+    default_source,
+    describe_build_failure,
+)
 from map.overpass import BBox, OverpassClient, OverpassError
 from map.scene_build import SceneSource
 from schema import Road, SceneDescription
@@ -1057,3 +1067,335 @@ def test_every_osm_signal_control_point_has_a_phase_group(nob_hill_scene):
     for cp in scene.control_points:
         if cp.kind == "signal":
             assert cp.id in scene.signal_groups
+
+
+# --------------------------------------------------------------------------- #
+# Point-to-point destination routing (integration, through OsmSceneSource)     #
+# --------------------------------------------------------------------------- #
+
+# A real junction in the Nob Hill fixture, ~987 m from NOB_HILL by the actual
+# route graph (verified directly against `select_route_to_destination` while
+# writing this test) -- not a guess at "somewhere nearby", so this exercises a
+# genuine multi-block path rather than risking `NoRouteFound` on a point the
+# fixture's road network doesn't actually reach.
+FAR_JUNCTION = Place(lat=37.8033391, lon=-122.4165234, display_name="A junction north of Nob Hill")
+
+
+def test_build_location_with_a_destination_drives_an_open_route_to_it(tmp_path):
+    payload = json.loads(FIXTURE.read_text())
+    geocoder = MultiPlaceGeocoder(
+        {"Nob Hill, San Francisco": NOB_HILL, "A junction north of Nob Hill": FAR_JUNCTION}
+    )
+    client = OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
+    src = OsmSceneSource(geocoder, client, locations=())
+
+    scene = src.build_location(
+        "Nob Hill, San Francisco", 500.0, destination="A junction north of Nob Hill"
+    )
+
+    assert scene.ego_route.closed is False
+    assert scene.ego_route.length_m > 0
+    arrivals = [cp for cp in scene.control_points if cp.kind == "arrival"]
+    assert len(arrivals) == 1
+    assert arrivals[0].s == pytest.approx(scene.ego_route.length_m - 4.0)
+    # Traffic must never drive the open ego route directly (see `_traffic_loops`'s
+    # docstring: `sim/agents.py`'s IDM/MOBIL model assumes every route is
+    # closed) -- every agent route handed out is its own closed loop instead.
+    assert all(r.closed for r in scene.agent_routes)
+
+
+def test_build_location_names_a_destination_trip_distinctly_from_its_start_alone(tmp_path):
+    """(query, destination) is the identity `build_location` dedupes on, not
+    `query` alone -- the same start routed to two different places must not
+    collide on one catalog entry."""
+    payload = json.loads(FIXTURE.read_text())
+    geocoder = MultiPlaceGeocoder(
+        {"Nob Hill, San Francisco": NOB_HILL, "A junction north of Nob Hill": FAR_JUNCTION}
+    )
+    client = OverpassClient(ReplayFetcher(payload), DiskCache(tmp_path))
+    src = OsmSceneSource(geocoder, client, locations=())
+
+    loop_scene = src.build_location("Nob Hill, San Francisco", 500.0)
+    trip_scene = src.build_location(
+        "Nob Hill, San Francisco", 500.0, destination="A junction north of Nob Hill"
+    )
+    assert loop_scene.description.scenario_id != trip_scene.description.scenario_id
+    assert loop_scene.ego_route.closed is True
+    assert trip_scene.ego_route.closed is False
+
+
+def test_build_location_rejects_a_trip_beyond_the_v1_span_cap(tmp_path):
+    """Rejected before Overpass is ever touched -- a bbox spanning a trip this
+    long is exactly the dense-fetch cost this cap exists to avoid paying for
+    at all, not merely to recover from afterward."""
+    far_away = Place(lat=38.5, lon=-122.4156, display_name="Far outside the v1 cap")
+    geocoder = MultiPlaceGeocoder(
+        {"Nob Hill, San Francisco": NOB_HILL, "Far outside the v1 cap": far_away}
+    )
+    fetcher = CountingFetcher(json.loads(FIXTURE.read_text()))
+    client = OverpassClient(fetcher, DiskCache(tmp_path))
+    src = OsmSceneSource(geocoder, client, locations=())
+
+    with pytest.raises(TripTooLong):
+        src.build_location(
+            "Nob Hill, San Francisco", 500.0, destination="Far outside the v1 cap"
+        )
+    assert fetcher.calls == 0
+
+
+def test_max_trip_span_m_is_a_few_kilometers():
+    """Pins the v1 cap to the range the plan actually committed to, so a
+    casual future edit changing its order of magnitude fails loudly here
+    rather than silently reshaping what "too far" means."""
+    assert 3000.0 <= MAX_TRIP_SPAN_M <= 5000.0
+
+
+# --------------------------------------------------------------------------- #
+# Radius-widening retry ladder                                                 #
+# --------------------------------------------------------------------------- #
+
+
+class LadderFetcher:
+    """An empty (roadless) payload for the first `empty_calls` fetches, then
+    `payload` -- for proving `_build_uncached` actually widens its search
+    rather than failing on the first guess.
+    """
+
+    def __init__(self, empty_calls: int, payload: dict) -> None:
+        self.empty_calls = empty_calls
+        self.payload = payload
+        self.calls = 0
+
+    def fetch(self, query: str) -> dict:
+        self.calls += 1
+        if self.calls <= self.empty_calls:
+            return {"elements": []}
+        return self.payload
+
+
+def test_build_location_widens_the_radius_when_the_first_guess_has_no_road(tmp_path):
+    payload = json.loads(FIXTURE.read_text())
+    fetcher = LadderFetcher(empty_calls=1, payload=payload)
+    client = OverpassClient(fetcher, DiskCache(tmp_path))
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), client, locations=())
+
+    scene = src.build_location("Nob Hill, San Francisco", 500.0)
+
+    assert fetcher.calls == 2  # first (500 m) empty, second (1000 m) real
+    assert scene.ego_route.length_m > 0
+
+
+def test_build_location_gives_up_after_the_ladder_is_exhausted(tmp_path):
+    """Every radius in the ladder comes up empty -- the eventual failure must
+    still be `NoDrivableRoad`, not some other exception, and must not retry
+    forever."""
+    fetcher = LadderFetcher(empty_calls=999, payload=json.loads(FIXTURE.read_text()))
+    client = OverpassClient(fetcher, DiskCache(tmp_path))
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), client, locations=())
+
+    with pytest.raises(NoDrivableRoad):
+        src.build_location("Nob Hill, San Francisco", 500.0)
+    # 500 -> 1000 -> 2000 -> 4000 -> 5000 (capped): five attempts, not infinite.
+    assert fetcher.calls == 5
+
+
+def test_the_radius_ladder_never_retries_a_transport_failure(tmp_path):
+    """`OverpassError` already retries 3x internally with backoff
+    (`OverpassClient._fetch_with_retries`) -- compounding the radius ladder on
+    top of that would turn one outage into several times as many slow
+    requests. A transport failure must propagate on the FIRST radius, not
+    trigger widening."""
+
+    class AlwaysFailingFetcher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fetch(self, query: str) -> dict:
+            self.calls += 1
+            raise RuntimeError("connection refused")
+
+    fetcher = AlwaysFailingFetcher()
+    client = OverpassClient(fetcher, DiskCache(tmp_path), retries=1, backoff_s=0.0)
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), client, locations=())
+
+    with pytest.raises(OverpassError):
+        src.build_location("Nob Hill, San Francisco", 500.0)
+    assert fetcher.calls == 1  # one bbox, one attempt (retries=1) -- no ladder escalation
+
+
+def test_a_bundled_location_still_succeeds_on_its_first_radius(source):
+    """The offline bundle's cache key is derived from its exact baked
+    lat/lon/radius -- the ladder must never widen past that first radius on a
+    location that already has a real road, or the recorded cache entry stops
+    matching."""
+    scene = source.build("osm-nob-hill")
+    assert scene.ego_route.length_m > 0
+
+
+# --------------------------------------------------------------------------- #
+# Dense-area geometry cap                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def _payload_with_many_buildings(n: int) -> dict:
+    """A small drivable loop (so `select_ego_route` succeeds) plus `n`
+    building ways scattered with increasing distance from the origin, so
+    "nearest `MAX_BUILDINGS` to the route" and "farthest" are unambiguous.
+    """
+    d = 0.0018  # ~200 m, same square loop `test_route_selection.py` uses
+    elements = [
+        {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+        {"type": "node", "id": 2, "lat": 37.7945 + d, "lon": -122.4156},
+        {"type": "node", "id": 3, "lat": 37.7945 + d, "lon": -122.4156 + d},
+        {"type": "node", "id": 4, "lat": 37.7945, "lon": -122.4156 + d},
+    ]
+    for i, (a, b) in enumerate([(1, 2), (2, 3), (3, 4), (4, 1)]):
+        elements.append(
+            {"type": "way", "id": 100 + i, "nodes": [a, b], "tags": {"highway": "residential"}}
+        )
+
+    node_id = 1000
+    way_id = 1000
+    for i in range(n):
+        # Spread buildings out along longitude, increasingly far from the
+        # loop above -- building `i` is farther away than building `i - 1`.
+        lon = -122.4156 + 0.0001 * i
+        lat = 37.7945
+        side = 0.00002
+        corners = [
+            (lat, lon),
+            (lat + side, lon),
+            (lat + side, lon + side),
+            (lat, lon + side),
+        ]
+        ids = []
+        for clat, clon in corners:
+            elements.append({"type": "node", "id": node_id, "lat": clat, "lon": clon})
+            ids.append(node_id)
+            node_id += 1
+        ids.append(ids[0])  # OSM closes a ring by repeating the first node
+        elements.append(
+            {"type": "way", "id": way_id, "nodes": ids, "tags": {"building": "yes"}}
+        )
+        way_id += 1
+    return {"elements": elements}
+
+
+def test_a_dense_extract_is_truncated_to_the_buildings_nearest_the_route(tmp_path):
+    n = MAX_BUILDINGS + 143
+    client = OverpassClient(ReplayFetcher(_payload_with_many_buildings(n)), DiskCache(tmp_path))
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), client, locations=())
+
+    scene = src.build_location("a dense grid", 500.0)
+
+    assert len(scene.description.buildings) == MAX_BUILDINGS
+    codes = [code for code, _ in scene.build_notes]
+    assert codes.count("scene_truncated") == 1
+    assert str(143) in next(msg for code, msg in scene.build_notes if code == "scene_truncated")
+    # Building 0 sits essentially on the loop; the truncation must keep it and
+    # drop ones spread farther east instead of, say, the first N by id.
+    kept_ids = {b.id for b in scene.description.buildings}
+    assert "osm_b1000" in kept_ids
+    assert f"osm_b{1000 + n - 1}" not in kept_ids
+
+
+def test_a_small_extract_is_not_truncated_at_all(source):
+    """The common case -- well under the cap -- must produce no note and no
+    dropped geometry, exactly as before this existed."""
+    scene = source.build("osm-nob-hill")
+    assert len(scene.description.buildings) < MAX_BUILDINGS
+    assert not any(code == "scene_truncated" for code, _ in scene.build_notes)
+
+
+# --------------------------------------------------------------------------- #
+# Spawn-in-building telemetry                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def _payload_with_a_building_over_the_origin() -> dict:
+    """The same small square loop as `_square_graph`-style fixtures, plus one
+    large building footprint straddling the origin junction -- guaranteeing
+    the ego's spawn point (near local (0, 0)) falls inside it regardless of
+    the exact offset/fillet arithmetic.
+    """
+    d = 0.0018
+    elements = [
+        {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+        {"type": "node", "id": 2, "lat": 37.7945 + d, "lon": -122.4156},
+        {"type": "node", "id": 3, "lat": 37.7945 + d, "lon": -122.4156 + d},
+        {"type": "node", "id": 4, "lat": 37.7945, "lon": -122.4156 + d},
+    ]
+    for i, (a, b) in enumerate([(1, 2), (2, 3), (3, 4), (4, 1)]):
+        elements.append(
+            {"type": "way", "id": 100 + i, "nodes": [a, b], "tags": {"highway": "residential"}}
+        )
+    big = 0.001  # ~110 m -- comfortably bigger than the lane offset near (0, 0)
+    corners = [
+        (37.7945 - big, -122.4156 - big),
+        (37.7945 + big, -122.4156 - big),
+        (37.7945 + big, -122.4156 + big),
+        (37.7945 - big, -122.4156 + big),
+    ]
+    ids = []
+    node_id = 900
+    for clat, clon in corners:
+        elements.append({"type": "node", "id": node_id, "lat": clat, "lon": clon})
+        ids.append(node_id)
+        node_id += 1
+    ids.append(ids[0])
+    elements.append({"type": "way", "id": 900, "nodes": ids, "tags": {"building": "yes"}})
+    return {"elements": elements}
+
+
+def test_a_spawn_point_inside_a_building_is_reported_as_a_build_note(tmp_path):
+    client = OverpassClient(
+        ReplayFetcher(_payload_with_a_building_over_the_origin()), DiskCache(tmp_path)
+    )
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), client, locations=())
+
+    scene = src.build_location("a lot with a building over the road", 500.0)
+
+    codes = [code for code, _ in scene.build_notes]
+    assert "spawn_in_building" in codes
+
+
+def test_the_real_nob_hill_extract_reports_no_spawn_in_building_note(source):
+    """The shipped fixture's own spawn point is not inside a building -- this
+    is a negative control so the check above is proven to be selective, not
+    unconditionally true."""
+    scene = source.build("osm-nob-hill")
+    codes = [code for code, _ in scene.build_notes]
+    assert "spawn_in_building" not in codes
+
+
+# --------------------------------------------------------------------------- #
+# User-facing failure messages                                                 #
+# --------------------------------------------------------------------------- #
+
+
+def test_describe_build_failure_never_echoes_the_raw_exception_text():
+    """Every mapped branch must produce fixed, plain text -- never format the
+    exception's own message into the string a client sees. A raw httpx/
+    Nominatim error might contain a URL or something else not meant for a
+    user who just typed an address."""
+    secret = "http://internal.example/leaked?token=abc123"
+    cases = [
+        GeocodeNotFound(secret),
+        GeocodeUnavailable(secret),
+        GeocodeError(secret),
+        OverpassError(secret),
+        TripTooLong(secret),
+        NoRouteFound(secret),
+        NoDrivableRoad(secret),
+        RuntimeError(secret),
+    ]
+    for exc in cases:
+        message = describe_build_failure(exc)
+        assert secret not in message
+        assert message  # never empty
+
+
+def test_describe_build_failure_distinguishes_not_found_from_unavailable():
+    assert describe_build_failure(GeocodeNotFound("x")) != describe_build_failure(
+        GeocodeUnavailable("x")
+    )

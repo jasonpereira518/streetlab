@@ -68,6 +68,10 @@ def sign_at(s):
     return [ControlPoint(id="ss", kind="stop_sign", s=s, position=(s, 0.0))]
 
 
+def arrival_at(s):
+    return [ControlPoint(id="__trip_end__", kind="arrival", s=s, position=(s, 0.0))]
+
+
 def test_an_empty_road_cruises(road):
     d = BehaviorFSM().step(ego_at(0.0, 10.0), road, 0.0, [], {}, DT)
     assert d.state is BehaviorState.CRUISE
@@ -170,6 +174,25 @@ def test_a_stop_sign_is_held_for_the_dwell_and_then_released(road):
         held += DT
     d = fsm.step(ego_at(19.0, 0.1), road, 19.0, sign_at(20.0), {}, DT)
     assert d.state is BehaviorState.CREEP
+
+
+def test_an_arrival_point_always_requires_a_stop(road):
+    d = BehaviorFSM().step(ego_at(0.0, 10.0), road, 0.0, arrival_at(20.0), {}, DT)
+    assert d.state is BehaviorState.APPROACH
+    assert d.maneuver == "arrived"
+
+
+def test_stopping_at_an_arrival_point_never_releases(road):
+    """The one control point that never releases, unlike a stop sign's dwell
+    or a light going green: an open route's own end has nowhere left to
+    drive to, so the FSM holds STOP indefinitely once it gets there."""
+    fsm = BehaviorFSM()
+    held = 0.0
+    while held < STOP_DWELL_S * 5:  # far past any stop-sign-style dwell
+        d = fsm.step(ego_at(19.0, 0.1), road, 19.0, arrival_at(20.0), {}, DT)
+        assert d.state is BehaviorState.STOP, f"released after {held:.2f} s"
+        assert d.maneuver == "arrived"
+        held += DT
 
 
 def test_creeping_survives_the_light_going_back_to_red(road):

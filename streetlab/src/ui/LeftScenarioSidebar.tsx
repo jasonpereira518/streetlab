@@ -17,8 +17,11 @@ export function LeftScenarioSidebar() {
   const loadScenario = useSimStore((s) => s.loadScenario);
   const loadLocation = useSimStore((s) => s.loadLocation);
   const locationPending = useSimStore((s) => s.locationPending);
+  const locationError = useSimStore((s) => s.locationError);
+  const tripComplete = useSimStore((s) => s.tripComplete);
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
+  const [destQuery, setDestQuery] = useState('');
 
   const isBookmarked = (s: ScenarioSummary) => bookmarks[s.id] ?? s.bookmarked;
 
@@ -49,8 +52,9 @@ export function LeftScenarioSidebar() {
         className="location-search"
         onSubmit={(e) => {
           e.preventDefault();
-          loadLocation(query);
+          loadLocation(query, destQuery);
           setQuery('');
+          setDestQuery('');
         }}
       >
         <input
@@ -58,11 +62,27 @@ export function LeftScenarioSidebar() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Address or place…"
-          aria-label="Load a location"
+          aria-label="Start address"
+          disabled={locationPending !== null}
+        />
+        <input
+          type="text"
+          value={destQuery}
+          onChange={(e) => setDestQuery(e.target.value)}
+          placeholder="Destination (optional)…"
+          aria-label="Destination address"
           disabled={locationPending !== null}
         />
         {locationPending !== null && (
           <p className="location-pending">Building {locationPending}…</p>
+        )}
+        {locationPending === null && locationError && (
+          <p className="location-error" role="alert">
+            {locationError}
+          </p>
+        )}
+        {locationPending === null && !locationError && tripComplete && (
+          <p className="location-trip-complete">Arrived at destination.</p>
         )}
       </form>
 

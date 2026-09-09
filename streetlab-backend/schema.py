@@ -367,6 +367,7 @@ Maneuver = Literal[
     "lane_change_right",
     "stop",
     "yield",
+    "arrived",
 ]
 
 
@@ -504,6 +505,9 @@ class LoadLocation(_Cmd):
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
+    # A second address to route TO. Absent (the common case) means "drive an
+    # auto-discovered loop near `query`", exactly as before this existed.
+    destination: Annotated[str, Field(min_length=1)] | None = None
 
 
 class SetParam(_Cmd):

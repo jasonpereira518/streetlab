@@ -28,6 +28,15 @@ class GeocodeError(RuntimeError):
     """The address could not be resolved."""
 
 
+class GeocodeNotFound(GeocodeError):
+    """Nominatim answered, but had nothing usable -- a bad or garbled address."""
+
+
+class GeocodeUnavailable(GeocodeError):
+    """Could not reach Nominatim, or its response was not parseable at all --
+    a network/HTTP/timeout failure, not a comment on the address itself."""
+
+
 @dataclass(frozen=True, slots=True)
 class Place:
     lat: float
@@ -49,29 +58,30 @@ def parse_nominatim(payload: object) -> Place:
     against arbitrary payloads, and a corrupt top result should not sink an
     otherwise-usable one further down the same list.
 
-    Raises `GeocodeError` if the payload is not a non-empty list, or if none
-    of its entries are usable.
+    Raises `GeocodeNotFound` if the payload is not a non-empty list, or if
+    none of its entries are usable -- Nominatim answered, it just had nothing
+    (or nothing usable) to offer for this query.
     """
     if not isinstance(payload, list) or not payload:
-        raise GeocodeError("no results")
+        raise GeocodeNotFound("no results")
 
     last_error: Exception | None = None
     for entry in payload:
         if not isinstance(entry, dict):
-            last_error = GeocodeError("unexpected result shape")
+            last_error = GeocodeNotFound("unexpected result shape")
             continue
         try:
             lat = float(entry["lat"])
             lon = float(entry["lon"])
         except (KeyError, TypeError, ValueError) as exc:
-            last_error = GeocodeError(f"unusable coordinates: {exc}")
+            last_error = GeocodeNotFound(f"unusable coordinates: {exc}")
             continue
         # float() also accepts "nan"/"inf"/"-inf" and plain out-of-range
         # values (e.g. lat=137.5); none of them is a usable point on Earth,
         # and a bad origin here would propagate into every downstream
         # projection.
         if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
-            last_error = GeocodeError(f"coordinates out of range: lat={lat}, lon={lon}")
+            last_error = GeocodeNotFound(f"coordinates out of range: lat={lat}, lon={lon}")
             continue
         name = entry.get("display_name")
         if not isinstance(name, str) or not name.strip():
@@ -81,7 +91,7 @@ def parse_nominatim(payload: object) -> Place:
     log.warning(
         "no usable result among %d Nominatim candidate(s): %s", len(payload), last_error
     )
-    raise GeocodeError("no usable result in payload") from last_error
+    raise GeocodeNotFound("no usable result in payload") from last_error
 
 
 class NominatimGeocoder:
@@ -119,7 +129,7 @@ class NominatimGeocoder:
             response.raise_for_status()
             return response.json()
         except Exception as exc:  # httpx errors, JSON errors, all equivalent here
-            raise GeocodeError(str(exc)) from exc
+            raise GeocodeUnavailable(str(exc)) from exc
 
     def lookup(self, query: str) -> Place:
         return parse_nominatim(self.raw(query))

@@ -240,6 +240,21 @@ export interface SimStoreState {
    * building", not which specific query a late event belongs to.
    */
   locationPending: string | null;
+  /**
+   * Plain, user-facing text from the most recent `location_failed` event, or
+   * `null` when nothing has failed since the last attempt. Cleared the
+   * instant a new `loadLocation` call goes out, and on a successful
+   * `scene_description` — same lifecycle as `locationPending`, just carrying
+   * the failure text rather than only a boolean.
+   */
+  locationError: string | null;
+  /**
+   * True once a `trip_complete` event has arrived for the currently-loaded
+   * scene (a point-to-point route the ego has actually stopped at the end
+   * of). Cleared on every `loadLocation`/`loadScenario` call and on a fresh
+   * `scene_description`, so it never carries over from a previous trip.
+   */
+  tripComplete: boolean;
 
   /* mirrored frame fields (only updated on change) */
   paused: boolean;
@@ -272,7 +287,7 @@ export interface SimStoreState {
   send(command: CommandInput): string;
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
-  loadLocation(query: string): void;
+  loadLocation(query: string, destination?: string): void;
   setParam(key: string, value: ParamValue): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
@@ -298,6 +313,8 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   catalog: [],
   activeScenarioId: null,
   locationPending: null,
+  locationError: null,
+  tripComplete: false,
 
   paused: false,
   assistActive: false,
@@ -389,15 +406,24 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   },
 
   loadScenario(scenarioId) {
-    set({ activeScenarioId: scenarioId });
+    set({ activeScenarioId: scenarioId, locationError: null, tripComplete: false });
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
   },
 
-  loadLocation(query) {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-    set({ locationPending: trimmed });
-    get().send({ cmd: 'load_location', query: trimmed });
+  loadLocation(query, destination) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) return;
+    const trimmedDest = destination?.trim() || undefined;
+    set({
+      locationPending: trimmedDest ? `${trimmedQuery} → ${trimmedDest}` : trimmedQuery,
+      locationError: null,
+      tripComplete: false,
+    });
+    get().send({
+      cmd: 'load_location',
+      query: trimmedQuery,
+      ...(trimmedDest ? { destination: trimmedDest } : {}),
+    });
   },
 
   setParam(key, value) {
@@ -480,6 +506,8 @@ function applyServerMessage(
         hasFrames: false,
         events: [],
         locationPending: null,
+        locationError: null,
+        tripComplete: false,
       }));
       return;
 
@@ -516,11 +544,15 @@ function applyServerMessage(
         // sim/loop.py's `submit_scene`. Without this the box would stay
         // disabled forever on any bad address, the single most likely thing
         // a first-time user types.
-        if (
-          s.locationPending !== null &&
-          msg.events.some((e) => e.code === 'location_failed')
-        ) {
-          patch.locationPending = null;
+        const failure = msg.events.find((e) => e.code === 'location_failed');
+        if (failure) {
+          if (s.locationPending !== null) patch.locationPending = null;
+          patch.locationError = failure.message;
+        }
+        // A point-to-point trip's own arrival, surfaced next to the search
+        // box the same way a failure is — see LeftScenarioSidebar.tsx.
+        if (!s.tripComplete && msg.events.some((e) => e.code === 'trip_complete')) {
+          patch.tripComplete = true;
         }
       }
       if (Object.keys(patch).length) set(patch);
@@ -539,7 +571,7 @@ function applyServerMessage(
       // `synthetic`). Typing an address there is the documented behaviour in
       // DEMO.md, and it used to brick the sidebar.
       if (msg.cmd === 'load_location' && !msg.ok) {
-        set({ lastAck: msg, locationPending: null });
+        set({ lastAck: msg, locationPending: null, locationError: msg.message });
         return;
       }
       set({ lastAck: msg });

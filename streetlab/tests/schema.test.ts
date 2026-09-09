@@ -35,6 +35,24 @@ it('rejects a non-positive load_location radius', () => {
   ).toBe(false);
 });
 
+it('accepts load_location with and without a destination', () => {
+  expect(parseCommand({ cmd: 'load_location', id: 'c1', query: 'Nob Hill' }).ok).toBe(true);
+  expect(
+    parseCommand({
+      cmd: 'load_location',
+      id: 'c2',
+      query: 'Nob Hill',
+      destination: "Fisherman's Wharf",
+    }).ok,
+  ).toBe(true);
+});
+
+it('rejects an empty load_location destination', () => {
+  expect(
+    parseCommand({ cmd: 'load_location', id: 'c', query: 'x', destination: '' }).ok,
+  ).toBe(false);
+});
+
 it('rejects an explicit null radius_m (optional means absent, not null)', () => {
   // The Cycle 1 design doc's warning, pinned as a test: `.optional()` allows
   // the key to be missing but not present-and-null — that would need
@@ -241,6 +259,13 @@ describe('Command', () => {
       { id: 'c3', cmd: 'reset' },
       { id: 'c4', cmd: 'load_scenario', scenario_id: 'hyde-descent' },
       { id: 'c4b', cmd: 'load_location', query: 'Nob Hill', radius_m: 400 },
+      {
+        id: 'c4c',
+        cmd: 'load_location',
+        query: 'Nob Hill',
+        radius_m: 400,
+        destination: "Fisherman's Wharf",
+      },
       { id: 'c5', cmd: 'set_param', key: 'cutin_period_s', value: 12 },
       { id: 'c6', cmd: 'toggle_layer', layer: 'detections', visible: false },
       { id: 'c7', cmd: 'set_camera', view: 'overhead' },

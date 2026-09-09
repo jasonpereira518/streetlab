@@ -29,6 +29,8 @@ const INITIAL = {
   catalog: [],
   activeScenarioId: null,
   locationPending: null,
+  locationError: null,
+  tripComplete: false,
   paused: false,
   assistActive: false,
   hasFrames: false,
