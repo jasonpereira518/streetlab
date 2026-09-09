@@ -21,6 +21,14 @@ from random import Random
 from typing import Protocol, runtime_checkable
 
 from map.lanes import derive_lanes, project_control_points
+from map.placement import (
+    KERB_CLEARANCE_M,
+    SIDEWALK_W_M,
+    TREE_VERGE_M,
+    faces_the_route,
+    facing,
+    kerb_offset,
+)
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -84,7 +92,10 @@ MAP_EXTENT = 130.0
 LANE_W = 3.6
 # Centre of the rightmost forward lane, measured from the carriageway centreline.
 EGO_LANE_INSET = LANE_W * 0.5
-SIDEWALK_W = 2.4
+# Shared with the renderers through `map.placement`. This used to say 2.4
+# while `world.ts` drew 2.8, so every building here was set back less far
+# than the pavement it was set back from.
+SIDEWALK_W = SIDEWALK_W_M
 # Corner radius for the driven route.
 #
 # Bounded by geometry, not comfort. Rounding a right angle pulls the path
@@ -95,16 +106,32 @@ SIDEWALK_W = 2.4
 # the buildings behind it. `test_world_sanity.py` pins this.
 TURN_RADIUS_M = 6.0
 
+# How far back from the crossing carriageway the painted stop bar sits, and
+# with it the sign that announces it. Matches the bar the renderer paints
+# (`world.ts`, `c.s - dir * (c.half + 2.2)`) so sign and paint agree.
+STOP_BAR_SETBACK_M = 2.2
+
 # How far before a junction centre the car halts. Clears the widest crossing
 # carriageway here (an arterial's 7.2 m half-width) with room to spare.
 STOP_LINE_SETBACK_M = 9.0
 
-# How closely a head's approach direction must agree with the route heading for
-# that head to be the one governing the ego. Generous, because the route is
-# filleted through the junction and its heading there is not the street's.
-HEAD_TOL_RAD = math.radians(60.0)
-
 MPH = 0.44704
+
+
+@dataclass(frozen=True, slots=True)
+class _Head:
+    """One control device, before it becomes a wire `StopSign`/`TrafficLight`.
+
+    `centre` is the junction the head governs an approach to. It is carried
+    alongside the head because a stop line is measured from the junction, not
+    from the head -- which stands a crossing carriageway away from it.
+    """
+
+    id: str
+    position: tuple[float, float]
+    heading: float
+    centre: tuple[float, float]
+    mast_arm_m: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,8 +380,11 @@ class SyntheticGrid:
                     lane_width_m=LANE_W,
                     speed_limit_mps=s.speed_mph * MPH,
                     oneway=False,
-                    center_marking="double_yellow" if s.lanes > 1 else "solid_white",
-                    has_sidewalk=True,
+                    # Yellow divides opposing traffic; see `_center_marking`
+                    # in `map/lanes.py` for the rule both sources follow.
+                    center_marking="double_yellow" if s.lanes > 1 else "broken_yellow",
+                    sidewalk_left=True,
+                    sidewalk_right=True,
                 )
             )
         return roads
@@ -417,64 +447,105 @@ class SyntheticGrid:
     def _is_signalised(self, ns: _Street, ew: _Street) -> bool:
         return ns.at == _ARTERIAL_AT or ew.at == _ARTERIAL_AT
 
-    def _signal_heads(self) -> list[tuple[str, tuple[float, float], float, tuple[float, float]]]:
-        """`(id, position, heading, junction_centre)` for every signal head.
+    def _approaches(
+        self, ns: _Street, ew: _Street
+    ) -> list[tuple[str, tuple[float, float], _Street, _Street]]:
+        """`(name, travel, approach street, crossing street)` per leg.
 
-        The junction centre is what a stop line is measured from -- a head sits
-        a full crossing carriageway beyond the junction it governs, so the head
-        position is the wrong origin for a setback.
+        `travel` is the direction the traffic governed by that leg drives, and
+        the approach street is the one it drives ALONG -- northbound traffic is
+        on the north-south street and crosses the east-west one. Getting those
+        two the wrong way round is what puts a sign a crossing carriageway
+        wide of where it belongs.
+        """
+        return [
+            ("n", (0.0, 1.0), ns, ew),
+            ("s", (0.0, -1.0), ns, ew),
+            ("e", (1.0, 0.0), ew, ns),
+            ("w", (-1.0, 0.0), ew, ns),
+        ]
+
+    def _signal_heads(self) -> list[_Head]:
+        """One mast-arm head per signalised approach, on that approach's kerb.
+
+        The pole stands at the FAR right corner -- past the junction, on the
+        driver's side -- which is where a mast arm has to be planted for its
+        arm to reach back over the lanes coming toward it. The pole used to sit
+        on the carriageway centreline, which put a steel post in the middle of
+        Hyde Street.
+
+        The junction centre travels with the head because a stop line is
+        measured from the junction, not from the head: a head sits a whole
+        crossing carriageway beyond the line it governs.
         """
         heads = []
         for ns, ew in self._intersections():
             if not self._is_signalised(ns, ew):
                 continue
             cx, cy = ns.at, ew.at
-            # Stop line stand-off: clear of the crossing carriageway plus a lane.
-            ns_off = ew.half_width + LANE_W
-            ew_off = ns.half_width + LANE_W
             tag = f"{int(cx)}_{int(cy)}"
-            for name, pos, heading in (
-                ("n", (cx, cy + ns_off), -math.pi / 2),  # governs northbound
-                ("s", (cx, cy - ns_off), math.pi / 2),  # governs southbound
-                ("e", (cx + ew_off, cy), math.pi),  # governs eastbound
-                ("w", (cx - ew_off, cy), 0.0),  # governs westbound
-            ):
-                heads.append((f"tl_{tag}_{name}", pos, heading, (cx, cy)))
+            for name, travel, approach, crossing in self._approaches(ns, ew):
+                heads.append(
+                    _Head(
+                        id=f"tl_{tag}_{name}",
+                        position=kerb_offset(
+                            (cx, cy),
+                            travel,
+                            approach.half_width,
+                            along=crossing.half_width + KERB_CLEARANCE_M,
+                        ),
+                        heading=facing(travel),
+                        centre=(cx, cy),
+                        mast_arm_m=approach.half_width / 2 + KERB_CLEARANCE_M,
+                    )
+                )
         return heads
 
-    def _stop_sign_heads(self) -> list[tuple[str, tuple[float, float], float, tuple[float, float]]]:
+    def _stop_sign_heads(self) -> list[_Head]:
+        """One sign per uncontrolled approach, at its NEAR right corner.
+
+        Set back from the junction by the crossing carriageway plus
+        `STOP_BAR_SETBACK_M`, so the driver reads it on the approach rather
+        than after crossing the intersection -- the old placement put every
+        sign a crossing carriageway PAST its junction and on the left-hand
+        kerb, which is both sides of wrong at once.
+        """
         heads = []
         for ns, ew in self._intersections():
             if self._is_signalised(ns, ew):
                 continue
             cx, cy = ns.at, ew.at
-            ns_off = ew.half_width + 2.0
-            ew_off = ns.half_width + 2.0
             tag = f"{int(cx)}_{int(cy)}"
-            for name, pos, heading in (
-                ("n", (cx - ns.half_width - 1.5, cy + ns_off), -math.pi / 2),
-                ("s", (cx + ns.half_width + 1.5, cy - ns_off), math.pi / 2),
-                ("e", (cx + ew_off, cy + ew.half_width + 1.5), math.pi),
-                ("w", (cx - ew_off, cy - ew.half_width - 1.5), 0.0),
-            ):
-                heads.append((f"ss_{tag}_{name}", pos, heading, (cx, cy)))
+            for name, travel, approach, crossing in self._approaches(ns, ew):
+                heads.append(
+                    _Head(
+                        id=f"ss_{tag}_{name}",
+                        position=kerb_offset(
+                            (cx, cy),
+                            travel,
+                            approach.half_width,
+                            along=-(crossing.half_width + STOP_BAR_SETBACK_M),
+                        ),
+                        heading=facing(travel),
+                        centre=(cx, cy),
+                    )
+                )
         return heads
 
     def _traffic_lights(self) -> list[TrafficLight]:
-        lights = []
-        for light_id, pos, heading, (cx, cy) in self._signal_heads():
-            ns = next(s for s in NS_STREETS if s.at == cx)
-            ew = next(s for s in EW_STREETS if s.at == cy)
-            lights.append(
-                TrafficLight(
-                    id=light_id,
-                    position=pos,
-                    heading=heading,
-                    mast_arm_m=5.5 if max(ns.lanes, ew.lanes) > 1 else 0.0,
-                    height_m=6.0,
-                )
+        return [
+            TrafficLight(
+                id=head.id,
+                position=head.position,
+                heading=head.heading,
+                # Sized by the approach it reaches over, not by whichever of
+                # the two streets happens to be wider: an arm long enough for
+                # Hyde Street overhangs a one-lane cross street entirely.
+                mast_arm_m=head.mast_arm_m,
+                height_m=6.0,
             )
-        return lights
+            for head in self._signal_heads()
+        ]
 
     def _signal_groups(self) -> dict[str, str]:
         """North/south heads share a phase; east/west heads share the other."""
@@ -485,8 +556,8 @@ class SyntheticGrid:
 
     def _stop_signs(self) -> list[StopSign]:
         return [
-            StopSign(id=sign_id, position=pos, heading=heading)
-            for sign_id, pos, heading, _ in self._stop_sign_heads()
+            StopSign(id=head.id, position=head.position, heading=head.heading)
+            for head in self._stop_sign_heads()
         ]
 
     def _control_points(self, ego_route: Route) -> list[ControlPoint]:
@@ -500,39 +571,31 @@ class SyntheticGrid:
         route heading at the junction picks it out.
         """
         candidates = []
-        for cp_id, _pos, heading, centre in self._signal_heads():
-            if self._faces_the_route(ego_route, heading, centre):
-                candidates.append((cp_id, "signal", centre, STOP_LINE_SETBACK_M))
-        for cp_id, _pos, heading, centre in self._stop_sign_heads():
-            if self._faces_the_route(ego_route, heading, centre):
-                candidates.append((cp_id, "stop_sign", centre, STOP_LINE_SETBACK_M))
+        for head in self._signal_heads():
+            if self._faces_the_route(ego_route, head.heading, head.centre):
+                candidates.append((head.id, "signal", head.centre, STOP_LINE_SETBACK_M))
+        for head in self._stop_sign_heads():
+            if self._faces_the_route(ego_route, head.heading, head.centre):
+                candidates.append(
+                    (head.id, "stop_sign", head.centre, STOP_LINE_SETBACK_M)
+                )
         return project_control_points(ego_route, candidates)
 
     @staticmethod
     def _faces_the_route(
         ego_route: Route, lamp_heading: float, centre: tuple[float, float]
     ) -> bool:
-        """True if the lamp at `centre` faces traffic travelling the way the
-        ego does, evaluated where the ego actually has to obey it.
+        """Shared with `OsmSceneSource`; see `map.placement.faces_the_route`."""
+        return faces_the_route(ego_route, lamp_heading, centre, STOP_LINE_SETBACK_M)
 
-        The junction centre itself sits mid-turn on a filleted corner -- its
-        route heading is neither the entry nor the exit street's, so no head
-        matches it well and more than one can pass a generous tolerance. The
-        STOP LINE, `STOP_LINE_SETBACK_M` back from the centre, is where the
-        car is still on its approach leg and the route heading is the real
-        street heading -- the same point `project_control_points` measures
-        `s` from. Mirroring that here is what makes this an exact match
-        rather than a coin flip between two heads that share a phase group.
-        """
-        stop_s = ego_route.normalise(ego_route.project(centre) - STOP_LINE_SETBACK_M)
-        travel = lamp_heading + math.pi
-        return abs(math.remainder(ego_route.heading_at(stop_s) - travel, math.tau)) < HEAD_TOL_RAD
 
     def _crosswalks(self) -> list[Crosswalk]:
         walks = []
         for ns, ew in self._intersections():
-            if not self._is_signalised(ns, ew):
-                continue
+            # Every junction here is controlled -- signalised or all-way stop --
+            # and both kinds get painted crossings. Restricting these to the
+            # signalised corners left the four-way stops with none, which is
+            # not how a stop-controlled junction is marked.
             cx, cy = ns.at, ew.at
             tag = f"{int(cx)}_{int(cy)}"
             # Crossing the north-south carriageway: pedestrians walk east-west.
@@ -649,7 +712,7 @@ class SyntheticGrid:
     def _trees(self, rng: Random) -> list[Tree]:
         trees = []
         for s in STREETS:
-            verge = s.half_width + SIDEWALK_W * 0.6
+            verge = s.half_width + TREE_VERGE_M
             for side in (-1.0, 1.0):
                 pos = -MAP_EXTENT + 14.0
                 while pos < MAP_EXTENT - 14.0:

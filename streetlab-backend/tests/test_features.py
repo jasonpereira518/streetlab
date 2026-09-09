@@ -86,7 +86,23 @@ def test_degenerate_building_rings_are_dropped():
     assert build_buildings(graph, ORIGIN) == []
 
 
+def _street(way_id: int, node_ids: list[int], name: str = "Test St") -> dict:
+    return {
+        "type": "way",
+        "id": way_id,
+        "nodes": node_ids,
+        "tags": {"highway": "residential", "name": name},
+    }
+
+
 def test_traffic_lights_and_stop_signs_come_from_tagged_nodes():
+    """Both device builders need the way under the node, not just the node.
+
+    A head governs one APPROACH, and an approach only exists where a drivable
+    way runs through the tagged node -- so unlike a crossing, which is placed
+    from the node alone, these two are given a street to sit on here. A signal
+    node expands into one head per leg, hence the two ids for node 1.
+    """
     graph = parse_overpass(
         {"elements": [
             {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156,
@@ -95,11 +111,43 @@ def test_traffic_lights_and_stop_signs_come_from_tagged_nodes():
              "tags": {"highway": "stop"}},
             {"type": "node", "id": 3, "lat": 37.7947, "lon": -122.4158,
              "tags": {"highway": "crossing"}},
+            {"type": "node", "id": 4, "lat": 37.7944, "lon": -122.4155},
+            {"type": "node", "id": 5, "lat": 37.7948, "lon": -122.4159},
+            _street(500, [4, 1, 5]),
+            _street(501, [4, 2, 5]),
+            # The crossing needs a road under it too: which way pedestrians
+            # walk and how far are both read off the street being crossed, so
+            # a crossing node floating on its own is dropped rather than
+            # guessed at (it used to become a due-east 7.2 m band).
+            _street(502, [4, 3, 5]),
         ]}
     )
-    assert [t.id for t in build_traffic_lights(graph, ORIGIN)] == ["osm_tl_1"]
+    assert [t.id for t in build_traffic_lights(graph, ORIGIN)] == [
+        "osm_tl_1_0",
+        "osm_tl_1_1",
+    ]
     assert [s.id for s in build_stop_signs(graph, ORIGIN)] == ["osm_ss_2"]
     assert [c.id for c in build_crosswalks(graph, ORIGIN)] == ["osm_cw_3"]
+
+
+def test_a_control_device_with_no_drivable_way_under_it_is_dropped():
+    """A head that governs no approach is the artifact, not the data.
+
+    Placing one anyway is what the old builders did -- position straight off
+    the node, heading zero -- and it put a bare pole in the middle of every
+    junction facing due east. There is nothing to derive an approach from
+    here, so nothing is emitted.
+    """
+    graph = parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156,
+             "tags": {"highway": "traffic_signals"}},
+            {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4157,
+             "tags": {"highway": "stop"}},
+        ]}
+    )
+    assert build_traffic_lights(graph, ORIGIN) == []
+    assert build_stop_signs(graph, ORIGIN) == []
 
 
 def test_signal_groups_assign_every_light_to_ns_or_ew():
@@ -109,11 +157,16 @@ def test_signal_groups_assign_every_light_to_ns_or_ew():
              "tags": {"highway": "traffic_signals"}},
             {"type": "node", "id": 2, "lat": 37.7950, "lon": -122.4156,
              "tags": {"highway": "traffic_signals"}},
+            {"type": "node", "id": 3, "lat": 37.7940, "lon": -122.4156},
+            {"type": "node", "id": 4, "lat": 37.7955, "lon": -122.4156},
+            _street(500, [3, 1, 2, 4]),
         ]}
     )
-    groups = signal_groups(build_traffic_lights(graph, ORIGIN))
+    lights = build_traffic_lights(graph, ORIGIN)
+    groups = signal_groups(lights)
     assert set(groups.values()) <= {"ns", "ew"}
-    assert len(groups) == 2
+    assert len(groups) == len(lights)
+    assert lights, "the fixture should produce heads to group"
 
 
 def test_trees_have_valid_geometry_on_the_real_fixture(graph):
@@ -126,7 +179,7 @@ def test_trees_have_valid_geometry_on_the_real_fixture(graph):
     behaviour was flagged rather than hidden, and is fixed here now that this
     area is already being edited for the two findings below.
     """
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     assert trees
     for t in trees:
         assert t.height_m > 0
@@ -226,20 +279,25 @@ def test_procedural_verge_trees_supplement_sparse_tagged_coverage(graph):
     tagged_count = len(_tagged_nodes(graph, "natural", "tree"))
     assert tagged_count == 43  # pins the fixture's real, sparse OSM coverage
 
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     tagged = [t for t in trees if t.id.startswith("osm_tr_")]
     procedural = [t for t in trees if t.id.startswith("osm_tv_")]
     assert len(tagged) == 43
     # Verified directly against the fixture: the unfiltered verge fallback
-    # would place 798 trees -- almost 20x the tagged count, which is the
+    # offers 798 candidates -- almost 20x the tagged count, which is the
     # whole point of making it additive rather than an either/or fallback.
-    # Of those 798: 8 land within `_TREE_MIN_SPACING_M` of a tagged tree and
-    # are dropped by the dedup filter (see
-    # `test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree`),
-    # and a further 27 land inside some *other* drivable way's carriageway
-    # and are dropped by the cross-way clearance check (see
-    # `test_procedural_verge_trees_clear_the_carriageway`), leaving 763.
-    assert len(procedural) == 763
+    # Measured, of those 798:
+    #   124 are on ways with no pavement to plant a tree in, and never get
+    #       offered at all (`has_sidewalk`),
+    #    71 land within `_TREE_MIN_SPACING_M` of a tree already standing --
+    #       tagged or one of these (see
+    #       `test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree`
+    #       and `test_no_two_canopies_grow_through_each_other`),
+    #     8 land inside some drivable way's carriageway (see
+    #       `test_procedural_verge_trees_clear_the_carriageway`),
+    #    30 land inside a building footprint,
+    # leaving 565.
+    assert len(procedural) == 565
 
 
 def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
@@ -256,7 +314,7 @@ def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
             {"type": "way", "id": 10, "nodes": [2, 3], "tags": {"highway": "residential"}},
         ]}
     )
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     assert any(t.id == "osm_tr_1" for t in trees)
     assert any(t.id.startswith("osm_tv_10_") for t in trees)
 
@@ -332,9 +390,12 @@ def test_procedural_verge_trees_clear_the_carriageway(graph):
     # Broadway all qualify).
     assert any(half_width >= LANE_W + 2.0 for _, _, half_width in ways_geometry)
 
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     procedural = [t for t in trees if t.id.startswith("osm_tv_")]
-    assert len(procedural) == 763  # sanity: this is the real, filtered set
+    # Sanity: the real, filtered set. Was 763 before verge trees were checked
+    # against building footprints (144 stood inside one), spaced against each
+    # other, and confined to ways that actually carry a pavement.
+    assert len(procedural) == 565
 
     for t in procedural:
         for name, points, half_width in ways_geometry:
@@ -370,7 +431,7 @@ def test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree():
             {"type": "way", "id": 10, "nodes": [1, 2], "tags": {"highway": "residential"}},
         ]}
     )
-    trees = build_trees(graph, ORIGIN)
+    trees = build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))
     tagged_ids = [t.id for t in trees if t.id.startswith("osm_tr_")]
     procedural_ids = [t.id for t in trees if t.id.startswith("osm_tv_")]
     assert tagged_ids == ["osm_tr_3"]
@@ -383,16 +444,31 @@ def test_counts_on_the_real_fixture_match_verified_osm_tag_counts(graph):
     `highway=crossing` node counts were verified directly (58 / 145 / 370).
     A builder that silently starts dropping tagged nodes should fail this,
     not slip through on a `>= N` guard.
+
+    Stop signs and crossings stay one-per-node: OSM already tags those per
+    approach and per crossing point. Traffic signals do NOT -- one
+    `highway=traffic_signals` node is a whole junction, and a head governs the
+    single approach its lamps face -- so the 58 tagged nodes expand into 162
+    heads, one per distinct approach leg. That expansion is the fix for a
+    scene whose every signal was one east-facing pole in the middle of an
+    intersection; the ratio is pinned here so a change to leg merging shows up
+    as a diff rather than silently.
     """
-    assert len(build_traffic_lights(graph, ORIGIN)) == 58
+    assert len(build_traffic_lights(graph, ORIGIN)) == 162
+    assert len({t.id for t in build_traffic_lights(graph, ORIGIN)}) == 162
     assert len(build_stop_signs(graph, ORIGIN)) == 145
-    assert len(build_crosswalks(graph, ORIGIN)) == 370
+    # Crossings are no longer one-per-node either, for a different reason:
+    # 64 of the 370 are UNPAINTED in the data (`crossing=unmarked` or
+    # `crossing:markings=no`) and painting a zebra over them invents a road
+    # marking that is not on the street, and one more has no drivable way
+    # under it to take a direction or a width from. 370 - 64 - 1 = 305.
+    assert len(build_crosswalks(graph, ORIGIN)) == 305
 
 
 def test_trees_are_deterministic_across_runs(graph):
     """All tree placement/jitter must be seeded from OSM ids via sha256, not
     Python's per-process-salted `hash()` -- otherwise the same fixture would
     build a different forest on every launch."""
-    first = [t.model_dump() for t in build_trees(graph, ORIGIN)]
-    second = [t.model_dump() for t in build_trees(graph, ORIGIN)]
+    first = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
+    second = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
     assert first == second

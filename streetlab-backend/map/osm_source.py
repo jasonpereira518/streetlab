@@ -25,6 +25,8 @@ from map.features import (
     build_stop_signs,
     build_traffic_lights,
     build_trees,
+    control_anchors,
+    junction_of,
     signal_groups,
 )
 from map.geocode import Geocoder, NominatimGeocoder, Place
@@ -38,6 +40,7 @@ from map.lanes import (
 )
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
+from map.placement import faces_the_route
 from map.scene_build import STOP_LINE_SETBACK_M, BuiltScene
 from schema import (
     PROTOCOL_VERSION,
@@ -248,7 +251,7 @@ class OsmSceneSource:
         buildings = build_buildings(graph, origin)
         crosswalks = build_crosswalks(graph, origin)
         stop_signs = build_stop_signs(graph, origin)
-        trees = build_trees(graph, origin)
+        trees = build_trees(graph, origin, buildings)
 
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
@@ -280,16 +283,35 @@ class OsmSceneSource:
         # list (see `speed_limits_along`).
         ego_route.segment_limits = speed_limits_along(ego_route, roads)
 
-        # Every OSM light and stop sign is `heading=0.0` (`map/features.py`),
-        # so there is no approach direction to filter on -- but an OSM signals
-        # node sits ON the way at the junction it governs, so proximity to the
-        # driven route is itself the filter, and several nodes at one crossroads
-        # collapse into one stop line by the projector's merge window.
-        control_points = project_control_points(
-            ego_route,
-            [(tl.id, "signal", tl.position, STOP_LINE_SETBACK_M) for tl in lights]
-            + [(ss.id, "stop_sign", ss.position, STOP_LINE_SETBACK_M) for ss in stop_signs],
-        )
+        # Devices now carry a real approach heading, so the ego can be given
+        # only the ones facing IT -- the same filter `SyntheticGrid` has always
+        # applied. Without it a crossroads hands the ego four stop lines in two
+        # opposing phase groups, and the car waits at a red that is only ever
+        # green for the cross street.
+        #
+        # Anchored at the junction node rather than the device (see
+        # `control_anchors`): the post stands on a corner, the stop line does
+        # not. One head per junction survives the filter, so the projector sees
+        # one point per crossroads exactly as it did when every head sat on the
+        # node.
+        anchors = control_anchors(graph, origin)
+        candidates = []
+        seen_junctions = set()
+        for light in lights:
+            junction = junction_of(light.id)
+            at = anchors.get(junction)
+            if at is None or junction in seen_junctions:
+                continue
+            if faces_the_route(ego_route, light.heading, at, STOP_LINE_SETBACK_M):
+                seen_junctions.add(junction)
+                candidates.append((light.id, "signal", at, STOP_LINE_SETBACK_M))
+        for sign in stop_signs:
+            at = anchors.get(sign.id)
+            if at is None:
+                continue
+            if faces_the_route(ego_route, sign.heading, at, STOP_LINE_SETBACK_M):
+                candidates.append((sign.id, "stop_sign", at, STOP_LINE_SETBACK_M))
+        control_points = project_control_points(ego_route, candidates)
 
         return BuiltScene(
             description=description,
