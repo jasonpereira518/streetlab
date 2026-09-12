@@ -121,8 +121,12 @@ function buildRoads(): Road[] {
       lane_width_m: LANE_W,
       speed_limit_mps: s.speed_mph * MPH,
       oneway: false,
-      center_marking: 'double_yellow',
-      has_sidewalk: true,
+      // Yellow divides opposing traffic; broken where passing is permitted,
+      // double solid once there is more than one lane each way. Mirrors
+      // `_center_marking` in the backend's `map/lanes.py`.
+      center_marking: s.lanes > 1 ? 'double_yellow' : 'broken_yellow',
+      sidewalk_left: true,
+      sidewalk_right: true,
     };
   });
 }

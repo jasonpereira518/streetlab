@@ -414,7 +414,7 @@ def test_the_left_marking_is_the_governing_roads_own(nob_hill_scene):
     The oneway stretches are what distinguish the two rules. Clay Street is
     oneway with one forward lane and `center_marking = "none"` -- nothing is
     painted down the middle of a one-way street -- and the count rule this
-    replaces could not say so: `count == 1` always answered "solid_white" and
+    replaces could not say so: `count == 1` always answered a single line and
     `count > 1` always "double_yellow", so a oneway got a centre divider drawn
     on it either way.
 
@@ -436,8 +436,10 @@ def test_the_left_marking_is_the_governing_roads_own(nob_hill_scene):
             assert lane.left_marking == road.center_marking, road.name
             reported[road.center_marking] += 1
     # Non-vacuity: every marking the extract actually carries is reached, so
-    # this cannot pass on a walk that only ever saw one of them.
-    assert set(reported) == {"none", "solid_white", "double_yellow"}, reported
+    # this cannot pass on a walk that only ever saw one of them. `solid_white`
+    # is gone from this set because a white line never divides opposing
+    # traffic -- see `_center_marking` in `map/lanes.py`.
+    assert set(reported) == {"none", "broken_yellow", "double_yellow"}, reported
 
 
 def test_the_lane_index_is_always_inside_the_lane_count():
@@ -466,10 +468,12 @@ def test_a_single_lane_road_reports_index_zero_and_a_kerb_marking():
             assert lane.lane_index == 0
             # Now the road's own answer rather than a count rule: a
             # `SyntheticGrid` street with one lane each way is built
-            # `center_marking="solid_white"` (`map/scene_build.py`), and the
-            # permissive `in (...)` this assertion used to be would pass no
-            # matter what `_lane_state` did here.
-            assert lane.left_marking == "solid_white"
+            # `center_marking="broken_yellow"` (`map/scene_build.py`) -- yellow
+            # because the line divides OPPOSING traffic, broken because passing
+            # is permitted on a two-lane two-way street. The permissive
+            # `in (...)` this assertion used to be would pass no matter what
+            # `_lane_state` did here.
+            assert lane.left_marking == "broken_yellow"
     assert seen_single, "grid-loop never reported a single-lane stretch"
 
 
@@ -542,7 +546,7 @@ class _FixedLaneSet:
             centerline=[(0.0, 0.0), (100.0, 0.0)],
             lanes_forward=count, lanes_backward=count, lane_width_m=LANE_W,
             speed_limit_mps=15.0, oneway=False, center_marking="double_yellow",
-            has_sidewalk=True,
+            sidewalk_left=True, sidewalk_right=True,
         )
 
     def count_at(self, s: float) -> int:

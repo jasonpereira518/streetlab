@@ -1,5 +1,6 @@
 import json
 import math
+from collections import Counter
 import tempfile
 import threading
 import time
@@ -67,7 +68,7 @@ def _road(limit_mph: float, length_m: float, i: int) -> Road:
         centerline=[(0.0, 0.0), (float(length_m), 0.0)],
         lanes_forward=1, lanes_backward=1, lane_width_m=3.6,
         speed_limit_mps=limit_mph * MPH, oneway=False,
-        center_marking="solid_white", has_sidewalk=True,
+        center_marking="solid_white", sidewalk_left=True, sidewalk_right=True,
     )
 
 
@@ -219,7 +220,7 @@ def test_speed_limit_counts_the_full_multi_segment_centerline(source):
         centerline=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (300.0, 100.0)],
         lanes_forward=1, lanes_backward=1, lane_width_m=3.6,
         speed_limit_mps=35 * MPH, oneway=False,
-        center_marking="solid_white", has_sidewalk=True,
+        center_marking="solid_white", sidewalk_left=True, sidewalk_right=True,
     )
     stubs = [_road(15, 50, i) for i in range(5)]
     assert source._speed_limit([bent, *stubs]) == pytest.approx(35 * MPH)
@@ -305,7 +306,7 @@ def test_bounds_also_contain_building_and_tree_points_outside_the_road_network(s
         speed_limit_mps=11.176,
         oneway=False,
         center_marking="solid_white",
-        has_sidewalk=True,
+        sidewalk_left=True, sidewalk_right=True,
     )
     ego_route = Route([(0.0, 0.0), (10.0, 0.0), (5.0, 5.0)], closed=True)
     far_building = Building(
@@ -1040,18 +1041,31 @@ def test_the_building_clearance_check_would_catch_a_building_in_the_road():
 
 
 def test_the_osm_scene_carries_control_points_for_the_driven_route(nob_hill_scene):
-    """Measured: 58 lights and 145 stop signs in the extract, of which 4 and 12
-    are within 12 m of the driven route. The list is the ones the ego meets.
+    """The devices the ego must OBEY, which is fewer than the ones it drives past.
+
+    Measured on this extract: 145 stop signs, of which 12 come within 12 m of
+    the driven route -- but only 4 of those 12 face the ego. The other 8
+    govern the cross street or the opposite carriageway, and the ego used to
+    stop at all of them, because every device was `heading=0.0` and proximity
+    was the only filter available. Likewise the 4 signalised junctions on the
+    route now contribute one head each rather than all 16 of the heads
+    standing around them.
+
+    So: 4 + 4. The bounds below stay wide on either side of that; the point of
+    the pin is that the ego stops for its own approaches only, and that a
+    regression which drops the projections entirely still fails.
     """
     scene = nob_hill_scene
     assert scene.control_points
     assert len(scene.control_points) < 40, "matched far more props than the route passes"
-    # Lower bound too (12 stop signs + 4 signals measured): a cheap second
-    # backstop against a regression that silently drops most projections
-    # while still leaving `assert scene.control_points` truthy.
-    assert len(scene.control_points) >= 16, "matched far fewer props than the route passes"
+    assert len(scene.control_points) >= 6, "matched far fewer props than the route passes"
     kinds = {cp.kind for cp in scene.control_points}
     assert kinds <= {"signal", "stop_sign"}
+    by_kind = Counter(cp.kind for cp in scene.control_points)
+    assert by_kind == {"stop_sign": 4, "signal": 4}, (
+        f"expected the 4 stop signs and 4 signalised junctions facing the "
+        f"route, got {dict(by_kind)}"
+    )
 
 
 def test_osm_control_points_are_ordered_along_the_route(nob_hill_scene):

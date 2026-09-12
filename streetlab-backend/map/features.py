@@ -52,14 +52,28 @@ by running the real Nob Hill fixture rather than only synthetic data:
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
+from collections import defaultdict
 from random import Random
 
 from map.lanes import LANE_W, drivable_ways
-from map.osm_model import OsmGraph, OsmNode
+from map.placement import (
+    KERB_CLEARANCE_M,
+    MIN_CLEAR_WALK_M,
+    SIDEWALK_W_M,
+    TREE_VERGE_M,
+    facing,
+    escape_offsets,
+    kerb_offset,
+    push_clear,
+)
+from map.osm_model import OsmGraph, OsmNode, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import lane_counts, road_class
+from map.tags import has_sidewalk, lane_counts, road_class
 from schema import Building, Crosswalk, StopSign, TrafficLight, Tree
+
+log = logging.getLogger("streetlab.map")
 
 METRES_PER_LEVEL = 3.2
 DEFAULT_BUILDING_HEIGHT_M = 9.0
@@ -139,57 +153,459 @@ def _tagged_nodes(graph: OsmGraph, key: str, value: str) -> list[OsmNode]:
     )
 
 
-def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
-    lights = []
-    for node in _tagged_nodes(graph, "highway", "traffic_signals"):
-        lights.append(
-            TrafficLight(
-                id=f"osm_tl_{node.id}",
-                position=to_local(node.lat, node.lon, origin),
-                heading=0.0,
-                mast_arm_m=0.0,
-                height_m=6.0,
-            )
+#: Two approach legs closer than this in bearing are the same leg, arriving
+#: twice because two ways share the junction node. Generous, because OSM
+#: splits a street at a junction and the two halves rarely leave at exactly
+#: the same angle.
+_LEG_MERGE_RAD = math.radians(25.0)
+
+
+def _carriageways(
+    graph: OsmGraph, origin: LatLon
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Every drivable way's road surface, as `(local points, half-width)`.
+
+    The same shape `_inside_any_carriageway` already takes for trees, so a
+    sign, a pole and a tree all agree on where the tarmac is.
+    """
+    return [
+        (
+            [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)],
+            _carriageway_half_width_m(way.tags),
         )
-    return lights
+        for way in drivable_ways(graph)
+    ]
+
+
+def _ways_by_node(graph: OsmGraph) -> dict[int, list[OsmWay]]:
+    """Which drivable ways each node belongs to. Built once per scene."""
+    owner: dict[int, list[OsmWay]] = defaultdict(list)
+    for way in drivable_ways(graph):
+        for node_id in way.node_ids:
+            owner[node_id].append(way)
+    return owner
+
+
+def _way_geometry(
+    graph: OsmGraph, way: OsmWay, node_id: int, origin: LatLon
+) -> tuple[list[tuple[float, float]], int] | None:
+    """`(local points, index of node_id)` for a way, or None if unresolvable.
+
+    Indices are taken against the RESOLVED node list, not `way.node_ids`: a
+    bbox query can return a way referencing nodes outside the box, and
+    `way_points` silently drops those. Indexing one list with the other's
+    positions is how a tangent ends up pointing at a different street.
+    """
+    resolved = [nid for nid in way.node_ids if nid in graph.nodes]
+    if node_id not in resolved or len(resolved) < 2:
+        return None
+    points = [
+        to_local(graph.nodes[nid].lat, graph.nodes[nid].lon, origin) for nid in resolved
+    ]
+    return points, resolved.index(node_id)
+
+
+def _unit(dx: float, dy: float) -> tuple[float, float] | None:
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return None
+    return dx / length, dy / length
+
+
+def _tangent_at(points: list[tuple[float, float]], index: int) -> tuple[float, float] | None:
+    """The way's own direction at `index`, in way-node order.
+
+    A centred difference at an interior vertex, so a sign on a bend gets the
+    street's local direction rather than one arbitrary segment's.
+    """
+    before = points[index - 1] if index > 0 else points[index]
+    after = points[index + 1] if index < len(points) - 1 else points[index]
+    return _unit(after[0] - before[0], after[1] - before[1])
+
+
+def _governed_travel(
+    points: list[tuple[float, float]], index: int, tags: dict[str, str]
+) -> tuple[float, float] | None:
+    """Which way the traffic this sign governs is driving.
+
+    `direction=forward|backward` is the authoritative answer and OSM carries
+    it on 137 of the Nob Hill extract's 145 stop nodes -- it says whether the
+    governed traffic runs with the way's node order or against it. The two
+    fallbacks below only ever run for the handful of untagged nodes:
+
+    * a oneway street has only one answer,
+    * otherwise the sign faces the nearer end of its way, because a stop node
+      sits just before a junction and a junction is where ways end.
+    """
+    tangent = _tangent_at(points, index)
+    if tangent is None:
+        return None
+    direction = tags.get("direction")
+    if direction == "forward":
+        return tangent
+    if direction == "backward":
+        return -tangent[0], -tangent[1]
+    if tags.get("oneway") == "yes":
+        return tangent
+    ahead = sum(
+        math.dist(points[i], points[i + 1]) for i in range(index, len(points) - 1)
+    )
+    behind = sum(math.dist(points[i], points[i + 1]) for i in range(index))
+    return tangent if ahead <= behind else (-tangent[0], -tangent[1])
+
+
+def _approach_candidates(
+    graph: OsmGraph,
+    node: OsmNode,
+    owner: dict[int, list[OsmWay]],
+    origin: LatLon,
+) -> list[tuple[OsmWay, tuple[list[tuple[float, float]], int]]]:
+    """The ways a stop node might govern, best candidate first.
+
+    139 of the fixture's 145 stop nodes belong to exactly one drivable way and
+    this is a formality. The six that do not need a rule, and "lowest way id"
+    is the wrong one: it picked Broadway for a sign stopping Jones Street, and
+    Powell Street for one stopping Vallejo -- in both cases the street driving
+    straight PAST the junction rather than the one halting at it.
+
+    So an untagged node prefers a way it is an ENDPOINT of. That is the
+    T-junction shape: the minor street ends at the node, while the through
+    street carries on past it as an interior vertex. A node carrying an
+    explicit `direction` prefers the opposite -- the way it lies along -- since
+    that tag describes travel with or against one way's node order.
+
+    Way id breaks ties, so a crossroads whose every leg ends at the node (the
+    genuinely ambiguous case) still resolves the same way on every build.
+    """
+    prefer_endpoint = "direction" not in node.tags
+    candidates = []
+    for way in owner.get(node.id, ()):
+        geometry = _way_geometry(graph, way, node.id, origin)
+        if geometry is None:
+            continue
+        points, index = geometry
+        is_endpoint = index in (0, len(points) - 1)
+        candidates.append((is_endpoint == prefer_endpoint, way, geometry))
+    candidates.sort(key=lambda c: (not c[0], c[1].id))
+    return [(way, geometry) for _, way, geometry in candidates]
 
 
 def build_stop_signs(graph: OsmGraph, origin: LatLon) -> list[StopSign]:
-    return [
-        StopSign(
-            id=f"osm_ss_{node.id}",
-            position=to_local(node.lat, node.lon, origin),
-            heading=0.0,
+    """One sign per tagged approach, on that approach's right-hand kerb.
+
+    OSM already models stop signs per approach -- a `highway=stop` node sits on
+    the way it governs, at the stop line -- so there is no clustering to do
+    here, only the two things the node itself cannot say: which way the traffic
+    faces, and how far off the centreline the post stands. Both used to be left
+    at zero, which put all 145 of the fixture's signs in the road facing east.
+
+    A node with no drivable way under it is dropped rather than placed blind:
+    a sign governing no approach is the artifact this exists to remove.
+    """
+    owner = _ways_by_node(graph)
+    surfaces = _carriageways(graph, origin)
+    signs, orphaned, crowded = [], 0, 0
+    for node in _tagged_nodes(graph, "highway", "stop"):
+        placed = None
+        for way, (points, index) in _approach_candidates(graph, node, owner, origin):
+            travel = _governed_travel(points, index, {**way.tags, **node.tags})
+            if travel is None:
+                continue
+            placed = (points[index], travel, _carriageway_half_width_m(way.tags))
+            break
+        if placed is None:
+            orphaned += 1
+            continue
+        at, travel, half_width = placed
+        # The kerb of its OWN approach is not automatically clear of the
+        # CROSSING one: at a tight corner the offset lands in the side street.
+        # Backing the sign off toward the driver is the fix -- it is still on
+        # the same approach, just further from the junction.
+        position, _ = push_clear(
+            lambda o: kerb_offset(
+                at, travel, half_width + o[1], along=o[0]
+            ),
+            lambda p: _inside_any_carriageway(p, surfaces),
+            escape_offsets(-1.0),
         )
-        for node in _tagged_nodes(graph, "highway", "stop")
-    ]
+        if _inside_any_carriageway(position, surfaces):
+            crowded += 1
+        signs.append(
+            StopSign(
+                id=f"osm_ss_{node.id}",
+                position=position,
+                heading=facing(travel),
+            )
+        )
+    if orphaned:
+        log.debug("dropped %d stop sign(s) with no drivable approach", orphaned)
+    if crowded:
+        log.debug("%d stop sign(s) found no clear corner", crowded)
+    return signs
+
+
+def _approach_legs(
+    graph: OsmGraph, node: OsmNode, ways: list[OsmWay], origin: LatLon
+) -> list[tuple[tuple[float, float], float]]:
+    """`(travel, approach half-width)` for each distinct leg into a junction.
+
+    A `traffic_signals` node is a junction, not an approach: unlike a stop
+    node it carries no `direction` at all (0 of 58 on the fixture) and it sits
+    where several ways END. So the approaches have to be read off the geometry
+    -- every way-direction leaving the node is a leg, and the traffic on it
+    arrives travelling the other way.
+
+    Legs arriving twice, because OSM split the street at this junction, are
+    merged by bearing.
+    """
+    legs: list[tuple[tuple[float, float], float]] = []
+    for way in sorted(ways, key=lambda w: w.id):
+        geometry = _way_geometry(graph, way, node.id, origin)
+        if geometry is None:
+            continue
+        points, index = geometry
+        half_width = _carriageway_half_width_m(way.tags)
+        here = points[index]
+        for neighbour in (index - 1, index + 1):
+            if not 0 <= neighbour < len(points):
+                continue
+            outward = _unit(
+                points[neighbour][0] - here[0], points[neighbour][1] - here[1]
+            )
+            if outward is None:
+                continue
+            # Traffic on this leg drives INTO the junction.
+            travel = (-outward[0], -outward[1])
+            bearing = math.atan2(travel[1], travel[0])
+            if any(
+                abs(math.remainder(bearing - math.atan2(t[1], t[0]), math.tau))
+                < _LEG_MERGE_RAD
+                for t, _ in legs
+            ):
+                continue
+            legs.append((travel, half_width))
+    return legs
+
+
+def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
+    """One mast-arm head per approach into each signalised junction.
+
+    OSM tags a signalised crossroads as a single `highway=traffic_signals`
+    node sitting in the middle of it. Emitting one head per node -- which is
+    what this used to do -- puts a bare pole in the centre of the intersection
+    governing nobody, since a head governs the ONE approach its lamps face.
+    So each node is expanded into a head per approach leg instead.
+
+    The pole stands at that leg's far right corner and the arm reaches back
+    left over the lanes coming toward it, which is the American mast-arm
+    layout the renderer already draws (`world.ts`: the arm swings out along
+    `heading` rotated -90 degrees).
+    """
+    owner = _ways_by_node(graph)
+    surfaces = _carriageways(graph, origin)
+    lights, junctionless, crowded = [], 0, 0
+    for node in _tagged_nodes(graph, "highway", "traffic_signals"):
+        ways = owner.get(node.id, [])
+        legs = _approach_legs(graph, node, ways, origin)
+        if not legs:
+            junctionless += 1
+            continue
+        at = to_local(node.lat, node.lon, origin)
+        # How far past the junction centre the pole stands. The widest way
+        # meeting here approximates the junction's own size, so a pole set
+        # this far along a leg clears the carriageway it is crossing.
+        clear = max(half for _, half in legs) + KERB_CLEARANCE_M
+        for i, (travel, half_width) in enumerate(legs):
+            # `clear` is sized off the widest way meeting here, which is only
+            # an estimate of the junction; a skewed or multi-way crossing can
+            # still leave the pole on tarmac. Push it further out the same leg
+            # until it is off the road -- further from the driver, never into
+            # the road it is meant to overhang.
+            position, _ = push_clear(
+                lambda o, t=travel, h=half_width: kerb_offset(
+                    at, t, h + o[1], along=clear + o[0]
+                ),
+                lambda p: _inside_any_carriageway(p, surfaces),
+                escape_offsets(1.0),
+            )
+            if _inside_any_carriageway(position, surfaces):
+                crowded += 1
+            lights.append(
+                TrafficLight(
+                    id=f"osm_tl_{node.id}_{i}",
+                    position=position,
+                    heading=facing(travel),
+                    # Back over the middle of the approaching lanes, which run
+                    # from the centreline out to the kerb the pole stands on.
+                    mast_arm_m=half_width / 2 + KERB_CLEARANCE_M,
+                    height_m=6.0,
+                )
+            )
+    if junctionless:
+        log.debug("dropped %d signal node(s) with no drivable approach", junctionless)
+    if crowded:
+        log.debug("%d signal pole(s) found no clear corner", crowded)
+    return lights
+
+
+#: Depth of a marked crossing, measured ALONG the road it interrupts. Marked
+#: crossings run 6-10 ft; 3.0 m sits in that range and is what a signalised
+#: junction usually gets.
+CROSSING_DEPTH_M = 3.0
+
+#: `crossing:markings` -> the wire's paint style. OSM's "zebra" is the broad
+#: bars running with traffic that the US calls continental; "lines" is the pair
+#: of transverse lines and nothing between them.
+_MARKING_STYLE = {
+    "zebra": "continental",
+    "ladder": "ladder",
+    "lines": "transverse",
+    "dashes": "transverse",
+    "dots": "transverse",
+    "surface": "continental",
+    "yes": "continental",
+}
+
+
+def _crossing_style(tags: dict[str, str]) -> str | None:
+    """How a crossing is painted, or None when it is not painted at all.
+
+    `crossing:markings` is the specific answer and the extract carries it on
+    274 of its 370 crossings; `crossing` is the fallback. Both can say there is
+    no paint -- `crossing:markings=no` and `crossing=unmarked` -- and 64 of the
+    370 do. An unmarked crossing is a real thing on a real street, and drawing
+    a zebra over it is inventing a road marking that is not there.
+    """
+    markings = tags.get("crossing:markings", "").strip().lower()
+    if markings == "no":
+        return None
+    if markings in _MARKING_STYLE:
+        return _MARKING_STYLE[markings]
+    crossing = tags.get("crossing", "").strip().lower()
+    if crossing == "unmarked":
+        return None
+    return "continental"
 
 
 def build_crosswalks(graph: OsmGraph, origin: LatLon) -> list[Crosswalk]:
-    return [
-        Crosswalk(
-            id=f"osm_cw_{node.id}",
-            center=to_local(node.lat, node.lon, origin),
-            heading=0.0,
-            width_m=4.0,
-            length_m=7.2,
-            style="continental",
+    """One painted crossing per marked `highway=crossing` node.
+
+    A crossing node sits ON the way it crosses, so the road under it supplies
+    both things the node itself cannot say: which way pedestrians walk -- square
+    to the street, not due east, which is what every one of these used to be --
+    and how far, which is that street's own carriageway width rather than a
+    fixed 7.2 m that was wrong on 102 of the extract's 370.
+    """
+    owner = _ways_by_node(graph)
+    walks, roadless = [], 0
+    for node in _tagged_nodes(graph, "highway", "crossing"):
+        style = _crossing_style(node.tags)
+        if style is None:
+            continue
+        placed = None
+        # Lowest way id when a node is shared, so the same extract always
+        # builds the same scene.
+        for way in sorted(owner.get(node.id, ()), key=lambda w: w.id):
+            geometry = _way_geometry(graph, way, node.id, origin)
+            if geometry is None:
+                continue
+            points, index = geometry
+            tangent = _tangent_at(points, index)
+            if tangent is None:
+                continue
+            placed = (points[index], tangent, _carriageway_half_width_m(way.tags))
+            break
+        if placed is None:
+            roadless += 1
+            continue
+        at, tangent, half_width = placed
+        walks.append(
+            Crosswalk(
+                id=f"osm_cw_{node.id}",
+                center=at,
+                # Pedestrians walk ACROSS: the street's own direction, square.
+                heading=math.atan2(tangent[0], -tangent[1]),
+                width_m=CROSSING_DEPTH_M,
+                length_m=half_width * 2,
+                style=style,
+            )
         )
-        for node in _tagged_nodes(graph, "highway", "crossing")
-    ]
+    if roadless:
+        log.debug("dropped %d crossing(s) with no drivable way under them", roadless)
+    return walks
+
+
+def junction_of(light_id: str) -> str:
+    """The junction a head belongs to, from `osm_tl_<node>_<leg>`.
+
+    Falls back to the whole id, which puts an unrecognised head in a junction
+    of its own -- harmless, and better than mis-grouping it with a real one.
+    """
+    parts = light_id.rsplit("_", 1)
+    return parts[0] if len(parts) == 2 and parts[1].isdigit() else light_id
+
+
+def control_anchors(
+    graph: OsmGraph, origin: LatLon
+) -> dict[str, tuple[float, float]]:
+    """Where each control device's STOP LINE is measured from.
+
+    Not the device's own position. A head now stands on a corner several
+    metres off the junction it governs, and several heads at one crossroads
+    stand on different corners -- so projecting stop lines from head positions
+    gives a junction three or four of them, a few metres apart, and the ego
+    brakes for the same crossroads repeatedly. Measured on the Nob Hill route,
+    that dropped the median gap between the ego's control points from 83.2 m
+    to 16.3 m.
+
+    The junction node is the right origin, and it is what the head positions
+    were derived from in the first place. Keyed by `osm_tl_<node>` (the
+    junction, shared by all its heads -- see `_junction_of`) and by
+    `osm_ss_<node>` (one sign, one line).
+    """
+    anchors = {
+        f"osm_tl_{node.id}": to_local(node.lat, node.lon, origin)
+        for node in _tagged_nodes(graph, "highway", "traffic_signals")
+    }
+    anchors.update(
+        {
+            f"osm_ss_{node.id}": to_local(node.lat, node.lon, origin)
+            for node in _tagged_nodes(graph, "highway", "stop")
+        }
+    )
+    return anchors
 
 
 def signal_groups(lights: list[TrafficLight]) -> dict[str, str]:
-    """Alternate phase groups so opposing approaches are never both green.
+    """Split each junction's heads into the two phases that alternate.
 
-    Without OSM phase data (which is effectively never tagged), the honest
-    approach is a stable arbitrary split rather than an invented one: lights
-    are assigned by id order, which is deterministic and keeps an
-    intersection's heads from all showing green at once. It is not a model of
-    the real signal phasing -- OSM does not carry that -- and callers must
-    treat it as such.
+    Heads are grouped by the APPROACH AXIS they sit on: the two heads facing
+    each other down the same street share a phase, and the street crossing
+    them gets the other. That is the property the name has always claimed and
+    never had -- the previous rule assigned `i % 2` over one flat list, which
+    on a four-approach junction reliably put opposing heads in DIFFERENT
+    groups and crossing heads in the SAME one, so crossing traffic would have
+    gone green together.
+
+    The reference axis is taken per junction, from its first head, rather than
+    from true north. A junction on a skewed street grid has no north-south leg
+    at all, and bucketing it against the compass puts all four of its heads in
+    one group -- a signal that never releases.
+
+    OSM carries no phase or cycle data, so which group goes first is still
+    arbitrary. Only the split itself is meaningful, and callers must treat it
+    that way.
     """
-    return {light.id: ("ns" if i % 2 == 0 else "ew") for i, light in enumerate(lights)}
+    groups: dict[str, str] = {}
+    reference: dict[str, float] = {}
+    for light in lights:
+        junction = junction_of(light.id)
+        # Modulo pi: a head and the one facing it lie on one axis.
+        axis = light.heading % math.pi
+        anchor = reference.setdefault(junction, axis)
+        offset = abs(math.remainder(axis - anchor, math.pi))
+        groups[light.id] = "ns" if offset < math.pi / 4 else "ew"
+    return groups
 
 
 def _new_tree(id_: str, position: tuple[float, float], seed: str) -> Tree:
@@ -213,6 +629,14 @@ def _new_tree(id_: str, position: tuple[float, float], seed: str) -> Tree:
 # actually constructed).
 _TREE_MIN_SPACING_M = 8.0
 
+#: Grid cell for the building lookup index, in metres.
+_CELL_M = 40.0
+
+#: A canopy never shrinks below this, however tight the planting. Two trees
+#: closer together than twice this still touch -- a sapling is a better
+#: answer there than a canopy the schema would reject for being <= 0.
+_MIN_CANOPY_M = 0.6
+
 
 def _carriageway_half_width_m(tags: dict[str, str]) -> float:
     """Half the total carriageway width -- centreline to kerb -- for a way."""
@@ -222,20 +646,17 @@ def _carriageway_half_width_m(tags: dict[str, str]) -> float:
 
 
 def _verge_offset_m(tags: dict[str, str]) -> float:
-    """Distance from a way's centreline to plant a verge tree, clear of the
-    carriageway.
+    """Distance from a way's centreline to plant a verge tree.
 
-    A fixed offset put a tree inside any road wider than one lane each way --
-    on the real fixture, California St, Pine St and Broadway (each carrying
-    >= 4 total lanes, a 7.2 m carriageway half-width) would plant trees 1.6 m
-    inside the road surface. The offset is derived from the way's own lane
-    count instead, and floored at the old constant (`LANE_W + 2.0` = 5.6 m,
-    which is exactly a one-lane-each-way road's 3.6 m half-width plus a 2 m
-    verge margin) so the common one-lane-each-way street keeps today's
-    spacing rather than pulling its trees in closer than before.
+    `TREE_VERGE_M` past that way's own kerb -- in the verge strip against the
+    carriageway, which is where street trees actually stand and which leaves
+    the walking room on the building side of the trunk. It used to be a 2 m
+    margin floored at 5.6 m, which planted every trunk most of the way across
+    the footway: measured, 532 of 806 trees stood in the walking band, and on
+    a one-lane-each-way street the floor pushed the trunk 2 m out, past the
+    middle of a 2.8 m pavement.
     """
-    verge_margin_m = 2.0
-    return max(_carriageway_half_width_m(tags) + verge_margin_m, LANE_W + 2.0)
+    return _carriageway_half_width_m(tags) + TREE_VERGE_M
 
 
 def _point_to_segment_distance(
@@ -270,18 +691,67 @@ def _inside_any_carriageway(
     return False
 
 
+def _footprint_index(
+    buildings: list[Building],
+) -> dict[tuple[int, int], list[list[tuple[float, float]]]]:
+    """Building rings bucketed into a coarse grid, for cheap point lookups.
+
+    ~790 tree candidates against 2224 footprints is 1.8 M ring tests done
+    naively, and every candidate only ever falls in one bucket.
+    """
+    index: dict[tuple[int, int], list[list[tuple[float, float]]]] = defaultdict(list)
+    for building in buildings:
+        xs = [p[0] for p in building.footprint]
+        ys = [p[1] for p in building.footprint]
+        for cell_x in range(int(min(xs) // _CELL_M), int(max(xs) // _CELL_M) + 1):
+            for cell_y in range(int(min(ys) // _CELL_M), int(max(ys) // _CELL_M) + 1):
+                index[(cell_x, cell_y)].append(building.footprint)
+    return index
+
+
+def _inside_ring(point: tuple[float, float], ring: list[tuple[float, float]]) -> bool:
+    """Ray-casting point-in-polygon, on a ring that is not closed."""
+    x, y = point
+    hit = False
+    for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
+        if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
+            hit = not hit
+    return hit
+
+
+def _inside_any_building(point: tuple[float, float], index) -> bool:
+    cell = (int(point[0] // _CELL_M), int(point[1] // _CELL_M))
+    return any(_inside_ring(point, ring) for ring in index.get(cell, ()))
+
+
 def _procedural_verge_trees(
-    graph: OsmGraph, origin: LatLon, avoid: list[tuple[float, float]]
+    graph: OsmGraph,
+    origin: LatLon,
+    avoid: list[tuple[float, float]],
+    buildings: list[Building],
 ) -> list[Tree]:
     """Trees along the verges of drivable ways, filling in where OSM has none.
 
-    `avoid` is the set of already-placed tagged-tree positions; a candidate
-    within `_TREE_MIN_SPACING_M` of one is dropped rather than doubling up on
-    the same spot with visibly overlapping canopies. A candidate is also
-    dropped if it falls inside *any* drivable way's carriageway, not only the
-    way it was generated against -- see `_inside_any_carriageway`.
+    A candidate is dropped when it:
+
+    * is within `_TREE_MIN_SPACING_M` of an already-placed tree -- tagged
+      (`avoid`) OR one of these, which was never checked before and left six
+      pairs of canopies interpenetrating, the worst by 3.16 m;
+    * falls inside *any* drivable way's carriageway, not only the way it was
+      generated against (see `_inside_any_carriageway`);
+    * falls inside a building. 144 of 806 trees used to, because nothing here
+      had ever looked at a footprint -- a verge tree on a narrow street simply
+      planted itself through the wall behind the pavement.
+
+    Ways with no pavement get no street trees at all: there is no verge to
+    plant them in, and kerbing every service alley filled the scene with
+    trees nobody put there.
     """
-    ways = drivable_ways(graph)
+    ways = [
+        way
+        for way in drivable_ways(graph)
+        if has_sidewalk(way.tags, road_class(way.tags) or "residential")
+    ]
     # Each way's local points and half-width, computed once and reused both
     # as the outer loop's own geometry and as every other candidate's
     # cross-way carriageway check -- a brute-force all-pairs scan, not a
@@ -295,6 +765,11 @@ def _procedural_verge_trees(
         for way in ways
     ]
 
+    footprints = _footprint_index(buildings)
+    # Grows as trees are placed, so each candidate is spaced against every
+    # tree already standing, tagged or procedural.
+    taken = list(avoid)
+
     trees: list[Tree] = []
     for way, (points, _half_width) in zip(ways, ways_geometry):
         offset = _verge_offset_m(way.tags)
@@ -306,10 +781,13 @@ def _procedural_verge_trees(
             for side in (-1.0, 1.0):
                 px = a[0] + ux * length * 0.5 - uy * side * offset
                 py = a[1] + uy * length * 0.5 + ux * side * offset
-                if any(math.dist((px, py), p) < _TREE_MIN_SPACING_M for p in avoid):
+                if any(math.dist((px, py), p) < _TREE_MIN_SPACING_M for p in taken):
                     continue
                 if _inside_any_carriageway((px, py), ways_geometry):
                     continue
+                if _inside_any_building((px, py), footprints):
+                    continue
+                taken.append((px, py))
                 trees.append(
                     _new_tree(
                         f"osm_tv_{way.id}_{i}_{int(side)}",
@@ -320,7 +798,9 @@ def _procedural_verge_trees(
     return trees
 
 
-def build_trees(graph: OsmGraph, origin: LatLon) -> list[Tree]:
+def build_trees(
+    graph: OsmGraph, origin: LatLon, buildings: list[Building]
+) -> list[Tree]:
     """Tagged trees where OSM has them, plus procedural fill along drivable ways.
 
     OSM's tagged tree coverage is sparse rather than complete -- on the real
@@ -337,4 +817,45 @@ def build_trees(graph: OsmGraph, origin: LatLon) -> list[Tree]:
         for node in _tagged_nodes(graph, "natural", "tree")
     ]
     tagged_positions = [t.position for t in tagged]
-    return tagged + _procedural_verge_trees(graph, origin, tagged_positions)
+    return _fit_canopies(
+        tagged + _procedural_verge_trees(graph, origin, tagged_positions, buildings)
+    )
+
+
+def _fit_canopies(trees: list[Tree]) -> list[Tree]:
+    """Shrink canopies until no two interpenetrate.
+
+    The procedural fill spaces its own trees, but OSM's tagged ones are placed
+    exactly where surveyed and are not ours to move -- and real street trees
+    are planted 4-5 m apart, closer than two of our invented 1.8-3.4 m canopy
+    radii will fit. Three pairs on the Nob Hill extract overlapped for exactly
+    that reason, the worst by 0.90 m.
+
+    So the radius gives, not the position. Capping every tree at half the
+    distance to its nearest neighbour is what makes that safe for every pair
+    at once: if `r_a <= d/2` and `r_b <= d/2` then `r_a + r_b <= d`, whatever
+    the two radii started as. It also reads correctly -- a tightly planted row
+    has smaller crowns than a tree standing on its own.
+    """
+    if len(trees) < 2:
+        return trees
+    order = sorted(range(len(trees)), key=lambda i: trees[i].position[0])
+    room = [math.inf] * len(trees)
+    for a in range(len(order)):
+        ia = order[a]
+        for b in range(a + 1, len(order)):
+            ib = order[b]
+            dx = trees[ib].position[0] - trees[ia].position[0]
+            # Sorted by x, so once the x gap alone exceeds the room already
+            # found there is nothing closer further along.
+            if dx >= room[ia] * 2 and dx >= _TREE_MIN_SPACING_M:
+                break
+            half = math.dist(trees[ia].position, trees[ib].position) / 2
+            room[ia] = min(room[ia], half)
+            room[ib] = min(room[ib], half)
+    return [
+        tree
+        if room[i] >= tree.canopy_radius_m
+        else tree.model_copy(update={"canopy_radius_m": round(max(room[i], _MIN_CANOPY_M), 3)})
+        for i, tree in enumerate(trees)
+    ]

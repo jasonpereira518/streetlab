@@ -72,15 +72,15 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 4
+    assert dumped["protocol"] == PROTOCOL_VERSION == 6
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_four():
+def test_protocol_is_six():
     from schema import PROTOCOL_VERSION
 
-    assert PROTOCOL_VERSION == 4
+    assert PROTOCOL_VERSION == 6
 
 
 def test_load_location_parses_with_and_without_radius():
@@ -295,7 +295,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 4
+    assert PROTOCOL_VERSION == 6
 
     raw = {
         "id": "f1",
