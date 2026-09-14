@@ -266,6 +266,34 @@ describe('Location search box', () => {
     expect(useSimStore.getState().locationPending).toBeNull();
   });
 
+  it('has a real submit button, so Enter still submits now that there are two text fields', () => {
+    // Regression: a <form> with no submit button and MORE THAN ONE text-like
+    // input never submits on Enter at all (the HTML spec's implicit-
+    // submission rule) -- adding the destination field without a submit
+    // button silently broke the single most common way to use this box.
+    // `fireEvent.submit` (used by every other test in this file) dispatches
+    // the submit event directly and is blind to this: it would keep passing
+    // even with the button removed. This test instead drives the button
+    // itself, which is what a real Enter keypress resolves to.
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    const button = screen.getByLabelText('Search for this location') as HTMLButtonElement;
+    expect(button.type).toBe('submit');
+    expect(button.disabled).toBe(true); // nothing to search yet
+
+    fireEvent.change(box, { target: { value: 'Golden Gate Park' } });
+    expect(button.disabled).toBe(false);
+
+    fireEvent.click(button);
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'load_location', query: 'Golden Gate Park' }),
+    );
+    expect(useSimStore.getState().locationPending).toBe('Golden Gate Park');
+  });
+
   it('clears the pending state on a location_failed event, without waiting for a scene', () => {
     harness = createHarness();
     render(<LeftScenarioSidebar />);

@@ -701,6 +701,39 @@ canvas {
   cursor: not-allowed;
 }
 
+/* An explicit submit button, not just decoration: a form with two text
+   inputs and no submit button never submits on Enter at all (the HTML spec's
+   "more than one field blocks implicit submission" rule) -- this is what
+   makes the destination field's addition not silently break Enter-to-search
+   for the common single-field case. */
+.location-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  align-self: flex-end;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--r-pill, 999px);
+  background: var(--c-surface-sunken, #edf1f6);
+  color: var(--c-text-muted, #5f6e80);
+  font-size: 11px;
+  font-weight: 600;
+  transition: background 130ms ease, color 130ms ease, transform 130ms ease;
+}
+
+.location-submit:hover:not(:disabled) {
+  background: var(--c-accent, #0fb5c9);
+  color: #fff;
+}
+
+.location-submit:active:not(:disabled) { transform: scale(0.95); }
+
+.location-submit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .location-pending {
   margin: 0;
   font-size: 11px;

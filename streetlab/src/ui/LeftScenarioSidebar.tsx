@@ -6,7 +6,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ScenarioSummary } from '../schema';
 import { useSimStore } from '../store/simStore';
-import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon } from './Icons';
+import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon, SearchIcon } from './Icons';
 import { alpha, color } from './theme';
 
 export function LeftScenarioSidebar() {
@@ -73,6 +73,15 @@ export function LeftScenarioSidebar() {
           aria-label="Destination address"
           disabled={locationPending !== null}
         />
+        <button
+          type="submit"
+          className="location-submit"
+          aria-label="Search for this location"
+          disabled={locationPending !== null || !query.trim()}
+        >
+          <SearchIcon size={14} />
+          <span>Go</span>
+        </button>
         {locationPending !== null && (
           <p className="location-pending">Building {locationPending}…</p>
         )}
