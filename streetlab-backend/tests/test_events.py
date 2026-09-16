@@ -199,3 +199,58 @@ def test_a_cut_in_raises_a_hazard_flag_whatever_speed_the_ego_is_doing(sim):
             assert frame.telemetry.trajectory.cutin, "the graph has nothing to draw"
             return
     pytest.fail("a car merged into the ego's lane and nothing was flagged")
+
+
+def _overlaps(sim, spawned):
+    """Other vehicles in the ego lane whose bodywork `spawned` lands inside,
+    the ego included."""
+    route = sim.scene.ego_route
+    here = route.project((spawned.state.x, spawned.state.y))
+    ego = sim.world.ego
+    others = [
+        (route.project((a.state.x, a.state.y)), a.size.length, a.id)
+        for a in sim._traffic.agents
+        if a is not spawned and a.lane_id == spawned.lane_id and not a.lateral_m
+    ] + [(route.project((ego.x, ego.y)), 4.7, "ego")]
+    return [
+        name
+        for s, length, name in others
+        if abs(route.signed_gap(here, s)) < (length + spawned.size.length) / 2 + 0.5
+    ]
+
+
+def _park_in_the_way(sim, ahead_m):
+    """Stand the nearest ego-lane agent exactly where a hazard is about to land."""
+    from sim.events import _ego_s, _place
+
+    route = sim.scene.ego_route
+    victim = next(a for a in sim._traffic.agents if a.route is route)
+    _place(victim, route, _ego_s(sim) + ahead_m, speed_mps=0.0)
+    sim._traffic.hold(victim, at_mps=0.0, for_s=30.0)
+    return victim
+
+
+def test_an_obstacle_is_not_dropped_on_top_of_a_vehicle(sim):
+    from sim.events import OBSTACLE_AHEAD_M
+
+    _park_in_the_way(sim, OBSTACLE_AHEAD_M)
+    inject(sim, "obstacle")
+    obstacle = next(a for a in sim._traffic.agents if a.cls == "unknown")
+    assert not _overlaps(sim, obstacle), "the obstacle landed inside a parked car"
+
+
+def test_a_cut_in_does_not_land_on_top_of_a_vehicle(sim):
+    from sim.events import CUT_IN_FLOOR_MPS, CUT_IN_HEADWAY_S
+
+    gap = CUT_IN_HEADWAY_S * max(sim.world.ego.speed_mps, CUT_IN_FLOOR_MPS)
+    from sim.events import _ego_s, _place
+
+    blocker = _park_in_the_way(sim, gap)
+    # And a different car right beside the ego, so it -- not the blocker -- is
+    # the nearest vehicle the cut-in picks to move.
+    route = sim.scene.ego_route
+    mover = next(a for a in sim._traffic.agents if a is not blocker)
+    _place(mover, route, _ego_s(sim), lateral_m=-3.6)
+    inject(sim, "cut_in")
+    assert mover.lateral_m and mover.lane_id == blocker.lane_id
+    assert not _overlaps(sim, mover), "the cut-in landed inside a parked car"

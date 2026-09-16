@@ -59,6 +59,12 @@ class Agent:
     #: scalar `s` and nothing else, which is why a lane change could only ever
     #: have been a 3.6 m sideways jump between two frames.
     lateral_m: float = 0.0
+    #: The route of the lane being LEFT, while `lateral_m` is still sliding the
+    #: car out of it; None otherwise. `route` switches to the target lane on
+    #: the first tick of a change, but the body spends three more seconds
+    #: straddling the line, and a follower in the old lane that matched
+    #: leaders by `route` alone drove straight into its tail.
+    from_route: Route | None = None
     #: Seconds left before another change may be considered.
     lane_change_cooldown_s: float = 0.0
     #: Seconds this agent has left to live, or None to live as long as the
@@ -158,6 +164,11 @@ class ScriptedTraffic:
         self._elapsed = 0.0
         self._agents: list[Agent] = []
 
+        # What already stands on each route, as (s, length). The ego starts at
+        # s = 0 on the ego route, which every shipped source also hands
+        # traffic; reserving s = 0 on a route the ego is not on costs one car
+        # length of spawn space and nothing else.
+        taken: dict[int, list[tuple[float, float]]] = {}
         for i, route in enumerate(routes):
             cls, length, width, height, mult = _PROFILES[i % len(_PROFILES)]
             # Spread agents around the loop so ego meets them at intervals
@@ -165,6 +176,9 @@ class ScriptedTraffic:
             # different seeds diverge.
             base = route.length_m * (i + 1) / (len(routes) + 1)
             s = (base + self._rng.uniform(-12.0, 12.0)) % route.length_m
+            occupied = taken.setdefault(id(route), [(0.0, _EGO_LENGTH_M)])
+            s = _free_spot(route.length_m, s, length, occupied)
+            occupied.append((s, length))
             target = speed_limit_mps * mult * self._rng.uniform(0.85, 1.05)
             x, y = route.point_at(s)
             self._agents.append(
@@ -361,6 +375,11 @@ _NORMAL_SPAN_M = 1.0
 #: exactly" is not a lane change anyone makes.
 _MOBIL_MIN_CLEARANCE_M = 1.0
 
+#: How far short of a lane's end a car waiting to merge home stops. The end is
+#: read off the ego route's segment table, which is not the kerb-lane route the
+#: car is on; a metre absorbs the difference on a bend.
+_LANE_END_MARGIN_M = 1.0
+
 #: Below this a held vehicle counts as stopped rather than driving slowly.
 _STANDSTILL_MPS = 0.5
 
@@ -408,12 +427,16 @@ class IdmTraffic(ScriptedTraffic):
         # An agent on a route no lane owns keeps `lane_id = None` and never
         # changes lane, which is the honest answer rather than a guess.
         by_route = {id(lane.route): lane.id for lane in (lanes.lanes if lanes else ())}
+        #: This tick's arc length of a lane-changing agent on the lane it is
+        #: leaving, keyed `(id(agent), id(route))`. See `_s_on`.
+        self._straddle_s: dict[tuple[int, int], float] = {}
         for agent in self._agents:
             agent.lane_id = by_route.get(id(agent.route))
 
     def step(self, dt: float, world: TrafficWorld | None = None) -> None:
         self._elapsed += dt
         self._expire(dt)
+        self._straddle_s.clear()
         ego_s_by_route = self._project_ego(world)
 
         for agent in self._agents:
@@ -440,6 +463,8 @@ class IdmTraffic(ScriptedTraffic):
             # rebuilt so the two describe the same instant.
             was = agent.lateral_m
             agent.lateral_m = _approach(was, 0.0, _MOBIL_TRAVERSE_MPS * dt)
+            if not agent.lateral_m:
+                agent.from_route = None
             agent.lane_change_cooldown_s = max(
                 0.0, agent.lane_change_cooldown_s - dt
             )
@@ -509,38 +534,87 @@ class IdmTraffic(ScriptedTraffic):
         world: TrafficWorld | None,
         ego_s_by_route: dict[int, tuple[float, float]],
     ) -> tuple[float, float]:
-        """`(gap, leader_speed)` for the nearest vehicle ahead on this route.
+        """`(gap, leader_speed)` for the nearest thing ahead of `agent`.
 
-        The gap is bumper to bumper on the leader's side only -- the follower's
-        own front bumper is what `s` is measured to for this purpose -- and
-        `math.inf` when nothing is inside `_IDM_HORIZON_M`, which is what tells
-        `_idm_accel` to drop the interaction term entirely.
+        The gap is bumper to bumper (`bumper_gap`), and `math.inf` when nothing
+        is inside `_IDM_HORIZON_M`, which is what tells `_idm_accel` to drop
+        the interaction term entirely. An overlapping leader -- negative gap --
+        is still a leader, and the most urgent one.
 
-        Other agents qualify by route identity; the ego qualifies by lateral
-        offset (`_SAME_LANE_M`), because it is not pinned to a lane route at
-        all -- it tracks a blended aim point between two of them while it
-        changes lane.
+        A lane-changing vehicle occupies BOTH lanes until its slide completes:
+        it is looked for, and looks, in the lane it is leaving as well as the
+        one it has entered (`_s_on`).
+
+        Other agents qualify by route; the ego qualifies by lateral offset
+        (`_SAME_LANE_M`), because it is not pinned to a lane route at all --
+        it tracks a blended aim point between two of them while it changes
+        lane. And a lane that is about to end is a stationary leader at its
+        end (`_lane_end`), so a car that cannot yet merge home stops at the
+        kerb instead of driving onto the pavement.
         """
-        loop = agent.route.length_m
         best_gap, best_speed = math.inf, 0.0
-        for other in self._agents:
-            if other is agent or other.route is not agent.route:
-                continue
-            gap = (other.s - agent.s) % loop - other.size.length / 2
-            if 0 < gap < best_gap:
-                best_gap, best_speed = gap, other.state.speed_mps
-        if world is not None:
-            ego_s, ego_lat = self._ego_on(agent.route, world, ego_s_by_route)
-            # Ahead is not enough: the ego has to be in THIS lane. Phase 2 gave
-            # it lane changes, and a car that has pulled out to overtake is no
-            # longer something to brake for.
-            if abs(ego_lat) <= _SAME_LANE_M:
-                gap = (ego_s - agent.s) % loop - _EGO_LENGTH_M / 2
-                if 0 < gap < best_gap:
-                    best_gap, best_speed = gap, world.ego.speed_mps
+        routes = [agent.route]
+        if agent.from_route is not None:
+            routes.append(agent.from_route)
+        for route in routes:
+            loop = route.length_m
+            my_s = self._s_on(agent, route)
+            for other in self._agents:
+                if other is agent:
+                    continue
+                other_s = self._s_on(other, route)
+                if other_s is None or _fold(other_s - my_s, loop) <= 0:
+                    continue
+                gap = bumper_gap(other_s, other.size.length, my_s, agent.size.length, loop)
+                if gap < best_gap:
+                    best_gap, best_speed = gap, other.state.speed_mps
+            if world is not None:
+                ego_s, ego_lat = self._ego_on(route, world, ego_s_by_route)
+                # Ahead is not enough: the ego has to be in THIS lane. Phase 2
+                # gave it lane changes, and a car that has pulled out to
+                # overtake is no longer something to brake for.
+                if abs(ego_lat) <= _SAME_LANE_M and _fold(ego_s - my_s, loop) > 0:
+                    gap = bumper_gap(ego_s, _EGO_LENGTH_M, my_s, agent.size.length, loop)
+                    if gap < best_gap:
+                        best_gap, best_speed = gap, world.ego.speed_mps
+        end = self._lane_end(agent)
+        if end < best_gap:
+            best_gap, best_speed = end, 0.0
         if best_gap > _IDM_HORIZON_M:
             return math.inf, 0.0
         return best_gap, best_speed
+
+    def _s_on(self, agent: Agent, route: Route) -> float | None:
+        """`agent`'s arc length on `route` if it occupies that lane, else None.
+
+        Free for its own route. For the lane it is sliding out of it is one
+        `Route.project`, cached for the tick -- only agents mid-change pay it,
+        and at most a handful are at any moment.
+        """
+        if agent.route is route:
+            return agent.s
+        if agent.from_route is not route or not agent.lateral_m:
+            return None
+        key = (id(agent), id(route))
+        hit = self._straddle_s.get(key)
+        if hit is None:
+            hit = self._straddle_s[key] = route.project((agent.state.x, agent.state.y))
+        return hit
+
+    def _lane_end(self, agent: Agent) -> float:
+        """Front bumper to the end of the lane `agent` is in, or inf when that
+        lane runs the whole route (the ego lane) or past `_IDM_HORIZON_M`."""
+        lanes = self._lanes
+        if lanes is None or agent.lane_id is None or agent.lane_id == lanes.ego.id:
+            return math.inf
+        current = lanes.by_id(agent.lane_id)
+        if current is None:
+            return math.inf
+        here_s = lanes.ego.route.project((agent.state.x, agent.state.y))
+        left = lanes.legal_for(here_s, _sign(current.offset_m), _IDM_HORIZON_M)
+        if left >= _IDM_HORIZON_M:
+            return math.inf
+        return left - agent.size.length / 2 - _LANE_END_MARGIN_M
 
     # -- MOBIL ------------------------------------------------------------- #
 
@@ -583,7 +657,14 @@ class IdmTraffic(ScriptedTraffic):
             current = lanes.by_id(agent.lane_id)
             direction = 0 if current is None else _sign(current.offset_m)
             if current is None or not lanes.may_change_at(here_s, direction):
-                self._move(agent, home)
+                # Mandatory, but not blind: the home lane can be occupied
+                # right where this one ends -- measured on grid-night, a car
+                # merged 3 m in front of the stopped ego's centre. Until it is
+                # safe, `_lane_end` holds the car at the kerb instead.
+                if current is None or agent.lateral_m == 0.0 and self._evaluate(
+                    agent, home, world, ego_s_by_route
+                )[1]:
+                    self._move(agent, home)
                 return
 
         if agent.lane_change_cooldown_s > 0.0 or agent.lateral_m:
@@ -623,6 +704,7 @@ class IdmTraffic(ScriptedTraffic):
         position = (agent.state.x, agent.state.y)
         agent.s = lane.route.project(position)
         agent.lateral_m = _lateral_of(lane.route, position, agent.s)
+        agent.from_route = agent.route if agent.lateral_m else None
         agent.route = lane.route
         agent.lane_id = lane.id
         agent.lane_change_cooldown_s = MOBIL_COOLDOWN_S
@@ -650,11 +732,14 @@ class IdmTraffic(ScriptedTraffic):
         """
         loop = target.route.length_m
         my_s = target.route.project((agent.state.x, agent.state.y))
-        occupants = [
-            (other.s, other.state.speed_mps, other.size.length, self._desired_speed(other))
-            for other in self._agents
-            if other is not agent and other.lane_id == target.id
-        ]
+        occupants: list[_Occupant] = []
+        for other in self._agents:
+            if other is agent:
+                continue
+            # Anything still sliding OUT of the target lane is in it too.
+            other_s = self._s_on(other, target.route)
+            if other_s is not None:
+                occupants.append((other_s, other.state.speed_mps, other.size.length, other))
         if world is not None:
             # Whichever lane the ego is actually in, not whichever one it
             # started the scene in. Asking `target.id == EGO_LANE_ID` was the
@@ -664,14 +749,14 @@ class IdmTraffic(ScriptedTraffic):
             ego_s, ego_lat = self._ego_on(target.route, world, ego_s_by_route)
             if abs(ego_lat) <= _SAME_LANE_M:
                 occupants.append(
-                    (ego_s, world.ego.speed_mps, _EGO_LENGTH_M, world.ego.speed_mps)
+                    (ego_s, world.ego.speed_mps, _EGO_LENGTH_M, None)
                 )
 
         for other_s, _, length, _ in occupants:
-            # An occupant ALONGSIDE reads as no leader at all to `_gap_ahead`:
-            # its bumper-to-bumper gap has already gone negative. Overlap is
-            # refused here, before any of the incentive arithmetic, because it
-            # is not a trade -- there is no space to move into.
+            # An occupant ALONGSIDE is refused here, before any of the
+            # incentive arithmetic, because it is not a trade -- there is no
+            # space to move into, and IDM's answer to a negative gap (brake as
+            # hard as allowed) is not a lane change anyone should choose.
             clear = (agent.size.length + length) / 2 + _MOBIL_MIN_CLEARANCE_M
             if abs(_fold(other_s - my_s, loop)) < clear:
                 return 0.0, False
@@ -684,23 +769,64 @@ class IdmTraffic(ScriptedTraffic):
         there = _idm_accel(
             agent.state.speed_mps,
             self._desired_speed(agent),
-            *_gap_ahead(occupants, my_s, loop),
+            *_gap_ahead(occupants, my_s, agent.size.length, loop),
         )
 
         behind = _nearest_behind(occupants, my_s, loop)
         if behind is None:
             return there - here, True
-        back_s, back_speed, _, back_desired = behind
-        before = _idm_accel(back_speed, back_desired, *_gap_ahead(occupants, back_s, loop))
+        back_s, back_speed, back_len, back_agent = behind
+        # Only the one car behind needs a desired speed, and it costs a
+        # curvature scan; working it out for every occupant up front made
+        # `_evaluate` the dearest thing traffic does.
+        back_desired = (
+            back_speed if back_agent is None else self._desired_speed(back_agent)
+        )
+        before = _idm_accel(
+            back_speed, back_desired, *_gap_ahead(occupants, back_s, back_len, loop)
+        )
         after = _idm_accel(
             back_speed,
             back_desired,
-            (my_s - back_s) % loop - agent.size.length / 2,
+            bumper_gap(my_s, agent.size.length, back_s, back_len, loop),
             agent.state.speed_mps,
         )
         return (there - here) + _MOBIL_POLITENESS * (after - before), (
             after > -_MOBIL_SAFE_DECEL
         )
+
+
+def bumper_gap(
+    ahead_s: float, ahead_len: float, behind_s: float, behind_len: float, loop: float
+) -> float:
+    """Clear road between two vehicles on one route, rear bumper to front bumper.
+
+    THE gap, for every question traffic asks. `s` is a vehicle's CENTRE, so
+    the gap is the centre separation less BOTH half-lengths; `_leader` once
+    took off only the leader's, which let IDM's 2 m standstill gap park a bus
+    3.75 m inside the car in front. Negative means the bodies overlap.
+    Folded the short way round, so a vehicle just behind reads as behind
+    rather than as a leader almost a lap away.
+    """
+    return _fold(ahead_s - behind_s, loop) - (ahead_len + behind_len) / 2
+
+
+def _free_spot(
+    loop: float, s: float, length: float, occupied: list[tuple[float, float]]
+) -> float:
+    """`s`, or the nearest station ahead of it where a `length` vehicle does not
+    land inside anything in `occupied` -- falling back to `s` itself on a route
+    too crowded to have one, which is a scene problem no spawn can fix."""
+    step = 0.5
+    for i in range(int(loop / step)):
+        at = (s + i * step) % loop
+        if all(
+            abs(_fold(at - other_s, loop)) - (length + other_len) / 2
+            >= _MOBIL_MIN_CLEARANCE_M
+            for other_s, other_len in occupied
+        ):
+            return at
+    return s
 
 
 def _fold(gap: float, loop: float) -> float:
@@ -709,14 +835,25 @@ def _fold(gap: float, loop: float) -> float:
     return gap - loop if gap > loop / 2 else gap
 
 
+#: `(s, speed, length, agent)` of one vehicle in a lane MOBIL is judging; the
+#: agent is None for the ego.
+_Occupant = tuple[float, float, float, "Agent | None"]
+
+
 def _gap_ahead(
-    occupants: list[tuple[float, float, float, float]], s: float, loop: float
+    occupants: list[_Occupant],
+    s: float,
+    length: float,
+    loop: float,
 ) -> tuple[float, float]:
-    """`(gap, speed)` for the nearest occupant ahead of `s`, else `(inf, 0)`."""
+    """`(gap, speed)` for the nearest occupant ahead of a `length` vehicle at
+    `s`, bumper to bumper, else `(inf, 0)`."""
     best_gap, best_speed = math.inf, 0.0
-    for other_s, speed, length, _ in occupants:
-        gap = (other_s - s) % loop - length / 2
-        if 0 < gap < best_gap:
+    for other_s, speed, other_len, _ in occupants:
+        if _fold(other_s - s, loop) <= 0:
+            continue
+        gap = bumper_gap(other_s, other_len, s, length, loop)
+        if gap < best_gap:
             best_gap, best_speed = gap, speed
     if best_gap > _IDM_HORIZON_M:
         return math.inf, 0.0
@@ -724,8 +861,8 @@ def _gap_ahead(
 
 
 def _nearest_behind(
-    occupants: list[tuple[float, float, float, float]], s: float, loop: float
-) -> tuple[float, float, float, float] | None:
+    occupants: list[_Occupant], s: float, loop: float
+) -> _Occupant | None:
     """The occupant that would end up following a vehicle placed at `s`."""
     best, best_gap = None, math.inf
     for occupant in occupants:
