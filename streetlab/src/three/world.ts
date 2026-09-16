@@ -96,6 +96,7 @@ const BLADE_PROUD = 0.06;
 /** Height stack, kept in one place so nothing z-fights. */
 const Y = {
   road: 0.02,
+  roadArterial: 0.024,
   marking: 0.05,
   crosswalk: 0.055,
   sidewalk: SIDEWALK_H,
@@ -125,6 +126,18 @@ interface Crossing {
   s: number;
   /** Half-width of the crossing road. */
   half: number;
+  /**
+   * How far along THIS road the crossing carriageway reaches from `s`: its
+   * half-width over the sine of the crossing angle. At a right angle that is
+   * just `half`; at 30 degrees it is twice that, which is why sizing gaps by
+   * `half` put paint and stop bars in the junction box of every skewed one.
+   */
+  reach: number;
+  /**
+   * |cot| of the crossing angle: a line painted `l` metres off this road's
+   * centre meets the crossing carriageway `l * skew` further along or back.
+   */
+  skew: number;
   /** Crossing point in world coordinates. */
   at: Vec2;
 }
@@ -150,6 +163,9 @@ function segIntersect(
   return { ta, tb };
 }
 
+/** sin(35°): shallower meetings of a same-named street are continuations. */
+const MIN_JUNCTION_SIN = Math.sin((35 * Math.PI) / 180);
+
 function findCrossings(roads: Road[], lines: Polyline[]): Crossing[][] {
   const out: Crossing[][] = roads.map(() => []);
   for (let i = 0; i < roads.length; i++) {
@@ -167,10 +183,38 @@ function findCrossings(roads: Road[], lines: Polyline[]): Crossing[][] {
           );
           if (!hit) continue;
           const segLen = li.cum[si] - li.cum[si - 1];
+          const ljLen = lj.cum[sj] - lj.cum[sj - 1];
+          if (segLen < 1e-9 || ljLen < 1e-9) continue;
+          const cross =
+            ((li.points[si][0] - li.points[si - 1][0]) * (lj.points[sj][1] - lj.points[sj - 1][1]) -
+              (li.points[si][1] - li.points[si - 1][1]) * (lj.points[sj][0] - lj.points[sj - 1][0])) /
+            (segLen * ljLen);
+          const sin = Math.abs(cross);
+          const cos = Math.abs(
+            ((li.points[si][0] - li.points[si - 1][0]) * (lj.points[sj][0] - lj.points[sj - 1][0]) +
+              (li.points[si][1] - li.points[si - 1][1]) * (lj.points[sj][1] - lj.points[sj - 1][1])) /
+              (segLen * ljLen),
+          );
+          // Two ways of one street meeting end to end is a continuation, not a
+          // junction: OSM splits streets wherever a tag changes. Cutting the
+          // markings and painting stop bars there is what put 113 phantom
+          // junctions on Nob Hill.
+          const atEnd = (t: number, seg: number, n: number) =>
+            (t < 1e-6 && seg === 1) || (t > 1 - 1e-6 && seg === n - 1);
+          if (
+            atEnd(hit.ta, si, li.points.length) &&
+            atEnd(hit.tb, sj, lj.points.length) &&
+            roads[i].name === roads[j].name &&
+            sin < MIN_JUNCTION_SIN
+          ) {
+            continue;
+          }
           const s = li.cum[si - 1] + hit.ta * segLen;
           out[i].push({
             s,
             half: carriagewayHalfWidth(roads[j]),
+            reach: carriagewayHalfWidth(roads[j]) / Math.max(sin, MIN_JUNCTION_SIN),
+            skew: cos / Math.max(sin, MIN_JUNCTION_SIN),
             at: [
               li.points[si - 1][0] +
                 hit.ta * (li.points[si][0] - li.points[si - 1][0]),
@@ -365,6 +409,61 @@ function pavedStrip(
       builder.flatQuad(quad(a, b), height, color);
     }
   }
+  // Probe a band just outboard of the kerb, so the wedge survives touching its
+  // own road's edge but still yields to a crossing carriageway.
+  const probe = bendWedges(line, inner + Math.sign(inner) * 0.15, outer);
+  bendWedges(line, inner, outer).forEach((wedge, n) => {
+    if (!roads.coversQuad(probe[n].quad)) builder.flatQuad(wedge.quad, height, color);
+  });
+}
+
+interface Wedge {
+  /** Upward-facing quad, ready for `flatQuad`. */
+  quad: [Vec2, Vec2, Vec2, Vec2];
+  /** Its inner (kerbside) edge, in travel order. */
+  a: Vec2;
+  b: Vec2;
+}
+
+/**
+ * The gap a band `[inner, outer]` metres off a polyline leaves open on the
+ * OUTSIDE of each bend, between the incoming segment's square end and the
+ * outgoing one's square start. It is filled as two quads meeting on the mitre
+ * line, the same mitre `ribbon` gives the tarmac, so the kerb edge meets the
+ * road edge exactly. (The inside of a bend overlaps instead, which on a flat
+ * single-colour surface is invisible.) Nothing for a band on the inside of the
+ * turn, a straight vertex, or a hairpin past the mitre limit.
+ */
+function bendWedges(line: Polyline, inner: number, outer: number): Wedge[] {
+  const out: Wedge[] = [];
+  const pts = line.points;
+  const side = Math.sign(inner + outer);
+  for (let k = 1; k < pts.length - 1; k++) {
+    const l0 = line.cum[k] - line.cum[k - 1];
+    const l1 = line.cum[k + 1] - line.cum[k];
+    if (l0 < 1e-6 || l1 < 1e-6) continue;
+    const t0: Vec2 = [(pts[k][0] - pts[k - 1][0]) / l0, (pts[k][1] - pts[k - 1][1]) / l0];
+    const t1: Vec2 = [(pts[k + 1][0] - pts[k][0]) / l1, (pts[k + 1][1] - pts[k][1]) / l1];
+    const turn = t0[0] * t1[1] - t0[1] * t1[0]; // > 0 turning left
+    // A left turn opens its gap on the right (negative lateral), and v.v.
+    if (Math.abs(turn) < 1e-6 || Math.sign(turn) === side) continue;
+    const mx = -t0[1] - t1[1];
+    const my = t0[0] + t1[0];
+    const mLen = Math.hypot(mx, my);
+    const cosHalf = mLen / 2;
+    if (mLen < 1e-9 || 1 / cosHalf > 4) continue;
+    const scale = 1 / (mLen * cosHalf);
+    const v = pts[k];
+    const at = (t: Vec2, lat: number): Vec2 => [v[0] - t[1] * lat, v[1] + t[0] * lat];
+    const mit = (lat: number): Vec2 => [v[0] + mx * scale * lat, v[1] + my * scale * lat];
+    for (const [a, b, ao, bo] of [
+      [at(t0, inner), mit(inner), at(t0, outer), mit(outer)],
+      [mit(inner), at(t1, inner), mit(outer), at(t1, outer)],
+    ] as const) {
+      out.push({ quad: side > 0 ? [a, b, bo, ao] : [b, a, ao, bo], a, b });
+    }
+  }
+  return out;
 }
 
 /**
@@ -408,6 +507,23 @@ function pavedKerb(
       );
     }
   }
+  // Close the kerb face across the outside of each bend, as the pavement does.
+  const probes = bendWedges(line, lateral + probe, lateral + probe * 2);
+  bendWedges(line, lateral, lateral + probe).forEach((w, n) => {
+    if (roads.coversQuad(probes[n].quad)) return;
+    const [p, q] = [w.a, w.b];
+    const tx = q[0] - p[0];
+    const ty = q[1] - p[1];
+    const len = Math.hypot(tx, ty) || 1;
+    builder.quad(
+      worldToThree(p[0], p[1], roadY),
+      worldToThree(q[0], q[1], roadY),
+      worldToThree(q[0], q[1], Y.sidewalk),
+      worldToThree(p[0], p[1], Y.sidewalk),
+      [-ty / len, 0, -tx / len],
+      C.kerb,
+    );
+  });
 }
 
 /**
@@ -476,9 +592,11 @@ export function buildWorld(scene: SceneDescription): World {
   scene.roads.forEach((road, i) => {
     const line = lines[i];
     const half = carriagewayHalfWidth(road);
-    // A hair of vertical separation per road guarantees a stable draw order
-    // where carriageways overlap at intersections.
-    const yRoad = Y.road + i * 0.0009;
+    // Where two carriageways overlap at a junction, the arterial draws on top.
+    // Same-class overlaps are the same colour, so their tie is invisible. This
+    // used to be a step per road INDEX, which climbed past the paint (0.05)
+    // after 34 roads and past the pavement (0.16) after 157.
+    const yRoad = road.road_class === 'arterial' ? Y.roadArterial : Y.road;
     const col = road.road_class === 'arterial' ? C.asphaltArterial : C.asphalt;
 
     stripe(surface, line, { from: 0, to: line.length }, 0, half * 2, yRoad, col);
@@ -557,8 +675,8 @@ export function buildWorld(scene: SceneDescription): World {
     const oncoming = backward > 0;
 
     const holes: Interval[] = crossings[i].map((c) => ({
-      from: c.s - c.half - 1.5,
-      to: c.s + c.half + 1.5,
+      from: c.s - c.reach - h * c.skew - 1.5,
+      to: c.s + c.reach + h * c.skew + 1.5,
     }));
     const spans = subtractIntervals(line.length, holes);
 
@@ -620,7 +738,7 @@ export function buildWorld(scene: SceneDescription): World {
           [backward, divide, -1],
         ] as const) {
           if (lanes === 0) continue;
-          const at = c.s - sign * (c.half + 2.2);
+          const at = c.s - sign * (c.reach + h * c.skew + 2.2);
           if (at < span.from || at > span.to) continue;
           solid(
             { from: at - STOP_BAR_M / 2, to: at + STOP_BAR_M / 2 },

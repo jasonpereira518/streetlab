@@ -223,6 +223,86 @@ export function dashRuns(
   return out;
 }
 
+/**
+ * Beyond this, a mitred corner would reach further than this many times the
+ * lateral offset, so the join is bevelled instead. 4 allows turns up to ~151°.
+ */
+const MITER_LIMIT = 4;
+
+/**
+ * Lay a flat band between two lateral offsets along a polyline span, following
+ * every vertex inside the span.
+ *
+ * Each interior vertex gets a mitred join, so neighbouring segments share
+ * their corners exactly: no wedge gaps on the outside of a bend, no overlap on
+ * the inside, and the tarmac, the paint on it and the pavement beside it all
+ * agree on where the road is. (This used to be a single quad from the span's
+ * first point to its last, which on a bent road is the chord, not the road.)
+ */
+export function ribbon(
+  builder: MeshBuilder,
+  line: Polyline,
+  span: Interval,
+  latA: number,
+  latB: number,
+  height: number,
+  color: THREE.Color,
+): void {
+  const from = Math.max(0, span.from);
+  const to = Math.min(line.length, span.to);
+  if (to - from < 1e-6) return;
+  const lo = Math.min(latA, latB);
+  const hi = Math.max(latA, latB);
+  const { points: pts, cum } = line;
+
+  const normal = (k: number): Vec2 => {
+    const len = cum[k] - cum[k - 1];
+    return [-(pts[k][1] - pts[k - 1][1]) / len, (pts[k][0] - pts[k - 1][0]) / len];
+  };
+  // Segments of (effectively) zero length have no direction; skip past them.
+  const live = (k: number) => cum[k] - cum[k - 1] > 1e-6;
+
+  let k = 1;
+  while (k < pts.length - 1 && (cum[k] <= from || !live(k))) k++;
+  const start = line.at(from);
+  let prevLo: Vec2 = [start.x - start.ty * lo, start.y + start.tx * lo];
+  let prevHi: Vec2 = [start.x - start.ty * hi, start.y + start.tx * hi];
+
+  const emit = (nLo: Vec2, nHi: Vec2) => {
+    builder.flatQuad([prevLo, nLo, nHi, prevHi], height, color);
+    prevLo = nLo;
+    prevHi = nHi;
+  };
+
+  for (; k < pts.length - 1 && cum[k] < to; k++) {
+    if (!live(k)) continue;
+    let j = k + 1;
+    while (j < pts.length && !live(j)) j++;
+    if (j >= pts.length) break;
+    const v = pts[k];
+    const nIn = normal(k);
+    const nOut = normal(j);
+    const mx = nIn[0] + nOut[0];
+    const my = nIn[1] + nOut[1];
+    const mLen = Math.hypot(mx, my);
+    const cosHalf = mLen / 2;
+    if (mLen > 1e-9 && 1 / cosHalf <= MITER_LIMIT) {
+      const scale = 1 / (mLen * cosHalf);
+      const m: Vec2 = [mx * scale, my * scale];
+      emit([v[0] + m[0] * lo, v[1] + m[1] * lo], [v[0] + m[0] * hi, v[1] + m[1] * hi]);
+    } else {
+      // Hairpin: finish square on the incoming segment, fill the bevel, and
+      // restart square on the outgoing one.
+      emit([v[0] + nIn[0] * lo, v[1] + nIn[1] * lo], [v[0] + nIn[0] * hi, v[1] + nIn[1] * hi]);
+      emit([v[0] + nOut[0] * lo, v[1] + nOut[1] * lo], [v[0] + nOut[0] * hi, v[1] + nOut[1] * hi]);
+    }
+    k = j - 1;
+  }
+
+  const end = line.at(to);
+  emit([end.x - end.ty * lo, end.y + end.tx * lo], [end.x - end.ty * hi, end.y + end.tx * hi]);
+}
+
 /** Lay a constant-width strip of colour along a polyline span. */
 export function stripe(
   builder: MeshBuilder,
@@ -233,9 +313,5 @@ export function stripe(
   height: number,
   color: THREE.Color,
 ): void {
-  const a0 = line.offsetAt(span.from, lateral + width / 2);
-  const a1 = line.offsetAt(span.from, lateral - width / 2);
-  const b1 = line.offsetAt(span.to, lateral - width / 2);
-  const b0 = line.offsetAt(span.to, lateral + width / 2);
-  builder.flatQuad([a1, b1, b0, a0], height, color);
+  ribbon(builder, line, span, lateral - width / 2, lateral + width / 2, height, color);
 }
