@@ -428,6 +428,11 @@ class SimEvent(Wire):
     level: Literal["info", "warn", "critical"]
     code: str
     message: str
+    # How far a `location_progress` event's build has gotten, 0..1. Absent for
+    # every other event code -- this is not a general-purpose field, just the
+    # one thing a live-updating build progress bar needs alongside `message`'s
+    # stage label. `None` is the default so no other event code has to name it.
+    progress: Unit | None = None
 
 
 class StateUpdate(Wire):

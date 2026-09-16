@@ -740,6 +740,46 @@ canvas {
   color: var(--c-text-faint, #9aa7b6);
 }
 
+.location-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.location-progress-track {
+  height: 4px;
+  border-radius: var(--r-pill, 999px);
+  background: var(--c-surface-sunken, #edf1f6);
+  overflow: hidden;
+}
+
+.location-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--c-accent, #0fb5c9);
+  /* Only meaningful for a determinate bar -- the indeterminate one below
+     drives its own position via `transform`, not `width`. */
+  transition: width 220ms ease;
+}
+
+/* No checkpoint has arrived yet (the ack-to-first-report gap) -- a sliding
+   segment says "working" without claiming a fraction that isn't real. */
+.location-progress-bar.is-indeterminate {
+  width: 40%;
+  animation: location-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes location-progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.location-progress-stage {
+  margin: 0;
+  font-size: 10px;
+  color: var(--c-text-faint, #9aa7b6);
+}
+
 .location-error {
   margin: 0;
   font-size: 11px;

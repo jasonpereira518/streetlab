@@ -361,7 +361,7 @@ async def test_a_scene_swap_is_pushed_to_a_connected_client(server, sim_loop):
     async with connect(server) as ws:
         first = await recv_typed(ws, "scene_description")
         assert first.type == "scene_description"
-        sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        sim_loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         # The new scene must arrive unsolicited, with no command sent. Bounded
         # by wall-clock time rather than a message count: a fixed iteration
         # count times a per-recv timeout compounds into a worst case of
@@ -383,7 +383,7 @@ async def test_a_client_never_sees_a_frame_for_a_scene_it_has_not_received(serve
     sent — must never observe a `state_update` naming a scenario it was
     never told about, regardless of which side of that race wins.
     """
-    sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-signals"))
+    sim_loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-signals"))
     async with connect(server) as ws:
         known_scenarios: set[str] = set()
         # See the comment on the previous test: bounded by wall-clock time,

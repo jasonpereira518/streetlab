@@ -68,6 +68,13 @@ from sim.vehicle import BicycleModel, VehicleState
 
 log = logging.getLogger("streetlab.sim")
 
+# A build's progress: a short stage label, plus how far through the whole
+# build that stage sits, 0..1. `SceneBuilder` is the shape `submit_scene`
+# expects -- a zero-arg build wrapped in one more argument, the progress
+# callback it may call zero or more times before returning.
+ProgressCallback = Callable[[str, float], None]
+SceneBuilder = Callable[[ProgressCallback], BuiltScene]
+
 MPH = 0.44704
 DEFAULT_DT = 1 / 60
 
@@ -220,8 +227,10 @@ class Simulation:
         self._scored_frame_t: float | None = None
         # How `load_location` reaches the executor without a back-reference
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
-        # itself in.
-        self._build_sink: Callable[[Callable[[], BuiltScene]], None] | None = None
+        # itself in. The build function it is handed takes a progress
+        # callback (stage label, 0..1) so a slow build can report where it is
+        # -- see `submit_scene`'s `emit_progress`.
+        self._build_sink: Callable[[SceneBuilder], None] | None = None
         # Latches once per scene so a point-to-point trip's `trip_complete`
         # fires exactly once, at the moment the ego actually settles into
         # STOP at the route's own end -- not on every tick it stays there
@@ -248,7 +257,7 @@ class Simulation:
         self._signals = SignalController(self.scene.signal_groups)
         self._reset_dynamics()
 
-    def set_build_sink(self, sink: Callable[[Callable[[], BuiltScene]], None]) -> None:
+    def set_build_sink(self, sink: Callable[[SceneBuilder], None]) -> None:
         """How `load_location` reaches the executor without a back-reference."""
         self._build_sink = sink
 
@@ -766,7 +775,11 @@ class Simulation:
             return CommandOutcome(ok=False, message="no build executor attached")
 
         query, radius, destination = command.query, command.radius_m, command.destination
-        self._build_sink(lambda: builder(query, radius, destination=destination))
+        self._build_sink(
+            lambda on_progress: builder(
+                query, radius, destination=destination, on_progress=on_progress
+            )
+        )
         label = f"{query} → {destination}" if destination else query
         self._emit("location_requested", f"building {label}")
         return CommandOutcome(ok=True, message=f"building {label}")
@@ -1372,12 +1385,29 @@ class SimLoop:
         self._commands.put((raw, future))
         return future
 
-    def submit_scene(self, build: Callable[[], BuiltScene]) -> None:
+    def submit_scene(self, build: SceneBuilder) -> None:
         """Build a scene off the sim thread and swap it in when it is ready."""
+
+        def emit_progress(stage: str, fraction: float) -> None:
+            # Called from the executor thread, same as the rest of `run()` --
+            # `self._events` is a `queue.Queue`, already the cross-thread
+            # channel `_drain_events` (sim thread) drains every tick, so a
+            # progress update rides the same path a failure or a build note
+            # already does. `self.sim.t` is read, never written, from here;
+            # the exception handler below already reads it the same way.
+            self._events.put(
+                SimEvent(
+                    t=round(self.sim.t, 3),
+                    level="info",
+                    code="location_progress",
+                    message=stage,
+                    progress=fraction,
+                )
+            )
 
         def run() -> None:
             try:
-                scene = build()
+                scene = build(emit_progress)
             except Exception as exc:
                 # Full detail goes to the server log; `describe_build_failure`
                 # narrows what actually reaches a client to a plain sentence

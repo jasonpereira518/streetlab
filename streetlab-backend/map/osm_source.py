@@ -17,6 +17,13 @@ import sys
 import threading
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
+
+# A build's progress, reported as it happens: a short human-readable stage
+# label, and how far through the whole build that stage sits, 0..1. `None` is
+# the ordinary case (nothing listening -- built-in scenarios, most tests);
+# every call site guards through `_report`, so passing `None` costs nothing.
+ProgressCallback = Callable[[str, float], None] | None
 
 from shapely.geometry import Point, Polygon
 
@@ -95,6 +102,11 @@ MAX_TRIP_SPAN_M = 4000.0
 MAX_RADIUS_M = 5000.0
 
 _RADIUS_MULTIPLIER = 2.0
+
+
+def _report(on_progress: ProgressCallback, stage: str, fraction: float) -> None:
+    if on_progress is not None:
+        on_progress(stage, fraction)
 
 
 def _radius_ladder(start_m: float, cap_m: float = MAX_RADIUS_M) -> list[float]:
@@ -359,8 +371,8 @@ class OsmSceneSource:
             locations = self._locations
         return [self._summary(spec, i + 1) for i, spec in enumerate(locations)]
 
-    def build(self, scenario_id: str) -> BuiltScene:
-        core = self._core(self._find(scenario_id))
+    def build(self, scenario_id: str, on_progress: ProgressCallback = None) -> BuiltScene:
+        core = self._core(self._find(scenario_id), on_progress)
         # `scenarios()` never builds (see its docstring), so attaching the
         # catalog here is a cheap read of whatever is already built -- this
         # spec (just now, by `_core` above) plus anything else previously
@@ -371,11 +383,11 @@ class OsmSceneSource:
 
     # -- pipeline ----------------------------------------------------------- #
 
-    def _core(self, spec: LocationSpec) -> BuiltScene:
+    def _core(self, spec: LocationSpec, on_progress: ProgressCallback = None) -> BuiltScene:
         """The scene itself, carrying an empty catalog. Memoised per location."""
         cached = self._scenes.get(spec.id)
         if cached is None:
-            cached = self._build_uncached(spec)
+            cached = self._build_uncached(spec, on_progress)
             self._scenes[spec.id] = cached
         return cached
 
@@ -387,17 +399,19 @@ class OsmSceneSource:
                 return spec
         raise KeyError(f"unknown location: {scenario_id}")
 
-    def _build_uncached(self, spec: LocationSpec) -> BuiltScene:
+    def _build_uncached(self, spec: LocationSpec, on_progress: ProgressCallback = None) -> BuiltScene:
         # A baked `place` (bundled entries only -- see `LocationSpec`'s
         # docstring) skips the geocoder entirely: no network call, and a
         # bbox that reproduces the exact cache key the shipped extract was
         # recorded under, every time.
+        _report(on_progress, "Geocoding address", 0.05)
         place = spec.place if spec.place is not None else self.geocoder.lookup(spec.query)
         origin = LatLon(lat=place.lat, lon=place.lon)
 
         dest_place: Place | None = None
         dest_xy: tuple[float, float] | None = None
         if spec.destination is not None:
+            _report(on_progress, "Geocoding destination", 0.12)
             dest_place = self.geocoder.lookup(spec.destination)
             dest_xy = to_local(dest_place.lat, dest_place.lon, origin)
             span_m = math.dist((0.0, 0.0), dest_xy)
@@ -417,7 +431,16 @@ class OsmSceneSource:
         ladder = _radius_ladder(spec.radius_m)
         last_exc: NoDrivableRoad | NoRouteFound | None = None
         graph = roads = rg = ego_route = None
-        for radius in ladder:
+        for attempt, radius in enumerate(ladder):
+            _report(
+                on_progress,
+                "Fetching map data" if attempt == 0 else "Fetching map data (widening search)",
+                # Climbs through the ladder's own span rather than a fixed
+                # step, so a long ladder (a rural address with no nearby
+                # road) still reports *something* moving on every retry
+                # instead of parking at one number for several fetches.
+                min(0.18 + 0.35 * (attempt / max(len(ladder), 1)), 0.5),
+            )
             bbox = (
                 BBox.enclosing([(place.lat, place.lon), (dest_place.lat, dest_place.lon)], pad_m=radius)
                 if dest_place is not None
@@ -452,6 +475,7 @@ class OsmSceneSource:
             ) from last_exc
         assert graph is not None and roads is not None and rg is not None and ego_route is not None
 
+        _report(on_progress, "Placing signals, buildings, and trees", 0.6)
         lights = build_traffic_lights(graph, origin)
         buildings = build_buildings(graph, origin)
         crosswalks = build_crosswalks(graph, origin)
@@ -549,6 +573,7 @@ class OsmSceneSource:
         if arrival is not None:
             control_points = sorted([*control_points, arrival], key=lambda cp: cp.s)
 
+        _report(on_progress, "Finalizing scene", 0.9)
         traffic_loops = self._traffic_loops(rg, ego_route)
 
         return BuiltScene(
@@ -720,7 +745,11 @@ class OsmSceneSource:
     # -- catalog ------------------------------------------------------------ #
 
     def build_location(
-        self, query: str, radius_m: float | None = None, destination: str | None = None
+        self,
+        query: str,
+        radius_m: float | None = None,
+        destination: str | None = None,
+        on_progress: ProgressCallback = None,
     ) -> BuiltScene:
         """Geocode an arbitrary address, build it, and add it to the catalog.
 
@@ -785,7 +814,7 @@ class OsmSceneSource:
                     spec = self._disambiguate(base_id, query, radius_m, destination, by_id)
                 appended = True
         try:
-            return self.build(spec.id)
+            return self.build(spec.id, on_progress)
         except Exception:
             # A build that never succeeded must leave NO trace in the catalog.
             # The append above has to happen before the build -- it is what

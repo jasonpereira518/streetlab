@@ -409,6 +409,9 @@ export const SimEventSchema = z.object({
   level: z.enum(['info', 'warn', 'critical']),
   code: z.string(),
   message: z.string(),
+  /** How far a `location_progress` event's build has gotten, 0..1. Absent
+   * for every other event code. */
+  progress: z.number().min(0).max(1).optional(),
 });
 
 export const StateUpdateSchema = z.object({

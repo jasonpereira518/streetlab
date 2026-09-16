@@ -388,6 +388,68 @@ class MultiPlaceGeocoder:
         return self._places[query]
 
 
+# --------------------------------------------------------------------------- #
+# Build progress                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_build_location_reports_monotonically_increasing_progress(source):
+    reports: list[tuple[str, float]] = []
+    source.build_location(
+        "Alamo Square, San Francisco", 500.0, on_progress=lambda stage, frac: reports.append((stage, frac))
+    )
+
+    assert len(reports) >= 3, "too few checkpoints to call this a progress bar"
+    fractions = [frac for _, frac in reports]
+    assert fractions == sorted(fractions), "progress must never move backwards"
+    assert all(0.0 <= f <= 1.0 for f in fractions)
+    assert fractions[-1] < 1.0, "1.0 is reserved for the scene actually arriving, not a mid-build stage"
+    # Every stage is a real, non-empty label -- something a sidebar can show
+    # verbatim, not an internal code.
+    assert all(isinstance(stage, str) and stage for stage, _ in reports)
+
+
+def test_build_location_with_no_progress_callback_behaves_exactly_as_before(source):
+    """`on_progress` is optional everywhere it was added -- a caller that
+    never asks for progress (every existing call site before this feature)
+    must see no behaviour change at all."""
+    scene = source.build_location("A place with no progress callback, San Francisco", 500.0)
+    assert scene.ego_route.length_m > 0
+
+
+def test_a_cached_repeat_build_reports_no_progress_at_all(source):
+    """`_core` memoises by spec id and skips `_build_uncached` entirely on a
+    cache hit -- a repeat query is already instant, so it correctly has
+    nothing to report, not a burst of the same checkpoints twice."""
+    reports: list[tuple[str, float]] = []
+    source.build_location("Twin Peaks, San Francisco", 500.0)
+    source.build_location(
+        "Twin Peaks, San Francisco", 500.0, on_progress=lambda stage, frac: reports.append((stage, frac))
+    )
+    assert reports == []
+
+
+def test_progress_reports_widen_the_search_message_on_a_retry(tmp_path):
+    """The one place progress has to say something different from the happy
+    path: a rural address whose first radius guess finds no road at all.
+    `LadderFetcher` (below `_build_location_widens_the_radius_...`'s own
+    definition) returns an empty extract for the first N calls -- reused here
+    rather than redefined."""
+    payload = json.loads(FIXTURE.read_text())
+    fetcher = LadderFetcher(empty_calls=1, payload=payload)
+    client = OverpassClient(fetcher, DiskCache(tmp_path))
+    src = OsmSceneSource(StubGeocoder(NOB_HILL), client, locations=())
+
+    reports: list[tuple[str, float]] = []
+    src.build_location(
+        "Nob Hill, San Francisco", 500.0, on_progress=lambda stage, frac: reports.append((stage, frac))
+    )
+
+    fetch_stages = [stage for stage, _ in reports if "fetching map data" in stage.lower()]
+    assert len(fetch_stages) == 2, "one report per radius attempt, including the retry"
+    assert fetch_stages[0] != fetch_stages[1], "the retry must say something different from the first try"
+
+
 def test_build_location_adds_the_location_to_the_catalog(source):
     """Uses a query that does NOT match any bundled entry's text -- unlike
     the brief's original literal "Nob Hill, San Francisco" (which, after

@@ -163,6 +163,107 @@ describe('location error and trip completion', () => {
   });
 });
 
+describe('build progress', () => {
+  it('sets locationProgress from a location_progress event', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    useSimStore.setState({ locationPending: 'Nob Hill' });
+
+    h.emit({
+      ...base,
+      seq: base.seq + 1,
+      t: base.t + 0.1,
+      events: [
+        { t: base.t, level: 'info', code: 'location_progress', message: 'Geocoding address', progress: 0.1 },
+      ],
+    });
+
+    expect(useSimStore.getState().locationProgress).toEqual({
+      stage: 'Geocoding address',
+      fraction: 0.1,
+    });
+  });
+
+  it('takes the last location_progress event when a batch carries more than one', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    useSimStore.setState({ locationPending: 'Nob Hill' });
+
+    h.emit({
+      ...base,
+      seq: base.seq + 1,
+      t: base.t + 0.1,
+      events: [
+        { t: base.t, level: 'info', code: 'location_progress', message: 'Geocoding address', progress: 0.1 },
+        { t: base.t, level: 'info', code: 'location_progress', message: 'Fetching map data', progress: 0.4 },
+      ],
+    });
+
+    expect(useSimStore.getState().locationProgress).toEqual({
+      stage: 'Fetching map data',
+      fraction: 0.4,
+    });
+  });
+
+  it('is null before the first checkpoint and cleared by a fresh loadLocation call', () => {
+    const h = createHarness();
+    h.emitScene();
+    expect(useSimStore.getState().locationProgress).toBeNull();
+
+    useSimStore.setState({ locationProgress: { stage: 'stale', fraction: 0.5 } });
+    useSimStore.getState().loadLocation('Somewhere else');
+    expect(useSimStore.getState().locationProgress).toBeNull();
+  });
+
+  it('is cleared on a successful scene_description', () => {
+    const h = createHarness();
+    useSimStore.setState({ locationProgress: { stage: 'stale', fraction: 0.5 } });
+    h.emitScene();
+    expect(useSimStore.getState().locationProgress).toBeNull();
+  });
+
+  it('is cleared on a location_failed event, alongside locationPending', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    useSimStore.setState({
+      locationPending: 'Nonexistent Place',
+      locationProgress: { stage: 'Fetching map data', fraction: 0.4 },
+    });
+
+    h.emit({
+      ...base,
+      seq: base.seq + 1,
+      t: base.t + 0.1,
+      events: [
+        { t: base.t, level: 'warn', code: 'location_failed', message: "Couldn't find that address." },
+      ],
+    });
+
+    expect(useSimStore.getState().locationProgress).toBeNull();
+  });
+
+  it('is cleared when the backend rejects load_location at ack time', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.setState({ locationProgress: { stage: 'stale', fraction: 0.5 } });
+
+    h.emit({
+      type: 'ack',
+      protocol: 1,
+      id: 'whatever',
+      cmd: 'load_location',
+      ok: false,
+      message: 'SyntheticGrid does not support load_location',
+      t: 1,
+    });
+
+    expect(useSimStore.getState().locationProgress).toBeNull();
+  });
+});
+
 describe('loadLocation with a destination', () => {
   it('sends both fields and shows a combined pending label', () => {
     const h = createHarness();

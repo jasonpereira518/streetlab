@@ -17,6 +17,7 @@ export function LeftScenarioSidebar() {
   const loadScenario = useSimStore((s) => s.loadScenario);
   const loadLocation = useSimStore((s) => s.loadLocation);
   const locationPending = useSimStore((s) => s.locationPending);
+  const locationProgress = useSimStore((s) => s.locationProgress);
   const locationError = useSimStore((s) => s.locationError);
   const tripComplete = useSimStore((s) => s.tripComplete);
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({});
@@ -83,7 +84,31 @@ export function LeftScenarioSidebar() {
           <span>Go</span>
         </button>
         {locationPending !== null && (
-          <p className="location-pending">Building {locationPending}…</p>
+          <div className="location-progress-wrap">
+            <p className="location-pending">Building {locationPending}…</p>
+            <div
+              className="location-progress-track"
+              role="progressbar"
+              aria-label="Build progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={
+                locationProgress ? Math.round(locationProgress.fraction * 100) : undefined
+              }
+            >
+              <div
+                className={`location-progress-bar${locationProgress ? '' : ' is-indeterminate'}`}
+                style={
+                  locationProgress
+                    ? { width: `${Math.round(locationProgress.fraction * 100)}%` }
+                    : undefined
+                }
+              />
+            </div>
+            {locationProgress && (
+              <p className="location-progress-stage">{locationProgress.stage}</p>
+            )}
+          </div>
         )}
         {locationPending === null && locationError && (
           <p className="location-error" role="alert">

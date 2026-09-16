@@ -241,6 +241,14 @@ export interface SimStoreState {
    */
   locationPending: string | null;
   /**
+   * The most recent `location_progress` event for the in-flight build, or
+   * `null` while none has arrived yet (the ack-to-first-checkpoint gap, or a
+   * cache-hit build that finishes before ever reporting one). Cleared
+   * whenever `locationPending` is — a fresh `loadLocation` call, the
+   * eventual `scene_description`, or a `location_failed` event.
+   */
+  locationProgress: { stage: string; fraction: number } | null;
+  /**
    * Plain, user-facing text from the most recent `location_failed` event, or
    * `null` when nothing has failed since the last attempt. Cleared the
    * instant a new `loadLocation` call goes out, and on a successful
@@ -313,6 +321,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   catalog: [],
   activeScenarioId: null,
   locationPending: null,
+  locationProgress: null,
   locationError: null,
   tripComplete: false,
 
@@ -406,7 +415,12 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   },
 
   loadScenario(scenarioId) {
-    set({ activeScenarioId: scenarioId, locationError: null, tripComplete: false });
+    set({
+      activeScenarioId: scenarioId,
+      locationProgress: null,
+      locationError: null,
+      tripComplete: false,
+    });
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
   },
 
@@ -416,6 +430,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     const trimmedDest = destination?.trim() || undefined;
     set({
       locationPending: trimmedDest ? `${trimmedQuery} → ${trimmedDest}` : trimmedQuery,
+      locationProgress: null,
       locationError: null,
       tripComplete: false,
     });
@@ -506,6 +521,7 @@ function applyServerMessage(
         hasFrames: false,
         events: [],
         locationPending: null,
+        locationProgress: null,
         locationError: null,
         tripComplete: false,
       }));
@@ -547,12 +563,23 @@ function applyServerMessage(
         const failure = msg.events.find((e) => e.code === 'location_failed');
         if (failure) {
           if (s.locationPending !== null) patch.locationPending = null;
+          patch.locationProgress = null;
           patch.locationError = failure.message;
         }
         // A point-to-point trip's own arrival, surfaced next to the search
         // box the same way a failure is — see LeftScenarioSidebar.tsx.
         if (!s.tripComplete && msg.events.some((e) => e.code === 'trip_complete')) {
           patch.tripComplete = true;
+        }
+        // The build's own checkpoints, for a live progress bar. Last one in
+        // this batch wins — events land in the order the backend emitted
+        // them (see sim/loop.py's `submit_scene`), so the last is the
+        // farthest along. A `location_progress` event always carries a
+        // `progress` fraction (sim/loop.py's `emit_progress` never omits
+        // it); the `?? 0` only guards a hand-built test fixture that didn't.
+        const progress = [...msg.events].reverse().find((e) => e.code === 'location_progress');
+        if (progress) {
+          patch.locationProgress = { stage: progress.message, fraction: progress.progress ?? 0 };
         }
       }
       if (Object.keys(patch).length) set(patch);
@@ -571,7 +598,12 @@ function applyServerMessage(
       // `synthetic`). Typing an address there is the documented behaviour in
       // DEMO.md, and it used to brick the sidebar.
       if (msg.cmd === 'load_location' && !msg.ok) {
-        set({ lastAck: msg, locationPending: null, locationError: msg.message });
+        set({
+          lastAck: msg,
+          locationPending: null,
+          locationProgress: null,
+          locationError: msg.message,
+        });
         return;
       }
       set({ lastAck: msg });

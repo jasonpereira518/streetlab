@@ -294,6 +294,68 @@ describe('Location search box', () => {
     expect(useSimStore.getState().locationPending).toBe('Golden Gate Park');
   });
 
+  it('shows an indeterminate progress bar before the first checkpoint, then a real percentage', () => {
+    harness = createHarness();
+    const { container } = render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Golden Gate Park' } });
+    fireEvent.submit(box.closest('form')!);
+
+    // No checkpoint has arrived yet: the track exists, but it can't claim a
+    // real fraction -- it reads as indeterminate rather than pinned at 0%.
+    const track = screen.getByRole('progressbar', { name: 'Build progress' });
+    let bar = container.querySelector('.location-progress-bar') as HTMLElement;
+    expect(track.getAttribute('aria-valuenow')).toBeNull();
+    expect(bar.classList.contains('is-indeterminate')).toBe(true);
+    expect(bar.style.width).toBe('');
+    expect(container.querySelector('.location-progress-stage')).toBeNull();
+
+    // The first checkpoint arrives -- a real, growing percentage replaces it.
+    const base = harness.emitFrame(1);
+    harness.emit({
+      ...base,
+      seq: base.seq + 1,
+      events: [
+        { t: base.t, level: 'info', code: 'location_progress', message: 'Geocoding address', progress: 0.1 },
+      ],
+    });
+
+    bar = container.querySelector('.location-progress-bar') as HTMLElement;
+    expect(track.getAttribute('aria-valuenow')).toBe('10');
+    expect(bar.classList.contains('is-indeterminate')).toBe(false);
+    expect(bar.style.width).toBe('10%');
+    expect(screen.getByText('Geocoding address')).toBeTruthy();
+
+    // A later checkpoint moves it forward, never backward.
+    const base2 = harness.emitFrame(1);
+    harness.emit({
+      ...base2,
+      seq: base2.seq + 1,
+      events: [
+        { t: base2.t, level: 'info', code: 'location_progress', message: 'Fetching map data', progress: 0.4 },
+      ],
+    });
+    bar = container.querySelector('.location-progress-bar') as HTMLElement;
+    expect(bar.style.width).toBe('40%');
+    expect(screen.getByText('Fetching map data')).toBeTruthy();
+  });
+
+  it('removes the progress bar once the scene arrives', () => {
+    harness = createHarness();
+    const { container } = render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Golden Gate Park' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(container.querySelector('.location-progress-track')).toBeTruthy();
+
+    harness.emitScene();
+    expect(container.querySelector('.location-progress-track')).toBeNull();
+  });
+
   it('clears the pending state on a location_failed event, without waiting for a scene', () => {
     harness = createHarness();
     render(<LeftScenarioSidebar />);
