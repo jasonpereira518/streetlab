@@ -162,14 +162,24 @@ def test_the_five_scenarios_are_not_the_same_event_five_times(sim):
     assert len(set(fingerprints.values())) >= 4, f"too alike: {fingerprints}"
 
 
-def test_a_scenario_that_cannot_be_staged_acks_false(sim):
+def test_a_scenario_that_cannot_be_staged_names_its_reason(sim):
     """An empty population is not an error in the command; it is the scene
-    having nothing to disturb, and the ack has to say which.
+    having nothing to disturb, and the ack has to say which and why.
     """
     sim._traffic.agents.clear()
     outcome = inject(sim, "sudden_brake")
     assert outcome.ok is False
-    assert "sudden_brake" in (outcome.message or "")
+    assert outcome.message == "sudden_brake: no vehicle to brake"
+
+
+@pytest.mark.parametrize("kind", ["sudden_brake", "cut_in", "emergency_vehicle"])
+def test_no_decline_uses_the_old_generic_message(sim, kind):
+    sim._traffic.agents.clear()
+    outcome = inject(sim, kind)
+    assert outcome.ok is False
+    assert "nothing here to disturb" not in (outcome.message or "")
+    reason = (outcome.message or "").removeprefix(f"{kind}: ")
+    assert reason and reason != outcome.message, outcome.message
 
 
 def test_injecting_the_same_kind_twice_does_not_reuse_an_id(sim):

@@ -807,13 +807,11 @@ class Simulation:
             return CommandOutcome(
                 ok=False, message=f"unknown hazard kind: {command.kind}"
             )
-        message = scenario.stage(self)
-        if message is None:
-            return CommandOutcome(
-                ok=False, message=f"{command.kind}: nothing here to disturb"
-            )
-        self._emit(scenario.code, f"{scenario.code}: {message}", scenario.level)
-        return CommandOutcome(ok=True, message=f"injected {scenario.code}: {message}")
+        result = scenario.stage(self)
+        if isinstance(result, events.Declined):
+            return CommandOutcome(ok=False, message=f"{command.kind}: {result.reason}")
+        self._emit(scenario.code, f"{scenario.code}: {result}", scenario.level)
+        return CommandOutcome(ok=True, message=f"injected {scenario.code}: {result}")
 
     def _emit(self, code: str, message: str, level: str = "info") -> None:
         self.world.events.append(

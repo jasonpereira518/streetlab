@@ -87,15 +87,16 @@ class Scenario:
     """One hazard: what it is called on the wire, how loud it is, and how it
     stages itself.
 
-    `stage` returns the human-readable half of the `SimEvent` on success and
-    `None` when the scene could not host it -- an empty population, no lane to
-    cut in from. `None` is not an error in the scenario; it is the scene
-    declining, and `_cmd_inject_hazard` turns it into a false ack that says so.
+    `stage` returns the human-readable half of the `SimEvent` on success and a
+    `Declined` naming the reason when the scene could not host it -- an empty
+    population, no signal ahead, a one-way street. `Declined` is not an error
+    in the scenario; it is the scene declining, and `_cmd_inject_hazard` turns
+    it into a false ack that says why.
     """
 
     code: str
     level: str
-    stage: Callable[["Simulation"], str | None]
+    stage: Callable[["Simulation"], "str | Declined"]
     #: What the hazard menu calls it.
     label: str
     #: Which menu group it sits in: "ahead", "crossing" or "behind".
@@ -156,6 +157,14 @@ def _trailing_agent(sim: "Simulation") -> Agent | None:
         if best_gap < gap < loop / 2:
             best, best_gap = agent, gap
     return best
+
+
+@dataclass(frozen=True, slots=True)
+class Declined:
+    """The scene could not host a hazard, and why. The reason is what the ack
+    carries, so it is written for the person who pressed the button."""
+
+    reason: str
 
 
 def _place(
@@ -228,7 +237,7 @@ def _spawn(
 # --------------------------------------------------------------------------- #
 
 
-def _sudden_brake(sim: "Simulation") -> str | None:
+def _sudden_brake(sim: "Simulation") -> str | Declined:
     """Cycle 1's behaviour, moved rather than rewritten: the lead vehicle stops
     dead for `BRAKE_HOLD_S`. It is still the most direct test of the ego's
     following law, and the frontend's own button used to send it under five
@@ -236,12 +245,12 @@ def _sudden_brake(sim: "Simulation") -> str | None:
     """
     victim = _lead_agent(sim) or _nearest_agent(sim)
     if victim is None:
-        return None
+        return Declined("no vehicle to brake")
     _traffic(sim).hold(victim, at_mps=0.0, for_s=BRAKE_HOLD_S)
     return f"{victim.id} braking hard ahead"
 
 
-def _cut_in(sim: "Simulation") -> str | None:
+def _cut_in(sim: "Simulation") -> str | Declined:
     """A neighbour drops into the ego's lane `CUT_IN_AHEAD_M` ahead.
 
     The vehicle arrives a full lane width to the RIGHT of the ego route and
@@ -254,7 +263,7 @@ def _cut_in(sim: "Simulation") -> str | None:
     route = sim.scene.ego_route
     agent = _nearest_agent(sim)
     if agent is None:
-        return None
+        return Declined("no vehicle to cut in")
     ego_speed = sim.world.ego.speed_mps
     gap = CUT_IN_HEADWAY_S * max(ego_speed, CUT_IN_FLOOR_MPS)
     _place(
@@ -271,7 +280,7 @@ def _cut_in(sim: "Simulation") -> str | None:
     return f"{agent.id} cutting in {gap:.0f} m ahead"
 
 
-def _jaywalker(sim: "Simulation") -> str | None:
+def _jaywalker(sim: "Simulation") -> str | Declined:
     """A pedestrian crosses the ego's path `JAYWALK_AHEAD_M` ahead.
 
     On a route of its own, perpendicular to the ego's, because that is what a
@@ -302,7 +311,7 @@ def _jaywalker(sim: "Simulation") -> str | None:
     return f"{agent.id} crossing {JAYWALK_AHEAD_M:.0f} m ahead"
 
 
-def _obstacle(sim: "Simulation") -> str | None:
+def _obstacle(sim: "Simulation") -> str | Declined:
     """Something stationary and unclassifiable in the lane, `OBSTACLE_AHEAD_M`
     ahead. Zero target speed, so IDM holds it at rest rather than driving it.
     """
@@ -322,7 +331,7 @@ def _obstacle(sim: "Simulation") -> str | None:
     return f"{agent.id} stopped in the lane {OBSTACLE_AHEAD_M:.0f} m ahead"
 
 
-def _emergency_vehicle(sim: "Simulation") -> str | None:
+def _emergency_vehicle(sim: "Simulation") -> str | Declined:
     """A vehicle behind the ego runs at `EMERGENCY_SPEED_FACTOR` of the limit.
 
     The same temporary-override machinery `sudden_brake` uses, pointed the
@@ -332,7 +341,7 @@ def _emergency_vehicle(sim: "Simulation") -> str | None:
     """
     agent = _trailing_agent(sim) or _nearest_agent(sim)
     if agent is None:
-        return None
+        return Declined("no vehicle to run")
     _traffic(sim).hold(
         agent,
         at_mps=sim.scene.speed_limit_mps * EMERGENCY_SPEED_FACTOR,
