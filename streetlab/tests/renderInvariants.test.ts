@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as THREE from 'three/webgpu';
 import { buildWorld } from '../src/three/world';
+import { TerrainField, attitudeOn } from '../src/three/terrain';
 import type { Road, SceneDescription, Vec2 } from '../src/schema';
 
 const gridScene = (): SceneDescription =>
@@ -332,5 +333,117 @@ describe('stop bars', () => {
         expect(y).toBeLessThan(0.01); // across the eastbound (south) lane only
       }
     }
+  });
+});
+
+describe('on real terrain, everything sits on the ground', () => {
+  const hilly = (): SceneDescription =>
+    JSON.parse(readFileSync(resolve(__dirname, 'fixtures/nobHillScene.json'), 'utf8'));
+
+  it('is actually hilly', () => {
+    const field = TerrainField.from(hilly().terrain);
+    expect(field.flat).toBe(false);
+    expect(field.max - field.min).toBeGreaterThan(50);
+  });
+
+  it('drapes tarmac, paint and pavement at their stack height above the ground', () => {
+    const scene = hilly();
+    const field = TerrainField.from(scene.terrain);
+    const bands: Array<[string, number, number]> = [
+      ['roads', 0.019, 0.025],
+      ['lane-markings', 0.049, 0.051],
+      ['crosswalks', 0.054, 0.056],
+      // Pavement tops at 0.16; its kerb face runs down to road level.
+      ['sidewalks', 0.019, 0.161],
+    ];
+    for (const [name, lo, hi] of bands) {
+      const off = tris(scene, name).flatMap((t) =>
+        t.p.map(([x, y], k) => t.h[k] - field.heightAt(x, y)),
+      );
+      expect(off.length, name).toBeGreaterThan(0);
+      expect(Math.min(...off), name).toBeGreaterThan(lo - 1e-3);
+      expect(Math.max(...off), name).toBeLessThan(hi + 1e-3);
+    }
+  });
+
+  it('never lets the ground mesh rise through a road', () => {
+    const scene = hilly();
+    const field = TerrainField.from(scene.terrain);
+    const world = buildWorld(scene);
+    const mesh = world.root.getObjectByName('terrain') as THREE.Mesh;
+    const pos = mesh.geometry.getAttribute('position');
+    const { cols, cell, originX, originY } = field;
+    /** Height of the drawn ground mesh (not the field) at (x, y). */
+    const meshAt = (x: number, y: number) => {
+      const fx = (x - originX) / cell;
+      const fy = (y - originY) / cell;
+      const c = Math.floor(fx);
+      const r = Math.floor(fy);
+      const u = fx - c;
+      const v = fy - r;
+      const h = (rr: number, cc: number) => pos.getY(rr * cols + cc);
+      // Triangles (a, b, e) and (a, e, d): a=(r,c) b=(r,c+1) d=(r+1,c) e=(r+1,c+1).
+      return u >= v
+        ? h(r, c) + u * (h(r, c + 1) - h(r, c)) + v * (h(r + 1, c + 1) - h(r, c + 1))
+        : h(r, c) + v * (h(r + 1, c) - h(r, c)) + u * (h(r + 1, c + 1) - h(r + 1, c));
+    };
+    let worst = -Infinity;
+    for (const r of scene.roads) {
+      for (const [x, y] of samples(r.centerline, 0, 2)) {
+        if (x < originX || y < originY) continue;
+        if (x >= originX + (field.cols - 1) * cell || y >= originY + (field.rows - 1) * cell) continue;
+        worst = Math.max(worst, meshAt(x, y) - (field.heightAt(x, y) + 0.02));
+      }
+    }
+    expect(worst).toBeLessThan(0);
+  });
+
+  it('stands every tree, sign post and signal pole on the ground under it', () => {
+    const scene = hilly();
+    const field = TerrainField.from(scene.terrain);
+    const world = buildWorld(scene);
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    const check = (group: string, meshIndex: number, positions: Vec2[]) => {
+      const inst = (world.root.getObjectByName(group) as THREE.Group).children[meshIndex] as THREE.InstancedMesh;
+      positions.forEach((pos, i) => {
+        inst.getMatrixAt(i, m);
+        p.setFromMatrixPosition(m);
+        expect(p.y, `${group} ${i}`).toBeCloseTo(field.heightAt(pos[0], pos[1]), 3);
+      });
+    };
+    expect(scene.trees.length).toBeGreaterThan(0);
+    check('trees', 0, scene.trees.map((t) => t.position));
+    if (scene.stop_signs.length) check('stop-signs', 0, scene.stop_signs.map((s) => s.position));
+    if (scene.traffic_lights.length) check('traffic-lights', 0, scene.traffic_lights.map((s) => s.position));
+  });
+
+  it('never leaves a gap under a building on a slope', () => {
+    const scene = hilly();
+    const field = TerrainField.from(scene.terrain);
+    const world = buildWorld(scene);
+    const pos = (world.root.getObjectByName('buildings') as THREE.Mesh).geometry.getAttribute('position');
+    let lowest = Infinity;
+    for (let i = 0; i < pos.count; i++) lowest = Math.min(lowest, pos.getY(i));
+    const groundUnder = scene.buildings.flatMap((b) => b.footprint.map(([x, y]) => field.heightAt(x, y)));
+    // The merged mesh's lowest wall starts below the lowest ground under ANY
+    // building; and per building, below each of its own corners (checked by
+    // construction in world.ts, pinned here on the whole set).
+    expect(lowest).toBeLessThan(Math.min(...groundUnder));
+  });
+});
+
+describe('vehicles ride the slope', () => {
+  it('pitches nose-up climbing and rolls toward the low side', () => {
+    // Ground rising 10% to the east and 5% to the north.
+    const ground = (x: number, y: number) => 0.1 * x + 0.05 * y;
+    const east = attitudeOn(ground, 0, 0, 0, 4.6, 1.9);
+    expect(east.pitch).toBeCloseTo(Math.atan(0.1), 3);
+    // Facing east, north is to the LEFT and higher: the right side is low.
+    expect(east.roll).toBeCloseTo(Math.atan(0.05), 3);
+    expect(east.y).toBeCloseTo(0, 6);
+    const west = attitudeOn(ground, 0, 0, Math.PI, 4.6, 1.9);
+    expect(west.pitch).toBeCloseTo(-Math.atan(0.1), 3);
+    expect(west.roll).toBeCloseTo(-Math.atan(0.05), 3);
   });
 });

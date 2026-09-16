@@ -9,6 +9,10 @@
 import * as THREE from 'three/webgpu';
 import type { CameraView, Pose } from '../schema';
 import { clamp, damp, dampAngle } from '../units';
+import type { HeightFn } from './terrain';
+
+/** Closest a floating camera may get to the ground beneath it. */
+const MIN_CLEARANCE_M = 1.2;
 
 const CHASE = {
   /** Trail distance at 0 m/s and at 30 m/s. */
@@ -96,7 +100,23 @@ export class ChaseCamera {
    * camera already embedded in the wall, easing out over the following few
    * frames instead of never having been inside it.
    */
+  /**
+   * The scene's ground. Every view's heights are measured from the ground
+   * under the car, and a floating camera is kept above the ground under
+   * itself, so a car cresting a hill never drags the view into the slope.
+   */
+  private ground: HeightFn | null = null;
+
+  setGround(ground: HeightFn | null): void {
+    this.ground = ground;
+  }
+
+  private groundAt(x: number, z: number): number {
+    return this.ground ? this.ground(x, -z) : 0;
+  }
+
   reset(pose: Pose, blockers?: THREE.Object3D | null): void {
+    const g = this.groundAt(pose.x, -pose.y);
     this.vx = pose.x;
     this.vz = -pose.y;
     this.vHeading = pose.heading;
@@ -110,14 +130,15 @@ export class ChaseCamera {
       fx,
       fz,
       CHASE.distNear,
-      CHASE.heightNear,
+      g + CHASE.heightNear,
       blockers,
     );
     this.pullback = CHASE.distNear - dist;
-    this.camPos.set(pose.x - fx * dist, CHASE.heightNear, -pose.y - fz * dist);
+    this.camPos.set(pose.x - fx * dist, g + CHASE.heightNear, -pose.y - fz * dist);
+    this.camPos.y = Math.max(this.camPos.y, this.groundAt(this.camPos.x, this.camPos.z) + MIN_CLEARANCE_M);
     this.lookAt.set(
       pose.x + fx * CHASE.lookAhead,
-      1.15,
+      g + 1.15,
       -pose.y - fz * CHASE.lookAhead,
     );
     this.camera.position.copy(this.camPos);
@@ -187,6 +208,7 @@ export class ChaseCamera {
   ): void {
     const ex = pose.x;
     const ez = -pose.y;
+    const g = this.groundAt(ex, ez);
 
     if (!this.started) this.reset(pose, blockers);
 
@@ -204,7 +226,7 @@ export class ChaseCamera {
 
     switch (view) {
       case 'chase': {
-        const targetDist = this.clampTrailDistance(this.vx, this.vz, fx, fz, dist, height, blockers);
+        const targetDist = this.clampTrailDistance(this.vx, this.vz, fx, fz, dist, g + height, blockers);
         // Ease the *pullback* (how far short of the natural distance we're
         // sitting), not the distance itself — so when nothing is occluded
         // (targetPullback stays 0 every frame) `pullback` never leaves 0 and
@@ -215,29 +237,29 @@ export class ChaseCamera {
           targetPullback > this.pullback ? CHASE.occlusionPullIn : CHASE.occlusionEaseOut;
         this.pullback = damp(this.pullback, targetPullback, smoothing, dt);
         const trailDist = dist - this.pullback;
-        this.desired.set(this.vx - fx * trailDist, height, this.vz - fz * trailDist);
+        this.desired.set(this.vx - fx * trailDist, g + height, this.vz - fz * trailDist);
         this.desiredLook.set(
           ex + Math.cos(pose.heading) * CHASE.lookAhead,
-          1.15,
+          g + 1.15,
           ez - Math.sin(pose.heading) * CHASE.lookAhead,
         );
         break;
       }
 
       case 'overhead':
-        this.desired.set(this.vx - fx * 6, 46 + t * 18, this.vz - fz * 6);
-        this.desiredLook.set(ex + fx * 10, 0, ez + fz * 10);
+        this.desired.set(this.vx - fx * 6, g + 46 + t * 18, this.vz - fz * 6);
+        this.desiredLook.set(ex + fx * 10, g, ez + fz * 10);
         break;
 
       case 'cockpit':
         this.desired.set(
           ex + Math.cos(pose.heading) * 0.15,
-          1.33,
+          g + 1.33,
           ez - Math.sin(pose.heading) * 0.15,
         );
         this.desiredLook.set(
           ex + Math.cos(pose.heading) * 40,
-          1.15,
+          g + 1.15,
           ez - Math.sin(pose.heading) * 40,
         );
         break;
@@ -246,10 +268,10 @@ export class ChaseCamera {
         const ce = Math.cos(this.orbitElevation);
         this.desired.set(
           ex + Math.cos(this.orbitAzimuth) * ce * this.orbitDistance,
-          Math.sin(this.orbitElevation) * this.orbitDistance,
+          g + Math.sin(this.orbitElevation) * this.orbitDistance,
           ez + Math.sin(this.orbitAzimuth) * ce * this.orbitDistance,
         );
-        this.desiredLook.set(ex, 0, ez);
+        this.desiredLook.set(ex, g, ez);
         break;
       }
     }
@@ -266,6 +288,7 @@ export class ChaseCamera {
       this.lookAt.x = damp(this.lookAt.x, this.desiredLook.x, CHASE.targetSmoothing, dt);
       this.lookAt.y = damp(this.lookAt.y, this.desiredLook.y, CHASE.targetSmoothing, dt);
       this.lookAt.z = damp(this.lookAt.z, this.desiredLook.z, CHASE.targetSmoothing, dt);
+      this.camPos.y = Math.max(this.camPos.y, this.groundAt(this.camPos.x, this.camPos.z) + MIN_CLEARANCE_M);
     }
 
     this.camera.position.copy(this.camPos);

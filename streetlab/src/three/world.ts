@@ -26,10 +26,10 @@ import {
   dashRuns,
   stripe,
   subtractIntervals,
-  worldToThree,
 } from './meshBuilder';
 import type { Interval, P3 } from './meshBuilder';
 import { speedLimitTexture, stopFaceTexture, streetNameTexture } from './labels';
+import { TerrainField, type HeightFn } from './terrain';
 
 /* ------------------------------------------------------------------ */
 /* Palette                                                             */
@@ -37,6 +37,8 @@ import { speedLimitTexture, stopFaceTexture, streetNameTexture } from './labels'
 
 const C = {
   asphalt: new THREE.Color('#7E8894'),
+  // Same block colour as the flat ground plane in Renderer.tsx.
+  terrain: new THREE.Color('#DFE4DC'),
   asphaltArterial: new THREE.Color('#78828E'),
   sidewalk: new THREE.Color('#D5DAE1'),
   kerb: new THREE.Color('#BFC6CF'),
@@ -93,6 +95,11 @@ const FACE_PROUD = PLATE_T / 2 + 0.01;
  */
 const BLADE_PROUD = 0.06;
 
+/** How far below its lowest corner a building's plinth reaches on a slope. */
+const PLINTH_M = 0.5;
+/** How far the ground mesh sits below the field the roads are draped on. */
+const TERRAIN_SINK_M = 0.05;
+
 /** Height stack, kept in one place so nothing z-fights. */
 const Y = {
   road: 0.02,
@@ -108,6 +115,10 @@ const Y = {
 
 export interface World {
   root: THREE.Group;
+  /** Ground height at world (x, y): 0 everywhere on a scene without terrain. */
+  heightAt: HeightFn;
+  /** The lowest ground in the scene, for anything that must sit below it all. */
+  groundMin: number;
   /** Drive signal lamps from the live frame. */
   updateSignals(states: SignalState[], time: number): void;
   setLayerVisible(layer: LayerKey, visible: boolean): void;
@@ -372,12 +383,12 @@ class RoadSurfaces {
     return false;
   }
 
-  /** True when any part of a quad lies on tarmac. */
-  coversQuad(c: [Vec2, Vec2, Vec2, Vec2]): boolean {
+  /** True when any part of a quad lies on tarmac, deeper than `slack`. */
+  coversQuad(c: [Vec2, Vec2, Vec2, Vec2], slack = 0): boolean {
     let mx = 0;
     let my = 0;
     for (const [x, y] of c) {
-      if (this.covers(x, y)) return true;
+      if (this.covers(x, y, slack)) return true;
       mx += x / 4;
       my += y / 4;
     }
@@ -385,7 +396,7 @@ class RoadSurfaces {
     for (let i = 0; i < 4; i++) {
       const [ax, ay] = c[i];
       const [bx, by] = c[(i + 1) % 4];
-      if (this.covers((ax + bx) / 2, (ay + by) / 2)) return true;
+      if (this.covers((ax + bx) / 2, (ay + by) / 2, slack)) return true;
     }
     return false;
   }
@@ -475,8 +486,13 @@ function pavedStrip(
   // Probe a band just outboard of the kerb, so the wedge survives touching its
   // own road's edge but still yields to a crossing carriageway.
   const probe = bendWedges(line, inner + Math.sign(inner) * 0.15, outer);
+  // The wedge itself is checked too, with a millimetre of slack for the kerb
+  // it shares with its own road: its mitre corner can reach a DIFFERENT road
+  // that the outboard probe steps past.
   bendWedges(line, inner, outer).forEach((wedge, n) => {
-    if (!roads.coversQuad(probe[n].quad)) builder.flatQuad(wedge.quad, height, color);
+    if (!roads.coversQuad(probe[n].quad) && !roads.coversQuad(wedge.quad, 1e-3)) {
+      builder.flatQuad(wedge.quad, height, color);
+    }
   });
 }
 
@@ -560,32 +576,18 @@ function pavedKerb(
     for (const [a, b] of runs) {
       const p = at(a, lateral);
       const q = at(b, lateral);
-      builder.quad(
-        worldToThree(p[0], p[1], roadY),
-        worldToThree(q[0], q[1], roadY),
-        worldToThree(q[0], q[1], Y.sidewalk),
-        worldToThree(p[0], p[1], Y.sidewalk),
-        normal,
-        C.kerb,
-      );
+      builder.wall(p, q, roadY, Y.sidewalk, normal, C.kerb);
     }
   }
   // Close the kerb face across the outside of each bend, as the pavement does.
   const probes = bendWedges(line, lateral + probe, lateral + probe * 2);
   bendWedges(line, lateral, lateral + probe).forEach((w, n) => {
-    if (roads.coversQuad(probes[n].quad)) return;
+    if (roads.coversQuad(probes[n].quad) || roads.coversQuad(w.quad, 1e-3)) return;
     const [p, q] = [w.a, w.b];
     const tx = q[0] - p[0];
     const ty = q[1] - p[1];
     const len = Math.hypot(tx, ty) || 1;
-    builder.quad(
-      worldToThree(p[0], p[1], roadY),
-      worldToThree(q[0], q[1], roadY),
-      worldToThree(q[0], q[1], Y.sidewalk),
-      worldToThree(p[0], p[1], Y.sidewalk),
-      [-ty / len, 0, -tx / len],
-      C.kerb,
-    );
+    builder.wall(p, q, roadY, Y.sidewalk, [-ty / len, 0, -tx / len], C.kerb);
   });
 }
 
@@ -643,6 +645,12 @@ export function buildWorld(scene: SceneDescription): World {
     layerNodes.set(layer, list);
   };
 
+  const terrain = TerrainField.from(scene.terrain);
+  const heightAt = terrain.heightAt;
+  // Null on flat ground, so a scene without terrain builds exactly the same
+  // geometry as before terrain existed.
+  const ground = terrain.flat ? null : heightAt;
+
   const lines = scene.roads.map((r) => new Polyline(r.centerline));
   const crossings = findCrossings(scene.roads, lines);
   const controlled = controlledApproaches(scene, lines, crossings);
@@ -651,6 +659,8 @@ export function buildWorld(scene: SceneDescription): World {
 
   const surface = new MeshBuilder();
   const paving = new MeshBuilder();
+  surface.ground = ground;
+  paving.ground = ground;
   const roadSurfaces = new RoadSurfaces(scene.roads, lines);
 
   scene.roads.forEach((road, i) => {
@@ -723,6 +733,7 @@ export function buildWorld(scene: SceneDescription): World {
   /* -------- lane markings -------- */
 
   const markings = new MeshBuilder();
+  markings.ground = ground;
   scene.roads.forEach((road, i) => {
     const line = lines[i];
     const h = carriagewayHalfWidth(road);
@@ -828,6 +839,7 @@ export function buildWorld(scene: SceneDescription): World {
   /* -------- crosswalks -------- */
 
   const walks = new MeshBuilder();
+  walks.ground = ground;
   for (const xw of scene.crosswalks) {
     const [cx, cy] = xw.center;
     // Pedestrians walk along `heading`; the band is `width_m` deep measured
@@ -894,13 +906,24 @@ export function buildWorld(scene: SceneDescription): World {
       const shape = new THREE.Shape(
         b.footprint.map(([x, y]) => new THREE.Vector2(x, y)),
       );
+      // On a slope a building stands on a plinth down to its lowest corner, so
+      // no gap opens under the downhill wall, and is `height_m` tall from its
+      // highest, which is how a hillside building's height reads from the street.
+      let lo = 0;
+      let hi = 0;
+      if (!terrain.flat) {
+        const hs = b.footprint.map(([x, y]) => heightAt(x, y));
+        lo = Math.min(...hs) - PLINTH_M;
+        hi = Math.max(...hs);
+      }
       const geo = new THREE.ExtrudeGeometry(shape, {
-        depth: b.height_m,
+        depth: b.height_m + (hi - lo),
         bevelEnabled: false,
         curveSegments: 1,
       });
       // Shape XY -> world XY, extrusion Z -> height.
       geo.rotateX(-Math.PI / 2);
+      if (lo !== 0) geo.translate(0, lo, 0);
 
       facade.set(b.color).convertSRGBToLinear();
       roof.set(b.roof_color).convertSRGBToLinear();
@@ -959,14 +982,15 @@ export function buildWorld(scene: SceneDescription): World {
     scene.trees.forEach((t, i) => {
       const [tx, tz] = worldToThreeXZ(t.position);
       const trunkH = t.height_m * 0.46;
-      pos.set(tx, 0, tz);
+      const g = heightAt(t.position[0], t.position[1]);
+      pos.set(tx, g, tz);
       scale.set(t.trunk_radius_m, trunkH, t.trunk_radius_m);
       q.identity();
       trunks.setMatrixAt(i, m.compose(pos, q, scale));
       trunks.setColorAt(i, col.set(C.trunk));
 
       const wobble = 0.82 + t.variant * 0.36;
-      pos.set(tx, trunkH + t.canopy_radius_m * 0.72, tz);
+      pos.set(tx, g + trunkH + t.canopy_radius_m * 0.72, tz);
       scale.set(
         t.canopy_radius_m * wobble,
         t.canopy_radius_m * (1.05 + t.variant * 0.35),
@@ -994,7 +1018,7 @@ export function buildWorld(scene: SceneDescription): World {
 
   /* -------- traffic lights -------- */
 
-  const signals = buildTrafficLights(scene, disposables);
+  const signals = buildTrafficLights(scene, disposables, heightAt);
   if (signals) {
     root.add(signals.group);
     track('traffic_lights', signals.group);
@@ -1003,7 +1027,7 @@ export function buildWorld(scene: SceneDescription): World {
   /* -------- stop signs -------- */
 
   if (scene.stop_signs.length) {
-    const group = buildStopSigns(scene, disposables);
+    const group = buildStopSigns(scene, disposables, heightAt);
     root.add(group);
     track('traffic_lights', group);
   }
@@ -1011,13 +1035,23 @@ export function buildWorld(scene: SceneDescription): World {
   /* -------- street name signs -------- */
 
   if (scene.street_signs.length) {
-    const group = buildStreetSigns(scene, disposables);
+    const group = buildStreetSigns(scene, disposables, heightAt);
     root.add(group);
     track('labels', group);
   }
 
+  /* -------- terrain -------- */
+
+  if (!terrain.flat) {
+    const mesh = buildTerrainMesh(terrain);
+    root.add(mesh);
+    disposables.push(mesh.geometry, mesh.material as THREE.Material);
+  }
+
   return {
     root,
+    heightAt,
+    groundMin: terrain.min,
     updateSignals(states, time) {
       signals?.update(states, time);
     },
@@ -1035,6 +1069,57 @@ export function buildWorld(scene: SceneDescription): World {
 /* Sub-builders                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The ground itself, one vertex per terrain sample, dropped a few centimetres
+ * below the field every road is draped on: the ground must lose that tie to
+ * the tarmac, never win it.
+ */
+function buildTerrainMesh(terrain: TerrainField): THREE.Mesh {
+  const { cols, rows, cell, originX, originY, heights } = terrain;
+  // A flat triangle through three corners of a cell differs from the bilinear
+  // field inside it by up to a quarter of the cell's twist, h00 - h01 - h10 +
+  // h11 -- 0.56 m on one crest of Broadway, enough to push the ground through
+  // the tarmac draped on the field. Sinking each vertex by that bound over the
+  // cells around it puts every triangle below the field, wherever it bends.
+  const sink = new Float64Array(cols * rows);
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const a = r * cols + c;
+      const twist = Math.abs(heights[a] - heights[a + 1] - heights[a + cols] + heights[a + cols + 1]) / 4;
+      for (const v of [a, a + 1, a + cols, a + cols + 1]) sink[v] = Math.max(sink[v], twist);
+    }
+  }
+  const pos = new Float32Array(cols * rows * 3);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      pos[i * 3] = originX + c * cell;
+      pos[i * 3 + 1] = heights[i] - TERRAIN_SINK_M - sink[i];
+      pos[i * 3 + 2] = -(originY + r * cell);
+    }
+  }
+  const index: number[] = [];
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const a = r * cols + c;
+      const b = a + 1;
+      const d = a + cols;
+      const e = d + 1;
+      // Counter-clockwise seen from above, in three.js space (z = -north).
+      index.push(a, b, e, a, e, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(index);
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardNodeMaterial({ color: C.terrain, roughness: 1 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'terrain';
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 const worldToThreeXZ = (p: Vec2): [number, number] => [p[0], -p[1]];
 
 interface SignalRig {
@@ -1045,6 +1130,7 @@ interface SignalRig {
 function buildTrafficLights(
   scene: SceneDescription,
   disposables: Array<{ dispose(): void }>,
+  ground: HeightFn,
 ): SignalRig | null {
   const lights = scene.traffic_lights;
   if (!lights.length) return null;
@@ -1090,6 +1176,7 @@ function buildTrafficLights(
 
   lights.forEach((tl, i) => {
     const [px, pz] = worldToThreeXZ(tl.position);
+    const g = ground(tl.position[0], tl.position[1]);
     // Mast arm reaches out along `heading` rotated -90 degrees.
     const armWx = Math.sin(tl.heading);
     const armWy = -Math.cos(tl.heading);
@@ -1098,7 +1185,7 @@ function buildTrafficLights(
     q.identity();
     poles.setMatrixAt(
       i,
-      m.compose(pos.set(px, 0, pz), q, scale.set(1, tl.height_m, 1)),
+      m.compose(pos.set(px, g, pz), q, scale.set(1, tl.height_m, 1)),
     );
 
     const armAngle = Math.atan2(-az, ax);
@@ -1106,7 +1193,7 @@ function buildTrafficLights(
     arms.setMatrixAt(
       i,
       m.compose(
-        pos.set(px, tl.height_m - 0.12, pz),
+        pos.set(px, g + tl.height_m - 0.12, pz),
         q,
         scale.set(Math.max(0.001, tl.mast_arm_m), 1, 1),
       ),
@@ -1114,7 +1201,7 @@ function buildTrafficLights(
 
     const hx = px + ax * tl.mast_arm_m;
     const hz = pz + az * tl.mast_arm_m;
-    const hy = tl.height_m - 0.72;
+    const hy = g + tl.height_m - 0.72;
     heads.push({ x: hx, y: hy, z: hz, heading: tl.heading });
 
     q.setFromAxisAngle(up, tl.heading);
@@ -1214,6 +1301,7 @@ function buildTrafficLights(
 function buildStopSigns(
   scene: SceneDescription,
   disposables: Array<{ dispose(): void }>,
+  ground: HeightFn,
 ): THREE.Group {
   const n = scene.stop_signs.length;
   const postGeo = new THREE.CylinderGeometry(0.045, 0.05, 1, 6);
@@ -1247,6 +1335,7 @@ function buildStopSigns(
 
   scene.stop_signs.forEach((s, i) => {
     const [x, z] = worldToThreeXZ(s.position);
+    const g = ground(s.position[0], s.position[1]);
     // Three-space forward, for a world heading: world (cos h, sin h) -> (x, -z).
     const fx = Math.cos(s.heading);
     const fz = -Math.sin(s.heading);
@@ -1258,16 +1347,16 @@ function buildStopSigns(
     posts.setMatrixAt(
       i,
       m.compose(
-        pos.set(x - fx * POST_SETBACK, 0, z - fz * POST_SETBACK),
+        pos.set(x - fx * POST_SETBACK, g, z - fz * POST_SETBACK),
         q,
         new THREE.Vector3(1, POST_H, 1),
       ),
     );
     q.setFromAxisAngle(up, s.heading);
-    octs.setMatrixAt(i, m.compose(pos.set(x, SIGN_Y, z), q, one));
+    octs.setMatrixAt(i, m.compose(pos.set(x, g + SIGN_Y, z), q, one));
     faces.setMatrixAt(
       i,
-      m.compose(pos.set(x + fx * FACE_PROUD, SIGN_Y, z + fz * FACE_PROUD), q, one),
+      m.compose(pos.set(x + fx * FACE_PROUD, g + SIGN_Y, z + fz * FACE_PROUD), q, one),
     );
   });
   posts.instanceMatrix.needsUpdate = true;
@@ -1284,6 +1373,7 @@ function buildStopSigns(
 function buildStreetSigns(
   scene: SceneDescription,
   disposables: Array<{ dispose(): void }>,
+  ground: HeightFn,
 ): THREE.Group {
   const group = new THREE.Group();
   group.name = 'street-signs';
@@ -1308,7 +1398,7 @@ function buildStreetSigns(
   posts.forEach(([x, z], i) => {
     postMesh.setMatrixAt(
       i,
-      m.compose(new THREE.Vector3(x, 0, z), q.identity(), new THREE.Vector3(1, 3.1, 1)),
+      m.compose(new THREE.Vector3(x, ground(x, -z), z), q.identity(), new THREE.Vector3(1, 3.1, 1)),
     );
   });
   postMesh.instanceMatrix.needsUpdate = true;
@@ -1323,6 +1413,7 @@ function buildStreetSigns(
     const nth = perPost.get(key) ?? 0;
     perPost.set(key, nth + 1);
     const [x, z] = worldToThreeXZ(s.position);
+    const g = ground(s.position[0], s.position[1]);
 
     // A blade's plane faces along its own +x once rotated, so this is the
     // direction it has to step to leave the post behind it.
@@ -1338,7 +1429,7 @@ function buildStreetSigns(
       });
       const geo = new THREE.PlaneGeometry(0.62, 0.93);
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(x + bx, 2.0, z + bz);
+      mesh.position.set(x + bx, g + 2.0, z + bz);
       mesh.rotation.y = bladeAngle;
       group.add(mesh);
       disposables.push(geo, mat, tex);
@@ -1354,7 +1445,7 @@ function buildStreetSigns(
     const mesh = new THREE.Mesh(geo, mat);
     // Stack blades down the post so two street names never overlap, and stand
     // them clear of it so the post does not draw over the text.
-    mesh.position.set(x + bx, 3.0 - nth * 0.56, z + bz);
+    mesh.position.set(x + bx, g + 3.0 - nth * 0.56, z + bz);
     // The blade runs parallel to its own carriageway, so the plane's normal is
     // perpendicular to the street's heading.
     mesh.rotation.y = bladeAngle;

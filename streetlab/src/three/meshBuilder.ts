@@ -16,7 +16,25 @@ export type P3 = [number, number, number];
  */
 export const worldToThree = (x: number, y: number, h = 0): P3 => [x, h, -y];
 
+/** World (x, y) -> ground height in metres. */
+export type GroundFn = (x: number, y: number) => number;
+
+/**
+ * Longest edge a ground-following quad may have. The terrain is bilinear on a
+ * 4 m grid; a flat quad longer than that bridges the curvature between samples
+ * and either floats over a crest or buries itself in a dip.
+ */
+export const GROUND_STEP_M = 3;
+
 export class MeshBuilder {
+  /**
+   * When set, every `flatQuad` and `wall` is draped over this ground: heights
+   * passed in become offsets above it, and long quads are subdivided so they
+   * follow it. Left null, geometry is exactly as before -- flat at the given
+   * heights -- which is what a scene without terrain gets.
+   */
+  ground: GroundFn | null = null;
+
   private pos: number[] = [];
   private nrm: number[] = [];
   private uvs: number[] = [];
@@ -59,15 +77,70 @@ export class MeshBuilder {
     this.tri(a, c, d, normal, color, [[0, 0], [u, v], [0, v]]);
   }
 
-  /** Flat horizontal quad at height `h`, given world-plane corners. */
+  /**
+   * Horizontal quad at height `h`, given counter-clockwise world-plane corners.
+   * With `ground` set, `h` is above the ground and the quad is draped over it.
+   */
   flatQuad(
     corners: [Vec2, Vec2, Vec2, Vec2],
     h: number,
     color: THREE.Color,
     uvScale: [number, number] = [1, 1],
   ): void {
-    const [p0, p1, p2, p3] = corners.map((p) => worldToThree(p[0], p[1], h));
-    this.quad(p0, p1, p2, p3, [0, 1, 0], color, uvScale);
+    const ground = this.ground;
+    if (!ground) {
+      const [p0, p1, p2, p3] = corners.map((p) => worldToThree(p[0], p[1], h));
+      this.quad(p0, p1, p2, p3, [0, 1, 0], color, uvScale);
+      return;
+    }
+    const [c0, c1, c2, c3] = corners;
+    const edge = (a: Vec2, b: Vec2) => Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const nu = Math.max(1, Math.ceil(Math.max(edge(c0, c1), edge(c3, c2)) / GROUND_STEP_M));
+    const nv = Math.max(1, Math.ceil(Math.max(edge(c0, c3), edge(c1, c2)) / GROUND_STEP_M));
+    const at = (u: number, v: number): P3 => {
+      const x = (1 - v) * ((1 - u) * c0[0] + u * c1[0]) + v * ((1 - u) * c3[0] + u * c2[0]);
+      const y = (1 - v) * ((1 - u) * c0[1] + u * c1[1]) + v * ((1 - u) * c3[1] + u * c2[1]);
+      return worldToThree(x, y, ground(x, y) + h);
+    };
+    const [su, sv] = uvScale;
+    for (let i = 0; i < nu; i++) {
+      for (let j = 0; j < nv; j++) {
+        const a = at(i / nu, j / nv);
+        const b = at((i + 1) / nu, j / nv);
+        const c = at((i + 1) / nu, (j + 1) / nv);
+        const d = at(i / nu, (j + 1) / nv);
+        this.quad(a, b, c, d, upNormal(a, b, c), color, [su / nu, sv / nv]);
+      }
+    }
+  }
+
+  /**
+   * Vertical face from world `p` to `q`, spanning heights `h0`..`h1`. With
+   * `ground` set both are above the ground at each point along it.
+   */
+  wall(p: Vec2, q: Vec2, h0: number, h1: number, normal: P3, color: THREE.Color): void {
+    const ground = this.ground;
+    const n = ground
+      ? Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / GROUND_STEP_M))
+      : 1;
+    for (let i = 0; i < n; i++) {
+      const f0 = i / n;
+      const f1 = (i + 1) / n;
+      const x0 = p[0] + (q[0] - p[0]) * f0;
+      const y0 = p[1] + (q[1] - p[1]) * f0;
+      const x1 = p[0] + (q[0] - p[0]) * f1;
+      const y1 = p[1] + (q[1] - p[1]) * f1;
+      const g0 = ground ? ground(x0, y0) : 0;
+      const g1 = ground ? ground(x1, y1) : 0;
+      this.quad(
+        worldToThree(x0, y0, g0 + h0),
+        worldToThree(x1, y1, g1 + h0),
+        worldToThree(x1, y1, g1 + h1),
+        worldToThree(x0, y0, g0 + h1),
+        normal,
+        color,
+      );
+    }
   }
 
   /** Axis-aligned box in world coordinates, from `h0` to `h1`. */
@@ -119,6 +192,27 @@ export class MeshBuilder {
     g.computeBoundingSphere();
     return g;
   }
+}
+
+/** Unit normal of triangle `a b c`, flipped if need be to point up. */
+function upNormal(a: P3, b: P3, c: P3): P3 {
+  const ux = b[0] - a[0];
+  const uy = b[1] - a[1];
+  const uz = b[2] - a[2];
+  const vx = c[0] - a[0];
+  const vy = c[1] - a[1];
+  const vz = c[2] - a[2];
+  let nx = uy * vz - uz * vy;
+  let ny = uz * vx - ux * vz;
+  let nz = ux * vy - uy * vx;
+  const len = Math.hypot(nx, ny, nz);
+  if (len < 1e-12) return [0, 1, 0];
+  if (ny < 0) {
+    nx = -nx;
+    ny = -ny;
+    nz = -nz;
+  }
+  return [nx / len, ny / len, nz / len];
 }
 
 /* ------------------------------------------------------------------ */
