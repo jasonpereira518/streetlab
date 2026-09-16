@@ -5002,6 +5002,13 @@
       "level": "info",
       "group": "behind",
       "ml_limitation": "ML perception has no rear camera."
+    },
+    {
+      "code": "oncoming_drift",
+      "label": "Oncoming drift",
+      "level": "critical",
+      "group": "ahead",
+      "ml_limitation": null
     }
   ]
 }

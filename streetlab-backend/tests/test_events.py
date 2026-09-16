@@ -6,6 +6,7 @@ whatever the numbers, the five must not be the same event under five names.
 """
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -15,6 +16,7 @@ from sim.events import (
     CYCLIST_DRIFT_MPS,
     EGO_LENGTH_M,
     EMERGENCY_SPEED_FACTOR,
+    ONCOMING_OVER_LINE_M,
     SCENARIOS,
     STALLED_AHEAD_M,
     STALLED_LIFE_S,
@@ -60,6 +62,7 @@ def test_every_advertised_scenario_is_registered():
         "stalled_vehicle",
         "cyclist_drift",
         "tailgater",
+        "oncoming_drift",
     }
 
 
@@ -339,3 +342,43 @@ def test_an_emergency_vehicle_closes_on_the_ego_but_never_drives_through_it(sim)
             closest_centres = min(closest_centres, math.dist((ego.x, ego.y), (car.state.x, car.state.y)))
     assert nearest <= start - 20.0, f"closed only {start - nearest:.1f} m"
     assert closest_centres >= 3.5, f"drove into the ego: centres {closest_centres:.2f} m apart"
+
+
+def _loop_sim():
+    """grid-loop, seed 7, 300 warm-up steps: the configuration the Phase 1
+    stagings were calibrated on while planning."""
+    s = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    for _ in range(300):
+        s.step()
+    return s
+
+
+def test_an_oncoming_car_crosses_the_centre_line_as_it_reaches_the_ego():
+    """Calibrated while planning: near edge 0.80 m over the line on grid-loop
+    and on Nob Hill, on a local route. The first attempt, the whole loop
+    reversed, put the car on the ego's RIGHT on Nob Hill."""
+    sim = _loop_sim()
+    assert inject(sim, "oncoming_drift").ok
+    (car,) = _spawned(sim, "oncoming_drift")
+    route, lanes = sim.scene.ego_route, sim.scene.lanes
+    over = -math.inf
+    for _ in range(int(car.lifetime_s / DT) - 1):
+        sim.step()
+        ego = sim.world.ego
+        ego_s = route.project((ego.x, ego.y))
+        car_s = route.project((car.state.x, car.state.y))
+        if abs(route.signed_gap(ego_s, car_s)) > 10.0:
+            continue
+        centre_line = -lanes.ego_offset_at(car_s)
+        near_edge = route.lateral_offset((car.state.x, car.state.y)) - car.size.width / 2
+        over = max(over, centre_line - near_edge)
+    assert over == pytest.approx(ONCOMING_OVER_LINE_M, abs=0.15), f"{over:.2f} m over the line"
+
+
+def test_oncoming_drift_declines_without_a_lane_model():
+    sim = _loop_sim()
+    sim.adopt_scene(replace(sim.scene, lanes=None))
+    sim.step()
+    outcome = inject(sim, "oncoming_drift")
+    assert outcome.ok is False
+    assert outcome.message == "oncoming_drift: no lane model to find an oncoming lane in"

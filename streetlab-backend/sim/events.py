@@ -94,6 +94,19 @@ TAILGATE_GAP_S = 0.5
 TAILGATE_HEADWAY_S = 0.4
 TAILGATE_HOLD_S = 30.0
 
+#: An oncoming car `ONCOMING_AHEAD_M` ahead whose near edge crosses the centre
+#: line by `ONCOMING_OVER_LINE_M` by the time it reaches the ego.
+ONCOMING_AHEAD_M = 60.0
+ONCOMING_OVER_LINE_M = 0.8
+#: The route it drives: the ego route from `ONCOMING_ROUTE_BEHIND_M` behind the
+#: ego to `ONCOMING_ROUTE_PAST_M` past the spawn point, offset and reversed.
+#: Local, not the whole loop reversed: the Nob Hill route runs close to itself,
+#: and projecting onto a reversed loop picked the wrong stretch and put the car
+#: on the ego's right (measured while planning Cycle 6 Phase 1).
+ONCOMING_ROUTE_PAST_M = 10.0
+ONCOMING_ROUTE_BEHIND_M = 40.0
+ONCOMING_ROUTE_STEP_M = 2.0
+
 #: Where a stalled car sits and how long before it is towed. Longer-lived than
 #: an obstacle because a car takes longer to clear than debris, and still
 #: time-limited for the reason `OBSTACLE_LIFE_S` gives.
@@ -462,6 +475,58 @@ def _tailgater(sim: "Simulation") -> str | Declined:
     return f"{agent.id} tailgating {bumper:.0f} m behind"
 
 
+def _oncoming_drift(sim: "Simulation") -> str | Declined:
+    """An oncoming car drifts `ONCOMING_OVER_LINE_M` over the centre line.
+
+    It spawns in its own lane and slides onto a route whose near edge is over
+    the line -- the same slide-into-a-route trick `_cut_in` uses -- so what
+    the ego meets is a drift, not a car appearing in its lane.
+    """
+    lanes = sim.scene.lanes
+    route = sim.scene.ego_route
+    ego_s = _ego_s(sim)
+    at = ego_s + ONCOMING_AHEAD_M
+    road = lanes.road_at(at) if lanes is not None else None
+    if road is None:
+        return Declined("no lane model to find an oncoming lane in")
+    if road.oneway or road.lanes_backward < 1:
+        return Declined("one-way street, no oncoming lane")
+
+    # All three distances are metres to the EGO's left of its own route.
+    centre_line = -lanes.ego_offset_at(at)
+    car_left = centre_line - ONCOMING_OVER_LINE_M + CAR_SIZE.width / 2
+    lane_left = centre_line + _lane_width(sim) / 2
+
+    start = ego_s - ONCOMING_ROUTE_BEHIND_M
+    steps = int((ONCOMING_AHEAD_M + ONCOMING_ROUTE_BEHIND_M + ONCOMING_ROUTE_PAST_M) / ONCOMING_ROUTE_STEP_M)
+    alongside = Route(
+        [route.point_at(start + i * ONCOMING_ROUTE_STEP_M) for i in range(steps + 1)],
+        closed=False,
+    ).offset(car_left)
+    lane = Route(list(reversed(alongside.points)), closed=False)
+
+    speed = sim.scene.speed_limit_mps
+    agent = _spawn(
+        sim,
+        kind="oncoming_drift",
+        cls="car",
+        size=CAR_SIZE,
+        route=lane,
+        speed_mps=speed,
+        lifetime_s=1.0,  # replaced below, once the start point is known
+    )
+    s0 = lane.project(route.point_at(at))
+    # `lateral_m` is + to the left of the CAR's travel, which is the ego's
+    # right; its own lane is further to the ego's left, so the sign flips.
+    _place(agent, lane, s0, lateral_m=-(lane_left - car_left))
+    # Gone before it reaches the end of its open route, where arc length wraps
+    # (`ScriptedTraffic._advance`) and it would jump back to the start.
+    scale = max(1.0, float(sim.world.params["traffic_speed_scale"]))
+    agent.lifetime_s = (lane.length_m - s0 - ONCOMING_ROUTE_STEP_M) / (speed * scale)
+    agent.lane_change_cooldown_s = agent.lifetime_s
+    return f"{agent.id} drifting over the centre line {ONCOMING_AHEAD_M:.0f} m ahead"
+
+
 def _lane_width(sim: "Simulation") -> float:
     lanes = sim.scene.lanes
     if lanes is None:
@@ -505,6 +570,10 @@ SCENARIOS: dict[str, Scenario] = {
         code="tailgater", level="info", stage=_tailgater,
         label="Tailgater", group="behind",
         ml_limitation="ML perception has no rear camera.",
+    ),
+    "oncoming_drift": Scenario(
+        code="oncoming_drift", level="critical", stage=_oncoming_drift,
+        label="Oncoming drift", group="ahead",
     ),
 }
 
