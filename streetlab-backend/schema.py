@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -198,6 +198,27 @@ class Bounds(Wire):
     max_y: Num
 
 
+class Terrain(Wire):
+    """Ground height over the scene, as a regular grid in local metres.
+
+    Sample ``(r, c)`` sits at ``origin + (c, r) * cell_m`` -- row 0 is the
+    SOUTH edge, column 0 the WEST. Heights are ``base_m + q * step_m`` where
+    ``q`` is the row-major sequence of little-endian uint16 in ``heights_b64``.
+    Between samples the ground is bilinear; see `map/elevation.Heightfield.sample`
+    and `streetlab/src/three/terrain.ts`, which must agree exactly. Heights are
+    relative to the ground at world (0, 0), and already graded so every road
+    runs level across its width along a smoothed profile.
+    """
+
+    origin: Vec2
+    cell_m: Pos
+    cols: Annotated[int, Field(ge=2)]
+    rows: Annotated[int, Field(ge=2)]
+    base_m: Num
+    step_m: Pos
+    heights_b64: str
+
+
 class SceneDescription(Wire):
     type: Literal["scene_description"] = "scene_description"
     protocol: int = PROTOCOL_VERSION
@@ -217,6 +238,8 @@ class SceneDescription(Wire):
     stop_signs: list[StopSign]
     trees: list[Tree]
     street_signs: list[StreetSign]
+    # Null where the ground is flat (the synthetic grid, or no elevation data).
+    terrain: Terrain | None
     # Scenarios the server can load; drives the left sidebar.
     catalog: list[ScenarioSummary]
 

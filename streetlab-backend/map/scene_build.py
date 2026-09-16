@@ -308,6 +308,9 @@ class SyntheticGrid:
             stop_signs=self._stop_signs(),
             trees=self._trees(rng),
             street_signs=self._street_signs(),
+            # The grid is flat by construction, and its frozen detector
+            # benchmarks were captured on flat ground.
+            terrain=None,
             catalog=self.scenarios(),
         )
 

@@ -547,6 +547,7 @@ export function buildScene(scenarioId: string): SceneDescription {
     stop_signs: buildStopSigns(),
     trees: buildTrees(),
     street_signs: buildStreetSigns(),
+    terrain: null,
     catalog: SCENARIOS,
   };
 }

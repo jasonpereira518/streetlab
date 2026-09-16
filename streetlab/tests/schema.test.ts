@@ -11,7 +11,7 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
-it('is protocol 6', () => {
+it('is protocol 7', () => {
   // Bumped to 5 when `LaneMarking` gained `broken_yellow` and
   // `solid_yellow`. A new enum value is additive for a NEW client reading an
   // OLD server, but an old client rejects the new value on every frame -- and
@@ -21,7 +21,9 @@ it('is protocol 6', () => {
   // Bumped again to 6 when `Road.has_sidewalk` became
   // `sidewalk_left`/`sidewalk_right` -- a renamed field, so an old client
   // fails to parse rather than merely ignoring it.
-  expect(PROTOCOL_VERSION).toBe(6);
+  // Bumped to 7 when `SceneDescription` gained the required-nullable
+  // `terrain`: an old client would drop it and draw a hilly scene flat.
+  expect(PROTOCOL_VERSION).toBe(7);
 });
 
 it('accepts load_location with and without a radius', () => {
