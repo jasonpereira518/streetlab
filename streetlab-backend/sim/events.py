@@ -81,6 +81,24 @@ EMERGENCY_HOLD_S = 45.0
 #: `HAZARD_HOLD_S`, moved here with the behaviour it governs.
 BRAKE_HOLD_S = 8.0
 
+#: The size of a scenario-built car: `sim.agents._PROFILES`'s first profile.
+CAR_SIZE = Size(length=4.6, width=1.9, height=1.45)
+
+#: Where a stalled car sits and how long before it is towed. Longer-lived than
+#: an obstacle because a car takes longer to clear than debris, and still
+#: time-limited for the reason `OBSTACLE_LIFE_S` gives.
+STALLED_AHEAD_M = 40.0
+STALLED_LIFE_S = 45.0
+
+#: A cyclist ahead at the kerb, drifting into the lane slowly enough to read as
+#: encroachment rather than a lane change: 0.3 m/s puts a 2 m drift at ~6.7 s,
+#: against traffic's 1.2 m/s (`sim.agents._MOBIL_TRAVERSE_MPS`).
+CYCLIST_AHEAD_M = 25.0
+CYCLIST_SPEED_MPS = 5.0
+CYCLIST_DRIFT_MPS = 0.3
+CYCLIST_KERB_MARGIN_M = 0.2
+CYCLIST_LIFE_S = 30.0
+
 
 @dataclass(frozen=True, slots=True)
 class Scenario:
@@ -351,6 +369,55 @@ def _emergency_vehicle(sim: "Simulation") -> str | Declined:
     return f"{agent.id} closing fast from behind"
 
 
+def _stalled_vehicle(sim: "Simulation") -> str | Declined:
+    """A broken-down car in the ego's lane, `STALLED_AHEAD_M` ahead.
+
+    A `car`, where `obstacle` is `unknown`: it is the one blockage the ONNX
+    detector has a class for, which is what gives Cycle 6's ML measurement
+    something fair to be judged against.
+    """
+    route = sim.scene.ego_route
+    agent = _spawn(
+        sim,
+        kind="stalled_vehicle",
+        cls="car",
+        size=CAR_SIZE,
+        route=route,
+        speed_mps=0.0,
+        lifetime_s=STALLED_LIFE_S,
+    )
+    _place(agent, route, _ego_s(sim) + STALLED_AHEAD_M)
+    agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
+    return f"{agent.id} stalled in the lane {STALLED_AHEAD_M:.0f} m ahead"
+
+
+def _cyclist_drift(sim: "Simulation") -> str | Declined:
+    """A cyclist `CYCLIST_AHEAD_M` ahead at the kerb, drifting into the lane.
+
+    It starts just outside the ego's lane and slides in at `CYCLIST_DRIFT_MPS`
+    -- slow, continuous encroachment, the other shape of "about to enter the
+    lane" from the jaywalker's fast perpendicular crossing.
+    """
+    route = sim.scene.ego_route
+    kerb = -(_lane_width(sim) / 2 + CYCLIST_KERB_MARGIN_M)
+    agent = _spawn(
+        sim,
+        kind="cyclist_drift",
+        cls="cyclist",
+        # `streetlab/src/three/agents.ts` draws a cyclist at this size.
+        size=Size(length=1.8, width=0.7, height=1.7),
+        route=route,
+        speed_mps=CYCLIST_SPEED_MPS,
+        lifetime_s=CYCLIST_LIFE_S,
+    )
+    _place(agent, route, _ego_s(sim) + CYCLIST_AHEAD_M, lateral_m=kerb)
+    agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
+    agent.lateral_rate_mps = CYCLIST_DRIFT_MPS
+    # Drifting is the scenario; changing lane outright would be a different one.
+    agent.lane_change_cooldown_s = CYCLIST_LIFE_S
+    return f"{agent.id} drifting in from the kerb {CYCLIST_AHEAD_M:.0f} m ahead"
+
+
 def _lane_width(sim: "Simulation") -> float:
     lanes = sim.scene.lanes
     if lanes is None:
@@ -381,6 +448,14 @@ SCENARIOS: dict[str, Scenario] = {
         code="emergency_vehicle", level="info", stage=_emergency_vehicle,
         label="Emergency vehicle", group="behind",
         ml_limitation="ML perception has no rear camera and cannot see emergency lights.",
+    ),
+    "stalled_vehicle": Scenario(
+        code="stalled_vehicle", level="warn", stage=_stalled_vehicle,
+        label="Stalled vehicle", group="ahead",
+    ),
+    "cyclist_drift": Scenario(
+        code="cyclist_drift", level="warn", stage=_cyclist_drift,
+        label="Cyclist drift", group="ahead",
     ),
 }
 

@@ -4981,6 +4981,20 @@
       "level": "info",
       "group": "behind",
       "ml_limitation": "ML perception has no rear camera and cannot see emergency lights."
+    },
+    {
+      "code": "stalled_vehicle",
+      "label": "Stalled vehicle",
+      "level": "warn",
+      "group": "ahead",
+      "ml_limitation": null
+    },
+    {
+      "code": "cyclist_drift",
+      "label": "Cyclist drift",
+      "level": "warn",
+      "group": "ahead",
+      "ml_limitation": null
     }
   ]
 }

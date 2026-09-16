@@ -5,10 +5,12 @@ in its own docstring. These tests are one behavioural fingerprint per kind:
 whatever the numbers, the five must not be the same event under five names.
 """
 
+import math
+
 import pytest
 
 from map.scene_build import SyntheticGrid
-from sim.events import ALIASES, SCENARIOS
+from sim.events import ALIASES, CYCLIST_DRIFT_MPS, SCENARIOS, STALLED_AHEAD_M, STALLED_LIFE_S
 from sim.loop import Simulation
 
 DT = 1 / 60
@@ -47,6 +49,8 @@ def test_every_advertised_scenario_is_registered():
         "emergency_vehicle",
         "obstacle",
         "sudden_brake",
+        "stalled_vehicle",
+        "cyclist_drift",
     }
 
 
@@ -226,3 +230,37 @@ def test_a_newly_loaded_scene_carries_the_hazard_menu_too(sim):
     outcome = sim.apply_dict({"id": "l", "cmd": "load_scenario", "scenario_id": "grid-loop"})
     assert outcome.ok and outcome.scene is not None
     assert [h.code for h in outcome.scene.hazards] == list(SCENARIOS)
+
+
+def _spawned(sim, kind):
+    return [a for a in sim._traffic.agents if a.id.startswith(f"hzd_{kind}_")]
+
+
+def test_a_stalled_vehicle_is_a_stopped_car_in_the_ego_lane(sim):
+    assert inject(sim, "stalled_vehicle").ok
+    advance(sim, 1.0)
+    (car,) = _spawned(sim, "stalled_vehicle")
+    assert car.cls == "car", "a car, so the detector has a class for it"
+    assert car.state.speed_mps < 0.1
+    route = sim.scene.ego_route
+    ego_s = route.project((sim.world.ego.x, sim.world.ego.y))
+    assert 25.0 < route.signed_gap(ego_s, car.s) <= STALLED_AHEAD_M
+    assert abs(route.lateral_offset((car.state.x, car.state.y))) < 0.5
+
+
+def test_a_stalled_vehicle_is_towed_rather_than_blocking_forever(sim):
+    assert inject(sim, "stalled_vehicle").ok
+    advance(sim, STALLED_LIFE_S + 1.0)
+    assert _spawned(sim, "stalled_vehicle") == []
+
+
+def test_a_cyclist_drifts_in_from_the_kerb_at_its_own_slow_rate(sim):
+    assert inject(sim, "cyclist_drift").ok
+    (rider,) = _spawned(sim, "cyclist_drift")
+    assert rider.cls == "cyclist"
+    start = rider.lateral_m
+    assert start < -1.8, f"it has to start outside the ego's lane, not at {start:.2f} m"
+    advance(sim, 2.0)
+    assert rider.lateral_m == pytest.approx(start + 2.0 * CYCLIST_DRIFT_MPS, abs=0.05)
+    advance(sim, math.ceil(-start / CYCLIST_DRIFT_MPS))
+    assert rider.lateral_m == 0.0, "it never finished drifting into the lane"
