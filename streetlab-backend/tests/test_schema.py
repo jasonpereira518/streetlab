@@ -56,8 +56,8 @@ def test_hazard_fixture_actually_exercises_non_null_optionals():
     raw = load_fixture("state_update_hazard")
     state = StateUpdate.model_validate(raw)
     assert any(d.hazard and d.hazard_label is not None for d in state.detections)
-    assert state.telemetry.trajectory.cutin
-    assert state.telemetry.trajectory.cutin_label is not None
+    assert state.telemetry.trajectory.threat
+    assert state.telemetry.trajectory.threat_label is not None
 
 
 def test_nullable_fields_keep_their_key_when_none():
@@ -65,14 +65,14 @@ def test_nullable_fields_keep_their_key_when_none():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
     assert "ttc_s" in dumped["telemetry"]
-    assert "cutin" in dumped["telemetry"]["trajectory"]
-    assert "cutin_label" in dumped["telemetry"]["trajectory"]
+    assert "threat" in dumped["telemetry"]["trajectory"]
+    assert "threat_label" in dumped["telemetry"]["trajectory"]
 
 
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 6
+    assert dumped["protocol"] == PROTOCOL_VERSION == 7
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
@@ -80,7 +80,42 @@ def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
 def test_protocol_is_six():
     from schema import PROTOCOL_VERSION
 
-    assert PROTOCOL_VERSION == 6
+    assert PROTOCOL_VERSION == 7
+
+
+def test_protocol_is_7():
+    assert PROTOCOL_VERSION == 7
+
+
+def test_the_fixtures_carry_the_protocol_7_fields():
+    scene = SceneDescription.model_validate(load_fixture("scene_description"))
+    assert scene.hazards, "the hazard menu is empty"
+    frame = StateUpdate.model_validate(load_fixture("state_update_hazard"))
+    assert frame.detections and all(d.emergency is False for d in frame.detections)
+    assert frame.plan.reaction_source_id is None
+    assert frame.telemetry.trajectory.threat
+    assert frame.telemetry.trajectory.threat_label is not None
+
+
+@pytest.mark.parametrize(
+    "fixture_name,path",
+    [
+        ("scene_description", ("hazards",)),
+        ("state_update_hazard", ("plan", "reaction_source_id")),
+        ("state_update_hazard", ("detections", 0, "emergency")),
+        ("state_update_hazard", ("telemetry", "trajectory", "threat")),
+    ],
+)
+def test_protocol_7_fields_are_required_not_defaulted(fixture_name, path):
+    """A missing key must fail here exactly as zod fails it."""
+    raw = load_fixture(fixture_name)
+    parent = raw
+    for key in path[:-1]:
+        parent = parent[key]
+    del parent[path[-1]]
+    model = SceneDescription if fixture_name == "scene_description" else StateUpdate
+    with pytest.raises(ValueError):
+        model.model_validate(raw)
 
 
 def test_load_location_parses_with_and_without_radius():
@@ -264,7 +299,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 6
+    assert PROTOCOL_VERSION == 7
 
     raw = {
         "id": "f1",

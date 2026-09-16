@@ -1,6 +1,6 @@
 {
   "type": "scene_description",
-  "protocol": 6,
+  "protocol": 7,
   "scene_id": "synthetic-grid:grid-merge",
   "scenario_id": "grid-merge",
   "name": "Hyde Street Merge",
@@ -4944,6 +4944,43 @@
           19.923
         ]
       ]
+    }
+  ],
+  "hazards": [
+    {
+      "code": "sudden_brake",
+      "label": "Sudden brake",
+      "level": "warn",
+      "group": "ahead",
+      "ml_limitation": null
+    },
+    {
+      "code": "cut_in",
+      "label": "Cut-in",
+      "level": "warn",
+      "group": "ahead",
+      "ml_limitation": null
+    },
+    {
+      "code": "jaywalker",
+      "label": "Jaywalker",
+      "level": "critical",
+      "group": "crossing",
+      "ml_limitation": null
+    },
+    {
+      "code": "obstacle",
+      "label": "Obstacle",
+      "level": "warn",
+      "group": "ahead",
+      "ml_limitation": "The detector has no class for an unclassified obstacle."
+    },
+    {
+      "code": "emergency_vehicle",
+      "label": "Emergency vehicle",
+      "level": "info",
+      "group": "behind",
+      "ml_limitation": "ML perception has no rear camera and cannot see emergency lights."
     }
   ]
 }

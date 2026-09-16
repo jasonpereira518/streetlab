@@ -128,7 +128,7 @@ def test_an_emergency_vehicle_runs_faster_than_the_posted_limit(sim):
 
 
 def test_a_cut_in_moves_a_neighbour_into_the_ego_lane(sim):
-    """The one the trajectory graph's `cutin` series exists to draw."""
+    """The one the trajectory graph's `threat` series exists to draw."""
     inject(sim, "cut_in")
     # One tick first: `state_update()` serves the detections `_plan()` cached,
     # which until the sim has stepped are still the pre-injection ones.
@@ -196,6 +196,23 @@ def test_a_cut_in_raises_a_hazard_flag_whatever_speed_the_ego_is_doing(sim):
         sim.step()
         frame = sim.state_update()
         if any(d.hazard and d.hazard_label for d in frame.detections):
-            assert frame.telemetry.trajectory.cutin, "the graph has nothing to draw"
+            assert frame.telemetry.trajectory.threat, "the graph has nothing to draw"
             return
     pytest.fail("a car merged into the ego's lane and nothing was flagged")
+
+
+def test_the_scene_carries_the_hazard_menu_in_registry_order(sim):
+    hazards = sim.scene_description().hazards
+    assert [h.code for h in hazards] == list(SCENARIOS)
+    for h in hazards:
+        assert h.label
+        assert h.group in {"ahead", "crossing", "behind"}
+        assert h.level == SCENARIOS[h.code].level
+
+
+def test_a_newly_loaded_scene_carries_the_hazard_menu_too(sim):
+    """`load_scenario` acks with a scene, and that scene has to come from
+    `scene_description()` or this path ships an empty menu."""
+    outcome = sim.apply_dict({"id": "l", "cmd": "load_scenario", "scenario_id": "grid-loop"})
+    assert outcome.ok and outcome.scene is not None
+    assert [h.code for h in outcome.scene.hazards] == list(SCENARIOS)

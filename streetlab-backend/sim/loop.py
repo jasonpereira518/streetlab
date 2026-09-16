@@ -301,7 +301,16 @@ class Simulation:
         self.world.ego = state
 
     def scene_description(self) -> SceneDescription:
-        return self.scene.description
+        """The scene as the wire carries it, with the hazard menu attached.
+
+        Scene sources build `hazards=[]`: what can be injected is the
+        simulation's business, not the map's. Attached here rather than in
+        `adopt_scene`, which installs the scene exactly as built. Imported
+        here for the reason `_cmd_inject_hazard` gives.
+        """
+        from sim import events
+
+        return self.scene.description.model_copy(update={"hazards": events.catalog()})
 
     # -- stepping ---------------------------------------------------------- #
 
@@ -736,7 +745,7 @@ class Simulation:
                 ok=False, message=f"unknown scenario: {command.scenario_id}"
             )
         self._emit("scenario_loaded", f"loaded {command.scenario_id}")
-        return CommandOutcome(ok=True, message="loaded", scene=self.scene.description)
+        return CommandOutcome(ok=True, message="loaded", scene=self.scene_description())
 
     def _cmd_load_location(self, command) -> CommandOutcome:
         """Ack now, build later.
@@ -1172,11 +1181,11 @@ def _trajectory(
             TrajectorySample(t=round(t, 3), lateral_m=round(offset * math.exp(-t / 1.2), 3))
         )
 
-    cutting_in = next((d for d in detections if d.hazard), None)
-    cutin = None
-    if cutting_in is not None:
-        start = (cutting_in.lane_offset or 1) * LANE_W
-        cutin = [
+    reacting_to = next((d for d in detections if d.hazard), None)
+    threat = None
+    if reacting_to is not None:
+        start = (reacting_to.lane_offset or 1) * LANE_W
+        threat = [
             TrajectorySample(
                 t=round(i * _TRAJECTORY_STEP_S, 3),
                 lateral_m=round(start * math.exp(-i * _TRAJECTORY_STEP_S / 1.5), 3),
@@ -1187,8 +1196,8 @@ def _trajectory(
     return TrajectoryPrediction(
         horizon_s=_TRAJECTORY_HORIZON_S,
         planned=samples,
-        cutin=cutin,
-        cutin_label=(cutting_in.hazard_label if cutting_in else None),
+        threat=threat,
+        threat_label=(reacting_to.hazard_label if reacting_to else None),
     )
 
 

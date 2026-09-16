@@ -24,7 +24,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
-from schema import Size
+from schema import HazardSummary, Size
 from sim.agents import MOBIL_COOLDOWN_S, Agent, TrafficModel, lateral_unit
 from sim.route import EGO_LANE_ID, Route
 from sim.vehicle import VehicleState
@@ -96,6 +96,13 @@ class Scenario:
     code: str
     level: str
     stage: Callable[["Simulation"], str | None]
+    #: What the hazard menu calls it.
+    label: str
+    #: Which menu group it sits in: "ahead", "crossing" or "behind".
+    group: str
+    #: Why it, or the car's reaction to it, cannot work under ML perception,
+    #: or None when nothing is known to stop it.
+    ml_limitation: str | None = None
 
 
 def _traffic(sim: "Simulation") -> TrafficModel:
@@ -238,7 +245,7 @@ def _cut_in(sim: "Simulation") -> str | None:
     """A neighbour drops into the ego's lane `CUT_IN_AHEAD_M` ahead.
 
     The vehicle arrives a full lane width to the RIGHT of the ego route and
-    `IdmTraffic` slides it across, so what the trajectory graph's `cutin`
+    `IdmTraffic` slides it across, so what the trajectory graph's `threat`
     series draws is a curve rather than a step. It merges slower than the ego
     rather than at a standstill -- a cut-in is someone pulling in front of you,
     not a wall appearing -- and `CUT_IN_HEADWAY_S` is what makes "slower" add
@@ -344,11 +351,28 @@ def _lane_width(sim: "Simulation") -> float:
 
 
 SCENARIOS: dict[str, Scenario] = {
-    "sudden_brake": Scenario("sudden_brake", "warn", _sudden_brake),
-    "cut_in": Scenario("cut_in", "warn", _cut_in),
-    "jaywalker": Scenario("jaywalker", "critical", _jaywalker),
-    "obstacle": Scenario("obstacle", "warn", _obstacle),
-    "emergency_vehicle": Scenario("emergency_vehicle", "info", _emergency_vehicle),
+    "sudden_brake": Scenario(
+        code="sudden_brake", level="warn", stage=_sudden_brake,
+        label="Sudden brake", group="ahead",
+    ),
+    "cut_in": Scenario(
+        code="cut_in", level="warn", stage=_cut_in,
+        label="Cut-in", group="ahead",
+    ),
+    "jaywalker": Scenario(
+        code="jaywalker", level="critical", stage=_jaywalker,
+        label="Jaywalker", group="crossing",
+    ),
+    "obstacle": Scenario(
+        code="obstacle", level="warn", stage=_obstacle,
+        label="Obstacle", group="ahead",
+        ml_limitation="The detector has no class for an unclassified obstacle.",
+    ),
+    "emergency_vehicle": Scenario(
+        code="emergency_vehicle", level="info", stage=_emergency_vehicle,
+        label="Emergency vehicle", group="behind",
+        ml_limitation="ML perception has no rear camera and cannot see emergency lights.",
+    ),
 }
 
 #: Kinds an older client sends that are not the registry's own names.
@@ -365,3 +389,17 @@ ALIASES: dict[str, str] = {"cutin": "cut_in"}
 def resolve(kind: str) -> Scenario | None:
     """The scenario for a wire `kind`, or `None` if there is no such hazard."""
     return SCENARIOS.get(ALIASES.get(kind, kind))
+
+
+def catalog() -> list[HazardSummary]:
+    """The hazard menu, in registry order -- what `SceneDescription.hazards` carries."""
+    return [
+        HazardSummary(
+            code=s.code,
+            label=s.label,
+            level=s.level,
+            group=s.group,
+            ml_limitation=s.ml_limitation,
+        )
+        for s in SCENARIOS.values()
+    ]

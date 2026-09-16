@@ -20,6 +20,7 @@ describe('mock scene', () => {
     expect(s.stop_signs.length).toBeGreaterThan(0);
     expect(s.street_signs.some((n) => n.kind === 'street_name')).toBe(true);
     expect(s.catalog.length).toBe(5);
+    expect(s.hazards.map((h) => h.code)).toContain('cut_in');
   });
 
   it('keeps every building inside the map bounds', () => {

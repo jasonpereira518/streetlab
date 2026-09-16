@@ -191,6 +191,7 @@ class GroundTruthPerception:
                     hazard_label=threat.label,
                     ttc_s=threat.ttc_s,
                     lane_offset=lane_offset,
+                    emergency=False,
                 )
             )
         return out

@@ -68,7 +68,7 @@ def generate() -> dict[str, dict]:
     # vehicle happens to lead the ego's lane, and with reactive traffic that
     # can be 100 m away: measured on this scene, it never produces a frame
     # inside `plan.ttc.HAZARD_TTC_S` at all, the best TTC in 300 s being 4.03 s
-    # against a 4.0 s threshold. A fixture named for `cutin`/`cutin_label`
+    # against a 4.0 s threshold. A fixture named for `threat`/`threat_label`
     # asking for a cut-in is also simply the honest version.
     sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
     hazard = sim.state_update()
@@ -93,7 +93,7 @@ def generate() -> dict[str, dict]:
     out["invalid/renamed_field"] = renamed
 
     dropped = json.loads(json.dumps(good))
-    dropped["telemetry"]["trajectory"].pop("cutin")
+    dropped["telemetry"]["trajectory"].pop("threat")
     out["invalid/dropped_nullable_key"] = dropped
 
     mistyped = json.loads(json.dumps(good))
@@ -160,8 +160,8 @@ def test_the_hazard_fixture_exercises_non_null_optionals(generated):
     assert frame.telemetry.ttc_s is not None, "no TTC — the frame proves little"
     assert any(d.ttc_s is not None for d in frame.detections)
     assert any(d.hazard and d.hazard_label is not None for d in frame.detections)
-    assert frame.telemetry.trajectory.cutin, "cutin is null — nullable path untested"
-    assert frame.telemetry.trajectory.cutin_label is not None
+    assert frame.telemetry.trajectory.threat, "threat is null — nullable path untested"
+    assert frame.telemetry.trajectory.threat_label is not None
 
 
 def test_hand_authored_shadow_fixture_round_trips():

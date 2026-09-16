@@ -309,6 +309,7 @@ class SyntheticGrid:
             trees=self._trees(rng),
             street_signs=self._street_signs(),
             catalog=self.scenarios(),
+            hazards=[],
         )
 
         return BuiltScene(

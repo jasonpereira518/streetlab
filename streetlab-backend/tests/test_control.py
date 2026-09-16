@@ -171,6 +171,7 @@ def stopped_lead_at(route, ego_s, gap_m, cls="car"):
         hazard_label="stopped vehicle",
         ttc_s=None,
         lane_offset=0,
+        emergency=False,
     )
 
 

@@ -272,6 +272,7 @@ class OsmSceneSource:
             # Filled in by `build`; see the note there on why it cannot be done
             # inline without the builder re-entering itself.
             catalog=[],
+            hazards=[],
         )
 
         # Posted limits per route segment, so the ego obeys the street it is on

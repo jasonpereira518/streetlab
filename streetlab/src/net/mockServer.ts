@@ -622,6 +622,7 @@ export class MockSim {
         hazard_label: hazard ? 'Cut-in vehicle' : null,
         ttc_s: ttc == null ? null : Math.round(ttc * 100) / 100,
         lane_offset: clamp(Math.round(left / LANE_W), -2, 2),
+        emergency: false,
       });
 
       if (Math.abs(fwd) < 90) {
@@ -712,6 +713,7 @@ export class MockSim {
         ),
         maneuver,
         confidence: this.cutinPhase === 'merging' ? 0.71 : 0.94,
+        reaction_source_id: null,
       },
       telemetry: {
         radar,
@@ -822,8 +824,8 @@ export class MockSim {
     return {
       horizon_s: HORIZON,
       planned,
-      cutin: active ? cutinSeries : null,
-      cutin_label: active ? 'Cut-in vehicle' : null,
+      threat: active ? cutinSeries : null,
+      threat_label: active ? 'Cut-in vehicle' : null,
     };
   }
 

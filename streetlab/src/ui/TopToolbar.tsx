@@ -54,6 +54,8 @@ const MANEUVER_LABELS: Record<string, string> = {
   lane_change_right: 'Changing lane right',
   stop: 'Stopping',
   yield: 'Yielding',
+  emergency_brake: 'Emergency braking',
+  pull_over: 'Pulling over',
 };
 
 export function TopToolbar() {
