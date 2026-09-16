@@ -6,8 +6,8 @@ own docstring said so. Five names, one behaviour, and a UI offering a menu of
 hazards that were all the same hazard.
 
 `InjectHazard.kind` is a free string on the wire (`schema.py`), so a real
-scenario set needs no protocol change -- only somewhere for the five to live
-that is not a branch in the command handler. That is this module: one
+scenario set needs no protocol change -- only somewhere for the scenarios to
+live that is not a branch in the command handler. That is this module: one
 `Scenario` per kind behind `SCENARIOS`, each staging itself against the running
 `Simulation` and returning the line the event carries, or `None` when the scene
 gives it nothing to work with.
@@ -16,6 +16,10 @@ The stagings deliberately reach into the simulation rather than going through
 the command surface: injecting a hazard IS reaching in, and pretending
 otherwise would mean inventing wire commands ("teleport this vehicle") that
 exist for no other reason.
+
+Cycle 6 Phase 1 made it ten, gave each the menu metadata the app builds its
+hazard menu from (`catalog()`), and made a hazard the scene cannot host say
+why (`Declined`) instead of "nothing here to disturb".
 """
 
 from __future__ import annotations
@@ -292,7 +296,7 @@ def _spawn(
 
 
 # --------------------------------------------------------------------------- #
-# The five                                                                     #
+# The stagings                                                                 #
 # --------------------------------------------------------------------------- #
 
 
@@ -657,7 +661,7 @@ SCENARIOS: dict[str, Scenario] = {
 #: something now -- the app's one hazard button would ack false against a
 #: newer backend. The frontend sends `cut_in` as of this change; the alias is
 #: what keeps a mixed pair working, and it is the reason `SCENARIOS` itself
-#: stays exactly the five names the wire documents.
+#: holds only the names `catalog()` advertises.
 ALIASES: dict[str, str] = {"cutin": "cut_in"}
 
 

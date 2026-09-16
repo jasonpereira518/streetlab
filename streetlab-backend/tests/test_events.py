@@ -2,7 +2,8 @@
 
 `_cmd_inject_hazard` produced one generic hard-brake for every kind and said so
 in its own docstring. These tests are one behavioural fingerprint per kind:
-whatever the numbers, the five must not be the same event under five names.
+whatever the numbers, no two scenarios may be the same event under different
+names.
 """
 
 import math
@@ -16,6 +17,7 @@ from sim.events import (
     CYCLIST_DRIFT_MPS,
     EGO_LENGTH_M,
     EMERGENCY_SPEED_FACTOR,
+    ONCOMING_AHEAD_M,
     ONCOMING_OVER_LINE_M,
     SCENARIOS,
     STALLED_AHEAD_M,
@@ -158,7 +160,7 @@ def test_a_cut_in_moves_a_neighbour_into_the_ego_lane(sim):
     assert moved, "no neighbour ever entered the ego lane"
 
 
-def test_the_five_scenarios_are_not_the_same_event_five_times(sim):
+def test_no_two_scenarios_are_the_same_event(sim):
     """The regression this whole task exists to prevent recurring."""
     fingerprints = {}
     for kind in sorted(SCENARIOS):
@@ -426,3 +428,45 @@ def test_a_red_light_runner_declines_while_the_ego_is_stopped():
     outcome = inject(sim, "red_light_runner")
     assert outcome.ok is False
     assert outcome.message == "red_light_runner: the ego is not moving toward a junction"
+
+
+@pytest.fixture(scope="module")
+def nob_hill_sim(nob_hill_scene):
+    """A factory: a fresh sim on the real Nob Hill extract, warmed like `_loop_sim`."""
+
+    def make():
+        s = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+        s.adopt_scene(nob_hill_scene)
+        for _ in range(300):
+            s.step()
+        return s
+
+    return make
+
+
+@pytest.mark.parametrize("scene", ["grid-loop", "nob-hill"])
+@pytest.mark.parametrize("kind", sorted(SCENARIOS))
+def test_every_hazard_stages_on_both_shipped_scenes(kind, scene, nob_hill_sim):
+    """Definition of done 1: every hazard stages, and every decline on the way
+    names its reason (`_stage_when_possible` checks that). The slowest,
+    `red_light_runner` on Nob Hill, first stages ~75 s in."""
+    sim = _loop_sim() if scene == "grid-loop" else nob_hill_sim()
+    _stage_when_possible(sim, kind)
+    assert kind in [e.code for e in sim.world.events]
+
+
+def test_oncoming_drift_declines_on_a_one_way_street(nob_hill_sim):
+    """24.5 % of the Nob Hill route by length has no oncoming lane."""
+    sim = nob_hill_sim()
+    lanes, route = sim.scene.lanes, sim.scene.ego_route
+    for _ in range(int(240.0 / DT)):
+        ego = sim.world.ego
+        road = lanes.road_at(route.project((ego.x, ego.y)) + ONCOMING_AHEAD_M)
+        if road.oneway or road.lanes_backward < 1:
+            break
+        sim.step()
+    else:
+        pytest.fail("the ego never had a one-way street 60 m ahead in 240 s")
+    outcome = inject(sim, "oncoming_drift")
+    assert outcome.ok is False
+    assert outcome.message == "oncoming_drift: one-way street, no oncoming lane"
