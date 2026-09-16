@@ -292,3 +292,45 @@ describe('pavement follows the kerb round a bend', () => {
     expect(missing).toHaveLength(0);
   });
 });
+
+describe('stop bars', () => {
+  /** A four-way crossroads of two-lane streets, optionally with devices. */
+  function crossroads(signs: SceneDescription['stop_signs']): SceneDescription {
+    const scene = curvyScene();
+    scene.roads = [
+      road('ew', [[-100, 0], [100, 0]]),
+      road('ns', [[0, -100], [0, 100]]),
+    ];
+    scene.stop_signs = signs;
+    return scene;
+  }
+
+  /** Thick transverse white bars: across an east-west road they are tall in y. */
+  const bars = (scene: SceneDescription) =>
+    tris(scene, 'lane-markings').filter((t) => {
+      const xs = t.p.map((p) => p[0]);
+      const ys = t.p.map((p) => p[1]);
+      const w = Math.max(...xs) - Math.min(...xs);
+      const h = Math.max(...ys) - Math.min(...ys);
+      // Stop bars are 0.5 m deep and a lane wide; lane lines are 0.12 m wide.
+      return (w > 0.3 && h > 2) || (h > 0.3 && w > 2);
+    });
+
+  it('paints none at a junction nothing controls', () => {
+    expect(bars(crossroads([]))).toHaveLength(0);
+  });
+
+  it('paints one per controlled approach, on that approach', () => {
+    // Eastbound traffic on `ew` arrives from the west; its sign faces west
+    // (heading pi) and stands on the right-hand (south) kerb before the junction.
+    const scene = crossroads([{ id: 'ss_eb', position: [-9, -5], heading: Math.PI }]);
+    const found = bars(scene);
+    expect(found.length).toBeGreaterThan(0);
+    for (const t of found) {
+      for (const [x, y] of t.p) {
+        expect(x).toBeLessThan(0); // west of the junction
+        expect(y).toBeLessThan(0.01); // across the eastbound (south) lane only
+      }
+    }
+  });
+});

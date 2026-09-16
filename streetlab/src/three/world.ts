@@ -229,6 +229,69 @@ function findCrossings(roads: Road[], lines: Polyline[]): Crossing[][] {
   return out;
 }
 
+/** How far from a device its governed junction may be, along the road. */
+const DEVICE_REACH_M = 40;
+/** How far off a road's centreline a device may stand and still govern it. */
+const DEVICE_SIDE_M = 15;
+const DEVICE_ALIGN_COS = Math.cos((35 * Math.PI) / 180);
+
+const approachKey = (road: number, crossing: number, dir: 1 | -1) => `${road}:${crossing}:${dir}`;
+
+/**
+ * Which junction approaches a stop sign or signal head governs, as
+ * `approachKey`s: `dir` +1 for traffic travelling the way the centreline runs.
+ *
+ * Worked out from the devices themselves, so it holds for every scene source
+ * alike. A device faces the traffic it governs, which therefore travels
+ * `heading + pi`; the road it governs is the nearest one running that way; and
+ * the junction is the crossing on that road nearest the device -- ahead of a
+ * stop sign, behind a signal pole that stands past the junction.
+ */
+function controlledApproaches(
+  scene: SceneDescription,
+  lines: Polyline[],
+  crossings: Crossing[][],
+): Set<string> {
+  const out = new Set<string>();
+  const devices = [...scene.stop_signs, ...scene.traffic_lights];
+  for (const d of devices) {
+    const tx = -Math.cos(d.heading);
+    const ty = -Math.sin(d.heading);
+    let best: { road: number; s: number; dir: 1 | -1; dist: number } | null = null;
+    scene.roads.forEach((road, i) => {
+      const line = lines[i];
+      const half = carriagewayHalfWidth(road);
+      for (let k = 1; k < line.points.length; k++) {
+        const [ax, ay] = line.points[k - 1];
+        const [bx, by] = line.points[k];
+        const len = line.cum[k] - line.cum[k - 1];
+        if (len < 1e-6) continue;
+        const ux = (bx - ax) / len;
+        const uy = (by - ay) / len;
+        const dot = ux * tx + uy * ty;
+        if (Math.abs(dot) < DEVICE_ALIGN_COS) continue;
+        const f = Math.max(0, Math.min(len, (d.position[0] - ax) * ux + (d.position[1] - ay) * uy));
+        const dist = Math.hypot(d.position[0] - (ax + ux * f), d.position[1] - (ay + uy * f));
+        if (dist > half + DEVICE_SIDE_M || (best && dist >= best.dist)) continue;
+        best = { road: i, s: line.cum[k - 1] + f, dir: dot > 0 ? 1 : -1, dist };
+      }
+    });
+    if (!best) continue;
+    const { road, s, dir } = best;
+    let pick = -1;
+    let pickGap = DEVICE_REACH_M;
+    crossings[road].forEach((c, ci) => {
+      const gap = Math.abs(c.s - s);
+      if (gap < pickGap) {
+        pick = ci;
+        pickGap = gap;
+      }
+    });
+    if (pick >= 0) out.add(approachKey(road, pick, dir));
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Road surface index                                                  */
 /* ------------------------------------------------------------------ */
@@ -582,6 +645,7 @@ export function buildWorld(scene: SceneDescription): World {
 
   const lines = scene.roads.map((r) => new Polyline(r.centerline));
   const crossings = findCrossings(scene.roads, lines);
+  const controlled = controlledApproaches(scene, lines, crossings);
 
   /* -------- road surface, kerbs and sidewalks -------- */
 
@@ -732,12 +796,15 @@ export function buildWorld(scene: SceneDescription): World {
       }
 
       // Stop bar across the approach lanes on the near side of a junction.
-      for (const c of crossings[i]) {
+      // Only where a sign or signal governs that approach: a bar is an
+      // instruction to stop, and painting one at every crossing told drivers
+      // to stop on the through street of every uncontrolled junction.
+      crossings[i].forEach((c, ci) => {
         for (const [lanes, from, sign] of [
           [forward, -h, 1],
           [backward, divide, -1],
         ] as const) {
-          if (lanes === 0) continue;
+          if (lanes === 0 || !controlled.has(approachKey(i, ci, sign))) continue;
           const at = c.s - sign * (c.reach + h * c.skew + 2.2);
           if (at < span.from || at > span.to) continue;
           solid(
@@ -747,7 +814,7 @@ export function buildWorld(scene: SceneDescription): World {
             lanes * w - 0.2,
           );
         }
-      }
+      });
     }
   });
 
