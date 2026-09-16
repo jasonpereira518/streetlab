@@ -10,6 +10,7 @@ import * as THREE from 'three/webgpu';
 import { color, float, mix, smoothstep, time, uniform, uv } from 'three/tsl';
 import type { Vec2 } from '../schema';
 import { color as tokens } from '../ui/theme';
+import type { HeightFn } from './terrain';
 
 const MAX_POINTS = 192;
 /** Height above the carriageway: clear of lane markings, still hugging it. */
@@ -99,7 +100,7 @@ export class PathRibbon {
    * perpendicular to the local tangent, so the ribbon keeps a constant width
    * through curves.
    */
-  update(polyline: Vec2[]): void {
+  update(polyline: Vec2[], ground: HeightFn | null = null): void {
     const n = Math.min(polyline.length, MAX_POINTS);
     if (n < 2) {
       this.mesh.visible = false;
@@ -147,10 +148,10 @@ export class PathRibbon {
 
       const a = i * 6;
       this.positions[a] = lx;
-      this.positions[a + 1] = RIDE_HEIGHT;
+      this.positions[a + 1] = RIDE_HEIGHT + (ground ? ground(lx, ly) : 0);
       this.positions[a + 2] = -ly;
       this.positions[a + 3] = rx;
-      this.positions[a + 4] = RIDE_HEIGHT;
+      this.positions[a + 4] = RIDE_HEIGHT + (ground ? ground(rx, ry) : 0);
       this.positions[a + 5] = -ry;
 
       const b = i * 4;

@@ -271,6 +271,9 @@ describe('crossing styles are painted as they are on the road', () => {
       stop_signs: [],
       traffic_lights: [],
       street_signs: [],
+      // Flat, so each band is one quad: on terrain a band is subdivided to
+      // follow the ground and this count would measure that instead.
+      terrain: null,
       crosswalks: [
         {
           id: 'cw',

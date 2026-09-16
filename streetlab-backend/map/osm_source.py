@@ -19,6 +19,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from map.cache import BundledExtracts, DiskCache, default_cache_dir
+from map.elevation import ElevationClient, HttpxTileFetcher
+from map.terrain import TERRAIN_CELL_M, grade
+from map.terrain import to_wire as terrain_to_wire
+from map.clearance import KeepOut, clear_trees, fit_road_widths
 from map.features import (
     build_buildings,
     build_crosswalks,
@@ -31,6 +35,7 @@ from map.features import (
 )
 from map.geocode import Geocoder, NominatimGeocoder, Place
 from map.lanes import (
+    drivable_ways,
     build_roads,
     build_route_graph,
     derive_lanes,
@@ -40,6 +45,7 @@ from map.lanes import (
 )
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
+from map.tags import passes_under
 from map.placement import faces_the_route
 from map.scene_build import STOP_LINE_SETBACK_M, BuiltScene
 from schema import (
@@ -153,6 +159,10 @@ def default_source() -> OsmSceneSource:
             HttpxFetcher(),
             DiskCache(default_cache_dir(), fallback=BundledExtracts(_bundled_dir())),
         ),
+        elevation=ElevationClient(
+            HttpxTileFetcher(),
+            DiskCache(default_cache_dir(), fallback=BundledExtracts(_bundled_dir())),
+        ),
     )
 
 
@@ -162,9 +172,13 @@ class OsmSceneSource:
         geocoder: Geocoder,
         overpass: OverpassClient,
         locations: tuple[LocationSpec, ...] = BUNDLED,
+        elevation: ElevationClient | None = None,
     ) -> None:
         self.geocoder = geocoder
         self.overpass = overpass
+        # None builds flat ground, which is what every test that predates
+        # terrain expects and what a scene without elevation data falls back to.
+        self.elevation = elevation
         # `build_location` (Task 4) mutates this from the executor thread
         # while `scenarios()`/`_find()` read it from the sim thread -- every
         # access goes through `_lock` so a reader never observes a state
@@ -245,13 +259,25 @@ class OsmSceneSource:
         origin = LatLon(lat=place.lat, lon=place.lon)
         graph = self.overpass.graph(BBox.around(place.lat, place.lon, spec.radius_m))
 
-        roads = build_roads(graph, origin)
         ego_route = select_ego_route(build_route_graph(graph, origin), (0.0, 0.0))
-        lights = build_traffic_lights(graph, origin)
         buildings = build_buildings(graph, origin)
+        # Roads first give way to the footprints beside them; everything placed
+        # after that is refereed against the roads as they will be drawn.
+        under = frozenset(f"osm_w{w.id}" for w in drivable_ways(graph) if passes_under(w.tags))
+        roads = fit_road_widths(build_roads(graph, origin), buildings, under)
         crosswalks = build_crosswalks(graph, origin)
-        stop_signs = build_stop_signs(graph, origin)
-        trees = build_trees(graph, origin, buildings)
+        keep_out = KeepOut(roads, crosswalks, buildings)
+        lights = build_traffic_lights(graph, origin, keep_out)
+        stop_signs = build_stop_signs(graph, origin, keep_out)
+        trees = clear_trees(build_trees(graph, origin, buildings), keep_out)
+
+        bounds = self._bounds(roads, ego_route, buildings, trees, crosswalks, stop_signs, lights)
+        terrain = None
+        if self.elevation is not None:
+            field = self.elevation.heightfield(
+                origin, (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y), TERRAIN_CELL_M
+            )
+            terrain = terrain_to_wire(grade(field, roads, under))
 
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
@@ -261,7 +287,7 @@ class OsmSceneSource:
             location=place.display_name,
             attribution=ATTRIBUTION,
             origin=Origin(lat=place.lat, lon=place.lon),
-            bounds=self._bounds(roads, ego_route, buildings, trees, crosswalks, stop_signs, lights),
+            bounds=bounds,
             roads=roads,
             buildings=buildings,
             crosswalks=crosswalks,
@@ -269,6 +295,7 @@ class OsmSceneSource:
             stop_signs=stop_signs,
             trees=trees,
             street_signs=[],
+            terrain=terrain,
             # Filled in by `build`; see the note there on why it cannot be done
             # inline without the builder re-entering itself.
             catalog=[],

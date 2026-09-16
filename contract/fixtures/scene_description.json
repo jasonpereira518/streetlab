@@ -1,6 +1,6 @@
 {
   "type": "scene_description",
-  "protocol": 6,
+  "protocol": 7,
   "scene_id": "synthetic-grid:grid-merge",
   "scenario_id": "grid-merge",
   "name": "Hyde Street Merge",
@@ -3594,6 +3594,7 @@
       "kind": "speed_limit"
     }
   ],
+  "terrain": null,
   "catalog": [
     {
       "id": "grid-loop",

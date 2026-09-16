@@ -455,6 +455,33 @@ class LaneSet:
     def may_change_at(self, s: float, direction: int) -> bool:
         return direction in self.legal_at(s)
 
+    def legal_for(self, s: float, direction: int, horizon_m: float) -> float:
+        """How far past `s` the lane one step `direction` over keeps existing.
+
+        0 when it does not exist at `s` at all, and `horizon_m` when it runs at
+        least that far. What a car IN that lane needs in order to stop before
+        the kerb rather than discover the lane has ended by standing on the
+        pavement: `may_change_at` answers "here", never "for how much longer".
+        """
+        if not self.may_change_at(s, direction):
+            return 0.0
+        route = self.ego.route
+        cum = route._cum
+        segments = len(cum) - 1
+        start = route.normalise(s)
+        k = min(max(bisect_right(cum, start) - 1, 0), segments - 1)
+        dist = cum[k + 1] - start
+        while dist < horizon_m:
+            k += 1
+            if k >= segments:
+                if not route.closed:
+                    return horizon_m
+                k = 0
+            if direction not in self.legal_along[min(k, len(self.legal_along) - 1)]:
+                return dist
+            dist += cum[k + 1] - cum[k]
+        return horizon_m
+
 
 def _menger_curvature(a: Point, b: Point, c: Point) -> float:
     """Reciprocal radius of the circle through three points; 0 if collinear."""

@@ -196,7 +196,12 @@ function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof
 }
 
 export interface DetectorCamera {
-  update(pose: { x: number; z: number; heading: number }): void;
+  /**
+   * `ground` is the terrain height under the car (0 on flat ground). The
+   * camera rides that high above it, but reports its height ABOVE the ground,
+   * because the backend casts detections onto a local ground plane at z = 0.
+   */
+  update(pose: { x: number; z: number; heading: number; ground?: number }): void;
   capture(): Promise<{ data: string; camera: CameraParams } | null>;
   /**
    * True only for the brief window where the shared renderer's render target
@@ -239,6 +244,7 @@ export function createDetectorCamera(
   // `capture`: the heading is known exactly here, and reading it back out of
   // matrixWorld columns is sign-error bait for no benefit.
   let heading = 0;
+  let groundY = 0;
   // Set once a readback timeout has ever fired, so a stuck GPU that times out
   // on every subsequent capture (one per DETECTOR_FRAME.intervalMs) logs a
   // single warning instead of spamming the console at ~10 Hz.
@@ -247,11 +253,12 @@ export function createDetectorCamera(
   return {
     update(pose) {
       heading = pose.heading;
+      groundY = pose.ground ?? 0;
       const fx = Math.cos(pose.heading);
       const fz = -Math.sin(pose.heading);
       camera.position.set(
         pose.x + fx * MOUNT_FORWARD,
-        MOUNT_HEIGHT,
+        groundY + MOUNT_HEIGHT,
         pose.z + fz * MOUNT_FORWARD,
       );
       // Built from the same constants `MOUNT_PITCH_RAD` is derived from, so
@@ -260,7 +267,7 @@ export function createDetectorCamera(
       // reintroduce the drift the derivation exists to prevent.
       camera.lookAt(
         pose.x + fx * MOUNT_LOOK_DISTANCE,
-        MOUNT_HEIGHT - MOUNT_LOOK_DROP,
+        groundY + MOUNT_HEIGHT - MOUNT_LOOK_DROP,
         pose.z + fz * MOUNT_LOOK_DISTANCE,
       );
     },
@@ -366,7 +373,11 @@ export function createDetectorCamera(
           // Pitch is the mount's, not the camera object's: it is fixed by
           // construction (see `MOUNT_PITCH_RAD`) and, like `heading` above,
           // known exactly here rather than dug back out of matrixWorld.
-          camera: cameraParamsFromThree(camera.position, heading, MOUNT_PITCH_RAD),
+          camera: cameraParamsFromThree(
+            { x: camera.position.x, y: camera.position.y - groundY, z: camera.position.z },
+            heading,
+            MOUNT_PITCH_RAD,
+          ),
         };
       } finally {
         // Fallback only: normally the early restore above already ran. This

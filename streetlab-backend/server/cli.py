@@ -31,6 +31,7 @@ from map.cache import DiskCache, default_cache_dir
 from map.geocode import GeocodeError, NominatimGeocoder
 from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource, default_source
+from map.elevation import ElevationClient, HttpxTileFetcher
 from map.overpass import HttpxFetcher, OverpassClient, OverpassError
 from map.scene_build import SceneSource, SyntheticGrid, TrafficOverrideError
 from perception.capture import CaptureSink
@@ -353,6 +354,7 @@ def _build_source(address: str, radius: float) -> OsmSceneSource:
         NominatimGeocoder(),
         OverpassClient(HttpxFetcher(), DiskCache(default_cache_dir())),
         locations=(spec,),
+        elevation=ElevationClient(HttpxTileFetcher(), DiskCache(default_cache_dir())),
     )
 
 

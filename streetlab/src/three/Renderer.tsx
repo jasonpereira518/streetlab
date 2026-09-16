@@ -25,6 +25,7 @@ import type { SimStoreState } from '../store/simStore';
 import { color as tokens, lighting } from '../ui/theme';
 import type { LightingPreset } from '../ui/theme';
 import { buildWorld } from './world';
+import type { HeightFn } from './terrain';
 import type { World } from './world';
 import { EgoVehicle } from './ego';
 import { TrafficFleet } from './agents';
@@ -410,12 +411,20 @@ function mount(
     applyLighting(String(params.time_of_day ?? 'midday'));
   };
 
+  let ground_: HeightFn | null = null;
+
   const rebuildWorld = (state: SimStoreState) => {
     if (!state.scene || state.sceneEpoch === builtEpoch) return;
     world?.dispose();
     if (world) scene.remove(world.root);
     world = buildWorld(state.scene);
     scene.add(world.root);
+    // Everything that moves over the ground asks the world where it is. On a
+    // flat scene that is null and nothing changes; on a hilly one the flat
+    // backdrop plane drops below the lowest ground, so it can never cover it.
+    ground_ = state.scene.terrain ? world.heightAt : null;
+    ground.mesh.position.y = Math.min(-0.01, world.groundMin - 1);
+    cam.setGround(ground_);
     builtEpoch = state.sceneEpoch;
     buildings = world.root.getObjectByName('buildings') ?? null;
     applyLayers(state.layers);
@@ -502,16 +511,20 @@ function mount(
   let captureSeq = 0;
 
   const applyFrame = (frame: StateUpdate, dt: number) => {
-    ego.setPose(frame.ego.pose);
+    ego.setPose(frame.ego.pose, ground_);
     ego.setAttitude(frame.ego.steering_angle, frame.ego.accel_mps2);
-    fleet.update(frame.detections, dt);
-    ribbon.update(frame.plan.polyline);
-    hazards.update(frame.detections, cam.camera);
-    shadowBoxes.update(frame.detections_shadow);
+    fleet.update(frame.detections, dt, ground_);
+    ribbon.update(frame.plan.polyline, ground_);
+    hazards.update(frame.detections, cam.camera, ground_);
+    shadowBoxes.update(frame.detections_shadow, ground_);
     world?.updateSignals(frame.signals, frame.t);
 
     // Keep the shadow frustum centred on the car so a 160 m box is enough.
-    sunTarget.position.set(frame.ego.pose.x, 0, -frame.ego.pose.y);
+    sunTarget.position.set(
+      frame.ego.pose.x,
+      ground_ ? ground_(frame.ego.pose.x, frame.ego.pose.y) : 0,
+      -frame.ego.pose.y,
+    );
     sun.position.copy(sunTarget.position).addScaledVector(sunDir, 150);
   };
 
@@ -568,6 +581,7 @@ function mount(
           // for the sun target above.
           z: -frame.ego.pose.y,
           heading: frame.ego.pose.heading,
+          ground: ground_ ? ground_(frame.ego.pose.x, frame.ego.pose.y) : 0,
         });
         const capturedAtT = frame.t;
         const seq = captureSeq++;

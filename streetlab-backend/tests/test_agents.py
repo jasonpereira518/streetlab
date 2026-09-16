@@ -263,3 +263,23 @@ def test_an_agent_with_a_lifetime_retires_when_it_runs_out(built):
     for _ in range(int(0.3 * 60)):
         traffic.step(1 / 60)
     assert victim not in traffic.agents
+
+
+def test_a_crowded_scene_never_spawns_two_vehicles_on_top_of_each_other(built):
+    """Agents were spread evenly and then jittered by up to 12 m each way, with
+    nothing checking the result. On a crowded loop two neighbours jittered
+    toward each other land inside one another's bodywork -- and the ego starts
+    at s = 0, which is inside the jitter of whichever agent wraps round to it.
+    """
+    route = built.ego_route
+    traffic = ScriptedTraffic(
+        routes=[route] * 24, speed_limit_mps=built.speed_limit_mps, seed=3
+    )
+    loop = route.length_m
+    occupants = [(a.s, a.size.length, a.id) for a in traffic.agents] + [(0.0, 4.7, "ego")]
+    for i, (s_a, len_a, id_a) in enumerate(occupants):
+        for s_b, len_b, id_b in occupants[i + 1 :]:
+            apart = abs(route.signed_gap(s_a, s_b))
+            assert apart >= (len_a + len_b) / 2 + 1.0, (
+                f"{id_a} and {id_b} spawned {apart:.1f} m apart, centre to centre"
+            )

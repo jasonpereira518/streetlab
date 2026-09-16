@@ -55,11 +55,29 @@ def _local_points(graph: OsmGraph, way: OsmWay, origin: LatLon) -> list[tuple[fl
     return [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)]
 
 
-def _simplify(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+def _simplify(
+    points: list[tuple[float, float]], pinned: Sequence[int] = ()
+) -> list[tuple[float, float]]:
+    """Douglas-Peucker, never removing a point whose index is in `pinned`.
+
+    Pinned points are junction nodes. Simplifying a way on its own used to
+    drop a node it shares with a side street whenever the street was straight
+    enough there, which left the side street ending up to a metre off the road
+    it joins: the renderer found no crossing, so no marking gap, pavement
+    corner or stop bar. Splitting at every pin and simplifying the runs
+    between them keeps each junction exactly where both ways put it.
+    """
     if len(points) < 3:
         return points
-    line = LineString(points).simplify(SIMPLIFY_TOLERANCE_M, preserve_topology=False)
-    return [(float(x), float(y)) for x, y in line.coords]
+    cuts = sorted({0, len(points) - 1, *(i for i in pinned if 0 < i < len(points) - 1)})
+    out: list[tuple[float, float]] = [points[0]]
+    for a, b in zip(cuts, cuts[1:]):
+        run = points[a : b + 1]
+        if len(run) >= 3:
+            line = LineString(run).simplify(SIMPLIFY_TOLERANCE_M, preserve_topology=False)
+            run = [(float(x), float(y)) for x, y in line.coords]
+        out.extend(run[1:])
+    return out
 
 
 def _is_degenerate(points: list[tuple[float, float]]) -> bool:
@@ -91,11 +109,18 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
     """Every drivable way as a wire `Road`, in local metres."""
     roads: list[Road] = []
     dropped = 0
-    for way in drivable_ways(graph):
+    ways = drivable_ways(graph)
+    uses: dict[int, int] = {}
+    for way in ways:
+        for nid in set(way.node_ids):
+            uses[nid] = uses.get(nid, 0) + 1
+    for way in ways:
         cls = road_class(way.tags)
         if cls is None:
             continue  # unreachable: drivable_ways() already filtered on this
-        points = _simplify(_local_points(graph, way, origin))
+        resolved = [nid for nid in way.node_ids if nid in graph.nodes]
+        pinned = [i for i, nid in enumerate(resolved) if uses.get(nid, 0) > 1]
+        points = _simplify(_local_points(graph, way, origin), pinned)
         if len(points) < 2 or _is_degenerate(points):
             dropped += 1
             continue
