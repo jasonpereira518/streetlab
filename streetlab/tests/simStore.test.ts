@@ -285,3 +285,85 @@ describe('loadLocation with a destination', () => {
     expect(sent).not.toHaveProperty('destination');
   });
 });
+
+describe('suggestAddress', () => {
+  it('sends a suggest_address command and does not log it', () => {
+    const h = createHarness();
+    h.emitScene();
+    const id = useSimStore.getState().suggestAddress('nob');
+
+    const sent = h.sent.find((c) => c.cmd === 'suggest_address');
+    expect(sent).toMatchObject({ id, query: 'nob' });
+    expect(useSimStore.getState().commandLog).toHaveLength(0);
+  });
+
+  it('stores a reply keyed by its request id', () => {
+    const h = createHarness();
+    h.emitScene();
+    const id = useSimStore.getState().suggestAddress('nob');
+
+    h.emit({
+      type: 'address_suggestions',
+      protocol: 1,
+      id,
+      query: 'nob',
+      suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+    });
+
+    expect(useSimStore.getState().addressSuggestions[id]).toEqual({
+      query: 'nob',
+      items: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+    });
+  });
+
+  it('keeps two concurrent requests (start + destination fields) separate', () => {
+    const h = createHarness();
+    h.emitScene();
+    const startId = useSimStore.getState().suggestAddress('nob');
+    const destId = useSimStore.getState().suggestAddress('fish');
+
+    h.emit({
+      type: 'address_suggestions',
+      protocol: 1,
+      id: destId,
+      query: 'fish',
+      suggestions: [{ label: "Fisherman's Wharf, San Francisco, CA", lat: 37.8, lon: -122.4 }],
+    });
+    h.emit({
+      type: 'address_suggestions',
+      protocol: 1,
+      id: startId,
+      query: 'nob',
+      suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+    });
+
+    const s = useSimStore.getState();
+    expect(s.addressSuggestions[startId].items[0].label).toBe('Nob Hill, San Francisco, CA');
+    expect(s.addressSuggestions[destId].items[0].label).toBe(
+      "Fisherman's Wharf, San Francisco, CA",
+    );
+  });
+
+  it('evicts the oldest entries once past the cap, keeping recent ones', () => {
+    const h = createHarness();
+    h.emitScene();
+    const ids = Array.from({ length: 10 }, (_, i) =>
+      useSimStore.getState().suggestAddress(`q${i}`),
+    );
+    ids.forEach((id, i) => {
+      h.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id,
+        query: `q${i}`,
+        suggestions: [],
+      });
+    });
+
+    const stored = useSimStore.getState().addressSuggestions;
+    expect(Object.keys(stored).length).toBeLessThanOrEqual(8);
+    // The most recent request must have survived eviction.
+    expect(stored[ids[ids.length - 1]]).toBeDefined();
+    expect(stored[ids[0]]).toBeUndefined();
+  });
+});

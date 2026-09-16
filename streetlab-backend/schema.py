@@ -530,6 +530,16 @@ class LoadLocation(_Cmd):
     destination: Annotated[str, Field(min_length=1)] | None = None
 
 
+class SuggestAddress(_Cmd):
+    """Ask for as-you-type address candidates. Answered directly by the
+    server's connection handler (see `server/ws_server.py`), never routed
+    through the sim thread's command queue -- same reason `camera_frame`
+    bypasses it: a network geocode call must not stall the physics step."""
+
+    cmd: Literal["suggest_address"] = "suggest_address"
+    query: Annotated[str, Field(min_length=1)]
+
+
 class SetParam(_Cmd):
     cmd: Literal["set_param"] = "set_param"
     key: str
@@ -577,6 +587,7 @@ Command = Annotated[
         Reset,
         LoadScenario,
         LoadLocation,
+        SuggestAddress,
         SetParam,
         ToggleLayer,
         SetCamera,
@@ -604,12 +615,31 @@ class Ack(Wire):
     t: Num
 
 
+class AddressSuggestion(Wire):
+    label: str
+    lat: Num
+    lon: Num
+
+
+class AddressSuggestions(Wire):
+    """Reply to `SuggestAddress`. `id` echoes the command's id -- like `Ack`,
+    but its own message type rather than a rider on `Ack` because it carries
+    a payload and, unlike an ack, is never paired with a command outcome."""
+
+    type: Literal["address_suggestions"] = "address_suggestions"
+    protocol: int = PROTOCOL_VERSION
+    id: str
+    query: str
+    suggestions: list[AddressSuggestion]
+
+
 # --------------------------------------------------------------------------- #
 # Envelope + helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 ServerMessage = Annotated[
-    Union[SceneDescription, StateUpdate, Ack], Field(discriminator="type")
+    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions],
+    Field(discriminator="type"),
 ]
 
 _COMMAND_ADAPTER: TypeAdapter[Any] = TypeAdapter(Command)

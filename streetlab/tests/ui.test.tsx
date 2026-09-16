@@ -537,6 +537,95 @@ describe('Location search box', () => {
   });
 });
 
+describe('Address suggestions', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not request suggestions for a query shorter than the minimum length', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'no' } });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(harness.sent.filter((c) => c.cmd === 'suggest_address')).toHaveLength(0);
+  });
+
+  it('requests suggestions after the debounce and fills the field on selection', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'nob' } });
+    fireEvent.focus(box);
+
+    // Nothing fires before the debounce elapses.
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(harness.sent.filter((c) => c.cmd === 'suggest_address')).toHaveLength(0);
+
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    const suggestCmd = harness.sent.find((c) => c.cmd === 'suggest_address');
+    expect(suggestCmd).toMatchObject({ query: 'nob' });
+
+    act(() => {
+      harness!.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id: suggestCmd!.id,
+        query: 'nob',
+        suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+      });
+    });
+
+    const option = screen.getByRole('option', { name: 'Nob Hill, San Francisco, CA' });
+    fireEvent.mouseDown(option);
+
+    expect(box.value).toBe('Nob Hill, San Francisco, CA');
+    expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  it('never shows a stale reply that no longer matches the box, even if it arrives late', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'nob' } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    const staleCmd = harness.sent.find((c) => c.cmd === 'suggest_address');
+
+    // The user kept typing before the first reply ever arrived.
+    fireEvent.change(box, { target: { value: 'nobody home' } });
+
+    act(() => {
+      harness!.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id: staleCmd!.id,
+        query: 'nob',
+        suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+      });
+    });
+
+    expect(screen.queryByRole('option')).toBeNull();
+  });
+});
+
 describe('Scene attribution', () => {
   it('shows the OpenStreetMap attribution when the scene carries one', () => {
     harness = createHarness();

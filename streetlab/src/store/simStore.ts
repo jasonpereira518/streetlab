@@ -19,6 +19,7 @@
 import { create } from 'zustand';
 import type {
   Ack,
+  AddressSuggestion,
   CameraView,
   Command,
   CommandInput,
@@ -263,6 +264,15 @@ export interface SimStoreState {
    * `scene_description`, so it never carries over from a previous trip.
    */
   tripComplete: boolean;
+  /**
+   * Replies to in-flight `suggest_address` requests, keyed by the request's
+   * own command id — not by query text, so two fields typing similar
+   * addresses at once (start + destination) never clobber each other's
+   * results. Callers look up their own id and ignore the rest; entries are
+   * pruned oldest-first past `MAX_ADDRESS_SUGGESTIONS` so a long session
+   * typing many addresses doesn't grow this without bound.
+   */
+  addressSuggestions: Record<string, { query: string; items: AddressSuggestion[] }>;
 
   /* mirrored frame fields (only updated on change) */
   paused: boolean;
@@ -296,6 +306,9 @@ export interface SimStoreState {
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
   loadLocation(query: string, destination?: string): void;
+  /** Fire off a `suggest_address` request and return its command id, so the
+   * caller can look its result up in `addressSuggestions` once it arrives. */
+  suggestAddress(query: string): string;
   setParam(key: string, value: ParamValue): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
@@ -309,6 +322,10 @@ export interface SimStoreState {
 
 let transportRef: Transport | null = null;
 let commandSeq = 0;
+
+/** Bounds `addressSuggestions` the same way `commandLog`'s `.slice(0, 50)`
+ * bounds itself — small, since only the two search fields ever populate it. */
+const MAX_ADDRESS_SUGGESTIONS = 8;
 
 export const useSimStore = create<SimStoreState>((set, get) => ({
   status: 'idle',
@@ -324,6 +341,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   locationProgress: null,
   locationError: null,
   tripComplete: false,
+  addressSuggestions: {},
 
   paused: false,
   assistActive: false,
@@ -400,7 +418,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     // seconds, permanently hiding diagnostics like LayersTab's last-toggle
     // readout, and would force every commandLog subscriber to re-render at
     // 10 Hz forever since `send()` allocates a new array on every call.
-    if (command.cmd === 'camera_frame') return id;
+    // `suggest_address` is excluded for the same reason at a smaller
+    // scale: it fires on every debounced keystroke in an address field and
+    // never gets an ack, so it would just be noise among real commands.
+    if (command.cmd === 'camera_frame' || command.cmd === 'suggest_address') return id;
     set((s) => ({
       commandLog: [
         { id, cmd: command.cmd, at: Date.now() },
@@ -439,6 +460,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       query: trimmedQuery,
       ...(trimmedDest ? { destination: trimmedDest } : {}),
     });
+  },
+
+  suggestAddress(query) {
+    return get().send({ cmd: 'suggest_address', query });
   },
 
   setParam(key, value) {
@@ -607,6 +632,24 @@ function applyServerMessage(
         return;
       }
       set({ lastAck: msg });
+      return;
+
+    case 'address_suggestions':
+      set((s) => {
+        const ids = Object.keys(s.addressSuggestions);
+        const evicted =
+          ids.length >= MAX_ADDRESS_SUGGESTIONS
+            ? Object.fromEntries(
+                ids.slice(ids.length - MAX_ADDRESS_SUGGESTIONS + 1).map((id) => [id, s.addressSuggestions[id]]),
+              )
+            : s.addressSuggestions;
+        return {
+          addressSuggestions: {
+            ...evicted,
+            [msg.id]: { query: msg.query, items: msg.suggestions },
+          },
+        };
+      });
       return;
   }
 }

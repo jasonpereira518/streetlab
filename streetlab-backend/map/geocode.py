@@ -47,6 +47,33 @@ class Place:
 class Geocoder(Protocol):
     def lookup(self, query: str) -> Place: ...
 
+    def suggest(self, query: str, limit: int = 5) -> list[Place]: ...
+
+
+def _parse_entry(entry: object) -> Place | None:
+    """One Nominatim result -> `Place`, or `None` if it is not usable.
+
+    Shared by `parse_nominatim` (single best result) and
+    `parse_nominatim_suggestions` (every usable result, in order), so the
+    two never disagree about what counts as a usable candidate.
+    """
+    if not isinstance(entry, dict):
+        return None
+    try:
+        lat = float(entry["lat"])
+        lon = float(entry["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    # float() also accepts "nan"/"inf"/"-inf" and plain out-of-range values
+    # (e.g. lat=137.5); none of them is a usable point on Earth, and a bad
+    # origin here would propagate into every downstream projection.
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+        return None
+    name = entry.get("display_name")
+    if not isinstance(name, str) or not name.strip():
+        name = f"{lat}, {lon}"
+    return Place(lat=lat, lon=lon, display_name=name)
+
 
 def parse_nominatim(payload: object) -> Place:
     """The best usable result of a Nominatim response.
@@ -65,33 +92,25 @@ def parse_nominatim(payload: object) -> Place:
     if not isinstance(payload, list) or not payload:
         raise GeocodeNotFound("no results")
 
-    last_error: Exception | None = None
     for entry in payload:
-        if not isinstance(entry, dict):
-            last_error = GeocodeNotFound("unexpected result shape")
-            continue
-        try:
-            lat = float(entry["lat"])
-            lon = float(entry["lon"])
-        except (KeyError, TypeError, ValueError) as exc:
-            last_error = GeocodeNotFound(f"unusable coordinates: {exc}")
-            continue
-        # float() also accepts "nan"/"inf"/"-inf" and plain out-of-range
-        # values (e.g. lat=137.5); none of them is a usable point on Earth,
-        # and a bad origin here would propagate into every downstream
-        # projection.
-        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
-            last_error = GeocodeNotFound(f"coordinates out of range: lat={lat}, lon={lon}")
-            continue
-        name = entry.get("display_name")
-        if not isinstance(name, str) or not name.strip():
-            name = f"{lat}, {lon}"
-        return Place(lat=lat, lon=lon, display_name=name)
+        place = _parse_entry(entry)
+        if place is not None:
+            return place
 
-    log.warning(
-        "no usable result among %d Nominatim candidate(s): %s", len(payload), last_error
-    )
-    raise GeocodeNotFound("no usable result in payload") from last_error
+    log.warning("no usable result among %d Nominatim candidate(s)", len(payload))
+    raise GeocodeNotFound("no usable result in payload")
+
+
+def parse_nominatim_suggestions(payload: object) -> list[Place]:
+    """Every usable result of a Nominatim response, relevance-ordered.
+
+    Unlike `parse_nominatim`, an empty or all-unusable payload is not an
+    error here -- "nothing to suggest yet" is the normal state for a query
+    the user is still typing, not a failure worth raising over.
+    """
+    if not isinstance(payload, list):
+        return []
+    return [p for entry in payload if (p := _parse_entry(entry)) is not None]
 
 
 class NominatimGeocoder:
@@ -115,14 +134,14 @@ class NominatimGeocoder:
                 time.sleep(wait)
             self._last_call = time.monotonic()
 
-    def raw(self, query: str) -> list:
+    def raw(self, query: str, limit: int = 1) -> list:
         import httpx
 
         self._throttle()
         try:
             response = httpx.get(
                 self.url,
-                params={"q": query, "format": "json", "limit": 1},
+                params={"q": query, "format": "json", "limit": limit},
                 headers={"User-Agent": USER_AGENT},
                 timeout=15.0,
             )
@@ -134,6 +153,22 @@ class NominatimGeocoder:
     def lookup(self, query: str) -> Place:
         return parse_nominatim(self.raw(query))
 
+    def suggest(self, query: str, limit: int = 5) -> list[Place]:
+        """Candidates for an as-you-type address field.
+
+        Deliberately does not raise `GeocodeUnavailable` on a transport
+        failure: a dropped keystroke-driven request should just show no
+        dropdown, not surface an error banner over what the user hasn't
+        even submitted yet. `lookup()` keeps the stricter behaviour because
+        a submitted `load_location` is a real request that deserves a real
+        failure message.
+        """
+        try:
+            return parse_nominatim_suggestions(self.raw(query, limit=limit))
+        except GeocodeUnavailable:
+            log.warning("suggest() couldn't reach Nominatim for %r", query)
+            return []
+
 
 class StubGeocoder:
     """A fixed answer, for tests and for bundled offline locations."""
@@ -143,3 +178,6 @@ class StubGeocoder:
 
     def lookup(self, query: str) -> Place:
         return self.place
+
+    def suggest(self, query: str, limit: int = 5) -> list[Place]:
+        return [self.place]

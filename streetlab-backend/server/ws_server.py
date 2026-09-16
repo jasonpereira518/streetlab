@@ -28,14 +28,29 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
+from map.geocode import Geocoder
 from perception.capture import label_frame
 from perception.frames import CameraFrame
-from schema import PROTOCOL_VERSION, CameraFrameCmd, SceneDescription, StateUpdate, format_issues
+from schema import (
+    PROTOCOL_VERSION,
+    AddressSuggestion,
+    AddressSuggestions,
+    CameraFrameCmd,
+    SceneDescription,
+    StateUpdate,
+    SuggestAddress,
+    format_issues,
+)
 from sim.loop import CommandOutcome, SimLoop, make_ack
 
 log = logging.getLogger("streetlab.server")
 
 DEFAULT_TICK_HZ = 60.0
+# Nominatim's own policy is one request/second; a keystroke-driven field
+# fires far faster than that, so results are capped small rather than
+# widened -- five candidates is plenty for a dropdown and keeps each answer
+# a light `asyncio.to_thread` hop instead of a multi-second one.
+SUGGESTION_LIMIT = 5
 
 
 def _rss_mb() -> float:
@@ -48,7 +63,9 @@ def _rss_mb() -> float:
     return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
 
 
-def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
+def create_app(
+    loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ, geocoder: Geocoder | None = None
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         loop.start()
@@ -96,11 +113,11 @@ def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
     # endpoint.
     @app.websocket("/")
     async def root(ws: WebSocket) -> None:
-        await _serve(ws, loop, tick_hz, clients)
+        await _serve(ws, loop, tick_hz, clients, geocoder)
 
     @app.websocket("/ws")
     async def ws_path(ws: WebSocket) -> None:
-        await _serve(ws, loop, tick_hz, clients)
+        await _serve(ws, loop, tick_hz, clients, geocoder)
 
     return app
 
@@ -108,9 +125,12 @@ def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
 class _Connection:
     """One client. Owns its own `seq` counter and its own outbound ordering."""
 
-    def __init__(self, ws: WebSocket, loop: SimLoop, tick_hz: float) -> None:
+    def __init__(
+        self, ws: WebSocket, loop: SimLoop, tick_hz: float, geocoder: Geocoder | None = None
+    ) -> None:
         self.ws = ws
         self.loop = loop
+        self.geocoder = geocoder
         self.period = 1.0 / tick_hz
         self.seq = 0
         # Serialises the streaming task against command replies, so a scene and
@@ -204,6 +224,15 @@ class _Connection:
             self._ingest_frame(raw)
             return
 
+        # Same bypass as `camera_frame`, for the same reason: a geocode call
+        # is network I/O, and the sim thread's command queue must never wait
+        # on the network. Unlike `camera_frame` this does reply -- just with
+        # its own message type instead of an ack, since there is no command
+        # outcome to report, only a payload.
+        if raw.get("cmd") == "suggest_address":
+            await self._suggest_address(raw)
+            return
+
         command_id = raw.get("id")
         command_name = raw.get("cmd")
         outcome = await self._apply(raw)
@@ -228,6 +257,38 @@ class _Connection:
         except asyncio.TimeoutError:
             log.error("simulation did not answer command in time: %r", raw)
             return CommandOutcome(ok=False, message="simulation busy")
+
+    async def _suggest_address(self, raw: dict) -> None:
+        """Answer a `suggest_address` with candidates, or an empty list.
+
+        Never fails loudly: a malformed command, a missing geocoder (the
+        synthetic scenarios have none), or a Nominatim outage all resolve to
+        `suggestions: []` rather than a dropped connection or a surfaced
+        error over what the user is still typing.
+        """
+        try:
+            cmd = SuggestAddress.model_validate(raw)
+        except ValidationError as exc:
+            log.warning("dropping malformed suggest_address: %s", format_issues(exc))
+            return
+
+        places = []
+        if self.geocoder is not None:
+            # `Geocoder.suggest` calls out to Nominatim (rate-limited to 1
+            # req/s) and must not run on the event loop -- `to_thread` keeps
+            # a burst of keystrokes from stalling every other connection's
+            # frame stream.
+            places = await asyncio.to_thread(self.geocoder.suggest, cmd.query, SUGGESTION_LIMIT)
+
+        await self.send_model(
+            AddressSuggestions(
+                id=cmd.id,
+                query=cmd.query,
+                suggestions=[
+                    AddressSuggestion(label=p.display_name, lat=p.lat, lon=p.lon) for p in places
+                ],
+            )
+        )
 
     def _ingest_frame(self, raw: dict) -> None:
         """Validate, decode and hand off one camera frame. Never acks, never raises.
@@ -344,11 +405,17 @@ class _Connection:
             log.exception("capture failed for frame t=%.3f; dropping", cmd.t)
 
 
-async def _serve(ws: WebSocket, loop: SimLoop, tick_hz: float, clients: dict[str, int]) -> None:
+async def _serve(
+    ws: WebSocket,
+    loop: SimLoop,
+    tick_hz: float,
+    clients: dict[str, int],
+    geocoder: Geocoder | None = None,
+) -> None:
     await ws.accept()
     clients["count"] += 1
     try:
-        conn = _Connection(ws, loop, tick_hz)
+        conn = _Connection(ws, loop, tick_hz, geocoder)
 
         try:
             await conn.send_model(loop.sim.scene_description())

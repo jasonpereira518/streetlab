@@ -4,10 +4,139 @@
  * from the server, so the sidebar has no knowledge of the mock.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { ScenarioSummary } from '../schema';
+import type { AddressSuggestion, ScenarioSummary } from '../schema';
 import { useSimStore } from '../store/simStore';
 import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon, SearchIcon } from './Icons';
 import { alpha, color } from './theme';
+
+/** Debounce before an as-you-type address fires a `suggest_address` request.
+ * Short enough to feel responsive, long enough that a fast typist doesn't
+ * spend one Nominatim round trip per keystroke. */
+const SUGGEST_DEBOUNCE_MS = 250;
+/** Below this length a query is either empty or too short to narrow down
+ * real candidates — Nominatim's own results get noisy well before this. */
+const MIN_SUGGEST_LENGTH = 3;
+
+/**
+ * A text input with an as-you-type dropdown of address candidates.
+ *
+ * Fetching is keyed by the store's own `suggest_address` request id (see
+ * `simStore.ts`'s `addressSuggestions`), not by query text — so this field
+ * and its sibling (start vs. destination) never show each other's results
+ * even if both happen to be typing something that matches. Staleness during
+ * the debounce window is handled the same way: `reply.query === trimmed`
+ * hides a response that no longer matches what's in the box.
+ */
+function AddressField({
+  value,
+  onChange,
+  onSelect,
+  placeholder,
+  ariaLabel,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onSelect: (label: string) => void;
+  placeholder: string;
+  ariaLabel: string;
+  disabled: boolean;
+}) {
+  const suggestAddress = useSimStore((s) => s.suggestAddress);
+  const suggestionsById = useSimStore((s) => s.addressSuggestions);
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const trimmed = value.trim();
+    if (disabled || trimmed.length < MIN_SUGGEST_LENGTH) {
+      setRequestId(null);
+      return;
+    }
+    const timer = setTimeout(() => setRequestId(suggestAddress(trimmed)), SUGGEST_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [value, disabled, suggestAddress]);
+
+  useEffect(() => () => {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+  }, []);
+
+  const reply = requestId ? suggestionsById[requestId] : undefined;
+  const suggestions: AddressSuggestion[] =
+    reply && reply.query === value.trim() ? reply.items : [];
+  const showDropdown = open && suggestions.length > 0;
+
+  const select = (label: string) => {
+    onSelect(label);
+    setRequestId(null);
+    setOpen(false);
+  };
+
+  return (
+    <div className="address-field">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+          setHighlight(-1);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => {
+          // A plain blur would unmount the dropdown before a click on one of
+          // its options registers; the option's own onMouseDown (below)
+          // pre-empts that by firing first and clearing this timer.
+          blurTimer.current = setTimeout(() => setOpen(false), 150);
+        }}
+        onKeyDown={(e) => {
+          if (!showDropdown) return;
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setHighlight((h) => (h + 1) % suggestions.length);
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setHighlight((h) => (h <= 0 ? suggestions.length - 1 : h - 1));
+          } else if (e.key === 'Enter' && highlight >= 0) {
+            e.preventDefault();
+            select(suggestions[highlight].label);
+          } else if (e.key === 'Escape') {
+            setOpen(false);
+          }
+        }}
+        placeholder={placeholder}
+        aria-label={ariaLabel}
+        aria-autocomplete="list"
+        aria-expanded={showDropdown}
+        disabled={disabled}
+      />
+      {showDropdown && (
+        <ul className="address-suggestions" role="listbox">
+          {suggestions.map((s, i) => (
+            <li
+              key={`${s.lat},${s.lon},${s.label}`}
+              role="option"
+              aria-selected={i === highlight}
+              className={`address-suggestion${i === highlight ? ' is-highlighted' : ''}`}
+              onMouseDown={(e) => {
+                // onMouseDown, not onClick: it fires before the input's own
+                // onBlur, so the field never closes the list out from under
+                // a click that was already in flight.
+                e.preventDefault();
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                select(s.label);
+              }}
+            >
+              {s.label}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export function LeftScenarioSidebar() {
   const catalog = useSimStore((s) => s.catalog);
@@ -58,20 +187,20 @@ export function LeftScenarioSidebar() {
           setDestQuery('');
         }}
       >
-        <input
-          type="text"
+        <AddressField
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={setQuery}
+          onSelect={setQuery}
           placeholder="Address or place…"
-          aria-label="Start address"
+          ariaLabel="Start address"
           disabled={locationPending !== null}
         />
-        <input
-          type="text"
+        <AddressField
           value={destQuery}
-          onChange={(e) => setDestQuery(e.target.value)}
+          onChange={setDestQuery}
+          onSelect={setDestQuery}
           placeholder="Destination (optional)…"
-          aria-label="Destination address"
+          ariaLabel="Destination address"
           disabled={locationPending !== null}
         />
         <button

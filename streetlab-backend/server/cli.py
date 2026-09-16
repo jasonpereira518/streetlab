@@ -453,8 +453,9 @@ def _serve(args) -> int:
     sink = capture_sink_for(args)
 
     try:
+        source = scene_source_for(args.source, args.traffic)
         sim = Simulation(
-            scene_source_for(args.source, args.traffic),
+            source,
             args.scenario,
             seed=args.seed,
             dt=1 / args.sim_hz,
@@ -476,7 +477,11 @@ def _serve(args) -> int:
     real_port = sock.getsockname()[1]
 
     loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
-    app = create_app(loop, tick_hz=args.tick_hz)
+    # Address suggestions need a real geocoder; SyntheticGrid has none, and
+    # asking it for one would be a lie the dropdown would then show as an
+    # empty result anyway -- `None` here makes that explicit instead.
+    geocoder = source.geocoder if isinstance(source, OsmSceneSource) else None
+    app = create_app(loop, tick_hz=args.tick_hz, geocoder=geocoder)
 
     print(
         f"StreetLab serving {sim.scene.description.scenario_id} on "
