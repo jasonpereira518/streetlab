@@ -10,7 +10,15 @@ import math
 import pytest
 
 from map.scene_build import SyntheticGrid
-from sim.events import ALIASES, CYCLIST_DRIFT_MPS, SCENARIOS, STALLED_AHEAD_M, STALLED_LIFE_S
+from sim.events import (
+    ALIASES,
+    CYCLIST_DRIFT_MPS,
+    EGO_LENGTH_M,
+    EMERGENCY_SPEED_FACTOR,
+    SCENARIOS,
+    STALLED_AHEAD_M,
+    STALLED_LIFE_S,
+)
 from sim.loop import Simulation
 
 DT = 1 / 60
@@ -51,6 +59,7 @@ def test_every_advertised_scenario_is_registered():
         "sudden_brake",
         "stalled_vehicle",
         "cyclist_drift",
+        "tailgater",
     }
 
 
@@ -122,13 +131,6 @@ def test_an_obstacle_is_cleared_rather_than_blocking_the_lane_forever(sim):
     assert any(a.cls == "unknown" for a in sim._traffic.agents)
     advance(sim, 40.0)
     assert not any(a.cls == "unknown" for a in sim._traffic.agents)
-
-
-def test_an_emergency_vehicle_runs_faster_than_the_posted_limit(sim):
-    inject(sim, "emergency_vehicle")
-    advance(sim, 8.0)
-    fastest = max(a.state.speed_mps for a in sim._traffic.agents)
-    assert fastest > sim.scene.speed_limit_mps, "nothing is overtaking anything"
 
 
 def test_a_cut_in_moves_a_neighbour_into_the_ego_lane(sim):
@@ -264,3 +266,76 @@ def test_a_cyclist_drifts_in_from_the_kerb_at_its_own_slow_rate(sim):
     assert rider.lateral_m == pytest.approx(start + 2.0 * CYCLIST_DRIFT_MPS, abs=0.05)
     advance(sim, math.ceil(-start / CYCLIST_DRIFT_MPS))
     assert rider.lateral_m == 0.0, "it never finished drifting into the lane"
+
+
+def test_a_tailgater_holds_station_close_behind_the_ego(sim):
+    outcome = inject(sim, "tailgater")
+    assert outcome.ok, outcome.message
+    (car,) = [a for a in sim._traffic.agents if a.headway_s is not None]
+    assert car.cls == "car"
+    route = sim.scene.ego_route
+    close = 0
+    for _ in range(int(10.0 / DT)):
+        sim.step()
+        ego = sim.world.ego
+        if ego.speed_mps < 1.0:
+            continue
+        ego_s = route.project((ego.x, ego.y))
+        car_s = route.project((car.state.x, car.state.y))
+        bumper = route.signed_gap(car_s, ego_s) - (EGO_LENGTH_M + car.size.length) / 2
+        if 0.0 < bumper / ego.speed_mps < 1.0:
+            close += 1
+    # Calibrated on this fixture while planning: 5.7 s.
+    assert close * DT >= 2.0, f"only {close * DT:.1f} s within 1.0 s of the ego"
+
+
+def _emergency(sim):
+    (car,) = [a for a in sim._traffic.agents if a.emergency_speed_mps is not None]
+    return car
+
+
+def test_an_emergency_vehicle_is_the_nearest_vehicle_behind_and_wants_more_than_the_limit(sim):
+    assert inject(sim, "emergency_vehicle").ok
+    car = _emergency(sim)
+    assert car.emergency_speed_mps == pytest.approx(
+        sim.scene.speed_limit_mps * EMERGENCY_SPEED_FACTOR
+    )
+    assert car.override_speed_mps is None, "an override would drive it through the ego"
+    route = sim.scene.ego_route
+    ego_s = route.project((sim.world.ego.x, sim.world.ego.y))
+    behind = [
+        (ego_s - a.s) % route.length_m
+        for a in sim._traffic.agents
+        if a.route is route and 0 < (ego_s - a.s) % route.length_m < route.length_m / 2
+    ]
+    assert (ego_s - car.s) % route.length_m == pytest.approx(min(behind))
+
+
+def test_an_emergency_vehicle_closes_on_the_ego_but_never_drives_through_it(sim):
+    """With `hold` it drove through: centres 0.05 m apart on grid-loop, 0.00 m
+    on Nob Hill (measured while planning Cycle 6 Phase 1). Through
+    car-following it closes and queues behind an ego that does not yet yield.
+    Calibrated on this fixture: starts 85.7 m back, gets to 31 m.
+    """
+    assert inject(sim, "emergency_vehicle").ok
+    car = _emergency(sim)
+    route = sim.scene.ego_route
+
+    def gap():
+        ego = sim.world.ego
+        return route.signed_gap(
+            route.project((car.state.x, car.state.y)), route.project((ego.x, ego.y))
+        )
+
+    start, nearest, closest_centres = gap(), math.inf, math.inf
+    for _ in range(int(45.0 / DT)):
+        sim.step()
+        ego = sim.world.ego
+        nearest = min(nearest, gap())
+        side = abs(
+            route.lateral_offset((car.state.x, car.state.y)) - route.lateral_offset((ego.x, ego.y))
+        )
+        if side < 1.5:
+            closest_centres = min(closest_centres, math.dist((ego.x, ego.y), (car.state.x, car.state.y)))
+    assert nearest <= start - 20.0, f"closed only {start - nearest:.1f} m"
+    assert closest_centres >= 3.5, f"drove into the ego: centres {closest_centres:.2f} m apart"

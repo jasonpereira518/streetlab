@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Callable
 from schema import HazardSummary, Size
 from sim.agents import MOBIL_COOLDOWN_S, Agent, TrafficModel, lateral_unit
 from sim.route import EGO_LANE_ID, Route
-from sim.vehicle import VehicleState
+from sim.vehicle import BicycleModel, VehicleState
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle, `sim.loop` imports this
     from sim.loop import Simulation
@@ -70,10 +70,9 @@ JAYWALK_SPEED_MPS = 1.4
 OBSTACLE_AHEAD_M = 40.0
 OBSTACLE_LIFE_S = 30.0
 
-#: How much over the posted limit an emergency vehicle runs, and for how long.
-#: Time-boxed for the same reason every other hold is: the scene has to come
-#: back to itself, or the next thing the user tries is measured against a
-#: world the last thing permanently changed.
+#: How far over the posted limit an emergency vehicle wants to run, and for how
+#: long. Time-limited for the same reason every other override is: the scene
+#: has to come back to itself.
 EMERGENCY_SPEED_FACTOR = 1.6
 EMERGENCY_HOLD_S = 45.0
 
@@ -83,6 +82,17 @@ BRAKE_HOLD_S = 8.0
 
 #: The size of a scenario-built car: `sim.agents._PROFILES`'s first profile.
 CAR_SIZE = Size(length=4.6, width=1.9, height=1.45)
+
+#: The ego's own length, for bumper-to-bumper placement. Read off the model the
+#: simulation integrates the ego with, as `sim.agents._EGO_LENGTH_M` is.
+EGO_LENGTH_M = BicycleModel().length_m
+
+#: A tailgater sits `TAILGATE_GAP_S` of the ego's own travel behind it, follows
+#: at `TAILGATE_HEADWAY_S` against traffic's 1.4 s, and backs off after
+#: `TAILGATE_HOLD_S`.
+TAILGATE_GAP_S = 0.5
+TAILGATE_HEADWAY_S = 0.4
+TAILGATE_HOLD_S = 30.0
 
 #: Where a stalled car sits and how long before it is towed. Longer-lived than
 #: an obstacle because a car takes longer to clear than debris, and still
@@ -161,18 +171,24 @@ def _nearest_agent(sim: "Simulation") -> Agent | None:
     return min(agents, key=lambda a: math.dist((a.state.x, a.state.y), (ego.x, ego.y)))
 
 
-def _trailing_agent(sim: "Simulation") -> Agent | None:
-    """The agent furthest BEHIND the ego on its route -- the most road to make
-    up, and therefore the one an emergency run has something to show."""
+def _nearest_behind(sim: "Simulation", cls: str | None = None) -> Agent | None:
+    """The closest agent BEHIND the ego on its own route, within half a lap,
+    optionally of one class.
+
+    Closest, not furthest. Through car-following the furthest one spends the
+    whole hazard stuck behind the traffic between it and the ego -- measured
+    while planning Cycle 6 Phase 1: still 62-143 m short after 45 s -- and a
+    vehicle that never arrives tests nothing.
+    """
     route = sim.scene.ego_route
     ego_s = _ego_s(sim)
     loop = route.length_m
-    best, best_gap = None, 0.0
+    best, best_gap = None, math.inf
     for agent in _traffic(sim).agents:
-        if agent.route is not route:
+        if agent.route is not route or (cls is not None and agent.cls != cls):
             continue
         gap = (ego_s - agent.s) % loop
-        if best_gap < gap < loop / 2:
+        if 0 < gap < min(best_gap, loop / 2):
             best, best_gap = agent, gap
     return best
 
@@ -350,23 +366,26 @@ def _obstacle(sim: "Simulation") -> str | Declined:
 
 
 def _emergency_vehicle(sim: "Simulation") -> str | Declined:
-    """A vehicle behind the ego runs at `EMERGENCY_SPEED_FACTOR` of the limit.
+    """The nearest vehicle behind the ego runs lights and siren, wanting
+    `EMERGENCY_SPEED_FACTOR` of the limit, through car-following.
 
-    The same temporary-override machinery `sudden_brake` uses, pointed the
-    other way: `hold` is not a synonym for "brake", it is "run at this speed
-    until further notice", and an emergency run is exactly that. The agent
-    furthest behind the ego is chosen so there is road for it to make up.
+    This used `hold`, which bypasses car-following, and so drove through the
+    ego and everything else ahead of it -- measured, centres 0.05 m apart on
+    grid-loop and 0.00 m on Nob Hill. Through IDM it closes on the ego and
+    queues behind it until something gives way. Before Cycle 6 Phase 3 the ego
+    never does, which is an accurate picture of that ego.
     """
-    agent = _trailing_agent(sim) or _nearest_agent(sim)
+    agent = _nearest_behind(sim)
     if agent is None:
-        return Declined("no vehicle to run")
-    _traffic(sim).hold(
+        return Declined("no vehicle behind the ego to run")
+    _traffic(sim).emergency(
         agent,
         at_mps=sim.scene.speed_limit_mps * EMERGENCY_SPEED_FACTOR,
         for_s=EMERGENCY_HOLD_S,
     )
+    agent.override_speed_mps = None
     agent.lane_change_cooldown_s = 0.0
-    return f"{agent.id} closing fast from behind"
+    return f"{agent.id} running lights and siren from behind"
 
 
 def _stalled_vehicle(sim: "Simulation") -> str | Declined:
@@ -418,6 +437,31 @@ def _cyclist_drift(sim: "Simulation") -> str | Declined:
     return f"{agent.id} drifting in from the kerb {CYCLIST_AHEAD_M:.0f} m ahead"
 
 
+def _tailgater(sim: "Simulation") -> str | Declined:
+    """A car pulls up `TAILGATE_GAP_S` behind the ego and stays there.
+
+    Moved rather than spawned, as a cut-in is, and time-limited through
+    `TrafficModel.tailgate` so it drops back rather than vanishing.
+    """
+    route = sim.scene.ego_route
+    # A car: through the known bumper-gap bug in `IdmTraffic._leader` a bus
+    # cannot hold station this close (measured on grid-merge: 1.8 s of 10
+    # within 1.0 s of the ego, against 5.7 s for a car).
+    agent = _nearest_behind(sim, cls="car")
+    if agent is None:
+        return Declined("no car behind the ego to tailgate with")
+    ego_speed = sim.world.ego.speed_mps
+    bumper = TAILGATE_GAP_S * max(ego_speed, CUT_IN_FLOOR_MPS)
+    centres = bumper + (EGO_LENGTH_M + agent.size.length) / 2
+    _place(agent, route, _ego_s(sim) - centres, speed_mps=ego_speed)
+    agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
+    agent.override_speed_mps = None
+    # Pulling out to overtake would end the scenario it exists to stage.
+    agent.lane_change_cooldown_s = TAILGATE_HOLD_S
+    _traffic(sim).tailgate(agent, headway_s=TAILGATE_HEADWAY_S, for_s=TAILGATE_HOLD_S)
+    return f"{agent.id} tailgating {bumper:.0f} m behind"
+
+
 def _lane_width(sim: "Simulation") -> float:
     lanes = sim.scene.lanes
     if lanes is None:
@@ -456,6 +500,11 @@ SCENARIOS: dict[str, Scenario] = {
     "cyclist_drift": Scenario(
         code="cyclist_drift", level="warn", stage=_cyclist_drift,
         label="Cyclist drift", group="ahead",
+    ),
+    "tailgater": Scenario(
+        code="tailgater", level="info", stage=_tailgater,
+        label="Tailgater", group="behind",
+        ml_limitation="ML perception has no rear camera.",
     ),
 }
 

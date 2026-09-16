@@ -4995,6 +4995,13 @@
       "level": "warn",
       "group": "ahead",
       "ml_limitation": null
+    },
+    {
+      "code": "tailgater",
+      "label": "Tailgater",
+      "level": "info",
+      "group": "behind",
+      "ml_limitation": "ML perception has no rear camera."
     }
   ]
 }
