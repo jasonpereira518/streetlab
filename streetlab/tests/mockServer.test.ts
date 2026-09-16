@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MockSim, createMockTransport } from '../src/net/mockServer';
 import { SCENARIOS } from '../src/net/mockCity';
@@ -422,6 +424,23 @@ describe('mock transport', () => {
 
     setTimeoutSpy.mockRestore();
     clearTimeoutSpy.mockRestore();
+  });
+});
+
+describe('mock hazard menu', () => {
+  it('lists exactly the backend hazards, in the backend order', () => {
+    const backend = JSON.parse(
+      readFileSync(resolve(__dirname, '../../contract/fixtures/scene_description.json'), 'utf8'),
+    ) as SceneDescription;
+    expect(new MockSim().scene.hazards).toEqual(backend.hazards);
+  });
+
+  it('stages cut_in and declines everything else by name', () => {
+    const sim = new MockSim();
+    expect(sim.apply({ id: 'a', cmd: 'inject_hazard', kind: 'cut_in' }).ok).toBe(true);
+    const res = sim.apply({ id: 'b', cmd: 'inject_hazard', kind: 'jaywalker' });
+    expect(res.ok).toBe(false);
+    expect(res.message).toBe('jaywalker: the in-process mock only stages cut_in');
   });
 });
 

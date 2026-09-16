@@ -1194,6 +1194,18 @@ canvas {
 
 .panel-action--sm { height: 28px; font-size: 11px; }
 
+.hazard-menu { display: flex; flex-direction: column; gap: 8px; }
+.hazard-group { display: flex; flex-direction: column; gap: 4px; }
+.hazard-group-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-text-faint, #9aa7b6);
+}
+.hazard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.hazard-empty { margin: 0; font-size: 11px; color: var(--c-text-faint, #9aa7b6); }
+
 .preset-row { display: flex; gap: 6px; }
 
 .ack {

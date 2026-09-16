@@ -545,6 +545,17 @@ export const HAZARDS: HazardSummary[] = [
     group: 'behind',
     ml_limitation: 'ML perception has no rear camera and cannot see emergency lights.',
   },
+  { code: 'stalled_vehicle', label: 'Stalled vehicle', level: 'warn', group: 'ahead', ml_limitation: null },
+  { code: 'cyclist_drift', label: 'Cyclist drift', level: 'warn', group: 'ahead', ml_limitation: null },
+  {
+    code: 'tailgater',
+    label: 'Tailgater',
+    level: 'info',
+    group: 'behind',
+    ml_limitation: 'ML perception has no rear camera.',
+  },
+  { code: 'oncoming_drift', label: 'Oncoming drift', level: 'critical', group: 'ahead', ml_limitation: null },
+  { code: 'red_light_runner', label: 'Red-light runner', level: 'critical', group: 'crossing', ml_limitation: null },
 ];
 
 /** Build the full static scene for a scenario. */

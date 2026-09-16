@@ -281,7 +281,7 @@ export interface SimStoreState {
   togglePanel(panel: PanelId): void;
   togglePerfOverlay(): void;
   resetSim(): void;
-  injectHazard(): void;
+  injectHazard(kind: string): void;
 }
 
 let transportRef: Transport | null = null;
@@ -443,14 +443,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     get().send({ cmd: 'reset' });
   },
 
-  injectHazard() {
-    // `cut_in` is the backend's own name for this scenario
-    // (`streetlab-backend/sim/events.py`). This shipped as `cutin`, which cost
-    // nothing while every kind produced the identical hard-brake and would
-    // cost the button its ack now that they do not. The backend still accepts
-    // the old spelling as an alias, so an older build of this app keeps
-    // working against a newer sidecar.
-    get().send({ cmd: 'inject_hazard', kind: 'cut_in' });
+  injectHazard(kind) {
+    // `kind` is a `HazardSummary.code` from the scene's `hazards`; the
+    // backend declines, by name, one the scene cannot host.
+    get().send({ cmd: 'inject_hazard', kind });
   },
 }));
 

@@ -887,6 +887,13 @@ export class MockSim {
         // refuses the same way when `self.perception_pipeline is None`.
         return { ok: false, message: 'no perception pipeline: start with --perception' };
       case 'inject_hazard':
+        // The mock scripts one hazard. The rest of the menu is the backend's
+        // (`sim/events.py`), so decline them by name, the way the backend
+        // declines a hazard the scene cannot host. `cutin` is the alias an
+        // older build of this app sent.
+        if (command.kind !== 'cut_in' && command.kind !== 'cutin') {
+          return { ok: false, message: `${command.kind}: the in-process mock only stages cut_in` };
+        }
         this.nextCutinAt = this.t;
         this.cutinPhase = 'idle';
         return { ok: true, message: `hazard ${command.kind} queued` };
