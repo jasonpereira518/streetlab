@@ -56,6 +56,7 @@ import logging
 import math
 from collections import defaultdict
 from random import Random
+from typing import TYPE_CHECKING
 
 from map.lanes import LANE_W, drivable_ways
 from map.placement import (
@@ -72,6 +73,9 @@ from map.osm_model import OsmGraph, OsmNode, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import has_sidewalk, lane_counts, road_class
 from schema import Building, Crosswalk, StopSign, TrafficLight, Tree
+
+if TYPE_CHECKING:
+    from map.clearance import KeepOut
 
 log = logging.getLogger("streetlab.map")
 
@@ -175,6 +179,19 @@ def _carriageways(
         )
         for way in drivable_ways(graph)
     ]
+
+
+def _post_blocker(graph: OsmGraph, origin: LatLon, keep_out: KeepOut | None):
+    """Where a sign or signal post may not stand.
+
+    With a `KeepOut` -- the scene as drawn, buildings included -- that is the
+    referee. Without one (unit tests that build devices on their own) it falls
+    back to the tag-derived carriageways, which is all this module can see.
+    """
+    if keep_out is not None:
+        return keep_out.blocks_post
+    surfaces = _carriageways(graph, origin)
+    return lambda p: _inside_any_carriageway(p, surfaces)
 
 
 def _ways_by_node(graph: OsmGraph) -> dict[int, list[OsmWay]]:
@@ -290,7 +307,9 @@ def _approach_candidates(
     return [(way, geometry) for _, way, geometry in candidates]
 
 
-def build_stop_signs(graph: OsmGraph, origin: LatLon) -> list[StopSign]:
+def build_stop_signs(
+    graph: OsmGraph, origin: LatLon, keep_out: KeepOut | None = None
+) -> list[StopSign]:
     """One sign per tagged approach, on that approach's right-hand kerb.
 
     OSM already models stop signs per approach -- a `highway=stop` node sits on
@@ -303,7 +322,7 @@ def build_stop_signs(graph: OsmGraph, origin: LatLon) -> list[StopSign]:
     a sign governing no approach is the artifact this exists to remove.
     """
     owner = _ways_by_node(graph)
-    surfaces = _carriageways(graph, origin)
+    blocked = _post_blocker(graph, origin, keep_out)
     signs, orphaned, crowded = [], 0, 0
     for node in _tagged_nodes(graph, "highway", "stop"):
         placed = None
@@ -325,11 +344,15 @@ def build_stop_signs(graph: OsmGraph, origin: LatLon) -> list[StopSign]:
             lambda o: kerb_offset(
                 at, travel, half_width + o[1], along=o[0]
             ),
-            lambda p: _inside_any_carriageway(p, surfaces),
+            blocked,
             escape_offsets(-1.0),
         )
-        if _inside_any_carriageway(position, surfaces):
+        if blocked(position):
+            # No corner of this approach is clear. A post in the road or in a
+            # wall is worse than no post: the stop LINE is anchored on the
+            # junction node, not on this, so the ego still stops.
             crowded += 1
+            continue
         signs.append(
             StopSign(
                 id=f"osm_ss_{node.id}",
@@ -340,7 +363,7 @@ def build_stop_signs(graph: OsmGraph, origin: LatLon) -> list[StopSign]:
     if orphaned:
         log.debug("dropped %d stop sign(s) with no drivable approach", orphaned)
     if crowded:
-        log.debug("%d stop sign(s) found no clear corner", crowded)
+        log.debug("dropped %d stop sign(s) that found no clear corner", crowded)
     return signs
 
 
@@ -387,7 +410,9 @@ def _approach_legs(
     return legs
 
 
-def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
+def build_traffic_lights(
+    graph: OsmGraph, origin: LatLon, keep_out: KeepOut | None = None
+) -> list[TrafficLight]:
     """One mast-arm head per approach into each signalised junction.
 
     OSM tags a signalised crossroads as a single `highway=traffic_signals`
@@ -402,7 +427,7 @@ def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
     `heading` rotated -90 degrees).
     """
     owner = _ways_by_node(graph)
-    surfaces = _carriageways(graph, origin)
+    blocked = _post_blocker(graph, origin, keep_out)
     lights, junctionless, crowded = [], 0, 0
     for node in _tagged_nodes(graph, "highway", "traffic_signals"):
         ways = owner.get(node.id, [])
@@ -425,11 +450,12 @@ def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
                 lambda o, t=travel, h=half_width: kerb_offset(
                     at, t, h + o[1], along=clear + o[0]
                 ),
-                lambda p: _inside_any_carriageway(p, surfaces),
+                blocked,
                 escape_offsets(1.0),
             )
-            if _inside_any_carriageway(position, surfaces):
+            if blocked(position):
                 crowded += 1
+                continue
             lights.append(
                 TrafficLight(
                     id=f"osm_tl_{node.id}_{i}",
@@ -444,7 +470,7 @@ def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
     if junctionless:
         log.debug("dropped %d signal node(s) with no drivable approach", junctionless)
     if crowded:
-        log.debug("%d signal pole(s) found no clear corner", crowded)
+        log.debug("dropped %d signal pole(s) that found no clear corner", crowded)
     return lights
 
 

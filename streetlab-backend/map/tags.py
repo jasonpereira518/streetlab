@@ -62,6 +62,21 @@ def _positive_int(raw: str | None) -> int | None:
     return value if value > 0 else None
 
 
+def passes_under(tags: dict[str, str]) -> bool:
+    """True for a way OSM maps beneath something: a tunnel, a building
+    passage, a covered driveway, or anything on a negative layer.
+
+    Such a way legitimately shares its ground footprint with buildings, so a
+    footprint over it is not evidence that the road is drawn too wide.
+    """
+    if tags.get("tunnel", "no") != "no" or tags.get("covered", "no") != "no":
+        return True
+    try:
+        return int(tags.get("layer", "0")) < 0
+    except ValueError:
+        return False
+
+
 def lane_counts(tags: dict[str, str], cls: str) -> tuple[int, int]:
     """(forward, backward) lane counts."""
     default_each_way = _DEFAULTS[cls][0]

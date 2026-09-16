@@ -19,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from map.cache import BundledExtracts, DiskCache, default_cache_dir
+from map.clearance import KeepOut, clear_trees, fit_road_widths
 from map.features import (
     build_buildings,
     build_crosswalks,
@@ -31,6 +32,7 @@ from map.features import (
 )
 from map.geocode import Geocoder, NominatimGeocoder, Place
 from map.lanes import (
+    drivable_ways,
     build_roads,
     build_route_graph,
     derive_lanes,
@@ -40,6 +42,7 @@ from map.lanes import (
 )
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
+from map.tags import passes_under
 from map.placement import faces_the_route
 from map.scene_build import STOP_LINE_SETBACK_M, BuiltScene
 from schema import (
@@ -245,13 +248,20 @@ class OsmSceneSource:
         origin = LatLon(lat=place.lat, lon=place.lon)
         graph = self.overpass.graph(BBox.around(place.lat, place.lon, spec.radius_m))
 
-        roads = build_roads(graph, origin)
         ego_route = select_ego_route(build_route_graph(graph, origin), (0.0, 0.0))
-        lights = build_traffic_lights(graph, origin)
         buildings = build_buildings(graph, origin)
+        # Roads first give way to the footprints beside them; everything placed
+        # after that is refereed against the roads as they will be drawn.
+        roads = fit_road_widths(
+            build_roads(graph, origin),
+            buildings,
+            frozenset(f"osm_w{w.id}" for w in drivable_ways(graph) if passes_under(w.tags)),
+        )
         crosswalks = build_crosswalks(graph, origin)
-        stop_signs = build_stop_signs(graph, origin)
-        trees = build_trees(graph, origin, buildings)
+        keep_out = KeepOut(roads, crosswalks, buildings)
+        lights = build_traffic_lights(graph, origin, keep_out)
+        stop_signs = build_stop_signs(graph, origin, keep_out)
+        trees = clear_trees(build_trees(graph, origin, buildings), keep_out)
 
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
