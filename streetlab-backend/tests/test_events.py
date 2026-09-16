@@ -63,13 +63,16 @@ def test_every_advertised_scenario_is_registered():
         "cyclist_drift",
         "tailgater",
         "oncoming_drift",
+        "red_light_runner",
     }
 
 
 @pytest.mark.parametrize("kind", sorted(SCENARIOS))
 def test_each_scenario_acks_and_emits_its_own_event(sim, kind):
-    outcome = inject(sim, kind)
-    assert outcome.ok, outcome.message
+    # Some hazards wait for the scene -- a red-light runner needs a green light
+    # ahead that lasts past the ego's arrival -- so stage when possible;
+    # `_stage_when_possible` also requires every decline on the way to be named.
+    _stage_when_possible(sim, kind)
     codes = [e.code for e in sim.world.events]
     assert kind in codes, f"{kind} emitted {codes}"
 
@@ -382,3 +385,44 @@ def test_oncoming_drift_declines_without_a_lane_model():
     outcome = inject(sim, "oncoming_drift")
     assert outcome.ok is False
     assert outcome.message == "oncoming_drift: no lane model to find an oncoming lane in"
+
+
+def _stage_when_possible(sim, kind, within_s=120.0):
+    """Step until `kind` stages, tick by tick, checking every decline on the
+    way is named. Tick by tick because that is how its thresholds were
+    calibrated; a hazard that waits for a green light can be missed at
+    coarser steps."""
+    outcome = None
+    for _ in range(int(within_s / DT)):
+        outcome = inject(sim, kind)
+        if outcome.ok:
+            return outcome
+        reason = (outcome.message or "").removeprefix(f"{kind}: ")
+        assert reason and reason != outcome.message, outcome.message
+        sim.step()
+    raise AssertionError(f"{kind} never staged in {within_s:.0f} s; last: {outcome.message}")
+
+
+def test_a_red_light_runner_meets_the_ego_at_the_junction():
+    """A collision course is the point. Calibrated while planning: centres
+    2.60 m apart on grid-loop, 0.22 m on Nob Hill; two ~4.6 m outlines touch
+    below 4.65 m."""
+    sim = _loop_sim()
+    _stage_when_possible(sim, "red_light_runner")
+    (runner,) = _spawned(sim, "red_light_runner")
+    closest = math.inf
+    for _ in range(int(15.0 / DT)):
+        sim.step()
+        if runner not in sim._traffic.agents:
+            break
+        ego = sim.world.ego
+        closest = min(closest, math.dist((ego.x, ego.y), (runner.state.x, runner.state.y)))
+    assert closest < 4.65, f"missed the ego: centres {closest:.2f} m apart"
+
+
+def test_a_red_light_runner_declines_while_the_ego_is_stopped():
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim.step()
+    outcome = inject(sim, "red_light_runner")
+    assert outcome.ok is False
+    assert outcome.message == "red_light_runner: the ego is not moving toward a junction"

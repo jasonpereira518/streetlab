@@ -5009,6 +5009,13 @@
       "level": "critical",
       "group": "ahead",
       "ml_limitation": null
+    },
+    {
+      "code": "red_light_runner",
+      "label": "Red-light runner",
+      "level": "critical",
+      "group": "crossing",
+      "ml_limitation": null
     }
   ]
 }

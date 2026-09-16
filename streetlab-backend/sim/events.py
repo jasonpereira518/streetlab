@@ -122,6 +122,18 @@ CYCLIST_DRIFT_MPS = 0.3
 CYCLIST_KERB_MARGIN_M = 0.2
 CYCLIST_LIFE_S = 30.0
 
+#: A car crosses the next signal against its red, timed to reach the crossing
+#: point when the ego does. Measured while planning Cycle 6 Phase 1: centres
+#: 2.60 m apart on grid-loop, 0.22 m on Nob Hill -- a collision course.
+RUNNER_SEARCH_M = 80.0
+RUNNER_MIN_EGO_MPS = 2.0
+#: The crossing point: this far past the stop line, inside the junction.
+RUNNER_PAST_LINE_M = 6.0
+#: The ego's green must outlast its arrival by this much, or it stops for the
+#: change and the runner crosses an empty junction.
+RUNNER_GREEN_MARGIN_S = 2.0
+RUNNER_RUN_OFF_M = 30.0
+
 
 @dataclass(frozen=True, slots=True)
 class Scenario:
@@ -527,6 +539,63 @@ def _oncoming_drift(sim: "Simulation") -> str | Declined:
     return f"{agent.id} drifting over the centre line {ONCOMING_AHEAD_M:.0f} m ahead"
 
 
+def _red_light_runner(sim: "Simulation") -> str | Declined:
+    """A car runs the red across the ego's green, arriving when the ego does.
+
+    Its route crosses the ego's path `RUNNER_PAST_LINE_M` past the next signal's
+    stop line, from the ego's right, starting as far out as the limit covers in
+    the ego's time to get there. Cycle 3 taught the ego to obey lights; this is
+    the first thing that tests whether it trusts everyone else to.
+    """
+    ego_speed = sim.world.ego.speed_mps
+    if ego_speed < RUNNER_MIN_EGO_MPS:
+        return Declined("the ego is not moving toward a junction")
+    route = sim.scene.ego_route
+    ego_s = _ego_s(sim)
+    ahead = [
+        (gap, cp)
+        for cp in sim.scene.control_points
+        if cp.kind == "signal"
+        for gap in (route.signed_gap(ego_s, cp.s),)
+        if 0 < gap <= RUNNER_SEARCH_M
+    ]
+    if not ahead:
+        return Declined(f"no signal within {RUNNER_SEARCH_M:.0f} m ahead")
+    gap, cp = min(ahead, key=lambda pair: pair[0])
+    signal = next((sig for sig in sim.world.signals if sig.id == cp.id), None)
+    if signal is None or signal.phase != "green":
+        return Declined("the signal ahead is not green for the ego")
+    eta = (gap + RUNNER_PAST_LINE_M) / ego_speed
+    if signal.time_to_change_s is not None and signal.time_to_change_s < eta + RUNNER_GREEN_MARGIN_S:
+        return Declined("the signal ahead changes before the ego would reach it")
+
+    speed = sim.scene.speed_limit_mps
+    at = cp.s + RUNNER_PAST_LINE_M
+    cx, cy = route.point_at(at)
+    heading = route.heading_at(at)
+    nx, ny = -math.sin(heading), math.cos(heading)
+    approach = speed * eta
+    crossing = Route(
+        [
+            (cx - nx * approach, cy - ny * approach),
+            (cx + nx * RUNNER_RUN_OFF_M, cy + ny * RUNNER_RUN_OFF_M),
+        ],
+        closed=False,
+    )
+    scale = max(1.0, float(sim.world.params["traffic_speed_scale"]))
+    agent = _spawn(
+        sim,
+        kind="red_light_runner",
+        cls="car",
+        size=CAR_SIZE,
+        route=crossing,
+        speed_mps=speed,
+        # Gone before the end of its open route, where arc length wraps.
+        lifetime_s=(crossing.length_m - 1.0) / (speed * scale),
+    )
+    return f"{agent.id} running the red {gap:.0f} m ahead"
+
+
 def _lane_width(sim: "Simulation") -> float:
     lanes = sim.scene.lanes
     if lanes is None:
@@ -574,6 +643,10 @@ SCENARIOS: dict[str, Scenario] = {
     "oncoming_drift": Scenario(
         code="oncoming_drift", level="critical", stage=_oncoming_drift,
         label="Oncoming drift", group="ahead",
+    ),
+    "red_light_runner": Scenario(
+        code="red_light_runner", level="critical", stage=_red_light_runner,
+        label="Red-light runner", group="crossing",
     ),
 }
 
