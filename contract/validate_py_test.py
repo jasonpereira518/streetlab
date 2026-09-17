@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from map.scene_build import SyntheticGrid
-from schema import StateUpdate
+from schema import PROTOCOL_VERSION, StateUpdate
 from sim.loop import Simulation, make_ack
 
 HERE = Path(__file__).resolve().parent
@@ -197,6 +197,10 @@ def test_hand_authored_shadow_fixture_round_trips():
     """
     raw = json.loads((FIXTURES / "state_update_shadow_populated.json").read_text())
     frame = StateUpdate.model_validate(raw)
+
+    # Hand-authored, so nothing regenerates it when the protocol is bumped --
+    # without this it sat at protocol 4 through two bumps.
+    assert raw["protocol"] == PROTOCOL_VERSION
 
     assert frame.detections_shadow is not None
     assert len(frame.detections_shadow) > 0

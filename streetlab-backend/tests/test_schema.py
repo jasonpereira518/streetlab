@@ -77,12 +77,6 @@ def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_six():
-    from schema import PROTOCOL_VERSION
-
-    assert PROTOCOL_VERSION == 7
-
-
 def test_protocol_is_7():
     assert PROTOCOL_VERSION == 7
 
