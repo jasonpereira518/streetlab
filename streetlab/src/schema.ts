@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -168,6 +168,16 @@ export const ScenarioSummarySchema = z.object({
   preview_route: z.array(Vec2Schema),
 });
 
+/** One entry in the hazard menu. `code` is what `inject_hazard.kind` takes. */
+export const HazardSummarySchema = z.object({
+  code: z.string(),
+  label: z.string(),
+  level: z.enum(['info', 'warn', 'critical']),
+  group: z.enum(['ahead', 'crossing', 'behind']),
+  /** Why this hazard, or the reaction to it, cannot work under ML perception; null if nothing is known to stop it. */
+  ml_limitation: z.string().nullable(),
+});
+
 export const SceneDescriptionSchema = z.object({
   type: z.literal('scene_description'),
   protocol: z.number().int(),
@@ -194,6 +204,8 @@ export const SceneDescriptionSchema = z.object({
   street_signs: z.array(StreetSignSchema),
   /** Scenarios the server can load; drives the left sidebar. */
   catalog: z.array(ScenarioSummarySchema),
+  /** Hazards `inject_hazard` can stage; drives the hazard menu. */
+  hazards: z.array(HazardSummarySchema),
 });
 
 /* ------------------------------------------------------------------ */
@@ -225,6 +237,8 @@ export const DetectionSchema = z.object({
   ttc_s: z.number().nullable(),
   /** Lane index relative to ego: -1 right, 0 same, +1 left, null if unknown. */
   lane_offset: z.number().int().nullable(),
+  /** Lights and siren on. Ground truth only; ML perception always sends false. */
+  emergency: z.boolean(),
 });
 
 export const PerceptionModeSchema = z.enum(['ground-truth', 'ml']);
@@ -345,9 +359,9 @@ export const TrajectorySampleSchema = z.object({
 export const TrajectoryPredictionSchema = z.object({
   horizon_s: z.number().positive(),
   planned: z.array(TrajectorySampleSchema),
-  /** Predicted path of the cutting-in agent, or null when nobody is cutting in. */
-  cutin: z.array(TrajectorySampleSchema).nullable(),
-  cutin_label: z.string().nullable(),
+  /** Predicted lateral path of the object the car is reacting to, or null. */
+  threat: z.array(TrajectorySampleSchema).nullable(),
+  threat_label: z.string().nullable(),
 });
 
 export const TelemetrySchema = z.object({
@@ -367,6 +381,8 @@ export const ManeuverSchema = z.enum([
   'lane_change_right',
   'stop',
   'yield',
+  'emergency_brake',
+  'pull_over',
 ]);
 
 export const PlanSchema = z.object({
@@ -375,6 +391,8 @@ export const PlanSchema = z.object({
   target_speed_mps: z.number().nonnegative(),
   maneuver: ManeuverSchema,
   confidence: z.number().min(0).max(1),
+  /** The detection the planner's current reaction is to, or null. */
+  reaction_source_id: z.string().nullable(),
 });
 
 export const CruiseModeSchema = z.enum(['off', 'cruise', 'autosteer', 'fsd']);
@@ -545,6 +563,7 @@ export type StopSign = z.infer<typeof StopSignSchema>;
 export type Tree = z.infer<typeof TreeSchema>;
 export type StreetSign = z.infer<typeof StreetSignSchema>;
 export type ScenarioSummary = z.infer<typeof ScenarioSummarySchema>;
+export type HazardSummary = z.infer<typeof HazardSummarySchema>;
 export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
 
 export type DetectionClass = z.infer<typeof DetectionClassSchema>;

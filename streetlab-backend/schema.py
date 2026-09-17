@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -186,6 +186,22 @@ class ScenarioSummary(Wire):
     preview_route: list[Vec2]
 
 
+HazardGroup = Literal["ahead", "crossing", "behind"]
+
+
+class HazardSummary(Wire):
+    """One entry in the hazard menu. `code` is what `inject_hazard.kind` takes."""
+
+    code: str
+    label: str
+    level: Literal["info", "warn", "critical"]
+    group: HazardGroup
+    # Why this hazard, or the car's reaction to it, cannot work under ML
+    # perception -- or null when nothing is known to stop it. No default, for
+    # the reason every other nullable field here has none.
+    ml_limitation: str | None
+
+
 class Origin(Wire):
     lat: Num
     lon: Num
@@ -219,6 +235,10 @@ class SceneDescription(Wire):
     street_signs: list[StreetSign]
     # Scenarios the server can load; drives the left sidebar.
     catalog: list[ScenarioSummary]
+    # Hazards `inject_hazard` can stage; drives the hazard menu. Attached by
+    # `Simulation.scene_description()` -- scene sources build `[]`, because what
+    # can be injected is the simulation's business, not the map's.
+    hazards: list[HazardSummary]
 
 
 # --------------------------------------------------------------------------- #
@@ -245,6 +265,9 @@ class Detection(Wire):
     ttc_s: Num | None
     # Lane index relative to ego: -1 right, 0 same, +1 left, null if unknown.
     lane_offset: int | None
+    # Lights and siren on. Ground truth reads it off the agent; the ML source
+    # cannot perceive it and always says false.
+    emergency: bool
 
 
 PerceptionMode = Literal["ground-truth", "ml"]
@@ -360,9 +383,10 @@ class TrajectorySample(Wire):
 class TrajectoryPrediction(Wire):
     horizon_s: Pos
     planned: list[TrajectorySample]
-    # Predicted path of the cutting-in agent, or null when nobody is cutting in.
-    cutin: list[TrajectorySample] | None
-    cutin_label: str | None
+    # Predicted lateral path of the object the car is reacting to, or null.
+    # Named `cutin` through protocol 6, which it never was specific to.
+    threat: list[TrajectorySample] | None
+    threat_label: str | None
 
 
 class Telemetry(Wire):
@@ -382,6 +406,8 @@ Maneuver = Literal[
     "lane_change_right",
     "stop",
     "yield",
+    "emergency_brake",
+    "pull_over",
 ]
 
 
@@ -391,6 +417,9 @@ class Plan(Wire):
     target_speed_mps: NonNeg
     maneuver: Maneuver
     confidence: Unit
+    # The detection the planner's current reaction is to, or null. Always
+    # null until Cycle 6 Phase 2's `plan/hazard.py` exists.
+    reaction_source_id: str | None
 
 
 CruiseMode = Literal["off", "cruise", "autosteer", "fsd"]
