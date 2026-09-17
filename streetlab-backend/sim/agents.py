@@ -68,6 +68,10 @@ class Agent:
     lifetime_s: float | None = None
     #: How fast `lateral_m` slides back to zero, m/s, or None for traffic's own
     #: `_MOBIL_TRAVERSE_MPS`. A drifting cyclist wants a creep, not a lane change.
+    #: Set only on scenario-spawned agents, which expire (`lifetime_s`) and are
+    #: never recruited into another hazard -- which is why, unlike
+    #: `override_speed_mps`, `headway_s` and `emergency_speed_mps`, it has no
+    #: deadline of its own.
     lateral_rate_mps: float | None = None
     #: IDM time headway until `headway_until_s`, or None for `_IDM_HEADWAY_S`.
     headway_s: float | None = None

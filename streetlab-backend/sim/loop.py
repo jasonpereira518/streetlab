@@ -134,6 +134,13 @@ class WorldState:
     # This tick's signal phases, computed once in `_plan()` and reused by the
     # wire so the phase the car obeyed and the phase the HUD shows cannot drift.
     signals: list[SignalState] = field(default_factory=list)
+    # How many participants `sim/events.py` has spawned: the number in each
+    # one's id. Not `seq`, which two injections share when they land in one
+    # tick (`SimLoop._drain_commands` applies every queued command before the
+    # step), and not a module-level count, which would make an id depend on
+    # every other simulation the process has run. Never reset with the scene,
+    # so an id names one participant for the simulation's whole life.
+    hazard_spawns: int = 0
 
 
 class SignalController:

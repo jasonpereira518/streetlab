@@ -84,6 +84,10 @@ EMERGENCY_HOLD_S = 45.0
 #: `HAZARD_HOLD_S`, moved here with the behaviour it governs.
 BRAKE_HOLD_S = 8.0
 
+#: What every id `_spawn` hands out starts with, and so how a staging tells a
+#: participant a hazard added from one the scene put there (`_recruitable`).
+HAZARD_ID_PREFIX = "hzd_"
+
 #: The size of a scenario-built car: `sim.agents._PROFILES`'s first profile.
 CAR_SIZE = Size(length=4.6, width=1.9, height=1.45)
 
@@ -171,6 +175,21 @@ def _ego_s(sim: "Simulation") -> float:
     return sim.scene.ego_route.project((sim.world.ego.x, sim.world.ego.y))
 
 
+def _recruitable(sim: "Simulation") -> list[Agent]:
+    """The agents a staging may take over: the scene's own population, never a
+    participant another hazard spawned.
+
+    The helpers below that pick "an existing agent" all used to pick from the
+    whole population, and a spawned participant already IS a hazard, with its
+    own route, its own lifetime and its own overrides. Recruiting one breaks
+    both hazards -- measured in Cycle 6 Phase 1's final review: `cut_in`
+    teleported a jaywalker into the lane, `sudden_brake` held a drifting
+    cyclist, and once the ego was past a stalled car `emergency_vehicle` and
+    `tailgater` drove it off, into the stopped ego.
+    """
+    return [a for a in _traffic(sim).agents if not a.id.startswith(HAZARD_ID_PREFIX)]
+
+
 def _lead_agent(sim: "Simulation") -> Agent | None:
     """The closest agent ahead of the ego in the ego's own lane, if any.
 
@@ -183,7 +202,7 @@ def _lead_agent(sim: "Simulation") -> Agent | None:
     ego_s = _ego_s(sim)
     loop = route.length_m
     best, best_gap = None, math.inf
-    for agent in _traffic(sim).agents:
+    for agent in _recruitable(sim):
         if agent.route is not route:
             continue
         gap = (agent.s - ego_s) % loop
@@ -193,7 +212,7 @@ def _lead_agent(sim: "Simulation") -> Agent | None:
 
 
 def _nearest_agent(sim: "Simulation") -> Agent | None:
-    agents = _traffic(sim).agents
+    agents = _recruitable(sim)
     if not agents:
         return None
     ego = sim.world.ego
@@ -213,7 +232,7 @@ def _nearest_behind(sim: "Simulation", cls: str | None = None) -> Agent | None:
     ego_s = _ego_s(sim)
     loop = route.length_m
     best, best_gap = None, math.inf
-    for agent in _traffic(sim).agents:
+    for agent in _recruitable(sim):
         if agent.route is not route or (cls is not None and agent.cls != cls):
             continue
         gap = (ego_s - agent.s) % loop
@@ -275,14 +294,17 @@ def _spawn(
 ) -> Agent:
     """Add a temporary participant to the population.
 
-    The id carries the tick it was created on so a second injection of the same
-    kind cannot collide with the first: `Detection.id` is the frontend's
+    The id carries the simulation's spawn count so a second injection of the
+    same kind cannot collide with the first: `Detection.id` is the frontend's
     tracking key, and two vehicles sharing one would be drawn as a single
-    object teleporting between them.
+    object teleporting between them. It used to carry the tick, which two
+    injections in one tick share -- `spawn` raised out of `apply_dict` (see
+    `WorldState.hazard_spawns`).
     """
     x, y = route.point_at(0.0)
+    sim.world.hazard_spawns += 1
     agent = Agent(
-        id=f"hzd_{kind}_{sim.world.seq}",
+        id=f"{HAZARD_ID_PREFIX}{kind}_{sim.world.hazard_spawns}",
         cls=cls,
         state=VehicleState(x=x, y=y, heading=route.heading_at(0.0), speed_mps=speed_mps),
         size=size,

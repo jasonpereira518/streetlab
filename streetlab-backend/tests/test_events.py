@@ -17,11 +17,17 @@ from sim.events import (
     CYCLIST_DRIFT_MPS,
     EGO_LENGTH_M,
     EMERGENCY_SPEED_FACTOR,
+    HAZARD_ID_PREFIX,
     ONCOMING_AHEAD_M,
     ONCOMING_OVER_LINE_M,
     SCENARIOS,
     STALLED_AHEAD_M,
     STALLED_LIFE_S,
+    _ego_s,
+    _lead_agent,
+    _nearest_agent,
+    _nearest_behind,
+    _place,
 )
 from sim.loop import Simulation
 
@@ -207,6 +213,35 @@ def test_injecting_the_same_kind_twice_does_not_reuse_an_id(sim):
     assert len(ids) == len(set(ids))
 
 
+def test_two_injections_in_the_same_tick_both_stage(sim):
+    """`SimLoop._drain_commands` applies every queued command before the next
+    step, so two clicks inside one tick reach the sim with no step between
+    them. Measured in the final review: the ids carried the tick, both got the
+    same one, and `spawn` raised out of `apply_dict` -- which never raises.
+    """
+    first = inject(sim, "obstacle")
+    second = inject(sim, "obstacle")
+    assert first.ok and second.ok, (first.message, second.message)
+    ids = [a.id for a in _spawned(sim, "obstacle")]
+    assert len(ids) == 2 and len(set(ids)) == 2, ids
+
+
+def test_spawned_ids_are_the_same_every_time_the_same_run_is_replayed():
+    """Unique per injection, but not off a process-wide counter: that would
+    make a participant's id depend on every other simulation the process had
+    run -- in the suite, on test order."""
+
+    def run():
+        s = fresh()
+        inject(s, "obstacle")
+        inject(s, "obstacle")
+        advance(s, 1.0)
+        inject(s, "jaywalker")
+        return [a.id for a in s._traffic.agents if a.id.startswith(HAZARD_ID_PREFIX)]
+
+    assert run() == run()
+
+
 def test_a_cut_in_raises_a_hazard_flag_whatever_speed_the_ego_is_doing(sim):
     """What makes a cut-in a hazard is the time it leaves, not the metres.
 
@@ -243,7 +278,7 @@ def test_a_newly_loaded_scene_carries_the_hazard_menu_too(sim):
 
 
 def _spawned(sim, kind):
-    return [a for a in sim._traffic.agents if a.id.startswith(f"hzd_{kind}_")]
+    return [a for a in sim._traffic.agents if a.id.startswith(f"{HAZARD_ID_PREFIX}{kind}_")]
 
 
 def test_a_stalled_vehicle_is_a_stopped_car_in_the_ego_lane(sim):
@@ -470,3 +505,111 @@ def test_oncoming_drift_declines_on_a_one_way_street(nob_hill_sim):
     outcome = inject(sim, "oncoming_drift")
     assert outcome.ok is False
     assert outcome.message == "oncoming_drift: one-way street, no oncoming lane"
+
+
+# --------------------------------------------------------------------------- #
+# A staged participant is never recruited into another hazard                  #
+# --------------------------------------------------------------------------- #
+
+#: Every hazard that adds a participant rather than taking one over.
+SPAWNING = [
+    "cyclist_drift",
+    "jaywalker",
+    "obstacle",
+    "oncoming_drift",
+    "red_light_runner",
+    "stalled_vehicle",
+]
+
+
+def test_a_cut_in_never_recruits_a_jaywalker(sim):
+    """Measured in the final review: two seconds into a jaywalker, `cut_in`
+    took the pedestrian for "the nearest vehicle" and acked
+    `hzd_jaywalker_300 cutting in 15 m ahead`."""
+    assert inject(sim, "jaywalker").ok
+    advance(sim, 2.0)
+    (walker,) = _spawned(sim, "jaywalker")
+    crossing = walker.route
+    outcome = inject(sim, "cut_in")
+    assert outcome.ok, outcome.message
+    assert walker.id not in outcome.message, outcome.message
+    assert walker.route is crossing, "the pedestrian was taken off its crossing"
+
+
+def test_a_sudden_brake_never_recruits_a_drifting_cyclist(sim):
+    """Measured in the final review: the cyclist is the closest thing in the
+    ego's lane ahead, so `_lead_agent` picked it and held it at 0."""
+    assert inject(sim, "cyclist_drift").ok
+    (rider,) = _spawned(sim, "cyclist_drift")
+    outcome = inject(sim, "sudden_brake")
+    assert outcome.ok, outcome.message
+    assert rider.id not in outcome.message, outcome.message
+    assert rider.override_speed_mps is None
+
+
+@pytest.mark.parametrize(
+    "staged,recruiter",
+    [
+        ("stalled_vehicle", "emergency_vehicle"),
+        ("stalled_vehicle", "tailgater"),
+        ("obstacle", "emergency_vehicle"),
+    ],
+)
+def test_nothing_behind_the_ego_is_recruited_from_a_hazard_it_passed(sim, staged, recruiter):
+    """Measured in the final review: once the ego was past a stalled car, both
+    `emergency_vehicle` and `tailgater` took it -- live, the "stalled" car
+    drove off and overlapped the stopped ego for ~1.3 s -- and once past an
+    obstacle, `emergency_vehicle` drove the debris off at 1.6x the limit."""
+    assert inject(sim, staged).ok
+    (thing,) = _spawned(sim, staged)
+    route = sim.scene.ego_route
+    for _ in range(int(30.0 / DT)):
+        if route.signed_gap(thing.s, _ego_s(sim)) > 0:
+            break
+        sim.step()
+    else:
+        pytest.fail(f"the ego never got past the {staged}")
+    outcome = inject(sim, recruiter)
+    assert thing.id not in (outcome.message or ""), outcome.message
+    assert thing.emergency_speed_mps is None
+    assert thing.headway_s is None
+
+
+@pytest.mark.parametrize("kind", SPAWNING)
+def test_no_helper_that_picks_an_agent_ever_picks_a_staged_one(sim, kind):
+    """Each helper in turn gets the staged participant half a metre from the
+    ego on the side it looks, where it is the helper's pick under any other
+    id -- checked, so a passing assertion cannot come from a bad arrangement.
+    """
+    _stage_when_possible(sim, kind)
+    (staged,) = _spawned(sim, kind)
+    route = sim.scene.ego_route
+    helpers = [
+        ("_lead_agent", _lead_agent, +1, None),
+        ("_nearest_agent", _nearest_agent, +1, None),
+        ("_nearest_behind", _nearest_behind, -1, None),
+        ("_nearest_behind(cls='car')", lambda s: _nearest_behind(s, cls="car"), -1, "car"),
+    ]
+    real_id, recruited = staged.id, []
+    for name, pick, side, cls in helpers:
+        if cls is not None and staged.cls != cls:
+            continue
+        _place(staged, route, _ego_s(sim) + side * 0.5)
+        staged.id = "veh_arranged"
+        assert pick(sim) is staged, f"{name} would not pick it here even unstaged"
+        staged.id = real_id
+        if pick(sim) is staged:
+            recruited.append(name)
+    assert recruited == [], f"{real_id} recruited by {recruited}"
+
+
+def test_a_tailgater_declines_by_name_when_no_car_is_behind(sim):
+    """A car, and only a car (see `_tailgater`): with every car gone and a bus
+    still behind the ego, the scene has a vehicle to disturb but not the one
+    this hazard needs."""
+    for car in [a for a in sim._traffic.agents if a.cls == "car"]:
+        sim._traffic.despawn(car.id)
+    assert _nearest_behind(sim) is not None, "nothing at all behind: not a test of the class"
+    outcome = inject(sim, "tailgater")
+    assert outcome.ok is False
+    assert outcome.message == "tailgater: no car behind the ego to tailgate with"
