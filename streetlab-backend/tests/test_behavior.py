@@ -405,7 +405,7 @@ def slow_lead(gap_m, speed):
         id="lead", cls="car", pose=Pose(x=gap_m, y=0.0, heading=0.0),
         size=Size(length=4.6, width=1.9, height=1.45), velocity=(speed, 0.0),
         speed_mps=speed, confidence=1.0, hazard=False, hazard_label=None,
-        ttc_s=None, lane_offset=0,
+        ttc_s=None, lane_offset=0, emergency=False,
     )
 
 
@@ -416,7 +416,7 @@ def blocker(gap_m, speed, lane_offset):
         id=f"other_{gap_m}", cls="car", pose=Pose(x=gap_m, y=3.6 * lane_offset, heading=0.0),
         size=Size(length=4.6, width=1.9, height=1.45), velocity=(speed, 0.0),
         speed_mps=speed, confidence=1.0, hazard=False, hazard_label=None,
-        ttc_s=None, lane_offset=lane_offset,
+        ttc_s=None, lane_offset=lane_offset, emergency=False,
     )
 
 
@@ -745,7 +745,7 @@ def lead_at(x, speed, *, length=4.6, lead_id="lead"):
         id=lead_id, cls="car", pose=Pose(x=x, y=0.0, heading=0.0),
         size=Size(length=length, width=1.9, height=1.45), velocity=(speed, 0.0),
         speed_mps=speed, confidence=1.0, hazard=False, hazard_label=None,
-        ttc_s=None, lane_offset=0,
+        ttc_s=None, lane_offset=0, emergency=False,
     )
 
 

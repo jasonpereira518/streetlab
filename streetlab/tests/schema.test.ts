@@ -11,7 +11,7 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
-it('is protocol 6', () => {
+it('is protocol 7', () => {
   // Bumped to 5 when `LaneMarking` gained `broken_yellow` and
   // `solid_yellow`. A new enum value is additive for a NEW client reading an
   // OLD server, but an old client rejects the new value on every frame -- and
@@ -21,7 +21,12 @@ it('is protocol 6', () => {
   // Bumped again to 6 when `Road.has_sidewalk` became
   // `sidewalk_left`/`sidewalk_right` -- a renamed field, so an old client
   // fails to parse rather than merely ignoring it.
-  expect(PROTOCOL_VERSION).toBe(6);
+  // Bumped again to 7 for Cycle 6 Phase 1: new required fields
+  // (`SceneDescription.hazards`, `Detection.emergency`, `Plan.reaction_source_id`),
+  // two new `Maneuver` values, and `cutin`/`cutin_label` renamed to
+  // `threat`/`threat_label` -- new required keys and a rename both break an
+  // old client, matching the reasoning above.
+  expect(PROTOCOL_VERSION).toBe(7);
 });
 
 it('accepts load_location with and without a radius', () => {
@@ -108,6 +113,7 @@ const sample: StateUpdate = {
       hazard_label: 'Cut-in vehicle',
       ttc_s: 2.4,
       lane_offset: 0,
+      emergency: false,
     },
   ],
   plan: {
@@ -119,6 +125,7 @@ const sample: StateUpdate = {
     target_speed_mps: 11.176,
     maneuver: 'keep_lane',
     confidence: 0.94,
+    reaction_source_id: null,
   },
   telemetry: {
     radar: [
@@ -169,11 +176,11 @@ const sample: StateUpdate = {
         { t: 0, lateral_m: 0.12 },
         { t: 2.5, lateral_m: 0.5 },
       ],
-      cutin: [
+      threat: [
         { t: 0, lateral_m: -3.6 },
         { t: 2.5, lateral_m: -0.8 },
       ],
-      cutin_label: 'Cut-in vehicle',
+      threat_label: 'Cut-in vehicle',
     },
   },
   signals: [{ id: 'tl_0_0_e', phase: 'green', time_to_change_s: 6.2 }],
@@ -234,6 +241,18 @@ describe('StateUpdate', () => {
     const missing = { ...sample } as Record<string, unknown>;
     delete missing.detections_shadow;
     expect(StateUpdateSchema.safeParse(missing).success).toBe(false);
+  });
+
+  it('requires the protocol 7 fields rather than defaulting them', () => {
+    const noEmergency = structuredClone(sample) as Record<string, any>;
+    delete noEmergency.detections[0].emergency;
+    expect(StateUpdateSchema.safeParse(noEmergency).success).toBe(false);
+
+    const noSource = structuredClone(sample) as Record<string, any>;
+    delete noSource.plan.reaction_source_id;
+    expect(StateUpdateSchema.safeParse(noSource).success).toBe(false);
+
+    expect(PROTOCOL_VERSION).toBe(7);
   });
 });
 

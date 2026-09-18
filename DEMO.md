@@ -136,17 +136,18 @@ completely fresh install.
 
 ## Inject a hazard
 
-Open the right panel's **Parameters** tab and click **Inject cut-in hazard**.
+Open the right panel's **Params** tab and, in the **Inject hazard** menu,
+click **Cut-in**.
 A neighbouring vehicle slides into the ego's lane 1.5 seconds of travel ahead
 at half the ego's speed, and the ack log shows `injected cut_in: veh_NN
 cutting in N m ahead`. Watch the TTC readout in the toolbar drop and the
 planner respond — the orange hazard overlay renders around the flagged vehicle
-in the 3D view, and the trajectory graph's cut-in curve shows the predicted
+in the 3D view, and the trajectory graph's threat curve shows the predicted
 path.
 
-The button sends one of five scenarios (`streetlab-backend/sim/events.py`),
-and the wire's `kind` is a free string, so the other four are reachable from
-any client that speaks the protocol:
+The menu offers every scenario in `streetlab-backend/sim/events.py`, grouped
+Ahead, Crossing and Behind. A hazard the scene cannot host right now acks
+false and says why — no signal ahead, a one-way street:
 
 | `kind` | What it stages |
 |---|---|
@@ -154,7 +155,12 @@ any client that speaks the protocol:
 | `sudden_brake` | The vehicle leading the ego's lane stops dead for 8 s |
 | `jaywalker` | A pedestrian crosses the ego's path 30 m ahead, then leaves |
 | `obstacle` | Something stationary and unclassifiable sits in the lane 40 m ahead |
-| `emergency_vehicle` | A vehicle behind runs at 1.6× the limit and works its way past |
+| `emergency_vehicle` | The nearest vehicle behind runs lights and siren, wanting 1.6× the limit, and queues behind the ego |
+| `stalled_vehicle` | A broken-down car sits in the ego's lane 40 m ahead until it is towed |
+| `cyclist_drift` | A cyclist 25 m ahead drifts slowly in from the kerb |
+| `tailgater` | A car pulls up close behind the ego and stays there for 30 s |
+| `oncoming_drift` | An oncoming car drifts 0.8 m over the centre line as it reaches the ego |
+| `red_light_runner` | A car runs the red across the ego's green, timed to arrive when the ego does |
 
 An unknown `kind` acks false rather than raising, so a newer client cannot
 break an older backend.

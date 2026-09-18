@@ -59,6 +59,8 @@ const MANEUVER_LABELS: Record<Maneuver, string> = {
   stop: 'Stopping',
   yield: 'Yielding',
   arrived: 'Arrived',
+  emergency_brake: 'Emergency braking',
+  pull_over: 'Pulling over',
 };
 
 export function TopToolbar() {

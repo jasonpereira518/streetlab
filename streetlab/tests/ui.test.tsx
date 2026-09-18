@@ -1032,3 +1032,35 @@ describe('Telemetry row', () => {
     expect(canvasText(speed)).toContain('Awaiting telemetry');
   });
 });
+
+describe('RightPanel hazard menu', () => {
+  it('groups every hazard the scene lists', () => {
+    harness = createHarness();
+    render(<RightPanel />);
+    const scene = harness.emitScene();
+
+    const labels = ['Ahead', 'Crossing', 'Behind'].flatMap((group) =>
+      within(screen.getByRole('group', { name: `${group} hazards` }))
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    );
+    expect(labels.sort()).toEqual(scene.hazards.map((h) => h.label).sort());
+  });
+
+  it('sends the chosen kind and shows a decline where acks are shown', () => {
+    harness = createHarness();
+    render(<RightPanel />);
+    harness.emitScene();
+
+    const behind = screen.getByRole('group', { name: 'Behind hazards' });
+    fireEvent.click(within(behind).getByRole('button', { name: 'Emergency vehicle' }));
+
+    expect(harness.sent[harness.sent.length - 1]).toMatchObject({
+      cmd: 'inject_hazard',
+      kind: 'emergency_vehicle',
+    });
+    expect(
+      screen.getByText('emergency_vehicle: the in-process mock only stages cut_in'),
+    ).toBeTruthy();
+  });
+});

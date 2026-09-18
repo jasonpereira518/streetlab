@@ -623,6 +623,7 @@ export class MockSim {
         hazard_label: hazard ? 'Cut-in vehicle' : null,
         ttc_s: ttc == null ? null : Math.round(ttc * 100) / 100,
         lane_offset: clamp(Math.round(left / LANE_W), -2, 2),
+        emergency: false,
       });
 
       if (Math.abs(fwd) < 90) {
@@ -713,6 +714,7 @@ export class MockSim {
         ),
         maneuver,
         confidence: this.cutinPhase === 'merging' ? 0.71 : 0.94,
+        reaction_source_id: null,
       },
       telemetry: {
         radar,
@@ -823,8 +825,8 @@ export class MockSim {
     return {
       horizon_s: HORIZON,
       planned,
-      cutin: active ? cutinSeries : null,
-      cutin_label: active ? 'Cut-in vehicle' : null,
+      threat: active ? cutinSeries : null,
+      threat_label: active ? 'Cut-in vehicle' : null,
     };
   }
 
@@ -886,6 +888,13 @@ export class MockSim {
         // refuses the same way when `self.perception_pipeline is None`.
         return { ok: false, message: 'no perception pipeline: start with --perception' };
       case 'inject_hazard':
+        // The mock scripts one hazard. The rest of the menu is the backend's
+        // (`sim/events.py`), so decline them by name, the way the backend
+        // declines a hazard the scene cannot host. `cutin` is the alias an
+        // older build of this app sent.
+        if (command.kind !== 'cut_in' && command.kind !== 'cutin') {
+          return { ok: false, message: `${command.kind}: the in-process mock only stages cut_in` };
+        }
         this.nextCutinAt = this.t;
         this.cutinPhase = 'idle';
         return { ok: true, message: `hazard ${command.kind} queued` };

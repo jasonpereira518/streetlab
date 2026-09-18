@@ -33,6 +33,7 @@ function detection(id: string, x = 0, y = 0): Detection {
     hazard_label: null,
     ttc_s: null,
     lane_offset: 0,
+    emergency: false,
   };
 }
 

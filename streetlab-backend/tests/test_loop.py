@@ -1712,6 +1712,7 @@ class _MarkerPerception:
                 hazard_label=None,
                 ttc_s=None,
                 lane_offset=7,  # never the lead: this source is not driving
+                emergency=False,
             )
         ]
 

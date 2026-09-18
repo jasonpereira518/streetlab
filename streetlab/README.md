@@ -120,7 +120,7 @@ Every command carries a client-generated `id` for ack correlation.
 - Angles that the UI treats as signed-left-positive: `steering_angle`,
   `lane.offset_m`, `lane.heading_error`, `radar.azimuth`,
   `trajectory.*.lateral_m`, and `lane_offset` on detections.
-- `trajectory.planned` / `trajectory.cutin` accept **negative `t`** for observed
+- `trajectory.planned` / `trajectory.threat` accept **negative `t`** for observed
   history; the graph draws everything left of `t = 0` as the past.
 
 ---
