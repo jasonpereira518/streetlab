@@ -656,6 +656,16 @@ canvas {
 .location-search {
   padding: 10px var(--pad-panel);
   border-bottom: 1px solid var(--c-border, #e4e9f0);
+  /* Two stacked inputs (start + destination) rather than the single field's
+     former default block flow -- inputs are inline-block by default and
+     would otherwise sit side by side. */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.address-field {
+  position: relative;
 }
 
 .location-search input {
@@ -695,10 +705,128 @@ canvas {
   cursor: not-allowed;
 }
 
+.address-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--c-border-strong, #d2dae5);
+  background: var(--c-surface, #fff);
+  box-shadow: 0 6px 18px rgba(20, 29, 40, 0.14);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.address-suggestion {
+  padding: 6px 8px;
+  border-radius: var(--r-sm, 6px);
+  font-size: 12px;
+  color: var(--c-text, #141d28);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.address-suggestion.is-highlighted,
+.address-suggestion:hover {
+  background: var(--c-surface-sunken, #edf1f6);
+}
+
+/* An explicit submit button, not just decoration: a form with two text
+   inputs and no submit button never submits on Enter at all (the HTML spec's
+   "more than one field blocks implicit submission" rule) -- this is what
+   makes the destination field's addition not silently break Enter-to-search
+   for the common single-field case. */
+.location-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  align-self: flex-end;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--r-pill, 999px);
+  background: var(--c-surface-sunken, #edf1f6);
+  color: var(--c-text-muted, #5f6e80);
+  font-size: 11px;
+  font-weight: 600;
+  transition: background 130ms ease, color 130ms ease, transform 130ms ease;
+}
+
+.location-submit:hover:not(:disabled) {
+  background: var(--c-accent, #0fb5c9);
+  color: #fff;
+}
+
+.location-submit:active:not(:disabled) { transform: scale(0.95); }
+
+.location-submit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .location-pending {
-  margin: 6px 0 0;
+  margin: 0;
   font-size: 11px;
   color: var(--c-text-faint, #9aa7b6);
+}
+
+.location-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.location-progress-track {
+  height: 4px;
+  border-radius: var(--r-pill, 999px);
+  background: var(--c-surface-sunken, #edf1f6);
+  overflow: hidden;
+}
+
+.location-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--c-accent, #0fb5c9);
+  /* Only meaningful for a determinate bar -- the indeterminate one below
+     drives its own position via `transform`, not `width`. */
+  transition: width 220ms ease;
+}
+
+/* No checkpoint has arrived yet (the ack-to-first-report gap) -- a sliding
+   segment says "working" without claiming a fraction that isn't real. */
+.location-progress-bar.is-indeterminate {
+  width: 40%;
+  animation: location-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes location-progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.location-progress-stage {
+  margin: 0;
+  font-size: 10px;
+  color: var(--c-text-faint, #9aa7b6);
+}
+
+.location-error {
+  margin: 0;
+  font-size: 11px;
+  color: #b3363a;
+}
+
+.location-trip-complete {
+  margin: 0;
+  font-size: 11px;
+  color: #15803d;
 }
 
 .scenario-list {

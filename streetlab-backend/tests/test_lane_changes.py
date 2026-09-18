@@ -1173,6 +1173,15 @@ def test_every_hazard_free_wire_maneuver_is_reachable():
     centreline, never the blended aim route), so this has nothing to do with
     lane changes and is not a regression to chase here.
 
+    `arrived` is excluded for the same shape of reason as `turn_left`: it is
+    real, reachable protocol (`tests/test_behavior.py::
+    test_an_arrival_point_always_requires_a_stop` proves it directly against
+    the FSM), but only ever emitted at an open route's own end
+    (`map.lanes.arrival_control_point` returns `None` for a closed one).
+    `grid-loop` is a closed loop by construction -- `SyntheticGrid` never
+    builds an open route -- so this scenario can no more reach `arrived` than
+    it can reach `turn_left`, for an equally structural reason.
+
     The two Cycle 6 maneuvers are excluded for a different reason again: see
     `HAZARD_ONLY_MANEUVERS`.
     """
@@ -1182,7 +1191,7 @@ def test_every_hazard_free_wire_maneuver_is_reachable():
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     seen = set(maneuvers_over(sim, 300.0))
-    missing = set(get_args(Maneuver)) - seen - {"turn_left"} - HAZARD_ONLY_MANEUVERS
+    missing = set(get_args(Maneuver)) - seen - {"turn_left", "arrived"} - HAZARD_ONLY_MANEUVERS
     assert not missing, f"still unreachable: {sorted(missing)}"
 
 

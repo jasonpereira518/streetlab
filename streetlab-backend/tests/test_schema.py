@@ -145,6 +145,30 @@ def test_load_location_rejects_a_negative_radius():
     ).ok
 
 
+def test_load_location_parses_with_and_without_destination():
+    from schema import parse_command
+
+    a = parse_command({"cmd": "load_location", "id": "c1", "query": "Nob Hill"})
+    assert a.ok and a.value.destination is None
+    b = parse_command(
+        {
+            "cmd": "load_location",
+            "id": "c2",
+            "query": "Nob Hill",
+            "destination": "Fisherman's Wharf",
+        }
+    )
+    assert b.ok and b.value.destination == "Fisherman's Wharf"
+
+
+def test_load_location_rejects_an_empty_destination():
+    from schema import parse_command
+
+    assert not parse_command(
+        {"cmd": "load_location", "id": "c", "query": "x", "destination": ""}
+    ).ok
+
+
 def test_load_location_accepts_an_explicit_null_radius_as_absent():
     """Python is the receiving end of Command, so it is deliberately more
     lenient than the zod side that guards what goes on the wire: `Pos | None`
@@ -218,7 +242,14 @@ COMMANDS = [
     {"id": "c2", "cmd": "step", "frames": 4},
     {"id": "c3", "cmd": "reset"},
     {"id": "c4", "cmd": "load_scenario", "scenario_id": "nob-hill-loop"},
-    {"id": "c4b", "cmd": "load_location", "query": "Nob Hill", "radius_m": 400.0},
+    {"id": "c4b", "cmd": "load_location", "query": "Nob Hill", "radius_m": 400.0, "destination": None},
+    {
+        "id": "c4c",
+        "cmd": "load_location",
+        "query": "Nob Hill",
+        "radius_m": 400.0,
+        "destination": "Fisherman's Wharf",
+    },
     {"id": "c5", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 35},
     {"id": "c6", "cmd": "set_param", "key": "hazard_color", "value": "#FF7A1A"},
     {"id": "c7", "cmd": "set_param", "key": "assist_enabled", "value": False},

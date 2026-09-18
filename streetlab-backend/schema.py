@@ -406,6 +406,7 @@ Maneuver = Literal[
     "lane_change_right",
     "stop",
     "yield",
+    "arrived",
     "emergency_brake",
     "pull_over",
 ]
@@ -456,6 +457,11 @@ class SimEvent(Wire):
     level: Literal["info", "warn", "critical"]
     code: str
     message: str
+    # How far a `location_progress` event's build has gotten, 0..1. Absent for
+    # every other event code -- this is not a general-purpose field, just the
+    # one thing a live-updating build progress bar needs alongside `message`'s
+    # stage label. `None` is the default so no other event code has to name it.
+    progress: Unit | None = None
 
 
 class StateUpdate(Wire):
@@ -548,6 +554,19 @@ class LoadLocation(_Cmd):
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
+    # A second address to route TO. Absent (the common case) means "drive an
+    # auto-discovered loop near `query`", exactly as before this existed.
+    destination: Annotated[str, Field(min_length=1)] | None = None
+
+
+class SuggestAddress(_Cmd):
+    """Ask for as-you-type address candidates. Answered directly by the
+    server's connection handler (see `server/ws_server.py`), never routed
+    through the sim thread's command queue -- same reason `camera_frame`
+    bypasses it: a network geocode call must not stall the physics step."""
+
+    cmd: Literal["suggest_address"] = "suggest_address"
+    query: Annotated[str, Field(min_length=1)]
 
 
 class SetParam(_Cmd):
@@ -597,6 +616,7 @@ Command = Annotated[
         Reset,
         LoadScenario,
         LoadLocation,
+        SuggestAddress,
         SetParam,
         ToggleLayer,
         SetCamera,
@@ -624,12 +644,31 @@ class Ack(Wire):
     t: Num
 
 
+class AddressSuggestion(Wire):
+    label: str
+    lat: Num
+    lon: Num
+
+
+class AddressSuggestions(Wire):
+    """Reply to `SuggestAddress`. `id` echoes the command's id -- like `Ack`,
+    but its own message type rather than a rider on `Ack` because it carries
+    a payload and, unlike an ack, is never paired with a command outcome."""
+
+    type: Literal["address_suggestions"] = "address_suggestions"
+    protocol: int = PROTOCOL_VERSION
+    id: str
+    query: str
+    suggestions: list[AddressSuggestion]
+
+
 # --------------------------------------------------------------------------- #
 # Envelope + helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 ServerMessage = Annotated[
-    Union[SceneDescription, StateUpdate, Ack], Field(discriminator="type")
+    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions],
+    Field(discriminator="type"),
 ]
 
 _COMMAND_ADAPTER: TypeAdapter[Any] = TypeAdapter(Command)

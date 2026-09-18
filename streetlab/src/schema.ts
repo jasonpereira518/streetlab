@@ -381,6 +381,7 @@ export const ManeuverSchema = z.enum([
   'lane_change_right',
   'stop',
   'yield',
+  'arrived',
   'emergency_brake',
   'pull_over',
 ]);
@@ -426,6 +427,9 @@ export const SimEventSchema = z.object({
   level: z.enum(['info', 'warn', 'critical']),
   code: z.string(),
   message: z.string(),
+  /** How far a `location_progress` event's build has gotten, 0..1. Absent
+   * for every other event code. */
+  progress: z.number().min(0).max(1).optional(),
 });
 
 export const StateUpdateSchema = z.object({
@@ -493,6 +497,9 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
     cmd: z.literal('load_location'),
     query: z.string().min(1),
     radius_m: z.number().positive().optional(),
+    /** A second address to route TO. Absent means "drive an auto-discovered
+     * loop near `query`", exactly as before this existed. */
+    destination: z.string().min(1).optional(),
   }),
   cmd({
     cmd: z.literal('set_param'),
@@ -507,6 +514,9 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('set_camera'), view: CameraViewSchema }),
   cmd({ cmd: z.literal('inject_hazard'), kind: z.string() }),
   cmd({ cmd: z.literal('set_perception'), mode: PerceptionModeSchema }),
+  /** Answered directly by the server's connection handler, not routed
+   * through the sim command queue — see `SuggestAddress` in schema.py. */
+  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1) }),
   cmd({
     cmd: z.literal('camera_frame'),
     /** Monotonic per connection; the backend drops anything out of order. */
@@ -537,6 +547,21 @@ export const AckSchema = z.object({
   t: z.number(),
 });
 
+export const AddressSuggestionSchema = z.object({
+  label: z.string(),
+  lat: z.number(),
+  lon: z.number(),
+});
+
+/** Reply to `suggest_address`. `id` echoes the command's id. */
+export const AddressSuggestionsSchema = z.object({
+  type: z.literal('address_suggestions'),
+  protocol: z.number().int(),
+  id: z.string(),
+  query: z.string(),
+  suggestions: z.array(AddressSuggestionSchema),
+});
+
 /* ------------------------------------------------------------------ */
 /* Envelope + helpers                                                  */
 /* ------------------------------------------------------------------ */
@@ -545,6 +570,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   SceneDescriptionSchema,
   StateUpdateSchema,
   AckSchema,
+  AddressSuggestionsSchema,
 ]);
 
 /* ---- inferred types ---- */
@@ -603,6 +629,8 @@ export type CommandInput = Command extends infer C
     : never
   : never;
 export type Ack = z.infer<typeof AckSchema>;
+export type AddressSuggestion = z.infer<typeof AddressSuggestionSchema>;
+export type AddressSuggestions = z.infer<typeof AddressSuggestionsSchema>;
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 
 export type ParseResult<T> =
