@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 6,
+  "protocol": 7,
   "seq": 180,
   "t": 2.9999999999999942,
   "sim_rate_hz": 60.0,
@@ -54,7 +54,8 @@
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": -1
+      "lane_offset": -1,
+      "emergency": false
     },
     {
       "id": "veh_01",
@@ -78,7 +79,8 @@
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": 0
+      "lane_offset": 0,
+      "emergency": false
     },
     {
       "id": "veh_03",
@@ -102,7 +104,8 @@
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": 0
+      "lane_offset": 0,
+      "emergency": false
     },
     {
       "id": "veh_04",
@@ -126,7 +129,8 @@
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": 0
+      "lane_offset": 0,
+      "emergency": false
     },
     {
       "id": "veh_05",
@@ -150,7 +154,8 @@
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": 0
+      "lane_offset": 0,
+      "emergency": false
     }
   ],
   "detections_shadow": null,
@@ -223,7 +228,8 @@
     ],
     "target_speed_mps": 3.5115798028987397,
     "maneuver": "turn_right",
-    "confidence": 4.2
+    "confidence": 4.2,
+    "reaction_source_id": null
   },
   "telemetry": {
     "radar": [
@@ -963,8 +969,8 @@
           "lateral_m": -0.001
         }
       ],
-      "cutin": null,
-      "cutin_label": null
+      "threat": null,
+      "threat_label": null
     }
   },
   "signals": [

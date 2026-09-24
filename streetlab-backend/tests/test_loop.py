@@ -177,7 +177,7 @@ class _StubbedLocationSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
         return self._grid.build("grid-loop")
 
 
@@ -199,7 +199,7 @@ class _FailingLoadSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
         raise NoDrivableRoad(f"no drivable junctions in this extract: {query}")
 
 
@@ -962,7 +962,7 @@ def test_submit_scene_does_not_block_the_caller():
     loop = _loop()
     started = threading.Event()
 
-    def slow():
+    def slow(_progress):
         started.set()
         time.sleep(0.4)
         return SyntheticGrid().build("grid-arterial")
@@ -978,7 +978,7 @@ def test_scene_epoch_increments_once_per_swap():
     loop.start()
     try:
         before = loop.scene_epoch
-        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         while loop.scene_epoch == before and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -995,7 +995,7 @@ def test_a_failing_build_emits_an_event_and_keeps_the_old_scene():
         before_epoch = loop.scene_epoch
         before_id = loop.sim.scene.description.scenario_id
 
-        def boom():
+        def boom(_progress):
             raise RuntimeError("overpass exploded")
 
         loop.submit_scene(boom)
@@ -1057,7 +1057,7 @@ def test_load_location_with_no_drivable_roads_surfaces_as_an_event_not_a_dead_wo
         assert "drivable" in seen[0].message.lower()
 
         before_epoch = loop.scene_epoch
-        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         while loop.scene_epoch == before_epoch and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -1066,6 +1066,58 @@ def test_load_location_with_no_drivable_roads_surfaces_as_an_event_not_a_dead_wo
             "never pick up this later, unrelated, successful build"
         )
         assert loop.sim.scene.description.scenario_id == "grid-arterial"
+    finally:
+        loop.stop()
+
+
+class _ProgressReportingSource:
+    """Wraps `SyntheticGrid` the same way `_StubbedLocationSource` does, but
+    `build_location` calls `on_progress` a couple of times before returning --
+    a stand-in for a real `OsmSceneSource` build reporting its own stages.
+    """
+
+    def __init__(self) -> None:
+        self._grid = SyntheticGrid()
+
+    def scenarios(self):
+        return self._grid.scenarios()
+
+    def build(self, scenario_id):
+        return self._grid.build(scenario_id)
+
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
+        if on_progress is not None:
+            on_progress("Geocoding address", 0.1)
+            on_progress("Fetching map data", 0.4)
+        return self._grid.build("grid-loop")
+
+
+def test_load_location_progress_surfaces_as_events_in_order(tmp_path):
+    """The frontend has nothing else to build a progress bar from: progress
+    has to ride the same `events[]` channel `location_failed`/`trip_complete`
+    already use, in the order the build actually reported it, each carrying
+    both its stage label and its fraction.
+    """
+    loop = SimLoop(Simulation(_ProgressReportingSource(), seed=1), hz=20.0)
+    _ACTIVE_LOOPS.append(loop)
+    loop.start()
+    try:
+        outcome = loop.submit(
+            {"id": "c1", "cmd": "load_location", "query": "Nob Hill"}
+        ).result(timeout=2.0)
+        assert outcome.ok
+
+        deadline = time.monotonic() + 5.0
+        seen: list = []
+        while time.monotonic() < deadline and len(seen) < 2:
+            frame = loop.latest
+            if frame:
+                seen = [e for e in frame.events if e.code == "location_progress"]
+            time.sleep(0.02)
+
+        assert [e.message for e in seen] == ["Geocoding address", "Fetching map data"]
+        assert [e.progress for e in seen] == [0.1, 0.4]
+        assert all(e.level == "info" for e in seen)
     finally:
         loop.stop()
 
@@ -1166,14 +1218,14 @@ def test_a_second_build_overwrites_a_still_pending_first():
     """
     loop = _loop()
 
-    loop.submit_scene(lambda: SyntheticGrid().build("grid-loop"))
+    loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-loop"))
     deadline = time.monotonic() + 5.0
     while loop._pending_scene is None and time.monotonic() < deadline:
         time.sleep(0.01)
     assert loop._pending_scene is not None
     assert loop._pending_scene.description.scenario_id == "grid-loop"
 
-    loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+    loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
     deadline = time.monotonic() + 5.0
     while (
         loop._pending_scene is None
@@ -1208,7 +1260,7 @@ def test_a_build_finishing_after_stop_does_not_swap_into_a_dead_loop():
     started = threading.Event()
     release = threading.Event()
 
-    def slow():
+    def slow(_progress):
         started.set()
         release.wait(2.0)
         return SyntheticGrid().build("grid-arterial")
@@ -1261,7 +1313,7 @@ def test_snapshot_returns_the_epoch_and_a_frame_from_the_same_read():
         assert isinstance(frame, StateUpdate)
 
         before = loop.scene_epoch
-        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         epoch, frame = loop.snapshot()
         while epoch == before and time.monotonic() < deadline:
@@ -1292,7 +1344,7 @@ class _SlowLocationSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
         time.sleep(1.5)
         return self._grid.build("grid-arterial")
 
@@ -1679,6 +1731,7 @@ class _MarkerPerception:
                 hazard_label=None,
                 ttc_s=None,
                 lane_offset=7,  # never the lead: this source is not driving
+                emergency=False,
             )
         ]
 

@@ -17,6 +17,15 @@ import sys
 import threading
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
+
+# A build's progress, reported as it happens: a short human-readable stage
+# label, and how far through the whole build that stage sits, 0..1. `None` is
+# the ordinary case (nothing listening -- built-in scenarios, most tests);
+# every call site guards through `_report`, so passing `None` costs nothing.
+ProgressCallback = Callable[[str, float], None] | None
+
+from shapely.geometry import Point, Polygon
 
 from map.cache import BundledExtracts, DiskCache, default_cache_dir
 from map.features import (
@@ -29,17 +38,24 @@ from map.features import (
     junction_of,
     signal_groups,
 )
-from map.geocode import Geocoder, NominatimGeocoder, Place
+from map.geocode import GeocodeError, Geocoder, GeocodeNotFound, GeocodeUnavailable, NominatimGeocoder, Place
 from map.lanes import (
+    Junction,
+    NoDrivableRoad,
+    NoRouteFound,
+    RouteGraph,
+    arrival_control_point,
     build_roads,
     build_route_graph,
     derive_lanes,
+    nearest_junction,
     project_control_points,
     select_ego_route,
+    select_route_to_destination,
     speed_limits_along,
 )
-from map.overpass import BBox, HttpxFetcher, OverpassClient
-from map.projection import LatLon
+from map.overpass import BBox, HttpxFetcher, OverpassClient, OverpassError
+from map.projection import LatLon, to_local
 from map.placement import faces_the_route
 from map.scene_build import STOP_LINE_SETBACK_M, BuiltScene
 from schema import (
@@ -65,6 +81,146 @@ ATTRIBUTION = "© OpenStreetMap contributors"
 MPH = 0.44704
 
 
+class TripTooLong(RuntimeError):
+    """The straight-line distance between origin and destination exceeds what
+    this build will fetch and render in one scene."""
+
+
+#: v1 cap on a point-to-point trip's straight-line span. A bbox enclosing two
+#: points this far apart is 25-100x the area of the loop mode's default
+#: fetch, with proportionally larger Overpass payloads and render geometry --
+#: rejected before the network call, not discovered by timing out on it.
+#: Conservative rather than tuned: raise it once general dense-area
+#: performance (geometry caps, render LOD) has more headroom measured against
+#: it than a single number picked here.
+MAX_TRIP_SPAN_M = 4000.0
+
+#: Ceiling the radius-widening ladder below will not cross. Beyond this, an
+#: address genuinely has no nearby drivable road rather than merely an
+#: under-sized first guess, and the build should say so instead of retrying
+#: forever.
+MAX_RADIUS_M = 5000.0
+
+_RADIUS_MULTIPLIER = 2.0
+
+
+def _report(on_progress: ProgressCallback, stage: str, fraction: float) -> None:
+    if on_progress is not None:
+        on_progress(stage, fraction)
+
+
+def _radius_ladder(start_m: float, cap_m: float = MAX_RADIUS_M) -> list[float]:
+    """`start_m`, then doubled repeatedly up to `cap_m` -- the sequence of
+    radii (or, for a two-point trip, bbox pads) `_build_uncached` retries at
+    when the first guess turns up no drivable road at all.
+    """
+    start = min(start_m, cap_m)
+    radii = [start]
+    while radii[-1] < cap_m:
+        nxt = min(radii[-1] * _RADIUS_MULTIPLIER, cap_m)
+        if nxt == radii[-1]:
+            break
+        radii.append(nxt)
+    return radii
+
+
+def describe_build_failure(exc: Exception) -> str:
+    """A plain, user-facing sentence for a `build_location` failure.
+
+    Every branch here is deliberately silent about the underlying exception
+    TEXT: a raw `httpx` or Nominatim error is meaningless to someone who just
+    typed an address, and might one day contain something not meant for a
+    client (a URL, a stack fragment). The full exception is still logged by
+    the caller (`sim/loop.py`'s `submit_scene`) before this is called, so
+    nothing about the failure is actually lost -- only what reaches the UI is
+    narrowed.
+    """
+    if isinstance(exc, GeocodeNotFound):
+        return "Couldn't find that address. Check the spelling or try a nearby cross street."
+    if isinstance(exc, GeocodeUnavailable):
+        return "Couldn't reach the geocoding service. Check your connection and try again."
+    if isinstance(exc, GeocodeError):
+        return "Couldn't resolve that address. Try a different one."
+    if isinstance(exc, OverpassError):
+        return "Couldn't fetch map data for this area right now. Try again in a moment."
+    if isinstance(exc, TripTooLong):
+        return f"That trip is too far for now (over {MAX_TRIP_SPAN_M / 1000:.0f} km). Try a closer destination."
+    if isinstance(exc, NoRouteFound):
+        return "No drivable path connects those two addresses in the map data available."
+    if isinstance(exc, NoDrivableRoad):
+        return "No drivable road found near this address."
+    log.exception("unexpected error building location")
+    return "Something went wrong loading this location. Try a different address."
+
+
+def _centroid(points: list[tuple[float, float]]) -> tuple[float, float]:
+    n = len(points)
+    return (sum(p[0] for p in points) / n, sum(p[1] for p in points) / n)
+
+
+def _cap_by_route_proximity(items, route_points, position_of, max_count):
+    """Keep at most `max_count` items, the ones nearest to `route_points`.
+
+    Nearest to the ROUTE, not the geocoded origin point: every vehicle in the
+    scene drives at or near `ego_route` (`_agent_routes`/`_traffic_loops`
+    below), so "nearest to the route" is not a heuristic stand-in here -- on
+    this codebase's own traffic model it is literally "nearest to everywhere
+    a car can be." Returns `(kept, dropped_count)` so the caller can report
+    what happened rather than truncate silently.
+    """
+    if len(items) <= max_count:
+        return items, 0
+
+    def min_dist(item) -> float:
+        p = position_of(item)
+        return min(math.dist(p, rp) for rp in route_points)
+
+    ordered = sorted(items, key=min_dist)
+    return ordered[:max_count], len(items) - max_count
+
+
+#: `world.ts`'s own comment says its draw-call budget was sized for "~30
+#: buildings, ~250 trees" -- but the shipped Nob Hill bundle, already in
+#: production use, measures 2,224 buildings and 806 trees (confirmed by
+#: running `build_buildings`/`build_trees` against `bundled/`'s own extract).
+#: That figure was stale, not a real ceiling: whatever the true limit is, it
+#: is comfortably above what already ships. These caps are set well above
+#: the shipped fixture -- so today's flagship demo is truncated NOT AT ALL --
+#: while still bounding a genuinely pathological extract (a dense downtown
+#: core an order of magnitude denser still) instead of leaving fetch size and
+#: render payload completely unbounded. The actual risk such an extract poses
+#: is not draw calls (`world.ts` already merges every building into one mesh
+#: and instances every tree into one buffer) but CPU merge cost and payload
+#: size, both of which this bounds at the cheapest point: before the data
+#: leaves the backend at all.
+MAX_BUILDINGS = 5000
+MAX_TREES = 2000
+
+#: How many distinct local loops `_traffic_loops` samples for ambient traffic
+#: when the ego drives an open point-to-point route -- enough that traffic
+#: doesn't obviously repeat itself along a longer trip, cheap enough that a
+#: few failed samples (a point too close to a dead end, say) don't dominate
+#: the build.
+_TRAFFIC_LOOP_SAMPLES = 3
+
+
+def _spawn_overlaps_a_building(start: tuple[float, float], buildings: list[Building]) -> bool:
+    """True if the ego's own spawn point falls inside any building footprint.
+
+    A real, if uncommon, OSM data-quality pattern (a building traced to
+    include an arcade or overhang, a slightly-off import) that can recur at
+    any address, not just the one this was first found at. Checked once per
+    build, backend-side -- not the per-frame chase-camera path that already
+    has a known, accepted, purely-cosmetic residual clipping bug for exactly
+    this case. This does not fix that; it turns a mysterious per-address
+    glitch into a diagnosable `SimEvent` (`spawn_in_building`, attached to
+    `BuiltScene.build_notes`) so real frequency can be measured before anyone
+    spends the recurring per-frame cost a real fix would need.
+    """
+    point = Point(start)
+    return any(Polygon(b.footprint).contains(point) for b in buildings)
+
+
 class LocationSpec:
     """A named place the catalog offers.
 
@@ -85,7 +241,7 @@ class LocationSpec:
     its past self.
     """
 
-    __slots__ = ("id", "query", "name", "radius_m", "traffic", "place")
+    __slots__ = ("id", "query", "name", "radius_m", "traffic", "place", "destination")
 
     def __init__(
         self,
@@ -95,6 +251,7 @@ class LocationSpec:
         radius_m: float = 500.0,
         traffic: int = 4,
         place: Place | None = None,
+        destination: str | None = None,
     ) -> None:
         self.id = id
         self.query = query
@@ -102,6 +259,12 @@ class LocationSpec:
         self.radius_m = radius_m
         self.traffic = traffic
         self.place = place
+        # A second address to route TO, turning the loop `select_ego_route`
+        # would otherwise pick into a point-to-point path via
+        # `select_route_to_destination`. `None` (every bundled entry, and
+        # every location loaded before this existed) preserves today's
+        # loop-driving behaviour exactly.
+        self.destination = destination
 
 
 BUNDLED: tuple[LocationSpec, ...] = (
@@ -208,8 +371,8 @@ class OsmSceneSource:
             locations = self._locations
         return [self._summary(spec, i + 1) for i, spec in enumerate(locations)]
 
-    def build(self, scenario_id: str) -> BuiltScene:
-        core = self._core(self._find(scenario_id))
+    def build(self, scenario_id: str, on_progress: ProgressCallback = None) -> BuiltScene:
+        core = self._core(self._find(scenario_id), on_progress)
         # `scenarios()` never builds (see its docstring), so attaching the
         # catalog here is a cheap read of whatever is already built -- this
         # spec (just now, by `_core` above) plus anything else previously
@@ -220,11 +383,11 @@ class OsmSceneSource:
 
     # -- pipeline ----------------------------------------------------------- #
 
-    def _core(self, spec: LocationSpec) -> BuiltScene:
+    def _core(self, spec: LocationSpec, on_progress: ProgressCallback = None) -> BuiltScene:
         """The scene itself, carrying an empty catalog. Memoised per location."""
         cached = self._scenes.get(spec.id)
         if cached is None:
-            cached = self._build_uncached(spec)
+            cached = self._build_uncached(spec, on_progress)
             self._scenes[spec.id] = cached
         return cached
 
@@ -236,22 +399,112 @@ class OsmSceneSource:
                 return spec
         raise KeyError(f"unknown location: {scenario_id}")
 
-    def _build_uncached(self, spec: LocationSpec) -> BuiltScene:
+    def _build_uncached(self, spec: LocationSpec, on_progress: ProgressCallback = None) -> BuiltScene:
         # A baked `place` (bundled entries only -- see `LocationSpec`'s
         # docstring) skips the geocoder entirely: no network call, and a
         # bbox that reproduces the exact cache key the shipped extract was
         # recorded under, every time.
+        _report(on_progress, "Geocoding address", 0.05)
         place = spec.place if spec.place is not None else self.geocoder.lookup(spec.query)
         origin = LatLon(lat=place.lat, lon=place.lon)
-        graph = self.overpass.graph(BBox.around(place.lat, place.lon, spec.radius_m))
 
-        roads = build_roads(graph, origin)
-        ego_route = select_ego_route(build_route_graph(graph, origin), (0.0, 0.0))
+        dest_place: Place | None = None
+        dest_xy: tuple[float, float] | None = None
+        if spec.destination is not None:
+            _report(on_progress, "Geocoding destination", 0.12)
+            dest_place = self.geocoder.lookup(spec.destination)
+            dest_xy = to_local(dest_place.lat, dest_place.lon, origin)
+            span_m = math.dist((0.0, 0.0), dest_xy)
+            if span_m > MAX_TRIP_SPAN_M:
+                raise TripTooLong(
+                    f"trip is {span_m / 1000:.1f} km straight-line; "
+                    f"v1 caps this at {MAX_TRIP_SPAN_M / 1000:.0f} km"
+                )
+
+        # Widen the search and retry if the first guess finds no drivable
+        # road at all -- but never on a transport failure (`OverpassError`
+        # already retries 3x with backoff; compounding a radius ladder on
+        # top would turn one outage into up to 3x this ladder's own length of
+        # slow requests) and never by re-geocoding (lat/lon does not change
+        # with radius, and Nominatim does not guarantee the same top result
+        # twice -- see `LocationSpec`'s own docstring).
+        ladder = _radius_ladder(spec.radius_m)
+        last_exc: NoDrivableRoad | NoRouteFound | None = None
+        graph = roads = rg = ego_route = None
+        for attempt, radius in enumerate(ladder):
+            _report(
+                on_progress,
+                "Fetching map data" if attempt == 0 else "Fetching map data (widening search)",
+                # Climbs through the ladder's own span rather than a fixed
+                # step, so a long ladder (a rural address with no nearby
+                # road) still reports *something* moving on every retry
+                # instead of parking at one number for several fetches.
+                min(0.18 + 0.35 * (attempt / max(len(ladder), 1)), 0.5),
+            )
+            bbox = (
+                BBox.enclosing([(place.lat, place.lon), (dest_place.lat, dest_place.lon)], pad_m=radius)
+                if dest_place is not None
+                else BBox.around(place.lat, place.lon, radius)
+            )
+            graph = self.overpass.graph(bbox)
+            try:
+                roads = build_roads(graph, origin)
+                rg = build_route_graph(graph, origin)
+                ego_route = (
+                    select_route_to_destination(rg, (0.0, 0.0), dest_xy)
+                    if dest_xy is not None
+                    else select_ego_route(rg, (0.0, 0.0))
+                )
+                break
+            except (NoDrivableRoad, NoRouteFound) as exc:
+                last_exc = exc
+                log.info(
+                    "%s within %.0fm of %s; widening search",
+                    exc.__class__.__name__,
+                    radius,
+                    place.display_name,
+                )
+        else:
+            final_radius = ladder[-1]
+            if isinstance(last_exc, NoRouteFound):
+                raise NoRouteFound(
+                    f"no drivable path connects these two points within {final_radius:.0f}m"
+                ) from last_exc
+            raise NoDrivableRoad(
+                f"no drivable road found within {final_radius:.0f}m of this address"
+            ) from last_exc
+        assert graph is not None and roads is not None and rg is not None and ego_route is not None
+
+        _report(on_progress, "Placing signals, buildings, and trees", 0.6)
         lights = build_traffic_lights(graph, origin)
         buildings = build_buildings(graph, origin)
         crosswalks = build_crosswalks(graph, origin)
         stop_signs = build_stop_signs(graph, origin)
         trees = build_trees(graph, origin, buildings)
+
+        build_notes: list[tuple[str, str]] = []
+        buildings, buildings_dropped = _cap_by_route_proximity(
+            buildings, ego_route.points, lambda b: _centroid(b.footprint), MAX_BUILDINGS
+        )
+        if buildings_dropped:
+            build_notes.append((
+                "scene_truncated",
+                f"kept the {MAX_BUILDINGS} buildings nearest the route; "
+                f"dropped {buildings_dropped} farther away",
+            ))
+        trees, trees_dropped = _cap_by_route_proximity(
+            trees, ego_route.points, lambda t: t.position, MAX_TREES
+        )
+        if trees_dropped:
+            build_notes.append((
+                "scene_truncated",
+                f"kept the {MAX_TREES} trees nearest the route; dropped {trees_dropped} farther away",
+            ))
+        if _spawn_overlaps_a_building(ego_route.points[0], buildings):
+            build_notes.append((
+                "spawn_in_building",
+                "the ego's spawn point overlaps a building footprint from this OSM extract",
+            ))
 
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
@@ -272,6 +525,7 @@ class OsmSceneSource:
             # Filled in by `build`; see the note there on why it cannot be done
             # inline without the builder re-entering itself.
             catalog=[],
+            hazards=[],
         )
 
         # Posted limits per route segment, so the ego obeys the street it is on
@@ -312,16 +566,27 @@ class OsmSceneSource:
             if faces_the_route(ego_route, sign.heading, at, STOP_LINE_SETBACK_M):
                 candidates.append((sign.id, "stop_sign", at, STOP_LINE_SETBACK_M))
         control_points = project_control_points(ego_route, candidates)
+        # An open, point-to-point route needs one more stop the planner
+        # already knows how to bisect towards: the trip's own end. A closed
+        # loop has no such end -- `arrival_control_point` returns `None` for
+        # one, unchanged from before this existed.
+        arrival = arrival_control_point(ego_route)
+        if arrival is not None:
+            control_points = sorted([*control_points, arrival], key=lambda cp: cp.s)
+
+        _report(on_progress, "Finalizing scene", 0.9)
+        traffic_loops = self._traffic_loops(rg, ego_route)
 
         return BuiltScene(
             description=description,
             ego_route=ego_route,
-            agent_routes=self._agent_routes(ego_route, spec.traffic),
+            agent_routes=self._agent_routes(traffic_loops, spec.traffic),
             signal_groups=signal_groups(lights),
             speed_limit_mps=self._speed_limit(roads),
             traffic_count=spec.traffic,
             control_points=control_points,
             lanes=derive_lanes(ego_route, roads),
+            build_notes=build_notes,
         )
 
     def _bounds(
@@ -362,7 +627,54 @@ class OsmSceneSource:
             xs, ys = [0.0], [0.0]
         return Bounds(min_x=min(xs), min_y=min(ys), max_x=max(xs), max_y=max(ys))
 
-    def _agent_routes(self, ego_route: Route, traffic: int) -> list[Route]:
+    def _traffic_loops(self, rg: RouteGraph, ego_route: Route) -> list[Route]:
+        """Separate closed loops for traffic to lap, when the ego drives an
+        OPEN point-to-point route instead of a loop.
+
+        `sim/agents.py`'s IDM/MOBIL model assumes every route it walks is
+        closed -- `% agent.route.length_m` appears three times there (twice
+        in `IdmTraffic._leader` alone), with no `.closed` check anywhere in
+        the file. Handing traffic the ego's own open route unmodified would
+        make every agent teleport back to the start the instant it passed the
+        end: a visible pop, not a graceful loop. Giving traffic its own local
+        loops instead needs no change there at all: `IdmTraffic`'s existing
+        `other.route is not agent.route` identity check already treats two
+        different `Route` objects as being on different streets, which is
+        exactly right once they are.
+
+        Sampled at a few points spread along the ego's own path -- not
+        clustered near its start -- so ambient traffic exists along the whole
+        trip, not just its first block. `NoDrivableRoad` from a bad sample
+        point (e.g. one that lands somewhere `select_ego_route` can't find a
+        loop from) is swallowed per-sample rather than failing the whole
+        build: a trip with fewer ambient-traffic loops than requested is a
+        smaller degradation than losing the whole scene over it.
+        """
+        if ego_route.closed:
+            return [ego_route]
+        loops: list[Route] = []
+        seen: set[Junction] = set()
+        for i in range(_TRAFFIC_LOOP_SAMPLES):
+            frac = (i + 1) / (_TRAFFIC_LOOP_SAMPLES + 1)
+            xy = ego_route.point_at(ego_route.length_m * frac)
+            try:
+                junction = nearest_junction(rg, xy)
+            except NoDrivableRoad:
+                continue
+            if junction in seen:
+                continue
+            seen.add(junction)
+            try:
+                loops.append(select_ego_route(rg, xy))
+            except NoDrivableRoad:
+                continue
+        if not loops:
+            log.warning(
+                "no local loop found for ambient traffic near this open route; spawning none"
+            )
+        return loops
+
+    def _agent_routes(self, loops: list[Route], traffic: int) -> list[Route]:
         """Traffic shares the ego's lane, all of it.
 
         Every third agent used to drive
@@ -397,8 +709,17 @@ class OsmSceneSource:
         `remove_self_intersections` repair that guarded the old left lane goes
         with it -- `ego_route` is already simple (`select_ego_route` repairs
         it) and nothing offsets it again.
+
+        `loops` generalises what used to be a single `ego_route` argument: in
+        loop mode it is `[ego_route]` (so this round-robin is exactly the old
+        `[ego_route] * traffic`, unchanged), and for an open point-to-point
+        route it is `_traffic_loops`'s handful of separate local loops, which
+        agents round-robin across the same way `ScriptedTraffic.__init__`
+        already staggers position within a single one.
         """
-        return [ego_route] * traffic
+        if not loops:
+            return []
+        return [loops[i % len(loops)] for i in range(traffic)]
 
     def _speed_limit(self, roads: list[Road]) -> float:
         """The limit governing the most *metres* of road, not the most roads.
@@ -424,7 +745,13 @@ class OsmSceneSource:
 
     # -- catalog ------------------------------------------------------------ #
 
-    def build_location(self, query: str, radius_m: float | None = None) -> BuiltScene:
+    def build_location(
+        self,
+        query: str,
+        radius_m: float | None = None,
+        destination: str | None = None,
+        on_progress: ProgressCallback = None,
+    ) -> BuiltScene:
         """Geocode an arbitrary address, build it, and add it to the catalog.
 
         Catalogued only if the build SUCCEEDS -- a failed geocode or fetch
@@ -438,48 +765,57 @@ class OsmSceneSource:
         racing on the same query cannot both decide "not yet known" and
         both append.
 
-        Matched by QUERY TEXT FIRST, across the WHOLE catalog — bundled or
-        dynamic. An exact repeat of any already-known query reuses that
-        entry outright: retyping a bundled location's own address through
-        the freeform load box must not silently build and catalog a second,
-        identical copy of data already on hand. `radius_m` is deliberately
-        NOT part of that match — it is first-write-wins: a repeat with a
-        different radius still reuses the existing entry as-is, matching an
-        idempotence contract defined purely in terms of the query string.
+        Matched by (QUERY TEXT, DESTINATION) FIRST, across the WHOLE catalog
+        — bundled or dynamic. An exact repeat of an already-known pair reuses
+        that entry outright: retyping a bundled location's own address
+        through the freeform load box must not silently build and catalog a
+        second, identical copy of data already on hand. `destination` joins
+        `query` in that match (rather than being ignored like `radius_m`)
+        because it changes what gets built, not just how far around one point
+        to look — the same start address routed to two different
+        destinations is two different trips, and must not collide on one
+        catalog entry. `radius_m` is still deliberately NOT part of the
+        match — it is first-write-wins: a repeat with a different radius
+        still reuses the existing entry as-is.
 
-        Two distinct queries can still collide on the DERIVED id even
-        though neither matches an existing query verbatim: `_slug` collapses
-        punctuation, so "Main St, Springfield" and "Main St. Springfield"
-        both reduce to `osm-main-st-springfield`. Once the exact-text check
-        above has ruled out a genuine repeat, a collision on that id is a
-        genuinely different query wanting the same slot — silently reusing
-        the first query's cached scene for the second would serve the wrong
-        place with no error, and silently overwriting the first's catalog
-        entry would corrupt it out from under a client that already has it
-        open. So it gets its own `-2`, `-3`, ... id instead (`_disambiguate`).
+        Two distinct (query, destination) pairs can still collide on the
+        DERIVED id even though neither matches an existing entry verbatim:
+        `_slug` collapses punctuation, so "Main St, Springfield" and "Main
+        St. Springfield" both reduce to `osm-main-st-springfield`. Once the
+        exact-match check above has ruled out a genuine repeat, a collision
+        on that id is a genuinely different request wanting the same slot —
+        silently reusing the first's cached scene for the second would serve
+        the wrong place with no error, and silently overwriting the first's
+        catalog entry would corrupt it out from under a client that already
+        has it open. So it gets its own `-2`, `-3`, ... id instead
+        (`_disambiguate`).
         """
         with self._lock:
-            exact = next((s for s in self._locations if s.query == query), None)
+            exact = next(
+                (s for s in self._locations if s.query == query and s.destination == destination),
+                None,
+            )
             if exact is not None:
                 spec = exact
                 appended = False
             else:
-                base_id = f"osm-{_slug(query)}"
+                base_id = f"osm-{_slug(query)}-to-{_slug(destination)}" if destination else f"osm-{_slug(query)}"
                 by_id = {s.id: s for s in self._locations}
                 if base_id not in by_id:
                     spec = LocationSpec(
                         id=base_id,
                         query=query,
-                        name=query,
-                        radius_m=radius_m or 500.0,
+                        name=f"{query} → {destination}" if destination else query,
+                        radius_m=radius_m or (300.0 if destination else 500.0),
                         traffic=4,
+                        destination=destination,
                     )
                     self._locations = self._locations + (spec,)
                 else:
-                    spec = self._disambiguate(base_id, query, radius_m, by_id)
+                    spec = self._disambiguate(base_id, query, radius_m, destination, by_id)
                 appended = True
         try:
-            return self.build(spec.id)
+            return self.build(spec.id, on_progress)
         except Exception:
             # A build that never succeeded must leave NO trace in the catalog.
             # The append above has to happen before the build -- it is what
@@ -506,13 +842,14 @@ class OsmSceneSource:
         base_id: str,
         query: str,
         radius_m: float | None,
+        destination: str | None,
         by_id: dict[str, LocationSpec],
     ) -> LocationSpec:
-        """`base_id` is taken by a DIFFERENT query (a slug collision), and
-        the caller has already ruled out this exact query matching ANY
-        existing entry — so this just mints the next free `-N` suffix.
-        Caller holds `_lock` and mutates `self._locations` on our behalf via
-        the return value.
+        """`base_id` is taken by a DIFFERENT (query, destination) pair (a slug
+        collision), and the caller has already ruled out this exact pair
+        matching ANY existing entry — so this just mints the next free `-N`
+        suffix. Caller holds `_lock` and mutates `self._locations` on our
+        behalf via the return value.
         """
         n = 2
         while f"{base_id}-{n}" in by_id:
@@ -520,9 +857,10 @@ class OsmSceneSource:
         spec = LocationSpec(
             id=f"{base_id}-{n}",
             query=query,
-            name=query,
-            radius_m=radius_m or 500.0,
+            name=f"{query} → {destination}" if destination else query,
+            radius_m=radius_m or (300.0 if destination else 500.0),
             traffic=4,
+            destination=destination,
         )
         self._locations = self._locations + (spec,)
         return spec

@@ -225,7 +225,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Nob Hill' } });
     fireEvent.submit(box.closest('form')!);
 
@@ -250,7 +250,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: '   ' } });
     fireEvent.submit(box.closest('form')!);
 
@@ -266,12 +266,102 @@ describe('Location search box', () => {
     expect(useSimStore.getState().locationPending).toBeNull();
   });
 
+  it('has a real submit button, so Enter still submits now that there are two text fields', () => {
+    // Regression: a <form> with no submit button and MORE THAN ONE text-like
+    // input never submits on Enter at all (the HTML spec's implicit-
+    // submission rule) -- adding the destination field without a submit
+    // button silently broke the single most common way to use this box.
+    // `fireEvent.submit` (used by every other test in this file) dispatches
+    // the submit event directly and is blind to this: it would keep passing
+    // even with the button removed. This test instead drives the button
+    // itself, which is what a real Enter keypress resolves to.
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    const button = screen.getByLabelText('Search for this location') as HTMLButtonElement;
+    expect(button.type).toBe('submit');
+    expect(button.disabled).toBe(true); // nothing to search yet
+
+    fireEvent.change(box, { target: { value: 'Golden Gate Park' } });
+    expect(button.disabled).toBe(false);
+
+    fireEvent.click(button);
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'load_location', query: 'Golden Gate Park' }),
+    );
+    expect(useSimStore.getState().locationPending).toBe('Golden Gate Park');
+  });
+
+  it('shows an indeterminate progress bar before the first checkpoint, then a real percentage', () => {
+    harness = createHarness();
+    const { container } = render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Golden Gate Park' } });
+    fireEvent.submit(box.closest('form')!);
+
+    // No checkpoint has arrived yet: the track exists, but it can't claim a
+    // real fraction -- it reads as indeterminate rather than pinned at 0%.
+    const track = screen.getByRole('progressbar', { name: 'Build progress' });
+    let bar = container.querySelector('.location-progress-bar') as HTMLElement;
+    expect(track.getAttribute('aria-valuenow')).toBeNull();
+    expect(bar.classList.contains('is-indeterminate')).toBe(true);
+    expect(bar.style.width).toBe('');
+    expect(container.querySelector('.location-progress-stage')).toBeNull();
+
+    // The first checkpoint arrives -- a real, growing percentage replaces it.
+    const base = harness.emitFrame(1);
+    harness.emit({
+      ...base,
+      seq: base.seq + 1,
+      events: [
+        { t: base.t, level: 'info', code: 'location_progress', message: 'Geocoding address', progress: 0.1 },
+      ],
+    });
+
+    bar = container.querySelector('.location-progress-bar') as HTMLElement;
+    expect(track.getAttribute('aria-valuenow')).toBe('10');
+    expect(bar.classList.contains('is-indeterminate')).toBe(false);
+    expect(bar.style.width).toBe('10%');
+    expect(screen.getByText('Geocoding address')).toBeTruthy();
+
+    // A later checkpoint moves it forward, never backward.
+    const base2 = harness.emitFrame(1);
+    harness.emit({
+      ...base2,
+      seq: base2.seq + 1,
+      events: [
+        { t: base2.t, level: 'info', code: 'location_progress', message: 'Fetching map data', progress: 0.4 },
+      ],
+    });
+    bar = container.querySelector('.location-progress-bar') as HTMLElement;
+    expect(bar.style.width).toBe('40%');
+    expect(screen.getByText('Fetching map data')).toBeTruthy();
+  });
+
+  it('removes the progress bar once the scene arrives', () => {
+    harness = createHarness();
+    const { container } = render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'Golden Gate Park' } });
+    fireEvent.submit(box.closest('form')!);
+    expect(container.querySelector('.location-progress-track')).toBeTruthy();
+
+    harness.emitScene();
+    expect(container.querySelector('.location-progress-track')).toBeNull();
+  });
+
   it('clears the pending state on a location_failed event, without waiting for a scene', () => {
     harness = createHarness();
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Nonexistent Place' } });
     fireEvent.submit(box.closest('form')!);
     expect(useSimStore.getState().locationPending).toBe('Nonexistent Place');
@@ -306,7 +396,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Anywhere' } });
     fireEvent.submit(box.closest('form')!);
     expect(useSimStore.getState().locationPending).toBe('Anywhere');
@@ -343,7 +433,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Somewhere Real' } });
     fireEvent.submit(box.closest('form')!);
 
@@ -361,7 +451,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: 'Nob Hill' } });
     const form = box.closest('form')!;
     fireEvent.submit(form);
@@ -418,7 +508,7 @@ describe('Location search box', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    const box = screen.getByLabelText('Load a location') as HTMLInputElement;
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
     fireEvent.change(box, { target: { value: '1600 Amphitheatre Parkway' } });
     fireEvent.submit(box.closest('form')!);
     expect(useSimStore.getState().locationPending).toBe('1600 Amphitheatre Parkway');
@@ -444,6 +534,95 @@ describe('Location search box', () => {
     expect(harness.sent).toContainEqual(
       expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'hyde-descent' }),
     );
+  });
+});
+
+describe('Address suggestions', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not request suggestions for a query shorter than the minimum length', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'no' } });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    expect(harness.sent.filter((c) => c.cmd === 'suggest_address')).toHaveLength(0);
+  });
+
+  it('requests suggestions after the debounce and fills the field on selection', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'nob' } });
+    fireEvent.focus(box);
+
+    // Nothing fires before the debounce elapses.
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(harness.sent.filter((c) => c.cmd === 'suggest_address')).toHaveLength(0);
+
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    const suggestCmd = harness.sent.find((c) => c.cmd === 'suggest_address');
+    expect(suggestCmd).toMatchObject({ query: 'nob' });
+
+    act(() => {
+      harness!.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id: suggestCmd!.id,
+        query: 'nob',
+        suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+      });
+    });
+
+    const option = screen.getByRole('option', { name: 'Nob Hill, San Francisco, CA' });
+    fireEvent.mouseDown(option);
+
+    expect(box.value).toBe('Nob Hill, San Francisco, CA');
+    expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  it('never shows a stale reply that no longer matches the box, even if it arrives late', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: 'nob' } });
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    const staleCmd = harness.sent.find((c) => c.cmd === 'suggest_address');
+
+    // The user kept typing before the first reply ever arrived.
+    fireEvent.change(box, { target: { value: 'nobody home' } });
+
+    act(() => {
+      harness!.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id: staleCmd!.id,
+        query: 'nob',
+        suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+      });
+    });
+
+    expect(screen.queryByRole('option')).toBeNull();
   });
 });
 
@@ -851,5 +1030,37 @@ describe('Telemetry row', () => {
     tick(2);
     const speed = container.querySelector('canvas') as HTMLCanvasElement;
     expect(canvasText(speed)).toContain('Awaiting telemetry');
+  });
+});
+
+describe('RightPanel hazard menu', () => {
+  it('groups every hazard the scene lists', () => {
+    harness = createHarness();
+    render(<RightPanel />);
+    const scene = harness.emitScene();
+
+    const labels = ['Ahead', 'Crossing', 'Behind'].flatMap((group) =>
+      within(screen.getByRole('group', { name: `${group} hazards` }))
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    );
+    expect(labels.sort()).toEqual(scene.hazards.map((h) => h.label).sort());
+  });
+
+  it('sends the chosen kind and shows a decline where acks are shown', () => {
+    harness = createHarness();
+    render(<RightPanel />);
+    harness.emitScene();
+
+    const behind = screen.getByRole('group', { name: 'Behind hazards' });
+    fireEvent.click(within(behind).getByRole('button', { name: 'Emergency vehicle' }));
+
+    expect(harness.sent[harness.sent.length - 1]).toMatchObject({
+      cmd: 'inject_hazard',
+      kind: 'emergency_vehicle',
+    });
+    expect(
+      screen.getByText('emergency_vehicle: the in-process mock only stages cut_in'),
+    ).toBeTruthy();
   });
 });

@@ -29,6 +29,10 @@ const INITIAL = {
   catalog: [],
   activeScenarioId: null,
   locationPending: null,
+  locationProgress: null,
+  locationError: null,
+  tripComplete: false,
+  addressSuggestions: {},
   paused: false,
   assistActive: false,
   hasFrames: false,
@@ -72,10 +76,13 @@ export function createHarness(scenarioId?: string): Harness {
     send(command) {
       sent.push(command);
       // Mirror the real mock: commands actually drive the simulator, so a test
-      // that pauses sees `paused: true` on the next frame. `camera_frame` is
-      // the one exception — like the real backend (ws_server.py `_handle`)
-      // and createMockTransport, it bypasses the command/ack path entirely.
-      if (command.cmd === 'camera_frame') return;
+      // that pauses sees `paused: true` on the next frame. `camera_frame` and
+      // `suggest_address` are the exceptions — like the real backend
+      // (ws_server.py `_handle`) and createMockTransport, they bypass the
+      // command/ack path entirely. Tests exercise `suggest_address` by
+      // emitting an `address_suggestions` message directly via `h.emit(...)`,
+      // the same way they drive `location_progress`/`location_failed`.
+      if (command.cmd === 'camera_frame' || command.cmd === 'suggest_address') return;
       const res = sim.apply(command);
       handlers?.onMessage({
         type: 'ack',

@@ -28,6 +28,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
+from map.lanes import ARRIVAL_CONTROL_ID
+from map.osm_source import describe_build_failure
 from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.capture import CaptureSink
 from perception.history import PoseHistory
@@ -36,6 +38,7 @@ from perception.pipeline import PerceptionPipeline
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
+from plan.behavior import BehaviorState
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
     Ack,
@@ -64,6 +67,13 @@ from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
 from sim.vehicle import BicycleModel, VehicleState
 
 log = logging.getLogger("streetlab.sim")
+
+# A build's progress: a short stage label, plus how far through the whole
+# build that stage sits, 0..1. `SceneBuilder` is the shape `submit_scene`
+# expects -- a zero-arg build wrapped in one more argument, the progress
+# callback it may call zero or more times before returning.
+ProgressCallback = Callable[[str, float], None]
+SceneBuilder = Callable[[ProgressCallback], BuiltScene]
 
 MPH = 0.44704
 DEFAULT_DT = 1 / 60
@@ -137,6 +147,13 @@ class WorldState:
     # This tick's signal phases, computed once in `_plan()` and reused by the
     # wire so the phase the car obeyed and the phase the HUD shows cannot drift.
     signals: list[SignalState] = field(default_factory=list)
+    # How many participants `sim/events.py` has spawned: the number in each
+    # one's id. Not `seq`, which two injections share when they land in one
+    # tick (`SimLoop._drain_commands` applies every queued command before the
+    # step), and not a module-level count, which would make an id depend on
+    # every other simulation the process has run. Never reset with the scene,
+    # so an id names one participant for the simulation's whole life.
+    hazard_spawns: int = 0
 
 
 class SignalController:
@@ -237,8 +254,16 @@ class Simulation:
         self._scored_frame_t: float | None = None
         # How `load_location` reaches the executor without a back-reference
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
-        # itself in.
-        self._build_sink: Callable[[Callable[[], BuiltScene]], None] | None = None
+        # itself in. The build function it is handed takes a progress
+        # callback (stage label, 0..1) so a slow build can report where it is
+        # -- see `submit_scene`'s `emit_progress`.
+        self._build_sink: Callable[[SceneBuilder], None] | None = None
+        # Latches once per scene so a point-to-point trip's `trip_complete`
+        # fires exactly once, at the moment the ego actually settles into
+        # STOP at the route's own end -- not on every tick it stays there
+        # afterwards. Reset alongside everything else scene-scoped in
+        # `_reset_dynamics`.
+        self._trip_complete_emitted = False
         self._load(scenario_id or source.scenarios()[0].id)
 
     # -- lifecycle --------------------------------------------------------- #
@@ -261,7 +286,7 @@ class Simulation:
         self._signals = SignalController(self.scene.signal_groups)
         self._reset_dynamics()
 
-    def set_build_sink(self, sink: Callable[[Callable[[], BuiltScene]], None]) -> None:
+    def set_build_sink(self, sink: Callable[[SceneBuilder], None]) -> None:
         """How `load_location` reaches the executor without a back-reference."""
         self._build_sink = sink
 
@@ -283,6 +308,7 @@ class Simulation:
         # right above, so a stale entry could otherwise collide with a
         # genuinely new one.
         self.pose_history.clear()
+        self._trip_complete_emitted = False
         # Seeded at t = 0.0 right after the clear, because `state_update()` is
         # legitimately callable before any `step()` -- and because `world.t`
         # restarts at 0.0 above on every reset and scene swap, not just at
@@ -323,7 +349,16 @@ class Simulation:
         self.world.ego = state
 
     def scene_description(self) -> SceneDescription:
-        return self.scene.description
+        """The scene as the wire carries it, with the hazard menu attached.
+
+        Scene sources build `hazards=[]`: what can be injected is the
+        simulation's business, not the map's. Attached here rather than in
+        `adopt_scene`, which installs the scene exactly as built. Imported
+        here for the reason `_cmd_inject_hazard` gives.
+        """
+        from sim import events
+
+        return self.scene.description.model_copy(update={"hazards": events.catalog()})
 
     # -- stepping ---------------------------------------------------------- #
 
@@ -348,6 +383,7 @@ class Simulation:
 
         self._guard_world()
         result = self._plan(dt)
+        self._check_trip_complete()
         self.world.ego = self._model.step(
             self.world.ego,
             accel_mps2=result.accel_mps2,
@@ -763,7 +799,7 @@ class Simulation:
                 ok=False, message=f"unknown scenario: {command.scenario_id}"
             )
         self._emit("scenario_loaded", f"loaded {command.scenario_id}")
-        return CommandOutcome(ok=True, message="loaded", scene=self.scene.description)
+        return CommandOutcome(ok=True, message="loaded", scene=self.scene_description())
 
     def _cmd_load_location(self, command) -> CommandOutcome:
         """Ack now, build later.
@@ -781,10 +817,15 @@ class Simulation:
         if self._build_sink is None:
             return CommandOutcome(ok=False, message="no build executor attached")
 
-        query, radius = command.query, command.radius_m
-        self._build_sink(lambda: builder(query, radius))
-        self._emit("location_requested", f"building {query}")
-        return CommandOutcome(ok=True, message=f"building {query}")
+        query, radius, destination = command.query, command.radius_m, command.destination
+        self._build_sink(
+            lambda on_progress: builder(
+                query, radius, destination=destination, on_progress=on_progress
+            )
+        )
+        label = f"{query} → {destination}" if destination else query
+        self._emit("location_requested", f"building {label}")
+        return CommandOutcome(ok=True, message=f"building {label}")
 
     def _cmd_set_param(self, command) -> CommandOutcome:
         if command.key not in DEFAULT_PARAMS:
@@ -825,18 +866,36 @@ class Simulation:
             return CommandOutcome(
                 ok=False, message=f"unknown hazard kind: {command.kind}"
             )
-        message = scenario.stage(self)
-        if message is None:
-            return CommandOutcome(
-                ok=False, message=f"{command.kind}: nothing here to disturb"
-            )
-        self._emit(scenario.code, f"{scenario.code}: {message}", scenario.level)
-        return CommandOutcome(ok=True, message=f"injected {scenario.code}: {message}")
+        result = scenario.stage(self)
+        if isinstance(result, events.Declined):
+            return CommandOutcome(ok=False, message=f"{command.kind}: {result.reason}")
+        self._emit(scenario.code, f"{scenario.code}: {result}", scenario.level)
+        return CommandOutcome(ok=True, message=f"injected {scenario.code}: {result}")
 
     def _emit(self, code: str, message: str, level: str = "info") -> None:
         self.world.events.append(
             SimEvent(t=round(self.world.t, 3), level=level, code=code, message=message)
         )
+
+    def _check_trip_complete(self) -> None:
+        """Emit `trip_complete` once the ego actually settles into STOP at an
+        open route's own end -- not merely once it is nearby or slowing down,
+        which would fire just as readily for a car stopped at a red light a
+        block short of its destination. `fsm` is duck-typed the same way
+        `reset` is elsewhere in this class: a user-supplied planner with no
+        `.fsm` at all simply never reports arrival, same as before this
+        existed.
+        """
+        if self._trip_complete_emitted:
+            return
+        fsm = getattr(self._planner, "fsm", None)
+        if (
+            fsm is not None
+            and fsm.state is BehaviorState.STOP
+            and fsm.target_id == ARRIVAL_CONTROL_ID
+        ):
+            self._emit("trip_complete", "arrived at destination")
+            self._trip_complete_emitted = True
 
 
 # --------------------------------------------------------------------------- #
@@ -1199,11 +1258,11 @@ def _trajectory(
             TrajectorySample(t=round(t, 3), lateral_m=round(offset * math.exp(-t / 1.2), 3))
         )
 
-    cutting_in = next((d for d in detections if d.hazard), None)
-    cutin = None
-    if cutting_in is not None:
-        start = (cutting_in.lane_offset or 1) * LANE_W
-        cutin = [
+    reacting_to = next((d for d in detections if d.hazard), None)
+    threat = None
+    if reacting_to is not None:
+        start = (reacting_to.lane_offset or 1) * LANE_W
+        threat = [
             TrajectorySample(
                 t=round(i * _TRAJECTORY_STEP_S, 3),
                 lateral_m=round(start * math.exp(-i * _TRAJECTORY_STEP_S / 1.5), 3),
@@ -1214,8 +1273,8 @@ def _trajectory(
     return TrajectoryPrediction(
         horizon_s=_TRAJECTORY_HORIZON_S,
         planned=samples,
-        cutin=cutin,
-        cutin_label=(cutting_in.hazard_label if cutting_in else None),
+        threat=threat,
+        threat_label=(reacting_to.hazard_label if reacting_to else None),
     )
 
 
@@ -1367,23 +1426,48 @@ class SimLoop:
         self._commands.put((raw, future))
         return future
 
-    def submit_scene(self, build: Callable[[], BuiltScene]) -> None:
+    def submit_scene(self, build: SceneBuilder) -> None:
         """Build a scene off the sim thread and swap it in when it is ready."""
+
+        def emit_progress(stage: str, fraction: float) -> None:
+            # Called from the executor thread, same as the rest of `run()` --
+            # `self._events` is a `queue.Queue`, already the cross-thread
+            # channel `_drain_events` (sim thread) drains every tick, so a
+            # progress update rides the same path a failure or a build note
+            # already does. `self.sim.t` is read, never written, from here;
+            # the exception handler below already reads it the same way.
+            self._events.put(
+                SimEvent(
+                    t=round(self.sim.t, 3),
+                    level="info",
+                    code="location_progress",
+                    message=stage,
+                    progress=fraction,
+                )
+            )
 
         def run() -> None:
             try:
-                scene = build()
+                scene = build(emit_progress)
             except Exception as exc:
+                # Full detail goes to the server log; `describe_build_failure`
+                # narrows what actually reaches a client to a plain sentence
+                # -- a raw httpx/Nominatim exception string means nothing to
+                # someone who just typed an address.
                 log.warning("scene build failed: %s", exc)
                 self._events.put(
                     SimEvent(
                         t=round(self.sim.t, 3),
                         level="warn",
                         code="location_failed",
-                        message=str(exc),
+                        message=describe_build_failure(exc),
                     )
                 )
                 return
+            for code, message in scene.build_notes:
+                self._events.put(
+                    SimEvent(t=round(self.sim.t, 3), level="info", code=code, message=message)
+                )
             with self._lock:
                 self._pending_scene = scene
 

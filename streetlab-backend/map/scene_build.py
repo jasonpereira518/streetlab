@@ -69,6 +69,13 @@ class BuiltScene:
     # Lanes running the ego's way. None only for a scene built before this
     # existed; both shipped sources always supply one.
     lanes: LaneSet | None = None
+    # Non-fatal, human-readable notes about this build worth surfacing to the
+    # user as `SimEvent`s (`(code, message)` pairs) -- e.g. that dense-area
+    # geometry was truncated, or that the spawn point overlaps a building.
+    # The build still SUCCEEDED; these are not errors (`location_failed`
+    # already covers those). Empty for every scene built before this existed,
+    # including every `SyntheticGrid` scenario.
+    build_notes: list[tuple[str, str]] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -309,6 +316,7 @@ class SyntheticGrid:
             trees=self._trees(rng),
             street_signs=self._street_signs(),
             catalog=self.scenarios(),
+            hazards=[],
         )
 
         return BuiltScene(

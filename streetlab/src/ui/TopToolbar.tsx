@@ -5,7 +5,7 @@
  * frame stream at ~10 Hz and only re-renders when the displayed value changes.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CameraView, PerceptionMode } from '../schema';
+import type { CameraView, Maneuver, PerceptionMode } from '../schema';
 import { useFrameValue } from '../store/hooks';
 import { useSimStore } from '../store/simStore';
 import { formatTtc, toMph } from '../units';
@@ -46,7 +46,11 @@ const CRUISE_LABELS: Record<string, string> = {
   fsd: 'Full Self-Driving',
 };
 
-const MANEUVER_LABELS: Record<string, string> = {
+// Typed as exhaustive over `Maneuver`, not `Record<string, string>`: a wire
+// maneuver with no label here would otherwise silently fall back to '—' (see
+// the lookup below) instead of failing the build, which is exactly the gap
+// that let `arrived` ship without a label until this was tightened.
+const MANEUVER_LABELS: Record<Maneuver, string> = {
   keep_lane: 'Keeping lane',
   turn_left: 'Turning left',
   turn_right: 'Turning right',
@@ -54,6 +58,9 @@ const MANEUVER_LABELS: Record<string, string> = {
   lane_change_right: 'Changing lane right',
   stop: 'Stopping',
   yield: 'Yielding',
+  arrived: 'Arrived',
+  emergency_brake: 'Emergency braking',
+  pull_over: 'Pulling over',
 };
 
 export function TopToolbar() {
@@ -139,12 +146,12 @@ export function TopToolbar() {
           <span className="readout-unit">TTC</span>
         </div>
 
-        <div className="mode-chip" title={MANEUVER_LABELS[maneuver ?? ''] ?? ''}>
+        <div className="mode-chip" title={MANEUVER_LABELS[maneuver ?? 'keep_lane']}>
           <span className="mode-chip-title">
             {CRUISE_LABELS[cruise ?? 'off'] ?? 'Manual'}
           </span>
           <span className="mode-chip-sub">
-            {MANEUVER_LABELS[maneuver ?? 'keep_lane'] ?? '—'}
+            {MANEUVER_LABELS[maneuver ?? 'keep_lane']}
           </span>
         </div>
       </div>

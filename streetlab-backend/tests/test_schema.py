@@ -56,8 +56,8 @@ def test_hazard_fixture_actually_exercises_non_null_optionals():
     raw = load_fixture("state_update_hazard")
     state = StateUpdate.model_validate(raw)
     assert any(d.hazard and d.hazard_label is not None for d in state.detections)
-    assert state.telemetry.trajectory.cutin
-    assert state.telemetry.trajectory.cutin_label is not None
+    assert state.telemetry.trajectory.threat
+    assert state.telemetry.trajectory.threat_label is not None
 
 
 def test_nullable_fields_keep_their_key_when_none():
@@ -65,22 +65,51 @@ def test_nullable_fields_keep_their_key_when_none():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
     assert "ttc_s" in dumped["telemetry"]
-    assert "cutin" in dumped["telemetry"]["trajectory"]
-    assert "cutin_label" in dumped["telemetry"]["trajectory"]
+    assert "threat" in dumped["telemetry"]["trajectory"]
+    assert "threat_label" in dumped["telemetry"]["trajectory"]
 
 
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 6
+    assert dumped["protocol"] == PROTOCOL_VERSION == 7
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_six():
-    from schema import PROTOCOL_VERSION
+def test_protocol_is_7():
+    assert PROTOCOL_VERSION == 7
 
-    assert PROTOCOL_VERSION == 6
+
+def test_the_fixtures_carry_the_protocol_7_fields():
+    scene = SceneDescription.model_validate(load_fixture("scene_description"))
+    assert scene.hazards, "the hazard menu is empty"
+    frame = StateUpdate.model_validate(load_fixture("state_update_hazard"))
+    assert frame.detections and all(d.emergency is False for d in frame.detections)
+    assert frame.plan.reaction_source_id is None
+    assert frame.telemetry.trajectory.threat
+    assert frame.telemetry.trajectory.threat_label is not None
+
+
+@pytest.mark.parametrize(
+    "fixture_name,path",
+    [
+        ("scene_description", ("hazards",)),
+        ("state_update_hazard", ("plan", "reaction_source_id")),
+        ("state_update_hazard", ("detections", 0, "emergency")),
+        ("state_update_hazard", ("telemetry", "trajectory", "threat")),
+    ],
+)
+def test_protocol_7_fields_are_required_not_defaulted(fixture_name, path):
+    """A missing key must fail here exactly as zod fails it."""
+    raw = load_fixture(fixture_name)
+    parent = raw
+    for key in path[:-1]:
+        parent = parent[key]
+    del parent[path[-1]]
+    model = SceneDescription if fixture_name == "scene_description" else StateUpdate
+    with pytest.raises(ValueError):
+        model.model_validate(raw)
 
 
 def test_load_location_parses_with_and_without_radius():
@@ -113,6 +142,30 @@ def test_load_location_rejects_a_negative_radius():
 
     assert not parse_command(
         {"cmd": "load_location", "id": "c", "query": "x", "radius_m": -5}
+    ).ok
+
+
+def test_load_location_parses_with_and_without_destination():
+    from schema import parse_command
+
+    a = parse_command({"cmd": "load_location", "id": "c1", "query": "Nob Hill"})
+    assert a.ok and a.value.destination is None
+    b = parse_command(
+        {
+            "cmd": "load_location",
+            "id": "c2",
+            "query": "Nob Hill",
+            "destination": "Fisherman's Wharf",
+        }
+    )
+    assert b.ok and b.value.destination == "Fisherman's Wharf"
+
+
+def test_load_location_rejects_an_empty_destination():
+    from schema import parse_command
+
+    assert not parse_command(
+        {"cmd": "load_location", "id": "c", "query": "x", "destination": ""}
     ).ok
 
 
@@ -189,7 +242,14 @@ COMMANDS = [
     {"id": "c2", "cmd": "step", "frames": 4},
     {"id": "c3", "cmd": "reset"},
     {"id": "c4", "cmd": "load_scenario", "scenario_id": "nob-hill-loop"},
-    {"id": "c4b", "cmd": "load_location", "query": "Nob Hill", "radius_m": 400.0},
+    {"id": "c4b", "cmd": "load_location", "query": "Nob Hill", "radius_m": 400.0, "destination": None},
+    {
+        "id": "c4c",
+        "cmd": "load_location",
+        "query": "Nob Hill",
+        "radius_m": 400.0,
+        "destination": "Fisherman's Wharf",
+    },
     {"id": "c5", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 35},
     {"id": "c6", "cmd": "set_param", "key": "hazard_color", "value": "#FF7A1A"},
     {"id": "c7", "cmd": "set_param", "key": "assist_enabled", "value": False},
@@ -264,7 +324,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 6
+    assert PROTOCOL_VERSION == 7
 
     raw = {
         "id": "f1",
