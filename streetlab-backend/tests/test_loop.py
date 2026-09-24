@@ -302,9 +302,19 @@ def test_the_world_recovers_after_an_injected_hazard(sim):
     advance(sim, 3.0)
     assert min(d.speed_mps for d in sim.state_update().detections) < 1.0
 
-    advance(sim, 25.0)
-    assert max(d.speed_mps for d in sim.state_update().detections) > 1.0
-    assert sim.ego.speed_mps > 0.5, "ego never resumed after the hazard cleared"
+    advance(sim, 20.0)
+    # Sampled over a window, not at one instant: traffic now obeys stop signs
+    # and lights too, so any single frame may legitimately find the ego waiting
+    # at one (seed 7 puts it at the grid's stop sign at t=31 s).
+    ego_best = agent_best = 0.0
+    for _ in range(int(5.0 / DT)):
+        sim.step()
+        ego_best = max(ego_best, sim.ego.speed_mps)
+        agent_best = max(
+            agent_best, max(d.speed_mps for d in sim.state_update().detections)
+        )
+    assert agent_best > 1.0
+    assert ego_best > 0.5, "ego never resumed after the hazard cleared"
 
 
 def test_events_are_drained_after_being_reported(sim):
@@ -661,10 +671,19 @@ def test_plan_polyline_leads_the_car(sim):
 
 
 def test_ego_drives_and_stays_in_its_lane(sim):
+    # Measured against the nearest lane, not the ego route alone: traffic now
+    # queues at lights and stop signs, and the ego legitimately overtakes a
+    # slow queue into the neighbouring lane (Cycle 3 Phase 2). Mid-change the
+    # car is between lanes by design, so those ticks are not scored.
+    route = sim.scene.ego_route
+    centres = [lane.offset_m for lane in sim.scene.lanes.lanes]
     worst = 0.0
     for _ in range(int(60 / DT)):
         sim.step()
-        worst = max(worst, abs(sim.scene.ego_route.lateral_offset((sim.ego.x, sim.ego.y))))
+        if sim._planner.fsm.lane_change is not None:
+            continue
+        off = route.lateral_offset((sim.ego.x, sim.ego.y))
+        worst = max(worst, min(abs(off - c) for c in centres))
     assert sim.ego.speed_mps > 1.0
     assert worst < 1.8
 

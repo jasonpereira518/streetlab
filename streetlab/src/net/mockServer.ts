@@ -56,11 +56,17 @@ const MAX_LAT_ACCEL = 2.6;
 const MAX_ACCEL = 2.1;
 const MAX_DECEL = -4.4;
 
-/** Signal cycle, seconds. */
+/**
+ * Signal cycle, seconds. Mirrors the backend's `SignalController`: 12 s green,
+ * 3 s yellow, 1 s all-red per group, so the two groups are never green (or
+ * yellow) together even for a frame.
+ */
 const CYCLE = 32;
-const NS_GREEN_END = 13;
-const NS_YELLOW_END = 16;
-const EW_GREEN_END = 29;
+const NS_GREEN_END = 12;
+const NS_YELLOW_END = 15;
+const EW_GREEN_START = 16;
+const EW_GREEN_END = 28;
+const EW_YELLOW_END = 31;
 
 /** How often the scripted cut-in fires, seconds. */
 const DEFAULT_CUTIN_PERIOD = 22;
@@ -282,9 +288,10 @@ export class MockSim {
       if (c < NS_YELLOW_END) return 'yellow';
       return 'red';
     }
-    if (c < NS_YELLOW_END) return 'red';
+    if (c < EW_GREEN_START) return 'red';
     if (c < EW_GREEN_END) return 'green';
-    return 'yellow';
+    if (c < EW_YELLOW_END) return 'yellow';
+    return 'red';
   }
 
   private signalStates(): SignalState[] {
@@ -297,7 +304,7 @@ export class MockSim {
       const bounds =
         group === 'ns'
           ? [NS_GREEN_END, NS_YELLOW_END, CYCLE]
-          : [NS_YELLOW_END, EW_GREEN_END, CYCLE];
+          : [EW_GREEN_START, EW_GREEN_END, EW_YELLOW_END, CYCLE];
       const next = bounds.find((b) => b > c) ?? CYCLE;
       return {
         id: tl.id,
