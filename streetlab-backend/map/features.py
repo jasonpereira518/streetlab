@@ -52,9 +52,11 @@ by running the real Nob Hill fixture rather than only synthetic data:
 from __future__ import annotations
 
 import hashlib
+import itertools
 import logging
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from random import Random
 
 from map.lanes import LANE_W, drivable_ways
@@ -387,6 +389,166 @@ def _approach_legs(
     return legs
 
 
+#: Signal nodes closer than this belong to one junction. OSM draws a dual
+#: carriageway crossing as two to four nodes, and commonly tags a signal on
+#: the approach way a few metres short of the junction rather than on it:
+#: measured on the Nob Hill fixture, 18 of 58 signal nodes have a single
+#: approach leg and 9 have two, with partner nodes 8.7-28.2 m away. Treated as
+#: separate junctions, each got its own arbitrary phase split and two heads at
+#: one crossroads could be green for crossing traffic together.
+SIGNAL_CLUSTER_M = 30.0
+
+#: The phase group for a signal with no cross traffic (see `signal_groups`).
+PEDESTRIAN_GROUP = "ped"
+
+#: When an extract tags no signals at all, junctions where streets of these
+#: classes cross get one (see `_inferred_signal_nodes`).
+_SIGNAL_WORTHY = frozenset({"arterial", "collector"})
+
+#: An inferred signal is not placed within this of a tagged stop or give-way.
+_INFER_CLEAR_OF_CONTROL_M = 20.0
+
+
+@dataclass(frozen=True, slots=True)
+class SignalCluster:
+    """One signalised junction, however many OSM nodes it was drawn with."""
+
+    #: `osm_tl_<lowest node id>`, or `osm_tli_...` when inferred.
+    id: str
+    #: Where the junction is: the member node with the most approach legs.
+    hub: tuple[float, float]
+    #: `(travel, half-width)` for each distinct approach into the junction.
+    legs: list[tuple[tuple[float, float], float]]
+
+
+def signal_clusters(graph: OsmGraph, origin: LatLon) -> list[SignalCluster]:
+    """Every signalised junction, with its OSM nodes merged.
+
+    Legs are gathered from every member node, minus those that only lead to
+    another member (the stretch between two nodes of one junction is inside
+    it, not an approach), and merged by bearing so each approach gets one head.
+    """
+    nodes = _tagged_nodes(graph, "highway", "traffic_signals")
+    prefix = "osm_tl"
+    if not nodes:
+        nodes = _inferred_signal_nodes(graph, origin)
+        prefix = "osm_tli"
+        if nodes:
+            log.debug("no tagged signals; inferred %d signalised junction(s)", len(nodes))
+    owner = _ways_by_node(graph)
+    at = {n.id: to_local(n.lat, n.lon, origin) for n in nodes}
+
+    parent = {n.id: n.id for n in nodes}
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in itertools.combinations(nodes, 2):
+        if math.dist(at[a.id], at[b.id]) < SIGNAL_CLUSTER_M:
+            ra, rb = root(a.id), root(b.id)
+            parent[max(ra, rb)] = min(ra, rb)
+
+    members: dict[int, list[OsmNode]] = defaultdict(list)
+    for node in nodes:
+        members[root(node.id)].append(node)
+
+    clusters = []
+    for key in sorted(members):
+        group = members[key]
+        per_node = {
+            n.id: _approach_legs(graph, n, owner.get(n.id, []), origin) for n in group
+        }
+        hub_node = max(group, key=lambda n: (len(per_node[n.id]), -n.id))
+        legs: list[tuple[tuple[float, float], float]] = []
+        # Hub first, so where two members offer the same approach the head
+        # stands at the junction proper.
+        for node in sorted(group, key=lambda n: n is not hub_node):
+            for travel, half in per_node[node.id]:
+                if _leads_to_member(at[node.id], travel, node.id, group, at):
+                    continue
+                bearing = math.atan2(travel[1], travel[0])
+                if any(
+                    abs(math.remainder(bearing - math.atan2(t[1], t[0]), math.tau))
+                    < _LEG_MERGE_RAD
+                    for t, _ in legs
+                ):
+                    continue
+                legs.append((travel, half))
+        clusters.append(
+            SignalCluster(id=f"{prefix}_{key}", hub=at[hub_node.id], legs=legs)
+        )
+    return clusters
+
+
+def _leads_to_member(
+    here: tuple[float, float],
+    travel: tuple[float, float],
+    node_id: int,
+    group: list[OsmNode],
+    at: dict[int, tuple[float, float]],
+) -> bool:
+    """True if the leg arriving along `travel` comes FROM another member node."""
+    outward = math.atan2(-travel[1], -travel[0])
+    for other in group:
+        if other.id == node_id:
+            continue
+        dx, dy = at[other.id][0] - here[0], at[other.id][1] - here[1]
+        if math.hypot(dx, dy) < 1e-6:
+            continue
+        if abs(math.remainder(math.atan2(dy, dx) - outward, math.tau)) < _LEG_MERGE_RAD:
+            return True
+    return False
+
+
+def _inferred_signal_nodes(graph: OsmGraph, origin: LatLon) -> list[OsmNode]:
+    """Junctions that would carry a signal, for an extract that tags none.
+
+    OSM signal coverage is patchy, and an address searched at runtime can land
+    somewhere nobody mapped them -- which used to mean a city with no lights
+    at all. A node is signalised when at least three approaches meet there and
+    arterial or collector streets arrive on two different axes; residential
+    crossings stay uncontrolled, as they mostly are, and any node near a tagged
+    stop or give-way sign is left to that sign.
+    """
+    owner = _ways_by_node(graph)
+    controls = [
+        to_local(n.lat, n.lon, origin)
+        for n in graph.nodes.values()
+        if n.tags.get("highway") in ("stop", "give_way")
+    ]
+    out = []
+    for node_id in sorted(owner):
+        ways = owner[node_id]
+        if len(ways) < 2:
+            continue
+        node = graph.nodes.get(node_id)
+        if node is None:
+            continue
+        legs = _approach_legs(graph, node, ways, origin)
+        if len(legs) < 3:
+            continue
+        major_axes: list[float] = []
+        for way in ways:
+            if road_class(way.tags) not in _SIGNAL_WORTHY:
+                continue
+            for travel, _ in _approach_legs(graph, node, [way], origin):
+                major_axes.append(math.atan2(travel[1], travel[0]) % math.pi)
+        crossed = any(
+            abs(math.remainder(a - b, math.pi)) > math.pi / 4
+            for a, b in itertools.combinations(major_axes, 2)
+        )
+        if not crossed:
+            continue
+        here = to_local(node.lat, node.lon, origin)
+        if any(math.dist(here, c) < _INFER_CLEAR_OF_CONTROL_M for c in controls):
+            continue
+        out.append(node)
+    return out
+
+
 def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
     """One mast-arm head per approach into each signalised junction.
 
@@ -404,13 +566,12 @@ def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
     owner = _ways_by_node(graph)
     surfaces = _carriageways(graph, origin)
     lights, junctionless, crowded = [], 0, 0
-    for node in _tagged_nodes(graph, "highway", "traffic_signals"):
-        ways = owner.get(node.id, [])
-        legs = _approach_legs(graph, node, ways, origin)
+    for cluster in signal_clusters(graph, origin):
+        legs = cluster.legs
         if not legs:
             junctionless += 1
             continue
-        at = to_local(node.lat, node.lon, origin)
+        at = cluster.hub
         # How far past the junction centre the pole stands. The widest way
         # meeting here approximates the junction's own size, so a pole set
         # this far along a leg clears the carriageway it is crossing.
@@ -432,7 +593,7 @@ def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
                 crowded += 1
             lights.append(
                 TrafficLight(
-                    id=f"osm_tl_{node.id}_{i}",
+                    id=f"{cluster.id}_{i}",
                     position=position,
                     heading=facing(travel),
                     # Back over the middle of the approaching lanes, which run
@@ -563,10 +724,7 @@ def control_anchors(
     junction, shared by all its heads -- see `_junction_of`) and by
     `osm_ss_<node>` (one sign, one line).
     """
-    anchors = {
-        f"osm_tl_{node.id}": to_local(node.lat, node.lon, origin)
-        for node in _tagged_nodes(graph, "highway", "traffic_signals")
-    }
+    anchors = {cluster.id: cluster.hub for cluster in signal_clusters(graph, origin)}
     anchors.update(
         {
             f"osm_ss_{node.id}": to_local(node.lat, node.lon, origin)
@@ -605,6 +763,14 @@ def signal_groups(lights: list[TrafficLight]) -> dict[str, str]:
         anchor = reference.setdefault(junction, axis)
         offset = abs(math.remainder(axis - anchor, math.pi))
         groups[light.id] = "ns" if offset < math.pi / 4 else "ew"
+    # A junction whose heads all lie on one axis has no cross traffic to give
+    # way to -- a mid-block pedestrian signal, or an approach signal whose cross
+    # street OSM left unsignalised. Alternating it with a phase nobody uses
+    # would hold through traffic at red for half of every cycle.
+    crossed = {junction_of(i) for i, g in groups.items() if g == "ew"}
+    for light_id in groups:
+        if junction_of(light_id) not in crossed:
+            groups[light_id] = PEDESTRIAN_GROUP
     return groups
 
 

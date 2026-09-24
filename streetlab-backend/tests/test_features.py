@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from map.features import (
+    PEDESTRIAN_GROUP,
     _TREE_MIN_SPACING_M,
     _tagged_nodes,
     build_buildings,
@@ -164,7 +165,10 @@ def test_signal_groups_assign_every_light_to_ns_or_ew():
     )
     lights = build_traffic_lights(graph, ORIGIN)
     groups = signal_groups(lights)
-    assert set(groups.values()) <= {"ns", "ew"}
+    # Two signals on one straight street, 55 m apart: neither has cross
+    # traffic, so both run the short-red pedestrian phase rather than an
+    # alternation that would hold the street at red for nobody.
+    assert set(groups.values()) <= {"ns", "ew", PEDESTRIAN_GROUP}
     assert len(groups) == len(lights)
     assert lights, "the fixture should produce heads to group"
 
@@ -453,9 +457,13 @@ def test_counts_on_the_real_fixture_match_verified_osm_tag_counts(graph):
     scene whose every signal was one east-facing pole in the middle of an
     intersection; the ratio is pinned here so a change to leg merging shows up
     as a diff rather than silently.
+
+    153, not the 162 one-junction-per-node gave: nodes within
+    `SIGNAL_CLUSTER_M` are one junction (58 nodes -> 54 junctions), and the
+    stretch between two of a junction's nodes is inside it, not an approach.
     """
-    assert len(build_traffic_lights(graph, ORIGIN)) == 162
-    assert len({t.id for t in build_traffic_lights(graph, ORIGIN)}) == 162
+    assert len(build_traffic_lights(graph, ORIGIN)) == 153
+    assert len({t.id for t in build_traffic_lights(graph, ORIGIN)}) == 153
     assert len(build_stop_signs(graph, ORIGIN)) == 145
     # Crossings are no longer one-per-node either, for a different reason:
     # 64 of the 370 are UNPAINTED in the data (`crossing=unmarked` or

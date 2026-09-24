@@ -72,6 +72,9 @@ DEFAULT_DT = 1 / 60
 # groups are never green together even for one frame.
 GREEN_S, YELLOW_S, ALL_RED_S = 12.0, 3.0, 1.0
 _CYCLE_S = 2 * (GREEN_S + YELLOW_S + ALL_RED_S)
+#: How long a signal with no cross traffic (group "ped": a mid-block crossing)
+#: holds traffic each cycle, all-red included. Long enough to walk a street.
+PED_RED_S = 8.0
 
 # Trajectory graph: how far forward it predicts and how much history it keeps.
 _TRAJECTORY_HORIZON_S = 4.0
@@ -145,9 +148,15 @@ class SignalController:
     def state(self, t: float) -> list[SignalState]:
         phase_ns, left_ns = self._phase("ns", t)
         phase_ew, left_ew = self._phase("ew", t)
+        phase_ped, left_ped = self._pedestrian_phase(t)
         out = []
         for light_id, group in self._groups.items():
-            phase, left = (phase_ns, left_ns) if group == "ns" else (phase_ew, left_ew)
+            if group == "ped":
+                phase, left = phase_ped, left_ped
+            elif group == "ns":
+                phase, left = phase_ns, left_ns
+            else:
+                phase, left = phase_ew, left_ew
             out.append(
                 SignalState(id=light_id, phase=phase, time_to_change_s=round(left, 2))
             )
@@ -161,6 +170,17 @@ class SignalController:
             return "green", GREEN_S - local
         if local < GREEN_S + YELLOW_S:
             return "yellow", GREEN_S + YELLOW_S - local
+        return "red", _CYCLE_S - local
+
+    @staticmethod
+    def _pedestrian_phase(t: float) -> tuple[str, float]:
+        """Mostly green: a short red for the crossing, on the same cycle length."""
+        green = _CYCLE_S - YELLOW_S - PED_RED_S
+        local = t % _CYCLE_S
+        if local < green:
+            return "green", green - local
+        if local < green + YELLOW_S:
+            return "yellow", green + YELLOW_S - local
         return "red", _CYCLE_S - local
 
 
@@ -235,6 +255,8 @@ class Simulation:
             seed=self._seed,
             speed_scale=float(self.world.params["traffic_speed_scale"]),
             lanes=self.scene.lanes,
+            control_points=self.scene.control_points,
+            ego_route=self.scene.ego_route,
         )
         self._signals = SignalController(self.scene.signal_groups)
         self._reset_dynamics()
@@ -315,7 +337,12 @@ class Simulation:
         self._traffic.step(
             dt,
             TrafficWorld(
-                ego=self.world.ego, ego_route=self.scene.ego_route, t=self.world.t
+                ego=self.world.ego,
+                ego_route=self.scene.ego_route,
+                t=self.world.t,
+                # Same `t` `_plan` evaluates below, and the controller is a pure
+                # function of it, so traffic and ego obey the identical phase.
+                signals={s.id: s for s in self._signals.state(self.world.t)},
             ),
         )
 

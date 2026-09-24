@@ -1077,12 +1077,11 @@ def project_control_points(
     projecting that scene's 203 props takes 16.7 ms -- twice the whole 8 ms
     sim_step p95 budget.
 
-    Candidates are supplied by the scene source rather than filtered here.
-    `SyntheticGrid` models four directional heads per junction and knows which
-    one faces the ego; `OsmSceneSource` has one undirected node per junction
-    and `map/features.py` gives it `heading=0.0`, so it has nothing to filter
-    on. A single rule would either strand the synthetic car at four conflicting
-    heads or invent an approach direction the OSM data does not carry.
+    Candidates are supplied by the scene source rather than filtered here:
+    each source knows which of a junction's heads face the ego route
+    (`SyntheticGrid` by construction, `OsmSceneSource` via `faces_the_route`
+    on the per-approach heads `map/features.py` builds) and passes only those,
+    one per junction, anchored at the junction rather than the pole.
     """
     projected: list[ControlPoint] = []
     for cp_id, kind, position, setback_m in candidates:
