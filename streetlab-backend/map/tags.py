@@ -105,3 +105,76 @@ def street_name(tags: dict[str, str]) -> str:
     # stripped, so it falls through to `ref` / the placeholder like a
     # genuinely missing tag would, instead of yielding a blank-looking name.
     return tags.get("name", "").strip() or tags.get("ref", "").strip() or "Unnamed Road"
+
+
+# OSM sidewalk values, by what they mean for "is there a pavement here".
+# `separate` says the pavement is mapped as its own `footway=sidewalk` way
+# rather than as a property of the carriageway -- there IS one, and since
+# nothing renders footway ways it still has to be drawn from the road.
+_SIDEWALK_YES = frozenset({"yes", "both", "left", "right", "separate"})
+_SIDEWALK_NO = frozenset({"no", "none"})
+
+# Road classes that get a pavement when the tags say nothing at all. A service
+# way is an alley or a car park aisle; kerbing every one of them fills the
+# scene with pavement nobody walks on.
+_SIDEWALK_BY_CLASS: dict[str, bool] = {
+    "arterial": True,
+    "collector": True,
+    "residential": True,
+    "service": False,
+}
+
+
+def _sidewalk_value(raw: str | None) -> bool | None:
+    """One tag's answer, or None when it does not have an opinion."""
+    if raw is None:
+        return None
+    value = raw.strip().lower()
+    if value in _SIDEWALK_YES:
+        return True
+    if value in _SIDEWALK_NO:
+        return False
+    # An unrecognised value is not evidence of absence. Falling through to the
+    # class default keeps a typo from silently deleting a pavement.
+    return None
+
+
+def sidewalk_sides(tags: dict[str, str], cls: str) -> tuple[bool, bool]:
+    """`(left, right)` -- whether a pavement runs down each side of a way.
+
+    Left and right are relative to the way's own node order, the same frame
+    OSM's `sidewalk:left` / `sidewalk:right` use.
+
+    Most specific tag wins: `sidewalk:left`/`sidewalk:right` over
+    `sidewalk:both` over `sidewalk` over the road class. `sidewalk=left`
+    positions the pavement as well as asserting it, so it is read on both
+    axes -- "left" means a pavement on the left and none on the right.
+    """
+    default = _SIDEWALK_BY_CLASS.get(cls, True)
+    left = right = default
+
+    general = tags.get("sidewalk", "").strip().lower()
+    if general in ("left", "right"):
+        left, right = general == "left", general == "right"
+    else:
+        decided = _sidewalk_value(tags.get("sidewalk"))
+        if decided is not None:
+            left = right = decided
+
+    both = _sidewalk_value(tags.get("sidewalk:both"))
+    if both is not None:
+        left = right = both
+
+    per_side = _sidewalk_value(tags.get("sidewalk:left"))
+    if per_side is not None:
+        left = per_side
+    per_side = _sidewalk_value(tags.get("sidewalk:right"))
+    if per_side is not None:
+        right = per_side
+
+    return left, right
+
+
+def has_sidewalk(tags: dict[str, str], cls: str) -> bool:
+    """True when either side of a way carries a pavement."""
+    return any(sidewalk_sides(tags, cls))

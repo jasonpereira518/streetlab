@@ -16,6 +16,7 @@ import pytest
 import uvicorn
 from websockets.asyncio.client import connect
 
+from map.geocode import Place, StubGeocoder
 from map.scene_build import SyntheticGrid
 from schema import PROTOCOL_VERSION, parse_server_message
 from server.ws_server import create_app
@@ -227,6 +228,82 @@ async def test_unknown_scenario_is_acked_false_with_a_message(server):
         assert ack.message and "atlantis" in ack.message
 
 
+# -- suggest_address ---------------------------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def geocoded_server():
+    """A second world, wired to a `StubGeocoder`, so suggestion behaviour can
+    be tested independently of `server`'s geocoder-less `SyntheticGrid`."""
+    loop = SimLoop(Simulation(SyntheticGrid(), seed=5), hz=120)
+    geocoder = StubGeocoder(Place(lat=37.79, lon=-122.42, display_name="Nob Hill, SF"))
+    app = create_app(loop, tick_hz=120, geocoder=geocoder)
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    srv = uvicorn.Server(config)
+    thread = threading.Thread(target=srv.run, daemon=True)
+    thread.start()
+
+    for _ in range(200):
+        if srv.started:
+            break
+        threading.Event().wait(0.05)
+    else:
+        raise RuntimeError("server did not start")
+
+    yield f"ws://127.0.0.1:{port}/"
+
+    srv.should_exit = True
+    thread.join(timeout=5)
+
+
+async def test_suggest_address_with_no_geocoder_answers_an_empty_list(server):
+    """`server`'s world is a bare `SyntheticGrid` with no geocoder wired --
+    the common case for anything that isn't `--source osm`."""
+    async with connect(server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s1", "cmd": "suggest_address", "query": "1600 Amphitheatre"})
+        reply = await recv_typed(ws, "address_suggestions")
+        assert reply.id == "s1"
+        assert reply.query == "1600 Amphitheatre"
+        assert reply.suggestions == []
+
+
+async def test_suggest_address_is_not_acked_and_never_touches_the_command_log(server):
+    """`suggest_address` bypasses the sim thread entirely (see `_handle`), so
+    unlike every other command it must not produce an `ack`."""
+    async with connect(server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s2", "cmd": "suggest_address", "query": "anywhere"})
+        await recv_typed(ws, "address_suggestions")
+        # If an ack were coming, it would already be queued behind the
+        # suggestion reply; a state_update proves none arrived in between.
+        frame = await recv_typed(ws, "state_update")
+        assert frame.type == "state_update"
+
+
+async def test_suggest_address_with_a_geocoder_returns_its_candidates(geocoded_server):
+    async with connect(geocoded_server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s3", "cmd": "suggest_address", "query": "nob hill"})
+        reply = await recv_typed(ws, "address_suggestions")
+        assert reply.id == "s3"
+        assert [s.label for s in reply.suggestions] == ["Nob Hill, SF"]
+        assert reply.suggestions[0].lat == pytest.approx(37.79)
+
+
+async def test_suggest_address_with_a_blank_query_is_dropped_silently(geocoded_server):
+    """`SuggestAddress.query` requires `min_length=1`; a blank one fails
+    validation in `_suggest_address` and gets no reply at all, same as any
+    other malformed command dropped before an id can be extracted."""
+    async with connect(geocoded_server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s4", "cmd": "suggest_address", "query": ""})
+        await send(ws, {"id": "s5", "cmd": "suggest_address", "query": "nob hill"})
+        reply = await recv_typed(ws, "address_suggestions")
+        assert reply.id == "s5"
+
+
 async def test_toggle_layer_is_acked_as_a_client_concern(server):
     async with connect(server) as ws:
         await recv_typed(ws, "scene_description")
@@ -361,7 +438,7 @@ async def test_a_scene_swap_is_pushed_to_a_connected_client(server, sim_loop):
     async with connect(server) as ws:
         first = await recv_typed(ws, "scene_description")
         assert first.type == "scene_description"
-        sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        sim_loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         # The new scene must arrive unsolicited, with no command sent. Bounded
         # by wall-clock time rather than a message count: a fixed iteration
         # count times a per-recv timeout compounds into a worst case of
@@ -383,7 +460,7 @@ async def test_a_client_never_sees_a_frame_for_a_scene_it_has_not_received(serve
     sent — must never observe a `state_update` naming a scenario it was
     never told about, regardless of which side of that race wins.
     """
-    sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-signals"))
+    sim_loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-signals"))
     async with connect(server) as ws:
         known_scenarios: set[str] = set()
         # See the comment on the previous test: bounded by wall-clock time,
@@ -404,3 +481,158 @@ async def test_a_client_never_sees_a_frame_for_a_scene_it_has_not_received(serve
                 if msg.scenario_id == "grid-signals":
                     return
         raise AssertionError("never converged to the swapped scenario")
+
+
+# -- camera frames ------------------------------------------------------------ #
+#
+# Frames bypass `submit()`/`_apply` entirely, so these are driven directly
+# against `_Connection._handle` rather than through the shared `server`
+# fixture above — see `ws_session_factory` in conftest.py.
+
+
+def test_camera_frame_reaches_the_pipeline_and_is_not_acked(ws_session_factory):
+    """A frame is a data push. Acking at 10 Hz would double the traffic to say
+    nothing the `perception` stats block does not already say."""
+    import base64
+
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        session, sent = ws_session_factory(perception_pipeline=pipeline)
+        payload = {
+            "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+            "width": 640, "height": 384, "format": "jpeg",
+            "data": base64.b64encode(b"\xff\xd8jpegbytes").decode(),
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+        asyncio.run(session._handle(json.dumps(payload)))
+        pipeline.drain()
+
+        assert pipeline.latest() is not None
+        assert not any(m.get("type") == "ack" for m in sent)
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_malformed_camera_frame_is_dropped_without_acking(ws_session_factory):
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        session, sent = ws_session_factory(perception_pipeline=pipeline)
+        # `data` is not valid base64.
+        payload = {
+            "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+            "width": 640, "height": 384, "format": "jpeg", "data": "!!!not base64!!!",
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+        asyncio.run(session._handle(json.dumps(payload)))
+        assert pipeline.latest() is None
+        assert sent == []
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_camera_frame_is_dropped_silently_when_no_pipeline_exists(ws_session_factory):
+    """Without `--perception ml` there is no pipeline for a frame to reach.
+    `_ingest_frame` must drop it — no ack, no exception — rather than treat a
+    perfectly well-formed frame as an error just because nothing is listening.
+    """
+    import base64
+
+    session, sent = ws_session_factory()  # no perception_pipeline
+    payload = {
+        "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+        "width": 640, "height": 384, "format": "jpeg",
+        "data": base64.b64encode(b"\xff\xd8jpegbytes").decode(),
+        "camera": {
+            "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+            "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+        },
+    }
+    asyncio.run(session._handle(json.dumps(payload)))  # must not raise
+    assert sent == []
+
+
+def test_an_oversized_camera_frame_is_rejected_without_raising(ws_session_factory):
+    """`CameraFrameCmd.data` caps at 524288 chars; this pins that the cap is
+    enforced at `_ingest_frame`'s own call site — not only provable in
+    isolation against the schema — and that an oversized frame is dropped
+    rather than raising past `_ingest_frame`."""
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        session, sent = ws_session_factory(perception_pipeline=pipeline)
+        payload = {
+            "id": "f1", "cmd": "camera_frame", "seq": 0, "t": 0.0,
+            "width": 640, "height": 384, "format": "jpeg",
+            "data": "A" * 524289,  # one char over the schema's cap
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+        asyncio.run(session._handle(json.dumps(payload)))  # must not raise
+        assert pipeline.latest() is None
+        assert sent == []
+    finally:
+        pipeline.shutdown()
+
+
+def test_ordinary_commands_still_ack(ws_session_factory):
+    session, sent = ws_session_factory()
+    asyncio.run(session._handle(json.dumps({"id": "a1", "cmd": "set_paused", "paused": True})))
+    assert any(m.get("type") == "ack" for m in sent)
+
+
+def test_a_reconnecting_clients_frames_are_not_read_as_stale(ws_session_factory):
+    """`reset()`'s only caller is `_Connection.__init__` — one call per new
+    connection. A client that reconnects restarts its `seq` at 0; without the
+    reset, the frame slot's sequence gate would compare that 0 against the
+    previous connection's high-water mark and drop it as stale.
+    """
+    import base64
+
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    def frame_payload(seq: int) -> dict:
+        return {
+            "id": f"f{seq}", "cmd": "camera_frame", "seq": seq, "t": float(seq),
+            "width": 640, "height": 384, "format": "jpeg",
+            "data": base64.b64encode(b"\xff\xd8jpegbytes").decode(),
+            "camera": {
+                "x": 0.0, "y": 0.0, "z": 1.33, "yaw": 0.0, "pitch": 0.0,
+                "roll": 0.0, "fov_y_deg": 50.0, "aspect": 640 / 384,
+            },
+        }
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        # First connection sends frames up to seq 9.
+        first, _ = ws_session_factory(perception_pipeline=pipeline)
+        asyncio.run(first._handle(json.dumps(frame_payload(9))))
+        pipeline.drain()
+        assert pipeline.latest() is not None
+        assert pipeline.latest().frame_seq == 9
+
+        # A second connection over the same pipeline — the reconnect — starts
+        # counting from 0 again. Constructing it is what triggers the reset.
+        second, sent = ws_session_factory(perception_pipeline=pipeline)
+        asyncio.run(second._handle(json.dumps(frame_payload(0))))
+        pipeline.drain()
+
+        result = pipeline.latest()
+        assert result is not None and result.frame_seq == 0, (
+            "the reconnecting client's seq-0 frame was dropped as stale"
+        )
+        assert sent == []
+    finally:
+        pipeline.shutdown()

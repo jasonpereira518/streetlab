@@ -1,0 +1,30 @@
+{
+  "scenario": "grid-signals",
+  "seed": 3,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-signals --seed 3 --traffic 11 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-signals-seed3-t11",
+  "note": "Phase 3b training capture (Task 3, row 8/11). usable/frame 1.0197 (155/152). Per-class usable: car 139, truck 15, bus 1 -- first usable bus box outside grid-arterial (1 of 11 raw bus annotations here cleared the filter). No motorcycle. Ego below 0.5 m/s in 3.3% of frames, median speed 3.71 m/s, nearest vehicle median 25.0 m.",
+  "commit": "3ecbcab",
+  "frames": 152,
+  "annotations": 219,
+  "visible": 155,
+  "usable": 155,
+  "per_class": {
+    "car": 172,
+    "truck": 36,
+    "bus": 11
+  },
+  "per_class_visible": {
+    "car": 139,
+    "truck": 15,
+    "bus": 1
+  },
+  "per_class_usable": {
+    "car": 139,
+    "truck": 15,
+    "bus": 1
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "4eb283cb69495f33c28187b3a3fdff316cbf36db20b9bf5f341e70c55d071582"
+}

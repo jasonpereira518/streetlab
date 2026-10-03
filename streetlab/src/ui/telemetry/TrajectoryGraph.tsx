@@ -31,7 +31,7 @@ export function TrajectoryGraph() {
 
     let peak = 0;
     for (const s of traj.planned) peak = Math.max(peak, Math.abs(s.lateral_m));
-    for (const s of traj.cutin ?? []) peak = Math.max(peak, Math.abs(s.lateral_m));
+    for (const s of traj.threat ?? []) peak = Math.max(peak, Math.abs(s.lateral_m));
     const wanted = clamp(peak * 1.3, MIN_RANGE, MAX_RANGE);
     rangeRef.current = damp(rangeRef.current, wanted, 0.02, dt);
     const LATERAL_RANGE = rangeRef.current;
@@ -119,7 +119,7 @@ export function TrajectoryGraph() {
       ctx.restore();
     };
 
-    if (traj.cutin) series(traj.cutin, color.warn, [5, 4]);
+    if (traj.threat) series(traj.threat, color.warn, [5, 4]);
     series(traj.planned, color.plan, [], alpha(color.plan, 0.1));
 
     // Time axis labels.
@@ -141,9 +141,9 @@ export function TrajectoryGraph() {
       color: color.plan,
       baseline: 'middle',
     });
-    if (traj.cutin) {
+    if (traj.threat) {
       line(ctx, padL + w - 58, legendY + 11, padL + w - 46, legendY + 11, color.warn, 2, [4, 3]);
-      text(ctx, 'cut-in', padL + w - 43, legendY + 11, {
+      text(ctx, 'threat', padL + w - 43, legendY + 11, {
         size: 8.5,
         weight: 600,
         color: color.warn,

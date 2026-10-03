@@ -1,0 +1,33 @@
+{
+  "scenario": "grid-arterial",
+  "seed": 2,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-arterial --seed 2 --traffic 24 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-arterial-seed2-t24",
+  "note": "Phase 3b training capture (Task 3, row 4/11). usable/frame 2.9272 (442/151). Per-class usable: car 230, truck 74, motorcycle 71, bus 67 -- second capture with all four classes usable. Ego below 0.5 m/s in 27.3% of frames (higher than seed1's 20.5%, still under the 50% jam threshold), median speed 2.30 m/s, nearest vehicle median 8.9 m.",
+  "commit": "203311d",
+  "frames": 151,
+  "annotations": 640,
+  "visible": 442,
+  "usable": 442,
+  "per_class": {
+    "car": 331,
+    "truck": 107,
+    "bus": 104,
+    "motorcycle": 98
+  },
+  "per_class_visible": {
+    "car": 230,
+    "truck": 74,
+    "motorcycle": 71,
+    "bus": 67
+  },
+  "per_class_usable": {
+    "car": 230,
+    "truck": 74,
+    "motorcycle": 71,
+    "bus": 67
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "089baf992c13171ac9b1bc239060e89eea449cd612e82184c3fb0bde953dabfb"
+}

@@ -1,0 +1,33 @@
+{
+  "scenario": "grid-night",
+  "seed": 3,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-night --seed 3 --traffic 24 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-night-seed3-t24",
+  "note": "Phase 3b training capture (Task 3, row 11/11, final). usable/frame 2.6013 (398/153). Per-class usable: car 205, truck 77, motorcycle 45, bus 71 -- all four classes usable, consistent with grid-night seed1/seed2. Ego below 0.5 m/s in 19.7% of frames, median speed 3.16 m/s, nearest vehicle median 9.8 m.",
+  "commit": "faa17b4",
+  "frames": 153,
+  "annotations": 582,
+  "visible": 398,
+  "usable": 398,
+  "per_class": {
+    "car": 290,
+    "truck": 120,
+    "bus": 103,
+    "motorcycle": 69
+  },
+  "per_class_visible": {
+    "car": 205,
+    "truck": 77,
+    "motorcycle": 45,
+    "bus": 71
+  },
+  "per_class_usable": {
+    "car": 205,
+    "truck": 77,
+    "motorcycle": 45,
+    "bus": 71
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "b7f13192471b16c0a625e143dc0499a30f103ecda37310556b363bf60cfe94d0"
+}

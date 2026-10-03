@@ -16,7 +16,15 @@ from pathlib import Path
 
 import pytest
 
-from map.geocode import GeocodeError, NominatimGeocoder, Place, StubGeocoder, parse_nominatim
+from map.geocode import (
+    GeocodeError,
+    GeocodeUnavailable,
+    NominatimGeocoder,
+    Place,
+    StubGeocoder,
+    parse_nominatim,
+    parse_nominatim_suggestions,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nominatim_nob_hill.json"
 
@@ -50,6 +58,37 @@ def test_display_name_falls_back_when_absent():
 def test_stub_geocoder_returns_what_it_was_given():
     stub = StubGeocoder(Place(lat=1.0, lon=2.0, display_name="Somewhere"))
     assert stub.lookup("anything").display_name == "Somewhere"
+
+
+def test_stub_geocoder_suggests_its_one_place():
+    place = Place(lat=1.0, lon=2.0, display_name="Somewhere")
+    assert StubGeocoder(place).suggest("any") == [place]
+
+
+# --- parse_nominatim_suggestions ---------------------------------------------
+
+
+def test_parse_suggestions_returns_every_usable_entry_in_order():
+    payload = [
+        {"lat": "1", "lon": "1", "display_name": "First"},
+        {"lat": "2", "lon": "2", "display_name": "Second"},
+    ]
+    places = parse_nominatim_suggestions(payload)
+    assert [p.display_name for p in places] == ["First", "Second"]
+
+
+def test_parse_suggestions_skips_unusable_entries_rather_than_failing():
+    payload = [
+        {"lat": "bad", "lon": "bad"},
+        {"lat": "1", "lon": "1", "display_name": "Good"},
+    ]
+    places = parse_nominatim_suggestions(payload)
+    assert [p.display_name for p in places] == ["Good"]
+
+
+@pytest.mark.parametrize("payload", [None, {}, "nope", []])
+def test_parse_suggestions_returns_an_empty_list_rather_than_raising(payload):
+    assert parse_nominatim_suggestions(payload) == []
 
 
 # --- adversarial: coordinate validity ----------------------------------------
@@ -188,6 +227,49 @@ def test_lookup_delegates_to_parse_nominatim(monkeypatch):
         lambda query: [{"lat": "37.0", "lon": "-122.0", "display_name": "Somewhere"}],
     )
     assert geocoder.lookup("somewhere") == Place(lat=37.0, lon=-122.0, display_name="Somewhere")
+
+
+# --- NominatimGeocoder: suggest() wiring -------------------------------------
+
+
+def test_suggest_delegates_to_parse_nominatim_suggestions_with_the_requested_limit(monkeypatch):
+    captured = {}
+
+    def fake_raw(query, limit=1):
+        captured["query"] = query
+        captured["limit"] = limit
+        return [{"lat": "37.0", "lon": "-122.0", "display_name": "Somewhere"}]
+
+    geocoder = NominatimGeocoder(min_interval_s=0.0)
+    monkeypatch.setattr(geocoder, "raw", fake_raw)
+
+    places = geocoder.suggest("some", limit=5)
+
+    assert places == [Place(lat=37.0, lon=-122.0, display_name="Somewhere")]
+    assert captured == {"query": "some", "limit": 5}
+
+
+def test_suggest_returns_an_empty_list_rather_than_raising_on_a_transport_failure(monkeypatch):
+    def fake_raw(query, limit=1):
+        raise GeocodeUnavailable("network is down")
+
+    geocoder = NominatimGeocoder(min_interval_s=0.0)
+    monkeypatch.setattr(geocoder, "raw", fake_raw)
+
+    assert geocoder.suggest("some") == []
+
+
+def test_raw_forwards_a_non_default_limit(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["params"] = params
+        return _FakeResponse([{"lat": "1", "lon": "2"}])
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    geocoder = NominatimGeocoder(min_interval_s=0.0)
+    geocoder.raw("anywhere", limit=5)
+    assert captured["params"]["limit"] == 5
 
 
 # --- NominatimGeocoder: throttle ---------------------------------------------

@@ -36,8 +36,10 @@ class ControlPoint:
     """
 
     id: str
-    #: "signal" or "stop_sign". A signal resolves its phase through
-    #: `PlanContext.signals[id]`; a stop sign always requires a stop.
+    #: "signal", "stop_sign", or "arrival". A signal resolves its phase
+    #: through `PlanContext.signals[id]`; a stop sign always requires a stop;
+    #: "arrival" (`map.lanes.arrival_control_point`) marks an OPEN route's own
+    #: end and always requires a stop that never releases.
     kind: str
     s: float
     position: Point

@@ -1,0 +1,437 @@
+/**
+ * The camera perception sees.
+ *
+ * Deliberately NOT the camera the user sees: they must be able to orbit to
+ * overhead or free view without changing what the detector is looking at.
+ * Rigidly mounted at the ego windshield, same mount as the `cockpit` view.
+ *
+ * Rendered to an offscreen target at a fixed size and a fixed rate, so the
+ * frames the backend scores are independent of display resolution and FPS.
+ */
+
+import * as THREE from 'three/webgpu';
+import type { CameraParams } from '../schema';
+
+/**
+ * Which of the two renderer backends `createRenderer` (Renderer.tsx) settled
+ * on. Owned here rather than in Renderer.tsx because the flip decision below
+ * is what actually depends on it — Renderer.tsx just threads the value through.
+ */
+export type Backend = 'webgpu' | 'webgl2';
+
+export const DETECTOR_FRAME = {
+  width: 640,
+  height: 384,
+  fovYDeg: 50,
+  /** ~10 Hz. Independent of render FPS. */
+  intervalMs: 100,
+  /** JPEG quality: the wire cost is roughly linear in this. */
+  quality: 0.6,
+  /**
+   * Upper bound on the GPU readback inside `capture()`. Five capture
+   * intervals (100ms each) — generous enough that an ordinarily slow frame
+   * still completes, but short enough that a readback that never settles at
+   * all (the failure mode this constant exists for — see the comment above
+   * `capture()`) cannot wedge perception silently for the rest of the
+   * session.
+   */
+  captureTimeoutMs: 500,
+} as const;
+
+/** Mount height and forward offset, matching the cockpit view. */
+const MOUNT_HEIGHT = 1.33;
+const MOUNT_FORWARD = 0.15;
+/**
+ * Where the mount aims, measured along the ego heading *from the ego origin*
+ * — not from the camera, which already sits `MOUNT_FORWARD` ahead of it.
+ * Same aim point as the cockpit view (`chaseCam.ts`).
+ */
+const MOUNT_LOOK_DISTANCE = 40;
+/**
+ * How far below the mount that aim point sits: the cockpit looks at 1.15 from
+ * a 1.33 mount. This is what gives the detector camera its slight downtilt,
+ * and it is deliberate — it keeps the ground contact points the backend
+ * projects from (`perception/geometry.py`) inside the frame at close range.
+ */
+const MOUNT_LOOK_DROP = 0.18;
+
+/**
+ * The mount's pitch, in radians, on the wire's convention.
+ *
+ * DERIVED, never written down: `update()` below builds its `lookAt` from
+ * exactly these constants, so the pitch the backend is told and the pitch the
+ * camera actually has cannot drift. Move the mount, change the aim point, and
+ * this follows automatically.
+ *
+ * The camera sits at height `MOUNT_HEIGHT`, `MOUNT_FORWARD` ahead of the ego
+ * origin, and looks at a point `MOUNT_LOOK_DISTANCE` ahead of that *origin*
+ * and `MOUNT_LOOK_DROP` lower — so the horizontal run is
+ * `MOUNT_LOOK_DISTANCE - MOUNT_FORWARD` and the drop is `MOUNT_LOOK_DROP`.
+ *
+ * Negative on purpose. `schema.ts` defines `pitch` as "positive tilts the view
+ * upward (nose up)", and this mount tilts *down*. Reporting `+atan2(...)` here
+ * would not merely fail to fix the projection — it would double the error, by
+ * telling the backend to raise a ray that is already too shallow.
+ */
+export const MOUNT_PITCH_RAD = -Math.atan2(
+  MOUNT_LOOK_DROP,
+  MOUNT_LOOK_DISTANCE - MOUNT_FORWARD,
+);
+
+/**
+ * Three.js is Y-up with `+x` east and `+z` south. The wire is `+x` east,
+ * `+y` north, `+z` up. Converting here means the backend never learns that a
+ * renderer convention exists.
+ *
+ * `pitchRad` is passed rather than assumed: a position and a heading do not
+ * determine where a camera is looking vertically, and hardcoding a zero here
+ * is precisely the bug this parameter exists to make impossible. Callers pass
+ * the pitch their camera actually has — for the detector mount, the derived
+ * `MOUNT_PITCH_RAD`.
+ */
+export function cameraParamsFromThree(
+  position: { x: number; y: number; z: number },
+  headingRad: number,
+  pitchRad: number,
+): CameraParams {
+  return {
+    x: position.x,
+    y: -position.z,
+    z: position.y,
+    yaw: headingRad,
+    pitch: pitchRad,
+    roll: 0,
+    fov_y_deg: DETECTOR_FRAME.fovYDeg,
+    aspect: DETECTOR_FRAME.width / DETECTOR_FRAME.height,
+  };
+}
+
+/**
+ * Reverses row order in place: row 0 becomes the last row and vice versa.
+ *
+ * This does NOT universally "fix" a GPU readback — whether the readback needs
+ * it depends on which backend produced it. See `shouldFlipRows`, the only
+ * caller that decides whether to invoke this. Called unconditionally, this
+ * function is dumb on purpose: it flips, it does not know or care which way
+ * is correct.
+ */
+export function flipRowsInPlace(rgba: Uint8Array, width: number, height: number): void {
+  const stride = width * 4;
+  const row = new Uint8Array(stride);
+  for (let y = 0; y < Math.floor(height / 2); y++) {
+    const top = y * stride;
+    const bottom = (height - 1 - y) * stride;
+    row.set(rgba.subarray(top, top + stride));
+    rgba.copyWithin(top, bottom, bottom + stride);
+    rgba.set(row, bottom);
+  }
+}
+
+/** btoa in chunks: spreading 60 KB into String.fromCharCode blows the stack. */
+export function encodeBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Whether a readback from `backend` needs `flipRowsInPlace` to end up
+ * top-down.
+ *
+ * The two backends hand back rows in opposite order:
+ *
+ *  - WebGL2 reads back via `gl.readPixels`, whose origin is bottom-left, so
+ *    row 0 of the buffer is the bottom of the image. It needs the flip.
+ *  - WebGPU reads back via `copyTextureToBuffer` from `origin = (0, 0)` with
+ *    no flip anywhere in the path, and WebGPU's framebuffer origin is
+ *    top-left — so row 0 of the buffer is already the top of the image.
+ *    Flipping it would turn a correct image upside down. (three.js's own
+ *    `NodeBuilder.isFlipY()` returns `true` for GLSL and `false` for WGSL,
+ *    for exactly this reason — `TextureNode` applies it only for
+ *    `isRenderTargetTexture` on the GLSL path.)
+ *
+ * WebGPU is the primary path here (`createRenderer` in Renderer.tsx only
+ * falls back to WebGL2 when WebGPU init fails), so getting this backwards
+ * ships upside-down frames on the common case, not the rare one.
+ */
+export function shouldFlipRows(backend: Backend): boolean {
+  return backend === 'webgl2';
+}
+
+/**
+ * Sentinel distinguishing "the timeout elapsed" from any real value `promise`
+ * could resolve to (including `undefined`) — a plain `undefined` return from
+ * `raceWithTimeout` would be ambiguous between the two.
+ */
+const CAPTURE_TIMED_OUT = Symbol('detector capture timed out');
+
+/**
+ * Races `promise` against `ms`. If `promise` wins, its settlement (value or
+ * rejection) passes through unchanged. If the timer wins, resolves
+ * `CAPTURE_TIMED_OUT` — the timer never rejects, so a hang never becomes an
+ * unhandled rejection.
+ *
+ * `promise` itself is deliberately left running when the timer wins: nothing
+ * here cancels a GPU readback. Whoever calls this is responsible for treating
+ * a late settlement of the loser as a no-op — see the comment at the
+ * `CAPTURE_TIMED_OUT` check in `capture()`.
+ */
+function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof CAPTURE_TIMED_OUT> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(CAPTURE_TIMED_OUT), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+export interface DetectorCamera {
+  update(pose: { x: number; z: number; heading: number }): void;
+  capture(): Promise<{ data: string; camera: CameraParams } | null>;
+  /**
+   * True only for the brief window where the shared renderer's render target
+   * is actually pointed at this detector's offscreen buffer. The caller's
+   * main-view render loop (Renderer.tsx) must not call `renderer.render()`
+   * while this is true — the renderer has one `_renderTarget` slot shared
+   * between the visible canvas and this offscreen capture, and `render()`
+   * always draws into whatever it currently holds, silently. False the rest
+   * of the time, including while a capture's GPU readback and JPEG encode
+   * are still in flight after the target has already been restored.
+   */
+  renderTargetBusy(): boolean;
+  dispose(): void;
+}
+
+export function createDetectorCamera(
+  scene: THREE.Scene,
+  renderer: THREE.WebGPURenderer,
+  backend: Backend,
+): DetectorCamera {
+  const { width, height, fovYDeg, quality } = DETECTOR_FRAME;
+  // Decided once, from the backend that won at renderer creation — it never
+  // changes for the renderer's lifetime, so there is nothing to recompute
+  // per capture.
+  const flip = shouldFlipRows(backend);
+  const camera = new THREE.PerspectiveCamera(fovYDeg, width / height, 0.1, 400);
+  // Defaults to UnsignedByteType. `capture()` reinterprets the readback's raw
+  // bytes as a Uint8Array directly (no per-channel conversion) — switching this
+  // to FloatType/HalfFloatType would make that reinterpretation silent garbage.
+  const target = new THREE.RenderTarget(width, height);
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  let busy = false;
+  // See `renderTargetBusy()` on the interface. A strict subset of `busy`'s
+  // window: `busy` spans the whole capture (so a second capture() call can't
+  // overlap this one), but a main-view render only needs to avoid the much
+  // shorter span where the render target is actually switched away.
+  let targetBusy = false;
+  // Remembered from `update` rather than re-derived from the camera's matrix in
+  // `capture`: the heading is known exactly here, and reading it back out of
+  // matrixWorld columns is sign-error bait for no benefit.
+  let heading = 0;
+  // Set once a readback timeout has ever fired, so a stuck GPU that times out
+  // on every subsequent capture (one per DETECTOR_FRAME.intervalMs) logs a
+  // single warning instead of spamming the console at ~10 Hz.
+  let hasWarnedTimeout = false;
+
+  return {
+    update(pose) {
+      heading = pose.heading;
+      const fx = Math.cos(pose.heading);
+      const fz = -Math.sin(pose.heading);
+      camera.position.set(
+        pose.x + fx * MOUNT_FORWARD,
+        MOUNT_HEIGHT,
+        pose.z + fz * MOUNT_FORWARD,
+      );
+      // Built from the same constants `MOUNT_PITCH_RAD` is derived from, so
+      // the downtilt the backend is told about is the downtilt the camera
+      // actually has. Inlining `40` or `1.15` here again would silently
+      // reintroduce the drift the derivation exists to prevent.
+      camera.lookAt(
+        pose.x + fx * MOUNT_LOOK_DISTANCE,
+        MOUNT_HEIGHT - MOUNT_LOOK_DROP,
+        pose.z + fz * MOUNT_LOOK_DISTANCE,
+      );
+    },
+
+    async capture() {
+      // One capture in flight at a time. Readback is async; overlapping calls
+      // would interleave GPU work for frames nobody is waiting for.
+      if (busy || !ctx) return null;
+      busy = true;
+      // `previous` is read inside the try: if getRenderTarget() itself throws,
+      // there is nothing captured to restore, and `acquiredPrevious` staying
+      // false is what tells the `finally` not to call setRenderTarget with a
+      // value that was never actually obtained.
+      let previous: ReturnType<typeof renderer.getRenderTarget> | null = null;
+      // WebGPURenderer only runs its tone-mapping + color-space output pass
+      // when the active render target IS the renderer's designated "output"
+      // target (`isOutputTarget`, defined as `_renderTarget === _outputRenderTarget
+      // || _renderTarget === null`); see three's Renderer.js `_getFrameBufferTarget()`.
+      // The canvas satisfies this because `_renderTarget` is null there, but
+      // `target` never does on its own — so without this, every capture skipped
+      // `renderer.toneMapping`/`toneMappingExposure` AND the sRGB encode entirely,
+      // handing back raw scene-linear bytes that read as near-black once written
+      // into a JPEG. Declaring `target` as the output target for the duration of
+      // the render makes the offscreen pass go through exactly the same
+      // tonemap + encode the visible canvas gets, so the detector sees the scene
+      // at the same exposure the user does.
+      let previousOutput: ReturnType<typeof renderer.getOutputRenderTarget> | null = null;
+      let acquiredPrevious = false;
+      // Whether the early restore below already ran, so `finally` knows
+      // whether it still owes a restore or would just be repeating one.
+      let restoredEarly = false;
+      try {
+        previous = renderer.getRenderTarget();
+        previousOutput = renderer.getOutputRenderTarget();
+        acquiredPrevious = true;
+        renderer.setOutputRenderTarget(target);
+        renderer.setRenderTarget(target);
+        targetBusy = true;
+        await renderer.renderAsync(scene, camera);
+
+        // Restore the instant the render pass finishes, not in `finally`
+        // after the GPU readback and JPEG encode below. readRenderTargetPixelsAsync
+        // takes `target` explicitly and does not depend on the renderer's
+        // *current* target, so nothing from here on needs the switch still in
+        // effect. This shrinks the caller's unsafe window from "the whole
+        // capture" down to just the render pass above — narrower, but on its
+        // own still only a *timing* argument, not a guarantee, since nothing
+        // stops a future renderAsync from genuinely spanning a display frame.
+        // `targetBusy`, gated on by the render loop, is what turns this from
+        // "usually fine" into "cannot happen": the loop simply never calls
+        // render() while it reads true, independent of how long that window
+        // actually is.
+        renderer.setRenderTarget(previous);
+        // `previousOutput` is always `null` in this app (Renderer.tsx's main
+        // view never calls setOutputRenderTarget), but restoring the read
+        // value rather than hardcoding `null` means this stays correct if
+        // that ever changes. Left dangling, it would silently corrupt the
+        // *next* canvas frame too: `_getFrameBufferTarget()` keys its cached
+        // intermediate buffer on `_outputRenderTarget || _canvasTarget`, so a
+        // stale 640x384 detector target there would hand the main view's own
+        // tonemap pass a buffer sized for the wrong viewport.
+        renderer.setOutputRenderTarget(previousOutput);
+        restoredEarly = true;
+        targetBusy = false;
+
+        const pixels = await raceWithTimeout(
+          renderer.readRenderTargetPixelsAsync(target, 0, 0, width, height),
+          DETECTOR_FRAME.captureTimeoutMs,
+        );
+
+        if (pixels === CAPTURE_TIMED_OUT) {
+          // The render target was already restored above, before this await —
+          // `targetBusy` is not implicated here. The readback promise itself
+          // is abandoned, not cancelled: if it settles later, there is no
+          // `.then()` left on it beyond `raceWithTimeout`'s own (which only
+          // clears a timer that has already fired), so a late value or
+          // rejection touches nothing in this closure — no stale `target`
+          // restore, no stale frame reaching the caller, no guard release
+          // that a subsequent capture() call now owns. `finally` below still
+          // runs and releases `busy` for this call, exactly as any other
+          // return from this try block would.
+          if (!hasWarnedTimeout) {
+            hasWarnedTimeout = true;
+            console.warn(
+              `[streetlab] detector camera: GPU readback exceeded ` +
+                `${DETECTOR_FRAME.captureTimeoutMs}ms; dropping this frame ` +
+                `(further timeouts this session will not be logged again)`,
+            );
+          }
+          return null;
+        }
+
+        const rgba = new Uint8Array(
+          pixels.buffer, pixels.byteOffset, pixels.byteLength,
+        );
+        if (flip) flipRowsInPlace(rgba, width, height);
+        ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+        const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality });
+        const buffer = new Uint8Array(await blob.arrayBuffer());
+
+        return {
+          data: encodeBase64(buffer),
+          // Pitch is the mount's, not the camera object's: it is fixed by
+          // construction (see `MOUNT_PITCH_RAD`) and, like `heading` above,
+          // known exactly here rather than dug back out of matrixWorld.
+          camera: cameraParamsFromThree(camera.position, heading, MOUNT_PITCH_RAD),
+        };
+      } finally {
+        // Fallback only: normally the early restore above already ran. This
+        // still matters for a failure between acquiring `previous` and that
+        // point — e.g. renderAsync itself rejecting — where the target would
+        // otherwise be left switched.
+        //
+        // The restore call itself is wrapped so a failure here (e.g. a lost
+        // GPU device) cannot skip the two resets below. `targetBusy` stuck
+        // `true` is worse than `busy` stuck true: the render loop gates the
+        // *visible* canvas on it, so a wedged guard here would freeze the
+        // canvas for the rest of the session, not just stop captures. Given a
+        // choice between a frame that might draw into the wrong target while
+        // the GPU is already failing, and a canvas that never updates again,
+        // the corrupted frame is the lesser harm — it self-corrects if the
+        // renderer recovers; a permanent freeze does not. So both guards
+        // release unconditionally, and the restore failure is logged, not
+        // swallowed.
+        if (acquiredPrevious && !restoredEarly) {
+          // Each restore gets its OWN try/catch, deliberately not one try
+          // wrapping both: the original single-try version let a thrown
+          // setRenderTarget (the device-lost case this whole block exists
+          // for) skip setOutputRenderTarget entirely, since a throw jumps
+          // straight past the rest of the try body. That left
+          // `_outputRenderTarget` pointed at this detector's 640x384 target
+          // indefinitely — worse than the dangling `_renderTarget` this
+          // block was written to guard against, since `_getFrameBufferTarget()`
+          // keys its cached intermediate buffer on `_outputRenderTarget ||
+          // _canvasTarget` (see the comment above `setOutputRenderTarget`
+          // earlier in this function): the *next* canvas frame's own tonemap
+          // pass would silently pick up a buffer sized for the wrong
+          // viewport. Splitting the try means a lost GPU device that keeps
+          // failing setRenderTarget still gets setOutputRenderTarget's
+          // restore attempted and logged independently.
+          try {
+            renderer.setRenderTarget(previous);
+          } catch (err) {
+            console.warn(
+              '[streetlab] detector camera: failed to restore render target; ' +
+                'a subsequent main-view render may draw into the wrong target',
+              err,
+            );
+          }
+          try {
+            renderer.setOutputRenderTarget(previousOutput);
+          } catch (err) {
+            console.warn(
+              '[streetlab] detector camera: failed to restore output render target; ' +
+                'a subsequent main-view render may use a tonemap buffer sized for ' +
+                'the wrong viewport',
+              err,
+            );
+          }
+        }
+        targetBusy = false;
+        busy = false;
+      }
+    },
+
+    renderTargetBusy() {
+      return targetBusy;
+    },
+
+    dispose() {
+      target.dispose();
+    },
+  };
+}

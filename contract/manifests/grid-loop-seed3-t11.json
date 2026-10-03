@@ -1,0 +1,29 @@
+{
+  "scenario": "grid-loop",
+  "seed": 3,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-loop --seed 3 --traffic 11 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-loop-seed3-t11",
+  "note": "Phase 3b training capture (Task 3, row 2/11). usable/frame 1.1589 (175/151). Ego below 0.5 m/s in 3.3% of frames -- not a jam. Per-class usable: car 154, truck 21. Bus (4) and motorcycle (1) appeared raw but neither cleared visible+extent_from_truth.",
+  "commit": "dcbf9e5",
+  "frames": 151,
+  "annotations": 239,
+  "visible": 175,
+  "usable": 175,
+  "per_class": {
+    "car": 195,
+    "truck": 39,
+    "bus": 4,
+    "motorcycle": 1
+  },
+  "per_class_visible": {
+    "car": 154,
+    "truck": 21
+  },
+  "per_class_usable": {
+    "car": 154,
+    "truck": 21
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "6092c3bf1a085e851f2bb7d834d897b5858d71944140488ab5b61c61e41f3b13"
+}

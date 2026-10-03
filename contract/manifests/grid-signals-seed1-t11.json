@@ -1,0 +1,29 @@
+{
+  "scenario": "grid-signals",
+  "seed": 1,
+  "command": "uv run streetlab serve --port 8765 --scenario grid-signals --seed 1 --traffic 11 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /tmp/streetlab-capture/grid-signals-seed1-t11",
+  "note": "Phase 3b training capture (Task 3, row 6/11). usable/frame 1.0267 (154/150). Per-class usable: car 140, truck 14. Bus (13) and motorcycle (2) appeared raw but neither cleared visible+extent_from_truth -- matches grid-loop's pattern, not grid-arterial's. Ego below 0.5 m/s in 4.0% of frames, median speed 3.72 m/s, nearest vehicle median 21.7 m.",
+  "commit": "6741961",
+  "frames": 150,
+  "annotations": 218,
+  "visible": 154,
+  "usable": 154,
+  "per_class": {
+    "car": 166,
+    "truck": 37,
+    "bus": 13,
+    "motorcycle": 2
+  },
+  "per_class_visible": {
+    "car": 140,
+    "truck": 14
+  },
+  "per_class_usable": {
+    "car": 140,
+    "truck": 14
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "e2786066ae39013f624d3460774181ec3cf8cca08dc86624670e33215a3498f2"
+}

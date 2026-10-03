@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 7
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -79,7 +79,18 @@ class Size(Wire):
 
 SignalPhase = Literal["red", "yellow", "green", "flashing_yellow", "off"]
 RoadClass = Literal["arterial", "collector", "residential", "service"]
-LaneMarking = Literal["none", "dashed_white", "solid_white", "double_yellow"]
+# US convention (MUTCD 3A.05): yellow separates OPPOSING directions and marks
+# the left edge of a one-way roadway; white separates same-direction lanes and
+# marks the right edge. The colour carries the meaning, so both patterns of
+# each colour are on the wire rather than one stand-in for the pair.
+LaneMarking = Literal[
+    "none",
+    "dashed_white",
+    "solid_white",
+    "broken_yellow",
+    "solid_yellow",
+    "double_yellow",
+]
 
 
 class Road(Wire):
@@ -95,7 +106,11 @@ class Road(Wire):
     oneway: bool
     # Marking drawn on the centre divider.
     center_marking: LaneMarking
-    has_sidewalk: bool
+    # Which side of the way carries a pavement, in the way's own node order.
+    # A single boolean could not express `sidewalk=right`, which 16 of the Nob
+    # Hill extract's 264 drivable ways say, so the renderer drew both.
+    sidewalk_left: bool = True
+    sidewalk_right: bool = True
 
 
 class Building(Wire):
@@ -171,6 +186,22 @@ class ScenarioSummary(Wire):
     preview_route: list[Vec2]
 
 
+HazardGroup = Literal["ahead", "crossing", "behind"]
+
+
+class HazardSummary(Wire):
+    """One entry in the hazard menu. `code` is what `inject_hazard.kind` takes."""
+
+    code: str
+    label: str
+    level: Literal["info", "warn", "critical"]
+    group: HazardGroup
+    # Why this hazard, or the car's reaction to it, cannot work under ML
+    # perception -- or null when nothing is known to stop it. No default, for
+    # the reason every other nullable field here has none.
+    ml_limitation: str | None
+
+
 class Origin(Wire):
     lat: Num
     lon: Num
@@ -204,6 +235,10 @@ class SceneDescription(Wire):
     street_signs: list[StreetSign]
     # Scenarios the server can load; drives the left sidebar.
     catalog: list[ScenarioSummary]
+    # Hazards `inject_hazard` can stage; drives the hazard menu. Attached by
+    # `Simulation.scene_description()` -- scene sources build `[]`, because what
+    # can be injected is the simulation's business, not the map's.
+    hazards: list[HazardSummary]
 
 
 # --------------------------------------------------------------------------- #
@@ -230,6 +265,57 @@ class Detection(Wire):
     ttc_s: Num | None
     # Lane index relative to ego: -1 right, 0 same, +1 left, null if unknown.
     lane_offset: int | None
+    # Lights and siren on. Ground truth reads it off the agent; the ML source
+    # cannot perceive it and always says false.
+    emergency: bool
+
+
+PerceptionMode = Literal["ground-truth", "ml"]
+
+
+class CameraParams(Wire):
+    """The camera that produced one frame, in wire world coordinates:
+    +x east, +y north, +z up, ground plane at z = 0. The frontend converts out
+    of Three.js's Y-up frame before sending.
+    """
+
+    x: Num
+    y: Num
+    z: Num
+    # radians, 0 = +x (east), CCW positive — same convention as Pose.heading.
+    yaw: Num
+    # radians, positive tilts the view upward (nose up), rotation about the
+    # camera's local right axis — see perception/geometry.py.
+    pitch: Num
+    # radians, rotation about the camera's forward (optical) axis. Not
+    # applied by ground-plane projection today; no camera on the wire sends
+    # non-zero roll yet.
+    roll: Num
+    fov_y_deg: Pos
+    aspect: Pos
+
+
+class PerceptionStats(Wire):
+    mode: PerceptionMode
+    # Null until Phase 2 lands a model.
+    detector_ms: NonNeg | None
+    # Socket arrival -> detections available, measured entirely on the
+    # backend (both ends time.perf_counter(), process-wide consistent). Named
+    # server_* deliberately: it excludes the offscreen render, GPU readback,
+    # row flip, JPEG encode, base64 and the websocket transfer, which on a
+    # stub-detector run are most of the actual latency. A true end-to-end
+    # figure needs a frontend performance.now() stamp plus a clock-offset
+    # estimate (browser and Python clocks share no epoch) -- Phase 3 work.
+    server_e2e_ms: NonNeg | None
+    frames_received: Annotated[int, Field(ge=0)]
+    frames_dropped: Annotated[int, Field(ge=0)]
+    # Null means the question had no answer this cycle -- no score computed
+    # yet, or `score()` itself found a ratio undefined (no predictions, or
+    # no ground truth). `0.0` means measured, and zero; never substitute one
+    # for the other on the way to the wire.
+    precision: Unit | None
+    recall: Unit | None
+    mean_pos_err_m: NonNeg | None
 
 
 class RadarPoint(Wire):
@@ -297,9 +383,10 @@ class TrajectorySample(Wire):
 class TrajectoryPrediction(Wire):
     horizon_s: Pos
     planned: list[TrajectorySample]
-    # Predicted path of the cutting-in agent, or null when nobody is cutting in.
-    cutin: list[TrajectorySample] | None
-    cutin_label: str | None
+    # Predicted lateral path of the object the car is reacting to, or null.
+    # Named `cutin` through protocol 6, which it never was specific to.
+    threat: list[TrajectorySample] | None
+    threat_label: str | None
 
 
 class Telemetry(Wire):
@@ -319,6 +406,9 @@ Maneuver = Literal[
     "lane_change_right",
     "stop",
     "yield",
+    "arrived",
+    "emergency_brake",
+    "pull_over",
 ]
 
 
@@ -328,6 +418,9 @@ class Plan(Wire):
     target_speed_mps: NonNeg
     maneuver: Maneuver
     confidence: Unit
+    # The detection the planner's current reaction is to, or null. Always
+    # null until Cycle 6 Phase 2's `plan/hazard.py` exists.
+    reaction_source_id: str | None
 
 
 CruiseMode = Literal["off", "cruise", "autosteer", "fsd"]
@@ -364,6 +457,11 @@ class SimEvent(Wire):
     level: Literal["info", "warn", "critical"]
     code: str
     message: str
+    # How far a `location_progress` event's build has gotten, 0..1. Absent for
+    # every other event code -- this is not a general-purpose field, just the
+    # one thing a live-updating build progress bar needs alongside `message`'s
+    # stage label. `None` is the default so no other event code has to name it.
+    progress: Unit | None = None
 
 
 class StateUpdate(Wire):
@@ -377,10 +475,27 @@ class StateUpdate(Wire):
     scenario_id: str
     ego: Ego
     detections: list[Detection]
+    # The perception source that is NOT driving, when both are running.
+    # `None` when there is no second source at all (no ML pipeline running)
+    # -- distinct from `[]`, which means the other source ran and saw
+    # nothing. Collapsing the two would make "no ML running" indistinguishable
+    # from "ML saw an empty road" (same distinction `PoseHistory.at` draws in
+    # perception/history.py, which scoring.py depends on). No default, for
+    # the same reason `perception` below has none: a missing key here must
+    # fail validation, not silently default to null.
+    detections_shadow: list[Detection] | None
     plan: Plan
     telemetry: Telemetry
     signals: list[SignalState]
     events: list[SimEvent]
+    # Null when no ML perception is running — distinct from "measured, and
+    # zero". No default: every other nullable field in this class requires the
+    # caller to say so explicitly (transcription hazard #2 above), and a
+    # default here would let `StateUpdate.model_validate(...)` accept a
+    # payload missing `perception` where zod would reject it. There is exactly
+    # one construction site (sim/loop.py's assemble_state_update), and it
+    # already passes this explicitly.
+    perception: PerceptionStats | None
 
 
 # --------------------------------------------------------------------------- #
@@ -439,6 +554,19 @@ class LoadLocation(_Cmd):
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
+    # A second address to route TO. Absent (the common case) means "drive an
+    # auto-discovered loop near `query`", exactly as before this existed.
+    destination: Annotated[str, Field(min_length=1)] | None = None
+
+
+class SuggestAddress(_Cmd):
+    """Ask for as-you-type address candidates. Answered directly by the
+    server's connection handler (see `server/ws_server.py`), never routed
+    through the sim thread's command queue -- same reason `camera_frame`
+    bypasses it: a network geocode call must not stall the physics step."""
+
+    cmd: Literal["suggest_address"] = "suggest_address"
+    query: Annotated[str, Field(min_length=1)]
 
 
 class SetParam(_Cmd):
@@ -463,6 +591,24 @@ class InjectHazard(_Cmd):
     kind: str
 
 
+class SetPerception(_Cmd):
+    cmd: Literal["set_perception"] = "set_perception"
+    mode: PerceptionMode
+
+
+class CameraFrameCmd(_Cmd):
+    cmd: Literal["camera_frame"] = "camera_frame"
+    # Monotonic per connection; the backend drops anything out of order.
+    seq: Annotated[int, Field(ge=0)]
+    t: Num
+    width: Annotated[int, Field(gt=0)]
+    height: Annotated[int, Field(gt=0)]
+    format: Literal["jpeg"]
+    # base64. Capped: an uncapped field here is an OOM waiting for a bad client.
+    data: Annotated[str, Field(max_length=524288)]
+    camera: CameraParams
+
+
 Command = Annotated[
     Union[
         SetPaused,
@@ -470,10 +616,13 @@ Command = Annotated[
         Reset,
         LoadScenario,
         LoadLocation,
+        SuggestAddress,
         SetParam,
         ToggleLayer,
         SetCamera,
         InjectHazard,
+        SetPerception,
+        CameraFrameCmd,
     ],
     Field(discriminator="cmd"),
 ]
@@ -495,12 +644,31 @@ class Ack(Wire):
     t: Num
 
 
+class AddressSuggestion(Wire):
+    label: str
+    lat: Num
+    lon: Num
+
+
+class AddressSuggestions(Wire):
+    """Reply to `SuggestAddress`. `id` echoes the command's id -- like `Ack`,
+    but its own message type rather than a rider on `Ack` because it carries
+    a payload and, unlike an ack, is never paired with a command outcome."""
+
+    type: Literal["address_suggestions"] = "address_suggestions"
+    protocol: int = PROTOCOL_VERSION
+    id: str
+    query: str
+    suggestions: list[AddressSuggestion]
+
+
 # --------------------------------------------------------------------------- #
 # Envelope + helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 ServerMessage = Annotated[
-    Union[SceneDescription, StateUpdate, Ack], Field(discriminator="type")
+    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions],
+    Field(discriminator="type"),
 ]
 
 _COMMAND_ADAPTER: TypeAdapter[Any] = TypeAdapter(Command)

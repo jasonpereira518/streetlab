@@ -17,6 +17,7 @@ import { makeRng } from '../units';
 import type {
   Building,
   Crosswalk,
+  HazardSummary,
   Road,
   SceneDescription,
   ScenarioSummary,
@@ -121,8 +122,12 @@ function buildRoads(): Road[] {
       lane_width_m: LANE_W,
       speed_limit_mps: s.speed_mph * MPH,
       oneway: false,
-      center_marking: 'double_yellow',
-      has_sidewalk: true,
+      // Yellow divides opposing traffic; broken where passing is permitted,
+      // double solid once there is more than one lane each way. Mirrors
+      // `_center_marking` in the backend's `map/lanes.py`.
+      center_marking: s.lanes > 1 ? 'double_yellow' : 'broken_yellow',
+      sidewalk_left: true,
+      sidewalk_right: true,
     };
   });
 }
@@ -517,6 +522,42 @@ export const SCENARIOS: ScenarioSummary[] = [
 /* Assembly                                                          */
 /* ---------------------------------------------------------------- */
 
+/**
+ * The hazard menu. Mirrors `SCENARIOS` in `streetlab-backend/sim/events.py`
+ * entry for entry (`tests/mockServer.test.ts` holds the two together from
+ * Task 9); the mock itself only ever stages `cut_in`.
+ */
+export const HAZARDS: HazardSummary[] = [
+  { code: 'sudden_brake', label: 'Sudden brake', level: 'warn', group: 'ahead', ml_limitation: null },
+  { code: 'cut_in', label: 'Cut-in', level: 'warn', group: 'ahead', ml_limitation: null },
+  { code: 'jaywalker', label: 'Jaywalker', level: 'critical', group: 'crossing', ml_limitation: null },
+  {
+    code: 'obstacle',
+    label: 'Obstacle',
+    level: 'warn',
+    group: 'ahead',
+    ml_limitation: 'The detector has no class for an unclassified obstacle.',
+  },
+  {
+    code: 'emergency_vehicle',
+    label: 'Emergency vehicle',
+    level: 'info',
+    group: 'behind',
+    ml_limitation: 'ML perception has no rear camera and cannot see emergency lights.',
+  },
+  { code: 'stalled_vehicle', label: 'Stalled vehicle', level: 'warn', group: 'ahead', ml_limitation: null },
+  { code: 'cyclist_drift', label: 'Cyclist drift', level: 'warn', group: 'ahead', ml_limitation: null },
+  {
+    code: 'tailgater',
+    label: 'Tailgater',
+    level: 'info',
+    group: 'behind',
+    ml_limitation: 'ML perception has no rear camera.',
+  },
+  { code: 'oncoming_drift', label: 'Oncoming drift', level: 'critical', group: 'ahead', ml_limitation: null },
+  { code: 'red_light_runner', label: 'Red-light runner', level: 'critical', group: 'crossing', ml_limitation: null },
+];
+
 /** Build the full static scene for a scenario. */
 export function buildScene(scenarioId: string): SceneDescription {
   const scenario =
@@ -544,6 +585,7 @@ export function buildScene(scenarioId: string): SceneDescription {
     trees: buildTrees(),
     street_signs: buildStreetSigns(),
     catalog: SCENARIOS,
+    hazards: HAZARDS,
   };
 }
 

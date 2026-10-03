@@ -28,8 +28,17 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
+from map.lanes import ARRIVAL_CONTROL_ID
+from map.osm_source import describe_build_failure
 from map.scene_build import LANE_W, BuiltScene, SceneSource
-from perception.service import GroundTruthPerception, PerceptionSource
+from perception.capture import CaptureSink
+from perception.history import PoseHistory
+from perception.ml_source import MlPerception
+from perception.pipeline import PerceptionPipeline
+from perception.scoring import Prediction, ScoreResult, TruthObject, score
+from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
+from perception.tracker import Tracker
+from plan.behavior import BehaviorState
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
     Ack,
@@ -38,6 +47,7 @@ from schema import (
     Ego,
     LaneNeighbor,
     LaneState,
+    PerceptionMode,
     Plan,
     Pose,
     RadarPoint,
@@ -58,6 +68,13 @@ from sim.vehicle import BicycleModel, VehicleState
 
 log = logging.getLogger("streetlab.sim")
 
+# A build's progress: a short stage label, plus how far through the whole
+# build that stage sits, 0..1. `SceneBuilder` is the shape `submit_scene`
+# expects -- a zero-arg build wrapped in one more argument, the progress
+# callback it may call zero or more times before returning.
+ProgressCallback = Callable[[str, float], None]
+SceneBuilder = Callable[[ProgressCallback], BuiltScene]
+
 MPH = 0.44704
 DEFAULT_DT = 1 / 60
 
@@ -65,6 +82,9 @@ DEFAULT_DT = 1 / 60
 # groups are never green together even for one frame.
 GREEN_S, YELLOW_S, ALL_RED_S = 12.0, 3.0, 1.0
 _CYCLE_S = 2 * (GREEN_S + YELLOW_S + ALL_RED_S)
+#: How long a signal with no cross traffic (group "ped": a mid-block crossing)
+#: holds traffic each cycle, all-red included. Long enough to walk a street.
+PED_RED_S = 8.0
 
 # Trajectory graph: how far forward it predicts and how much history it keeps.
 _TRAJECTORY_HORIZON_S = 4.0
@@ -119,9 +139,21 @@ class WorldState:
     # and `step()` returns early while paused without refreshing either.
     plan_result: PlanResult | None = None
     detections: list[Detection] = field(default_factory=list)
+    # The non-driving source's detections for this tick, mirroring
+    # `detections`. `None` when there is no second source at all (no ML
+    # pipeline); a real, possibly empty, list when both sources ran -- see
+    # `_observe`'s docstring for why `[]` and `None` must stay distinct here.
+    detections_shadow: list[Detection] | None = None
     # This tick's signal phases, computed once in `_plan()` and reused by the
     # wire so the phase the car obeyed and the phase the HUD shows cannot drift.
     signals: list[SignalState] = field(default_factory=list)
+    # How many participants `sim/events.py` has spawned: the number in each
+    # one's id. Not `seq`, which two injections share when they land in one
+    # tick (`SimLoop._drain_commands` applies every queued command before the
+    # step), and not a module-level count, which would make an id depend on
+    # every other simulation the process has run. Never reset with the scene,
+    # so an id names one participant for the simulation's whole life.
+    hazard_spawns: int = 0
 
 
 class SignalController:
@@ -133,9 +165,15 @@ class SignalController:
     def state(self, t: float) -> list[SignalState]:
         phase_ns, left_ns = self._phase("ns", t)
         phase_ew, left_ew = self._phase("ew", t)
+        phase_ped, left_ped = self._pedestrian_phase(t)
         out = []
         for light_id, group in self._groups.items():
-            phase, left = (phase_ns, left_ns) if group == "ns" else (phase_ew, left_ew)
+            if group == "ped":
+                phase, left = phase_ped, left_ped
+            elif group == "ns":
+                phase, left = phase_ns, left_ns
+            else:
+                phase, left = phase_ew, left_ew
             out.append(
                 SignalState(id=light_id, phase=phase, time_to_change_s=round(left, 2))
             )
@@ -151,6 +189,17 @@ class SignalController:
             return "yellow", GREEN_S + YELLOW_S - local
         return "red", _CYCLE_S - local
 
+    @staticmethod
+    def _pedestrian_phase(t: float) -> tuple[str, float]:
+        """Mostly green: a short red for the crossing, on the same cycle length."""
+        green = _CYCLE_S - YELLOW_S - PED_RED_S
+        local = t % _CYCLE_S
+        if local < green:
+            return "green", green - local
+        if local < green + YELLOW_S:
+            return "yellow", green + YELLOW_S - local
+        return "red", _CYCLE_S - local
+
 
 class Simulation:
     """A deterministic, clock-free simulation. One instance is shared by clients."""
@@ -164,6 +213,9 @@ class Simulation:
         dt: float = DEFAULT_DT,
         perception: PerceptionSource | None = None,
         planner: Planner | None = None,
+        perception_pipeline: PerceptionPipeline | None = None,
+        ml_perception: PerceptionSource | None = None,
+        capture: bool = False,
     ) -> None:
         self._source = source
         self._seed = seed
@@ -172,10 +224,46 @@ class Simulation:
         self._planner = planner or CenterlineFollower()
         self._model = BicycleModel()
         self.world = WorldState()
+        self.perception_pipeline = perception_pipeline
+        # Built here, from the pipeline, so that every caller who asks for a
+        # pipeline gets the source that consumes it -- `set_perception ml`
+        # against a pipeline with nothing reading it would ack and change
+        # nothing. Injectable all the same, for tests and for Phase 3.
+        self._ml_perception = ml_perception or (
+            None
+            if perception_pipeline is None
+            else MlPerception(perception_pipeline, Tracker())
+        )
+        # Cycle 5: `--capture` needs `pose_history` populated exactly like an
+        # ML source does, but a plain capture run has no ML source at all --
+        # see `_record_truth`'s docstring for the two consumers this now
+        # serves and why their gating differs.
+        self._capture = capture
+        # Shadow is the default: the ML path runs and is measured, but ground
+        # truth is what the planner drives on until someone asks otherwise.
+        self.perception_mode: PerceptionMode = "ground-truth"
+        # What was actually true, by sim time -- so a detection can be scored
+        # against the instant its frame was captured, not against whatever
+        # the world has become by the time the detector answers. See
+        # `perception/history.py`.
+        self.pose_history = PoseHistory()
+        self.perception_score: ScoreResult | None = None
+        # The frame_t last folded into `perception_score`, so `_observe` scores
+        # a frame once -- at 60 Hz stepping and ~10 Hz frames the same
+        # `last_frame_t` is seen roughly six times in a row.
+        self._scored_frame_t: float | None = None
         # How `load_location` reaches the executor without a back-reference
         # to `SimLoop`. Set by `set_build_sink`; `None` until a loop wires
-        # itself in.
-        self._build_sink: Callable[[Callable[[], BuiltScene]], None] | None = None
+        # itself in. The build function it is handed takes a progress
+        # callback (stage label, 0..1) so a slow build can report where it is
+        # -- see `submit_scene`'s `emit_progress`.
+        self._build_sink: Callable[[SceneBuilder], None] | None = None
+        # Latches once per scene so a point-to-point trip's `trip_complete`
+        # fires exactly once, at the moment the ego actually settles into
+        # STOP at the route's own end -- not on every tick it stays there
+        # afterwards. Reset alongside everything else scene-scoped in
+        # `_reset_dynamics`.
+        self._trip_complete_emitted = False
         self._load(scenario_id or source.scenarios()[0].id)
 
     # -- lifecycle --------------------------------------------------------- #
@@ -192,11 +280,13 @@ class Simulation:
             seed=self._seed,
             speed_scale=float(self.world.params["traffic_speed_scale"]),
             lanes=self.scene.lanes,
+            control_points=self.scene.control_points,
+            ego_route=self.scene.ego_route,
         )
         self._signals = SignalController(self.scene.signal_groups)
         self._reset_dynamics()
 
-    def set_build_sink(self, sink: Callable[[Callable[[], BuiltScene]], None]) -> None:
+    def set_build_sink(self, sink: Callable[[SceneBuilder], None]) -> None:
         """How `load_location` reaches the executor without a back-reference."""
         self._build_sink = sink
 
@@ -211,12 +301,38 @@ class Simulation:
         self.world.pending_steps = 0
         self.world.plan_result = None
         self.world.detections = []
+        self.world.detections_shadow = None
         self.world.signals = []
+        # A scene swap invalidates every recorded instant -- the truth a
+        # stale `t` pointed to no longer exists, and world.t restarts at 0.0
+        # right above, so a stale entry could otherwise collide with a
+        # genuinely new one.
+        self.pose_history.clear()
+        self._trip_complete_emitted = False
+        # Seeded at t = 0.0 right after the clear, because `state_update()` is
+        # legitimately callable before any `step()` -- and because `world.t`
+        # restarts at 0.0 above on every reset and scene swap, not just at
+        # startup. Without this the first frame of each scene would carry a
+        # `t` no snapshot answers to, and a detection stamped with it would be
+        # silently unscoreable rather than scored. What it records is the
+        # world as it stands now, which is exactly what that first frame shows.
+        self._record_truth()
+        self.perception_score = None
+        self._scored_frame_t = None
         # `runtime_checkable` cannot enforce `reset`, and a user-supplied
         # planner predating it must not crash a scene swap.
         reset = getattr(self._planner, "reset", None)
         if reset is not None:
             reset()
+        # Same duck-typing, same reason, for perception. A tracked object is a
+        # world coordinate, and a swap onto the same scene leaves those
+        # coordinates sitting on the new ego route -- close enough to be
+        # picked as the lead and braked for. `GroundTruthPerception` has no
+        # state and so no `reset`; `MlPerception` has both.
+        for source in (self._perception, self._ml_perception):
+            reset = getattr(source, "reset", None)
+            if reset is not None:
+                reset()
 
     # -- convenience accessors --------------------------------------------- #
 
@@ -233,7 +349,16 @@ class Simulation:
         self.world.ego = state
 
     def scene_description(self) -> SceneDescription:
-        return self.scene.description
+        """The scene as the wire carries it, with the hazard menu attached.
+
+        Scene sources build `hazards=[]`: what can be injected is the
+        simulation's business, not the map's. Attached here rather than in
+        `adopt_scene`, which installs the scene exactly as built. Imported
+        here for the reason `_cmd_inject_hazard` gives.
+        """
+        from sim import events
+
+        return self.scene.description.model_copy(update={"hazards": events.catalog()})
 
     # -- stepping ---------------------------------------------------------- #
 
@@ -247,12 +372,18 @@ class Simulation:
         self._traffic.step(
             dt,
             TrafficWorld(
-                ego=self.world.ego, ego_route=self.scene.ego_route, t=self.world.t
+                ego=self.world.ego,
+                ego_route=self.scene.ego_route,
+                t=self.world.t,
+                # Same `t` `_plan` evaluates below, and the controller is a pure
+                # function of it, so traffic and ego obey the identical phase.
+                signals={s.id: s for s in self._signals.state(self.world.t)},
             ),
         )
 
         self._guard_world()
         result = self._plan(dt)
+        self._check_trip_complete()
         self.world.ego = self._model.step(
             self.world.ego,
             accel_mps2=result.accel_mps2,
@@ -263,6 +394,16 @@ class Simulation:
 
         self.world.t += dt
         self.world.seq += 1
+        # Recorded *after* the increment, so the snapshot is keyed by the
+        # instant it actually describes. `_traffic.step` and `_model.step`
+        # above have both advanced the world to `t + dt`, and `world.t` only
+        # becomes that value on the line above -- recording before it keyed a
+        # snapshot of `t + dt` under `t`, so `pose_history.at(frame_t)`
+        # returned the world one full step ahead of what the shutter saw and
+        # folded 1/60 s of relative motion into `mean_pos_err_m`: precisely
+        # the error this history exists to keep out. `_record_history` below
+        # has always had this order right; the two now agree.
+        self._record_truth()
         self._record_history()
 
     def _guard_world(self) -> None:
@@ -283,6 +424,108 @@ class Simulation:
         else:
             self.world.last_good_ego = repaired
 
+    def _observe(self) -> tuple[list[Detection], list[Detection] | None]:
+        """Run every perception source that exists; return (driving, shadow).
+
+        `shadow` is the source NOT driving -- `None` when there is no second
+        source at all (`self._ml_perception is None`), a real list (possibly
+        empty) whenever both ran. `None` and `[]` are different claims here
+        for the same reason `PoseHistory.at` (perception/history.py) keeps
+        them apart: `None` means "no second source ran", `[]` means "it ran
+        and saw nothing" -- a real, if uneventful, measurement. Collapsing
+        them on the wire (`StateUpdate.detections_shadow`) would make "no ML
+        running" indistinguishable from "ML saw an empty road".
+
+        Both run, every step, whichever is driving -- that is what shadow
+        mode means, and it is the default configuration. Running only the
+        selected source would leave the ML path never executed until the
+        moment a user switches to it, with a cold tracker: `birth_hits`
+        frames during which it publishes nothing, the planner finds no lead,
+        and the car accelerates to the speed limit exactly as perception
+        changes hands. It also gives Phase 3 two sources that have been
+        answering the same question continuously, which is what a comparison
+        needs.
+
+        The cost is one projection and one tracker update per *frame* -- not
+        per step. `MlPerception.observe` guards both on a `_processed`
+        identity check against the pipeline result it last consumed, so at
+        60 Hz stepping and ~10 Hz frames the tracker advances roughly one
+        step in six. That guard is load-bearing, not an optimisation:
+        re-running the tracker on a frame it has already consumed would
+        inflate hit streaks and, since every unmatched track takes a miss per
+        call, age live tracks to death inside a single frame interval.
+        Ground truth's own projection genuinely is per step.
+
+        A deliberate documented deviation from the plan's first global
+        constraint. That constraint ("nothing may run on the sim thread
+        except the sim") names decode, inference, projection AND tracking as
+        the executor's work; only decode and inference actually run there.
+        Projection and tracking run here, on the sim thread, and the plan has
+        been amended to record the exception rather than the code left
+        quietly disagreeing with it. The reasons, in full, are in
+        `docs/superpowers/plans/2026-08-20-cycle4-phase2-detector.md` under
+        Global Constraints; in short: the cost is bounded (no I/O, a handful
+        of boxes, ~10 Hz thanks to the `_processed` guard), and the
+        `EgoFrame` half of `observe()` has to stay on the sim thread anyway,
+        so moving the rest would split one seam across two threads. Do not
+        read this as an accepted cost mentioned in passing -- it is a ruling.
+
+        Which result is *consumed* is chosen per step, never captured at
+        construction: `set_perception` flips `perception_mode` at runtime,
+        and a source bound once would leave that command looking like it
+        worked -- field set, event emitted -- while the car went on driving
+        on the other one. Ground truth stays the default, and stays the
+        answer whenever no ML source exists.
+        """
+        ego, agents, route = self.world.ego, self._traffic.agents, self.scene.ego_route
+        ground_truth = self._perception.observe(ego, agents, route)
+        if self._ml_perception is None:
+            return ground_truth, None
+        ml = self._ml_perception.observe(ego, agents, route)
+        self._score_ml(ml)
+        if self.perception_mode == "ml":
+            return ml, ground_truth
+        return ground_truth, ml
+
+    def _score_ml(self, ml_detections: Sequence[Detection]) -> None:
+        """Score the ML source's latest published frame against the truth
+        recorded for that same instant, and cache the result on
+        `perception_score` for `state_update` to thread onto the wire.
+
+        Scored once per *frame*, mirroring the `_processed` guard in
+        `MlPerception.observe`: `last_frame_t` is a plain read of the
+        source's own state (never the world's -- see that property's
+        docstring), so comparing it against the last-scored value is enough
+        to tell whether this step's publish is the same frame already
+        scored or a new one.
+
+        Not every test double passed as `ml_perception` implements
+        `last_frame_t` (only `MlPerception` does), so the read is duck-typed
+        the same way `reset` is above -- a source with nothing to report
+        here simply never gets scored.
+
+        Ground truth for the ML detections' own frame comes from
+        `pose_history`, not from `agents` above: `agents` is this step's
+        positions, but the detections being scored describe a frame from
+        several steps back. Scoring them against `agents` would fold
+        perception's own transport latency into position error -- exactly
+        what `pose_history` exists to keep separate (see its docstring).
+        When the lookup misses -- the frame has aged out of the buffer, or a
+        scene swap cleared it -- `perception_score` is left as it was rather
+        than scored against the wrong world.
+        """
+        frame_t = getattr(self._ml_perception, "last_frame_t", None)
+        if frame_t is None or frame_t == self._scored_frame_t:
+            return
+        self._scored_frame_t = frame_t
+        truth = self.pose_history.at(frame_t)
+        if truth is None:
+            return
+        predictions = [
+            Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in ml_detections
+        ]
+        self.perception_score = score(predictions, truth)
+
     def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
 
@@ -300,9 +543,7 @@ class Simulation:
         actually advancing on rather than silently reverting to `self.dt`.
         """
         dt = self.dt if dt is None else dt
-        detections = self._perception.observe(
-            self.world.ego, self._traffic.agents, self.scene.ego_route
-        )
+        detections, detections_shadow = self._observe()
         signals = self._signals.state(self.world.t)
         context = PlanContext(
             t=self.world.t,
@@ -325,6 +566,7 @@ class Simulation:
             context,
         )
         self.world.detections = detections
+        self.world.detections_shadow = detections_shadow
         self.world.signals = signals
         self.world.plan_result = result
         return result
@@ -367,6 +609,119 @@ class Simulation:
         cutoff = self.world.t - _TRAJECTORY_HISTORY_S
         self.world.history = [h for h in self.world.history if h[0] >= cutoff]
 
+    def _record_truth(self) -> None:
+        """Snapshot where every agent actually is (and, alongside it, which
+        way each one is facing), keyed by the instant those positions
+        describe -- `world.t` *after* `step` has incremented it, which is
+        the same `t` the `StateUpdate` assembled from this tick carries. A
+        frame echoes that `t` back verbatim, so this is the key
+        `pose_history.at(frame_t)` will later be asked for, and the snapshot
+        under it is the world the shutter actually saw.
+
+        Heading rides alongside position in the same snapshot, read back via
+        `pose_history.headings_at(frame_t)`, for the same reason position
+        does: `label_frame` (`perception/capture.py`) needs the heading *as
+        of the instant the frame describes*, not whatever it has become by
+        the time a capture handler gets around to reading it. Recording the
+        two together, once, under one lock (`perception/history.py`) is what
+        keeps a heading read from ever describing a different instant than
+        the position it is paired with.
+
+        Every step whenever either of two consumers exists, regardless of
+        perception mode: Phase 3 scoring reads this after the fact, and a
+        frame's `t` cannot be known in advance, so nothing short of recording
+        continuously keeps the instant it eventually asks for in the buffer.
+        `--capture` (Cycle 5) is the second consumer -- it labels a captured
+        frame against exactly this snapshot (`perception/capture.py`), and
+        needs it recorded even when no ML source is attached at all: a plain
+        `streetlab serve --capture <dir>` run has `_ml_perception is None`.
+        With neither consumer there is nobody to read this at all -- the
+        shipped `.app` is ground-truth only -- so the early return below
+        skips the work rather than allocating a snapshot and a hypot per
+        agent for nobody. That is a statement about who consumes this, not
+        about how expensive it would be to keep running; it is what keeps
+        this as wide as the documented exception to "nothing runs on the sim
+        thread except the sim", which covers projection and tracking, not
+        this.
+
+        The two consumers disagree on how *much* of the snapshot they need,
+        so the gating differs by which one is asking:
+
+        - ML scoring is gated to `MAX_RANGE_M` from ego, the same constant
+          and the same straight-line measure both perception sources publish
+          within (`perception/service.py`, `perception/ml_source.py`).
+          `ScriptedTraffic` spreads agents around the whole scene so ego
+          meets them at intervals -- recording every agent regardless of
+          distance would count every far-away one as a false negative every
+          step, and `recall` would measure how large the scene is rather
+          than how the detector performs. Ungated precision and
+          `mean_pos_err_m` are unaffected -- `GATE_M` in
+          `perception/scoring.py` already keeps a distant truth from ever
+          stealing a nearby prediction -- so only recall cared.
+        - `--capture` is deliberately UNGATED. Its real visibility limit is
+          `MIN_BOX_PX` in image space (`perception/capture.py`), not a
+          world-space radius, and at `fov_y = 50 deg` and 640x384 that limit
+          is set by a car's HEIGHT, not its width, in both orientations: a
+          sedan is only ~1.5 m tall against 1.8-4.5 m wide, so the vertical
+          extent of its projected box crosses `MIN_BOX_PX` first regardless
+          of which way it is facing. Measured directly against
+          `project_box`: a head-on car is 8.45x7.04 px at 90 m and 4.06x3.38
+          px at 185 m, crossing the 4.0 px floor (on height) at roughly
+          157 m; broadside is 20.80x6.93 px at 90 m and crosses (again on
+          height) at roughly 155 m. So the real cutoff is ~155-157 m in
+          either orientation, not the few-hundred-metre figure width alone
+          would suggest -- still a real 65-67 m band (90-157 m) of visible,
+          above-threshold vehicles that `MAX_RANGE_M` would leave unlabelled,
+          and this capture is reused as a fine-tuning dataset, where an
+          unlabelled visible car actively teaches "car = background". So
+          capture records every agent and lets `label_frame`'s own clamp
+          against `MIN_BOX_PX` decide visibility instead.
+
+        The cost of that: a run with both `--capture` and an ML source
+        active (`streetlab serve --capture <dir> --perception ml`) reports a
+        `recall` that measures scene size, not detector performance --
+        ungating for capture ungates the same snapshot `_score_ml` reads,
+        since there is exactly one snapshot per instant, not one per
+        consumer. That is the deliberate price of the ungating, stated here
+        rather than left for someone to discover later while puzzling over a
+        bad number: capture runs are not scoring runs, and nothing here
+        tries to keep the two apart within one snapshot.
+
+        One residual gap, deliberately left rather than chased here: the ML
+        gate above uses the ego *as of the instant being recorded* -- the
+        correct "frame time" ego for whichever future frame lands on this
+        `t`. `MlPerception.observe` instead gates its publication against
+        the ego of *now*, applied to a track computed from a frame captured
+        one inference-latency earlier (see `EgoFrame.range_to`'s docstring,
+        and `observe`'s own "Recomputed every step even so" note). The two
+        egos are metres apart, not the scene-spanning miss this method
+        fixes.
+        """
+        if self._ml_perception is None and not self._capture:
+            return
+        if self._capture:
+            agents = self._traffic.agents
+        else:
+            ex, ey = self.world.ego.x, self.world.ego.y
+            agents = [
+                a
+                for a in self._traffic.agents
+                if math.hypot(a.state.x - ex, a.state.y - ey) <= MAX_RANGE_M
+            ]
+        # `objects`, `headings` and `sizes` are built from the same filtered
+        # `agents` list, in the same pass, so a heading or extent recorded
+        # under this `t` is guaranteed to describe the same instant -- and
+        # the same agent -- as the position recorded alongside it. See this
+        # method's docstring on why that pairing matters, and
+        # `PoseHistory.record` on why extents ride along even though an
+        # agent's dimensions never change.
+        objects = [
+            TruthObject(id=a.id, cls=a.cls, x=a.state.x, y=a.state.y) for a in agents
+        ]
+        headings = {a.id: a.state.heading for a in agents}
+        sizes = {a.id: a.size for a in agents}
+        self.pose_history.record(self.world.t, objects, headings, sizes)
+
     # -- frame assembly ---------------------------------------------------- #
 
     def state_update(self) -> StateUpdate:
@@ -386,6 +741,7 @@ class Simulation:
             world=self.world,
             scene=self.scene,
             detections=detections,
+            detections_shadow=self.world.detections_shadow,
             plan=plan.plan,
             # Reused from `_plan()` rather than recomputed, for the same
             # reason as `posted_limit_mps` below: the phase the car obeyed and
@@ -398,6 +754,9 @@ class Simulation:
             # posts and the speed the car is actually holding to cannot drift
             # apart on a street where they differ.
             posted_limit_mps=self.posted_limit(),
+            perception_pipeline=self.perception_pipeline,
+            perception_mode=self.perception_mode,
+            perception_quality=self.perception_score,
         )
         self.world.events = []
         return frame
@@ -440,7 +799,7 @@ class Simulation:
                 ok=False, message=f"unknown scenario: {command.scenario_id}"
             )
         self._emit("scenario_loaded", f"loaded {command.scenario_id}")
-        return CommandOutcome(ok=True, message="loaded", scene=self.scene.description)
+        return CommandOutcome(ok=True, message="loaded", scene=self.scene_description())
 
     def _cmd_load_location(self, command) -> CommandOutcome:
         """Ack now, build later.
@@ -458,10 +817,15 @@ class Simulation:
         if self._build_sink is None:
             return CommandOutcome(ok=False, message="no build executor attached")
 
-        query, radius = command.query, command.radius_m
-        self._build_sink(lambda: builder(query, radius))
-        self._emit("location_requested", f"building {query}")
-        return CommandOutcome(ok=True, message=f"building {query}")
+        query, radius, destination = command.query, command.radius_m, command.destination
+        self._build_sink(
+            lambda on_progress: builder(
+                query, radius, destination=destination, on_progress=on_progress
+            )
+        )
+        label = f"{query} → {destination}" if destination else query
+        self._emit("location_requested", f"building {label}")
+        return CommandOutcome(ok=True, message=f"building {label}")
 
     def _cmd_set_param(self, command) -> CommandOutcome:
         if command.key not in DEFAULT_PARAMS:
@@ -472,6 +836,15 @@ class Simulation:
         if command.key == "traffic_speed_scale":
             self._traffic.set_speed_scale(float(command.value))
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
+
+    def _cmd_set_perception(self, command) -> CommandOutcome:
+        if self.perception_pipeline is None:
+            return CommandOutcome(
+                ok=False, message="no perception pipeline: start with --perception"
+            )
+        self.perception_mode = command.mode
+        self._emit("perception_mode", f"perception: {command.mode}")
+        return CommandOutcome(ok=True, message=f"perception: {command.mode}")
 
     def _cmd_inject_hazard(self, command) -> CommandOutcome:
         """Stage one of `sim/events.py`'s scenarios.
@@ -493,18 +866,36 @@ class Simulation:
             return CommandOutcome(
                 ok=False, message=f"unknown hazard kind: {command.kind}"
             )
-        message = scenario.stage(self)
-        if message is None:
-            return CommandOutcome(
-                ok=False, message=f"{command.kind}: nothing here to disturb"
-            )
-        self._emit(scenario.code, f"{scenario.code}: {message}", scenario.level)
-        return CommandOutcome(ok=True, message=f"injected {scenario.code}: {message}")
+        result = scenario.stage(self)
+        if isinstance(result, events.Declined):
+            return CommandOutcome(ok=False, message=f"{command.kind}: {result.reason}")
+        self._emit(scenario.code, f"{scenario.code}: {result}", scenario.level)
+        return CommandOutcome(ok=True, message=f"injected {scenario.code}: {result}")
 
     def _emit(self, code: str, message: str, level: str = "info") -> None:
         self.world.events.append(
             SimEvent(t=round(self.world.t, 3), level=level, code=code, message=message)
         )
+
+    def _check_trip_complete(self) -> None:
+        """Emit `trip_complete` once the ego actually settles into STOP at an
+        open route's own end -- not merely once it is nearby or slowing down,
+        which would fire just as readily for a car stopped at a red light a
+        block short of its destination. `fsm` is duck-typed the same way
+        `reset` is elsewhere in this class: a user-supplied planner with no
+        `.fsm` at all simply never reports arrival, same as before this
+        existed.
+        """
+        if self._trip_complete_emitted:
+            return
+        fsm = getattr(self._planner, "fsm", None)
+        if (
+            fsm is not None
+            and fsm.state is BehaviorState.STOP
+            and fsm.target_id == ARRIVAL_CONTROL_ID
+        ):
+            self._emit("trip_complete", "arrived at destination")
+            self._trip_complete_emitted = True
 
 
 # --------------------------------------------------------------------------- #
@@ -622,10 +1013,14 @@ def assemble_state_update(
     world: WorldState,
     scene: BuiltScene,
     detections: Sequence[Detection],
+    detections_shadow: Sequence[Detection] | None,
     plan: Plan,
     signals: Sequence[SignalState],
     sim_rate_hz: float,
     posted_limit_mps: float | None = None,
+    perception_pipeline: PerceptionPipeline | None = None,
+    perception_mode: PerceptionMode = "ground-truth",
+    perception_quality: ScoreResult | None = None,
 ) -> StateUpdate:
     """Build the one message the frontend consumes at frame rate.
 
@@ -694,16 +1089,29 @@ def assemble_state_update(
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
         detections=list(detections),
+        # Null when there is no second source at all; a real (possibly
+        # empty) list whenever both sources ran -- see `_observe`'s
+        # docstring. Never collapse `None` into `[]` here.
+        detections_shadow=(
+            None if detections_shadow is None else list(detections_shadow)
+        ),
         plan=plan,
         telemetry=Telemetry(
             radar=_radar(ego, detections),
             lane=_lane_state(scene, route, ego_s, offset, heading_error, detections),
             ttc_s=ttc,
-            vehicle=_vehicle_status(world),
+            vehicle=_vehicle_status(world, perception_mode),
             trajectory=_trajectory(world, offset, detections),
         ),
         signals=list(signals),
         events=list(world.events),
+        # Null distinguishes "no ML perception running" from "measured, and
+        # zero" -- there is no pipeline unless `--perception ml` started one.
+        perception=(
+            None
+            if perception_pipeline is None
+            else perception_pipeline.stats(perception_mode, quality=perception_quality)
+        ),
     )
 
 
@@ -806,7 +1214,7 @@ def _radar(ego: VehicleState, detections: Sequence[Detection]) -> list[RadarPoin
     return points
 
 
-def _vehicle_status(world: WorldState) -> VehicleStatus:
+def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
     # Battery drains slowly with distance so the readout is not frozen.
     battery = max(4.0, 92.0 - world.t * 0.02)
     return VehicleStatus(
@@ -815,7 +1223,15 @@ def _vehicle_status(world: WorldState) -> VehicleStatus:
         motor_temp_c=round(38.0 + min(world.t, 600) * 0.02, 1),
         tire_pressure_kpa=(248.0, 247.0, 245.0, 246.0),
         subsystems=[
-            Subsystem(key="perception", label="Perception", status="ok", detail="ground truth"),
+            # The detail names what the planner is actually driving on. It
+            # used to say "ground truth" unconditionally, which was true only
+            # while `set_perception` could not change the answer.
+            Subsystem(
+                key="perception",
+                label="Perception",
+                status="ok",
+                detail="ground truth" if mode == "ground-truth" else "ml detector",
+            ),
             Subsystem(key="planner", label="Planner", status="ok", detail="centerline"),
             Subsystem(key="control", label="Control", status="ok", detail=None),
             Subsystem(key="battery", label="Battery", status="ok", detail=None),
@@ -842,11 +1258,11 @@ def _trajectory(
             TrajectorySample(t=round(t, 3), lateral_m=round(offset * math.exp(-t / 1.2), 3))
         )
 
-    cutting_in = next((d for d in detections if d.hazard), None)
-    cutin = None
-    if cutting_in is not None:
-        start = (cutting_in.lane_offset or 1) * LANE_W
-        cutin = [
+    reacting_to = next((d for d in detections if d.hazard), None)
+    threat = None
+    if reacting_to is not None:
+        start = (reacting_to.lane_offset or 1) * LANE_W
+        threat = [
             TrajectorySample(
                 t=round(i * _TRAJECTORY_STEP_S, 3),
                 lateral_m=round(start * math.exp(-i * _TRAJECTORY_STEP_S / 1.5), 3),
@@ -857,8 +1273,8 @@ def _trajectory(
     return TrajectoryPrediction(
         horizon_s=_TRAJECTORY_HORIZON_S,
         planned=samples,
-        cutin=cutin,
-        cutin_label=(cutting_in.hazard_label if cutting_in else None),
+        threat=threat,
+        threat_label=(reacting_to.hazard_label if reacting_to else None),
     )
 
 
@@ -874,9 +1290,30 @@ class SimLoop:
     driving simulator wants the newest state, never a backlog of stale ones.
     """
 
-    def __init__(self, sim: Simulation, *, hz: float = 60.0) -> None:
+    def __init__(
+        self,
+        sim: Simulation,
+        *,
+        hz: float = 60.0,
+        capture_sink: CaptureSink | None = None,
+    ) -> None:
         self.sim = sim
         self.hz = hz
+        # `None` unless `--capture` was passed; `_Connection._capture_frame`
+        # reads this to decide whether an incoming camera frame has anywhere
+        # to go. Lives here, not on `Simulation`, because it survives across
+        # reconnects the way `Simulation.capture` (the bool that un-gates
+        # `_record_truth`) already does -- a `_Connection` is per-socket and
+        # comes and goes, this does not.
+        self.capture_sink = capture_sink
+        # A frame number private to the sink's whole lifetime, handed out by
+        # `next_capture_seq` below -- deliberately NOT the wire's own
+        # `CameraFrameCmd.seq`, which restarts at zero on every reconnect
+        # (see that method's docstring). Touched only from the asyncio
+        # event-loop thread inside `_ingest_frame`, which never awaits
+        # between reading and incrementing it, so plain increments are safe
+        # with no lock: nothing else can run on that thread in between.
+        self._capture_seq = 0
         self._latest: StateUpdate | None = None
         self._lock = threading.Lock()
         self._published = threading.Event()
@@ -901,6 +1338,28 @@ class SimLoop:
         # would be a race; a queue is the same shape commands already use.
         self._events: queue.Queue[SimEvent] = queue.Queue()
         sim.set_build_sink(self.submit_scene)
+
+    def next_capture_seq(self) -> int:
+        """A fresh, gap-free frame number for the capture sink.
+
+        Deliberately decoupled from `CameraFrameCmd.seq`: that counter is
+        `captureSeq++` in the frontend, restarted at zero by a reconnect, a
+        scene swap, or a page reload, while this counter and the sink it
+        numbers both live for the whole process. Reusing the wire `seq`
+        would let a post-reconnect frame silently overwrite an earlier
+        JPEG and duplicate a COCO `image_id` -- an "ordinary event, not a
+        pathological one" per the task that added this. Labels are keyed by
+        `sim_t` downstream: `CaptureSink.write` (`perception/capture.py`)
+        never persists a `track_id` on the annotation records it writes
+        (only the in-memory `LabelBox` carries one), so a determinism check
+        comparing two runs keys annotations by `(sim_t, category_id, bbox)`
+        rather than `(sim_t, track_id)` -- see the task-4 report for why
+        that is an equally strict check here. Either way, nothing reads
+        this counter's value as anything but a unique file name.
+        """
+        seq = self._capture_seq
+        self._capture_seq += 1
+        return seq
 
     @property
     def running(self) -> bool:
@@ -967,23 +1426,48 @@ class SimLoop:
         self._commands.put((raw, future))
         return future
 
-    def submit_scene(self, build: Callable[[], BuiltScene]) -> None:
+    def submit_scene(self, build: SceneBuilder) -> None:
         """Build a scene off the sim thread and swap it in when it is ready."""
+
+        def emit_progress(stage: str, fraction: float) -> None:
+            # Called from the executor thread, same as the rest of `run()` --
+            # `self._events` is a `queue.Queue`, already the cross-thread
+            # channel `_drain_events` (sim thread) drains every tick, so a
+            # progress update rides the same path a failure or a build note
+            # already does. `self.sim.t` is read, never written, from here;
+            # the exception handler below already reads it the same way.
+            self._events.put(
+                SimEvent(
+                    t=round(self.sim.t, 3),
+                    level="info",
+                    code="location_progress",
+                    message=stage,
+                    progress=fraction,
+                )
+            )
 
         def run() -> None:
             try:
-                scene = build()
+                scene = build(emit_progress)
             except Exception as exc:
+                # Full detail goes to the server log; `describe_build_failure`
+                # narrows what actually reaches a client to a plain sentence
+                # -- a raw httpx/Nominatim exception string means nothing to
+                # someone who just typed an address.
                 log.warning("scene build failed: %s", exc)
                 self._events.put(
                     SimEvent(
                         t=round(self.sim.t, 3),
                         level="warn",
                         code="location_failed",
-                        message=str(exc),
+                        message=describe_build_failure(exc),
                     )
                 )
                 return
+            for code, message in scene.build_notes:
+                self._events.put(
+                    SimEvent(t=round(self.sim.t, 3), level="info", code=code, message=message)
+                )
             with self._lock:
                 self._pending_scene = scene
 

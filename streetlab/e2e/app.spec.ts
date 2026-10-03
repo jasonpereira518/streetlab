@@ -140,7 +140,7 @@ test('an injected hazard draws an orange overlay in the 3D view', async ({ page 
   await page.waitForTimeout(1500);
 
   const baseline = await orangePixels(page);
-  await page.getByText('Inject cut-in hazard').click();
+  await page.getByRole('button', { name: 'Cut-in', exact: true }).click();
 
   // The scripted cut-in needs a few seconds to pull alongside and merge before
   // the detection is flagged as a hazard.

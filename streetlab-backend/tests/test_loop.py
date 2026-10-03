@@ -23,7 +23,7 @@ from map.lanes import NoDrivableRoad, nearest_road_along
 from map.osm_source import LocationSpec, OsmSceneSource
 from map.overpass import BBox, OverpassClient
 from map.scene_build import LANE_W, SyntheticGrid
-from schema import Road, StateUpdate, parse_server_message
+from schema import Detection, Pose, Road, Size, StateUpdate, parse_server_message
 from sim.loop import SimLoop, Simulation, _lane_state
 from sim.route import Route
 
@@ -177,7 +177,7 @@ class _StubbedLocationSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
         return self._grid.build("grid-loop")
 
 
@@ -199,7 +199,7 @@ class _FailingLoadSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
         raise NoDrivableRoad(f"no drivable junctions in this extract: {query}")
 
 
@@ -302,9 +302,19 @@ def test_the_world_recovers_after_an_injected_hazard(sim):
     advance(sim, 3.0)
     assert min(d.speed_mps for d in sim.state_update().detections) < 1.0
 
-    advance(sim, 25.0)
-    assert max(d.speed_mps for d in sim.state_update().detections) > 1.0
-    assert sim.ego.speed_mps > 0.5, "ego never resumed after the hazard cleared"
+    advance(sim, 20.0)
+    # Sampled over a window, not at one instant: traffic now obeys stop signs
+    # and lights too, so any single frame may legitimately find the ego waiting
+    # at one (seed 7 puts it at the grid's stop sign at t=31 s).
+    ego_best = agent_best = 0.0
+    for _ in range(int(5.0 / DT)):
+        sim.step()
+        ego_best = max(ego_best, sim.ego.speed_mps)
+        agent_best = max(
+            agent_best, max(d.speed_mps for d in sim.state_update().detections)
+        )
+    assert agent_best > 1.0
+    assert ego_best > 0.5, "ego never resumed after the hazard cleared"
 
 
 def test_events_are_drained_after_being_reported(sim):
@@ -414,7 +424,7 @@ def test_the_left_marking_is_the_governing_roads_own(nob_hill_scene):
     The oneway stretches are what distinguish the two rules. Clay Street is
     oneway with one forward lane and `center_marking = "none"` -- nothing is
     painted down the middle of a one-way street -- and the count rule this
-    replaces could not say so: `count == 1` always answered "solid_white" and
+    replaces could not say so: `count == 1` always answered a single line and
     `count > 1` always "double_yellow", so a oneway got a centre divider drawn
     on it either way.
 
@@ -436,8 +446,10 @@ def test_the_left_marking_is_the_governing_roads_own(nob_hill_scene):
             assert lane.left_marking == road.center_marking, road.name
             reported[road.center_marking] += 1
     # Non-vacuity: every marking the extract actually carries is reached, so
-    # this cannot pass on a walk that only ever saw one of them.
-    assert set(reported) == {"none", "solid_white", "double_yellow"}, reported
+    # this cannot pass on a walk that only ever saw one of them. `solid_white`
+    # is gone from this set because a white line never divides opposing
+    # traffic -- see `_center_marking` in `map/lanes.py`.
+    assert set(reported) == {"none", "broken_yellow", "double_yellow"}, reported
 
 
 def test_the_lane_index_is_always_inside_the_lane_count():
@@ -466,10 +478,12 @@ def test_a_single_lane_road_reports_index_zero_and_a_kerb_marking():
             assert lane.lane_index == 0
             # Now the road's own answer rather than a count rule: a
             # `SyntheticGrid` street with one lane each way is built
-            # `center_marking="solid_white"` (`map/scene_build.py`), and the
-            # permissive `in (...)` this assertion used to be would pass no
-            # matter what `_lane_state` did here.
-            assert lane.left_marking == "solid_white"
+            # `center_marking="broken_yellow"` (`map/scene_build.py`) -- yellow
+            # because the line divides OPPOSING traffic, broken because passing
+            # is permitted on a two-lane two-way street. The permissive
+            # `in (...)` this assertion used to be would pass no matter what
+            # `_lane_state` did here.
+            assert lane.left_marking == "broken_yellow"
     assert seen_single, "grid-loop never reported a single-lane stretch"
 
 
@@ -542,7 +556,7 @@ class _FixedLaneSet:
             centerline=[(0.0, 0.0), (100.0, 0.0)],
             lanes_forward=count, lanes_backward=count, lane_width_m=LANE_W,
             speed_limit_mps=15.0, oneway=False, center_marking="double_yellow",
-            has_sidewalk=True,
+            sidewalk_left=True, sidewalk_right=True,
         )
 
     def count_at(self, s: float) -> int:
@@ -657,10 +671,19 @@ def test_plan_polyline_leads_the_car(sim):
 
 
 def test_ego_drives_and_stays_in_its_lane(sim):
+    # Measured against the nearest lane, not the ego route alone: traffic now
+    # queues at lights and stop signs, and the ego legitimately overtakes a
+    # slow queue into the neighbouring lane (Cycle 3 Phase 2). Mid-change the
+    # car is between lanes by design, so those ticks are not scored.
+    route = sim.scene.ego_route
+    centres = [lane.offset_m for lane in sim.scene.lanes.lanes]
     worst = 0.0
     for _ in range(int(60 / DT)):
         sim.step()
-        worst = max(worst, abs(sim.scene.ego_route.lateral_offset((sim.ego.x, sim.ego.y))))
+        if sim._planner.fsm.lane_change is not None:
+            continue
+        off = route.lateral_offset((sim.ego.x, sim.ego.y))
+        worst = max(worst, min(abs(off - c) for c in centres))
     assert sim.ego.speed_mps > 1.0
     assert worst < 1.8
 
@@ -939,7 +962,7 @@ def test_submit_scene_does_not_block_the_caller():
     loop = _loop()
     started = threading.Event()
 
-    def slow():
+    def slow(_progress):
         started.set()
         time.sleep(0.4)
         return SyntheticGrid().build("grid-arterial")
@@ -955,7 +978,7 @@ def test_scene_epoch_increments_once_per_swap():
     loop.start()
     try:
         before = loop.scene_epoch
-        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         while loop.scene_epoch == before and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -972,7 +995,7 @@ def test_a_failing_build_emits_an_event_and_keeps_the_old_scene():
         before_epoch = loop.scene_epoch
         before_id = loop.sim.scene.description.scenario_id
 
-        def boom():
+        def boom(_progress):
             raise RuntimeError("overpass exploded")
 
         loop.submit_scene(boom)
@@ -1034,7 +1057,7 @@ def test_load_location_with_no_drivable_roads_surfaces_as_an_event_not_a_dead_wo
         assert "drivable" in seen[0].message.lower()
 
         before_epoch = loop.scene_epoch
-        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         while loop.scene_epoch == before_epoch and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -1043,6 +1066,58 @@ def test_load_location_with_no_drivable_roads_surfaces_as_an_event_not_a_dead_wo
             "never pick up this later, unrelated, successful build"
         )
         assert loop.sim.scene.description.scenario_id == "grid-arterial"
+    finally:
+        loop.stop()
+
+
+class _ProgressReportingSource:
+    """Wraps `SyntheticGrid` the same way `_StubbedLocationSource` does, but
+    `build_location` calls `on_progress` a couple of times before returning --
+    a stand-in for a real `OsmSceneSource` build reporting its own stages.
+    """
+
+    def __init__(self) -> None:
+        self._grid = SyntheticGrid()
+
+    def scenarios(self):
+        return self._grid.scenarios()
+
+    def build(self, scenario_id):
+        return self._grid.build(scenario_id)
+
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
+        if on_progress is not None:
+            on_progress("Geocoding address", 0.1)
+            on_progress("Fetching map data", 0.4)
+        return self._grid.build("grid-loop")
+
+
+def test_load_location_progress_surfaces_as_events_in_order(tmp_path):
+    """The frontend has nothing else to build a progress bar from: progress
+    has to ride the same `events[]` channel `location_failed`/`trip_complete`
+    already use, in the order the build actually reported it, each carrying
+    both its stage label and its fraction.
+    """
+    loop = SimLoop(Simulation(_ProgressReportingSource(), seed=1), hz=20.0)
+    _ACTIVE_LOOPS.append(loop)
+    loop.start()
+    try:
+        outcome = loop.submit(
+            {"id": "c1", "cmd": "load_location", "query": "Nob Hill"}
+        ).result(timeout=2.0)
+        assert outcome.ok
+
+        deadline = time.monotonic() + 5.0
+        seen: list = []
+        while time.monotonic() < deadline and len(seen) < 2:
+            frame = loop.latest
+            if frame:
+                seen = [e for e in frame.events if e.code == "location_progress"]
+            time.sleep(0.02)
+
+        assert [e.message for e in seen] == ["Geocoding address", "Fetching map data"]
+        assert [e.progress for e in seen] == [0.1, 0.4]
+        assert all(e.level == "info" for e in seen)
     finally:
         loop.stop()
 
@@ -1143,14 +1218,14 @@ def test_a_second_build_overwrites_a_still_pending_first():
     """
     loop = _loop()
 
-    loop.submit_scene(lambda: SyntheticGrid().build("grid-loop"))
+    loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-loop"))
     deadline = time.monotonic() + 5.0
     while loop._pending_scene is None and time.monotonic() < deadline:
         time.sleep(0.01)
     assert loop._pending_scene is not None
     assert loop._pending_scene.description.scenario_id == "grid-loop"
 
-    loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+    loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
     deadline = time.monotonic() + 5.0
     while (
         loop._pending_scene is None
@@ -1185,7 +1260,7 @@ def test_a_build_finishing_after_stop_does_not_swap_into_a_dead_loop():
     started = threading.Event()
     release = threading.Event()
 
-    def slow():
+    def slow(_progress):
         started.set()
         release.wait(2.0)
         return SyntheticGrid().build("grid-arterial")
@@ -1238,7 +1313,7 @@ def test_snapshot_returns_the_epoch_and_a_frame_from_the_same_read():
         assert isinstance(frame, StateUpdate)
 
         before = loop.scene_epoch
-        loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         epoch, frame = loop.snapshot()
         while epoch == before and time.monotonic() < deadline:
@@ -1269,7 +1344,7 @@ class _SlowLocationSource:
     def build(self, scenario_id):
         return self._grid.build(scenario_id)
 
-    def build_location(self, query, radius_m=None):
+    def build_location(self, query, radius_m=None, destination=None, on_progress=None):
         time.sleep(1.5)
         return self._grid.build("grid-arterial")
 
@@ -1575,3 +1650,237 @@ def test_the_ego_never_leaves_its_lane_on_the_real_route():
     offsets = _drive_and_measure(_osm_sim(), 3600)
     out_of_lane = [o for o in offsets if o > 1.8]
     assert not out_of_lane, f"{len(out_of_lane)} frames outside the lane, worst {max(offsets):.2f} m"
+
+
+def test_state_update_perception_is_null_without_a_pipeline():
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    assert sim.state_update().perception is None
+
+
+def test_state_update_reports_perception_stats_when_a_pipeline_exists():
+    from map.scene_build import SyntheticGrid
+    from perception.pipeline import PerceptionPipeline, StubDetector
+    from sim.loop import Simulation
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline
+        )
+        stats = sim.state_update().perception
+        assert stats is not None
+        assert stats.mode == "ground-truth"
+        assert stats.frames_received == 0
+    finally:
+        pipeline.shutdown()
+
+
+def test_set_perception_switches_mode_and_acks():
+    from map.scene_build import SyntheticGrid
+    from perception.pipeline import PerceptionPipeline, StubDetector
+    from sim.loop import Simulation
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline
+        )
+        outcome = sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"})
+        assert outcome.ok
+        assert sim.state_update().perception.mode == "ml"
+    finally:
+        pipeline.shutdown()
+
+
+def test_set_perception_is_refused_without_a_pipeline():
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    outcome = sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"})
+    assert not outcome.ok
+
+
+class _MarkerPerception:
+    """A perception source whose one detection is unmistakably its own.
+
+    Counts observations and resets so a test can tell not just *what* the
+    planner consumed but *whether this source ran at all* -- the difference
+    between shadow mode being real and being a label.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.resets = 0
+
+    def observe(self, ego, agents, route):
+        self.calls += 1
+        return [
+            Detection(
+                id="marker",
+                cls="car",
+                pose=Pose(x=ego.x + 40.0, y=ego.y, heading=ego.heading),
+                size=Size(length=4.5, width=1.8, height=1.5),
+                velocity=(0.0, 0.0),
+                speed_mps=0.0,
+                confidence=0.9,
+                hazard=False,
+                hazard_label=None,
+                ttc_s=None,
+                lane_offset=7,  # never the lead: this source is not driving
+                emergency=False,
+            )
+        ]
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+def _ml_sim(ml):
+    """A sim with a real pipeline and `ml` as the source that consumes it."""
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    pipeline = PerceptionPipeline(StubDetector())
+    sim = Simulation(
+        SyntheticGrid(), "grid-merge", seed=4,
+        perception_pipeline=pipeline, ml_perception=ml,
+    )
+    return sim, pipeline
+
+
+def test_the_ml_source_runs_in_shadow_while_ground_truth_drives():
+    """Shadow mode has to mean the ML source actually runs, not just that the
+    pipeline is fed. Observed only when it drives, its tracker is cold at the
+    switch -- no published tracks for `birth_hits` frames, no lead for the
+    planner, and the car accelerates to the limit exactly as perception
+    changes hands.
+    """
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        sim.step()
+        sim.step()
+        assert ml.calls == 2, "the ML source must run every step, not only when it drives"
+        # ...while ground truth is still what reaches the wire.
+        ids = {d.id for d in sim.state_update().detections}
+        assert ids and "marker" not in ids
+    finally:
+        pipeline.shutdown()
+
+
+def test_the_perception_source_is_chosen_per_step_not_at_construction():
+    """`set_perception` flips the mode while the sim is running. A source
+    captured in `__init__` would leave that command acking, emitting its
+    event, and changing nothing about what the car actually drives on.
+    """
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        sim.step()
+        before = {d.id for d in sim.state_update().detections}
+        assert before and "marker" not in before, "ground truth drives until told otherwise"
+
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        assert {d.id for d in sim.state_update().detections} == {"marker"}, (
+            "the mode switch must reach the planner, not just the wire"
+        )
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_scene_swap_resets_the_ml_source():
+    """A tracked object is a world coordinate. Reset onto the same scene and
+    the old ones still sit on the ego route, close enough to be picked as the
+    lead and braked for -- `plan.control._closest_lead` ranks on along-route
+    distance and `lane_offset == 0`, neither of which can tell a ghost from a
+    car.
+    """
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        sim.step()
+        # Construction runs `_reset_dynamics` too, so count from there.
+        before = ml.resets
+        assert sim.apply_dict({"id": "r1", "cmd": "reset"}).ok
+        assert ml.resets == before + 1
+    finally:
+        pipeline.shutdown()
+
+
+def test_detections_shadow_is_null_without_a_second_source():
+    """No pipeline, no ML source -- there is nothing to shadow, so the field
+    must be `None`, not `[]`. `[]` would claim a second source ran and saw
+    nothing, which would be false."""
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    sim.step()
+    assert sim.state_update().detections_shadow is None
+
+
+def test_detections_shadow_carries_the_non_driving_source_while_ground_truth_drives():
+    """Shadow mode (the default): ground truth drives `detections`, and the
+    ML source's own output -- not an empty list, not ground truth again --
+    reaches `detections_shadow`."""
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        sim.step()
+        frame = sim.state_update()
+        assert "marker" not in {d.id for d in frame.detections}
+        assert frame.detections_shadow is not None
+        assert {d.id for d in frame.detections_shadow} == {"marker"}
+    finally:
+        pipeline.shutdown()
+
+
+def test_detections_shadow_carries_ground_truth_once_ml_drives():
+    """Flip `set_perception` to `ml` and the shadow relationship inverts:
+    `detections` becomes the ML source's output, and ground truth -- which
+    keeps running every step regardless -- becomes the shadow."""
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        frame = sim.state_update()
+        assert {d.id for d in frame.detections} == {"marker"}
+        assert frame.detections_shadow is not None
+        assert "marker" not in {d.id for d in frame.detections_shadow}
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_pipeline_brings_the_ml_source_that_consumes_it():
+    """No caller has to wire the two together: asking for a pipeline is asking
+    for the source that reads it. A pipeline that has seen no frame has
+    nothing to report -- ground truth, on the same tick, has plenty, so a
+    detection surviving the switch would mean the switch was cosmetic.
+    """
+    from map.scene_build import SyntheticGrid
+    from perception.pipeline import PerceptionPipeline, StubDetector
+    from sim.loop import Simulation
+
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline
+        )
+        sim.step()
+        assert sim.state_update().detections, "ground truth should see the traffic"
+
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        frame = sim.state_update()
+        assert frame.detections == []
+        # The HUD's subsystem line names what the car is driving on, so it
+        # has to follow the switch rather than assert ground truth forever.
+        detail = {s.key: s.detail for s in frame.telemetry.vehicle.subsystems}["perception"]
+        assert detail == "ml detector"
+    finally:
+        pipeline.shutdown()

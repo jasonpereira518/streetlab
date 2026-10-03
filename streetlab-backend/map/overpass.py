@@ -52,6 +52,24 @@ class BBox:
             dlon = math.degrees(radius_m / (EARTH_R * cos_lat))
         return cls(lat - dlat, lon - dlon, lat + dlat, lon + dlon)
 
+    @classmethod
+    def enclosing(cls, points: list[tuple[float, float]], pad_m: float) -> BBox:
+        """A bbox covering every `(lat, lon)` in `points`, padded by `pad_m`
+        on every side -- the point-to-point sibling of `around`, for a trip
+        whose two endpoints are not the same place.
+        """
+        lats = [lat for lat, _ in points]
+        lons = [lon for _, lon in points]
+        south, north = min(lats), max(lats)
+        west, east = min(lons), max(lons)
+        dlat = math.degrees(pad_m / EARTH_R)
+        # The more poleward of the two extremes shrinks a degree of longitude
+        # the most, so it sets the (larger, safer) `dlon` for the whole box --
+        # same singularity guard as `around`.
+        cos_lat = math.cos(math.radians(max(abs(south), abs(north))))
+        dlon = 180.0 if abs(cos_lat) < 1e-9 else math.degrees(pad_m / (EARTH_R * cos_lat))
+        return cls(south - dlat, west - dlon, north + dlat, east + dlon)
+
     def as_query(self) -> str:
         return f"{self.south:.6f},{self.west:.6f},{self.north:.6f},{self.east:.6f}"
 

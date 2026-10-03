@@ -32,4 +32,6 @@ export interface Transport {
   connect(handlers: TransportHandlers): void;
   send(cmd: Command): void;
   close(): void;
+  /** Commands currently buffered while disconnected. */
+  pendingCount(): number;
 }

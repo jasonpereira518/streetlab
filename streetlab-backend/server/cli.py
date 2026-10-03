@@ -25,22 +25,42 @@ import socket
 import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from map.cache import DiskCache, default_cache_dir
 from map.geocode import GeocodeError, NominatimGeocoder
 from map.lanes import NoDrivableRoad
 from map.osm_source import LocationSpec, OsmSceneSource, default_source
 from map.overpass import HttpxFetcher, OverpassClient, OverpassError
-from map.scene_build import SceneSource, SyntheticGrid
+from map.scene_build import SceneSource, SyntheticGrid, TrafficOverrideError
+from perception.capture import CaptureSink
+from perception.detector import OnnxDetector, build_session
+from perception.model_cache import DEFAULT_MODEL, ModelCache
+from perception.pipeline import Detector, PerceptionPipeline, StubDetector
 from schema import PROTOCOL_VERSION
 from sim.loop import DEFAULT_DT, SimLoop, Simulation
+
+log = logging.getLogger("streetlab.cli")
 
 # Every failure mode a real-network SceneSource build can raise, on top of the
 # KeyError an unknown scenario id already produced when the source was always
 # SyntheticGrid. Caught wherever `Simulation(...)` or `OsmSceneSource.build`
 # runs so a DNS failure or an Overpass outage prints one clean line instead
 # of a raw traceback.
-_SOURCE_ERRORS = (KeyError, GeocodeError, OverpassError, NoDrivableRoad)
+#
+# TrafficOverrideError is here because `scene_source_for` constructs
+# SyntheticGrid *inside* those same try blocks, after
+# `perception_pipeline_for` has already allocated a live ThreadPoolExecutor.
+# Leaving it out did not merely print a traceback for `--traffic -1`: it
+# skipped the `pipeline.shutdown()` on the except path, so the one rejection
+# this flag can raise leaked a thread pool every time it fired.
+_SOURCE_ERRORS = (
+    KeyError,
+    GeocodeError,
+    OverpassError,
+    NoDrivableRoad,
+    TrafficOverrideError,
+)
 
 MPS_TO_MPH = 2.236936292054402
 DEFAULT_PORT = 8765
@@ -53,9 +73,143 @@ DEFERRED = {
 }
 
 
-def scene_source_for(source: str) -> SceneSource:
-    """Pick a world. The seam that makes real map data a one-flag change."""
-    return default_source() if source == "osm" else SyntheticGrid()
+_DETECTOR_MODEL_HELP = (
+    "path to a local .onnx detector; omit to resolve the shipped model "
+    "through the weights cache, downloading it once"
+)
+
+# Enough for a handful of model variants side by side (the shipped one is
+# ~21 MB), so switching between an exported build and the default does not
+# mean re-downloading each time.
+MODEL_CACHE_BUDGET_BYTES = 128 * 1024 * 1024
+
+# Low enough to see traffic at a distance, high enough to keep the tracker
+# out of a fog of spurious boxes. Phase 2 makes the number real; tuning it
+# for quality is Phase 3's job, once there is a score to tune against.
+DETECTOR_SCORE_THRESHOLD = 0.5
+
+
+def scene_source_for(source: str, traffic: int | None = None) -> SceneSource:
+    """Pick a world. The seam that makes real map data a one-flag change.
+
+    `traffic` overrides the synthetic scenarios' agent counts, for Phase 3b's
+    captures. It is meaningless for `osm` -- `OsmSceneSource` builds its agent
+    routes from the ingested graph -- so callers must reject that combination
+    before reaching here rather than have it silently ignored.
+    """
+    return default_source() if source == "osm" else SyntheticGrid(traffic)
+
+
+def model_cache_dir() -> Path:
+    """Where downloaded weights live: beside the map extracts, not among them.
+
+    Same platform root `map.cache.default_cache_dir` picks, one directory
+    over, so there is a single place that knows what a cache directory is on
+    this OS and both caches evict independently.
+    """
+    return default_cache_dir().parent / "models"
+
+
+def fetch_weights(url: str, dest: Path) -> None:
+    """Stream a weights file to `dest`. The one place perception downloads.
+
+    Injected into `ModelCache.ensure` rather than imported by it, which is
+    what keeps the backend tests offline. Streamed rather than read whole:
+    the file is tens of megabytes and there is no reason for all of it to be
+    resident at once.
+    """
+    import httpx
+
+    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
+        response.raise_for_status()
+        with dest.open("wb") as out:
+            for chunk in response.iter_bytes(1024 * 1024):
+                out.write(chunk)
+
+
+def build_detector(model_path: str | None) -> Detector:
+    """Resolve weights once, at startup, and wrap them in a detector.
+
+    Once, never per frame: `ModelCache.ensure` re-hashes the whole file on
+    every call, which is exactly right for integrity and ruinous in a hot
+    path. The ONNX session itself is built lazily on the executor, inside
+    `OnnxDetector`, so a slow first load costs a frame rather than the boot.
+
+    Any failure to resolve weights degrades to `StubDetector`, loudly. A
+    backend that will not start because a download failed is worse than one
+    that starts with perception reporting nothing: the sim, the map and the
+    planner all still work, and the missing piece is named in the log.
+    """
+    try:
+        if model_path is not None:
+            path = Path(model_path)
+            if not path.is_file():
+                raise FileNotFoundError(f"no detector model at {path}")
+        else:
+            cache = ModelCache(model_cache_dir(), MODEL_CACHE_BUDGET_BYTES)
+            path = cache.ensure(DEFAULT_MODEL, fetch_weights)
+            cache.evict_to_budget()
+    except Exception as exc:
+        log.warning(
+            "detector weights unavailable (%s); perception will report nothing "
+            "until they can be resolved",
+            exc,
+        )
+        return StubDetector()
+
+    log.info("detector weights: %s", path)
+    return OnnxDetector(
+        lambda: build_session(str(path)), score_threshold=DETECTOR_SCORE_THRESHOLD
+    )
+
+
+def perception_pipeline_for(args) -> PerceptionPipeline | None:
+    """The pipeline `--perception ml` asks for, or None for ground truth.
+
+    `serve` and `run` both build it from here rather than each rolling their
+    own: Phase 1 shipped a resource leak precisely because a fix landed on
+    one of those two paths and not the other.
+    """
+    if args.perception != "ml":
+        return None
+    return PerceptionPipeline(build_detector(args.detector_model))
+
+
+def capture_sink_for(args) -> CaptureSink | None:
+    """The `CaptureSink` `--capture <dir>` asks for, or `None` for a plain run.
+
+    Only `serve` defines `--capture` (see Amendment 1 on this task: `run`
+    builds a bare `Simulation` with no WebSocket and no `_ingest_frame`, so a
+    capture directory there would accept the flag and produce an empty
+    `labels.json` -- worse than not offering it), so `getattr` rather than
+    `args.capture` directly, since `args` from `run` has no such attribute.
+
+    Warns rather than staying silent when `--capture` is given without
+    `--perception ml`: capture rides two independent gates it does not
+    control -- `perception_pipeline is None` short-circuits `_ingest_frame`
+    before any frame is even decoded, and the frontend never sends a
+    `camera_frame` at all while `perception` is null in `useSimStore` (see
+    `_ingest_frame` in `server/ws_server.py` and the `Renderer.tsx` comment
+    it references). Neither gate lives here, and neither should move to
+    accommodate this -- ML-off users should not pay for an offscreen render,
+    GPU readback, JPEG encode and ~0.5 MB/s over the socket that would be
+    discarded on arrival. So the only thing left to do is say so loudly:
+    without this, a mistyped command line looks identical to a working one
+    until someone notices `DIR` never got anything written to it.
+    """
+    directory = getattr(args, "capture", None)
+    if directory is None:
+        return None
+    if args.perception != "ml":
+        log.warning(
+            "--capture %s given without --perception ml: no camera frame will "
+            "ever reach the sink (perception_pipeline gates decoding in "
+            "_ingest_frame, and the frontend only streams frames once an ML "
+            "pipeline is attached), so %s will stay empty for the whole run",
+            directory,
+            directory,
+        )
+    return CaptureSink(Path(directory))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,9 +228,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--scenario", default=None)
     serve.add_argument("--seed", type=int, default=0)
+    serve.add_argument(
+        "--traffic",
+        type=int,
+        default=None,
+        help=(
+            "override the scenario's agent count (synthetic scenarios only). "
+            "Agents are spaced route_length/(traffic+1) along the ego's own "
+            "route, so raising this is how a capture gets vehicles close "
+            "enough to label. Omit to use each scenario's shipped count."
+        ),
+    )
     serve.add_argument("--sim-hz", type=float, default=1 / DEFAULT_DT)
     serve.add_argument("--tick-hz", type=float, default=60.0)
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
+    serve.add_argument(
+        "--perception",
+        choices=("ground-truth", "ml"),
+        default="ground-truth",
+        help="ground-truth drives on perfect sensing; ml additionally runs the "
+        "detector pipeline and reports it (shadow mode)",
+    )
+    serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
+    serve.add_argument(
+        "--capture",
+        default=None,
+        metavar="DIR",
+        help="write a COCO-format labelled capture (frames/ + labels.json) to DIR, "
+        "built from simulation truth, never from annotation; requires "
+        "--perception ml -- capture rides the same ML pipeline that gates frame "
+        "decoding in _ingest_frame and the frontend's perception-attached gate "
+        "in Renderer.tsx, so without --perception ml no camera_frame ever "
+        "reaches the sink and DIR stays empty for the whole run. Not available "
+        "on `run`, which has no WebSocket and so no frames to capture at all.",
+    )
 
     run_ = sub.add_parser("run", help="drive a scenario headlessly and log the reactions")
     run_.add_argument("--scenario", default=None)
@@ -92,6 +277,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="simulated seconds at which to inject the hazard; omit to skip",
     )
+    run_.add_argument(
+        "--perception",
+        choices=("ground-truth", "ml"),
+        default="ground-truth",
+        help="ground-truth drives on perfect sensing; ml additionally runs the "
+        "detector pipeline and reports it (shadow mode)",
+    )
+    run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
 
     sub.add_parser("scenarios", help="list the scenario catalog")
 
@@ -122,6 +315,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scenarios":
         return _scenarios()
     if args.command == "serve":
+        if args.traffic is not None and args.source == "osm":
+            parser.error(
+                "--traffic applies to synthetic scenarios only; OsmSceneSource "
+                "builds its agent routes from the ingested graph and would ignore it"
+            )
         return _serve(args)
     if args.command == "build":
         return _build(args)
@@ -201,17 +399,39 @@ def _bind(host: str, port: int) -> socket.socket:
     return sock
 
 
-def _start_stdin_watchdog() -> None:
+def _start_stdin_watchdog(sink: CaptureSink | None) -> None:
     """Exit the moment the parent's stdin pipe closes.
 
     Tauri gives this process a piped stdin; when the app dies the pipe
     closes, the blocking read returns EOF, and the process exits itself. This
     is the layer that survives a ``SIGKILL`` of the parent app — no Rust
     teardown hook runs in that case, so nothing else would catch it.
+
+    This path used to call ``os._exit(0)`` directly, which wins the race
+    against ``_serve``'s own ``finally`` and its ``sink.finalize()`` --
+    every JPEG already on disk survives (each `write()` call is its own
+    file), but every annotation, which lives only in `CaptureSink`'s memory
+    until `finalize()` runs, is lost. That is not a `SIGTERM`-specific
+    problem: this watchdog fires on *any* parent-death path, which is the
+    common case when this process runs under a supervisor rather than a
+    terminal -- and the failure looks exactly like success, since the
+    frames directory is still there. Finalizing here, before the exit,
+    closes that gap for a cooperative parent death; `CaptureSink.write`'s
+    own periodic rewrite (see its docstring) is the other half of this
+    guarantee, for a kill that skips even this thread (`SIGKILL` of this
+    process itself, not just its parent).
     """
 
     def _watch() -> None:
         sys.stdin.read()
+        if sink is not None:
+            try:
+                sink.finalize()
+            except Exception:
+                # Losing labels.json is bad; taking down the exit path
+                # entirely because finalize() hit a full disk or similar
+                # would be worse -- log and still exit.
+                log.exception("capture sink finalize failed during stdin-watchdog shutdown")
         os._exit(0)
 
     threading.Thread(target=_watch, daemon=True, name="stdin-watchdog").start()
@@ -225,11 +445,30 @@ def _serve(args) -> int:
     # The human-readable lines below go to stderr so that stdout carries
     # exactly one line — STREETLAB_READY — for the parent process to parse.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    pipeline = perception_pipeline_for(args)
+    # Built before `Simulation` so its warning (if any) appears before the
+    # scene build's own log lines -- a user staring at a wall of startup
+    # output is more likely to see a mistake called out first.
+    sink = capture_sink_for(args)
+
     try:
+        source = scene_source_for(args.source, args.traffic)
         sim = Simulation(
-            scene_source_for(args.source), args.scenario, seed=args.seed, dt=1 / args.sim_hz
+            source,
+            args.scenario,
+            seed=args.seed,
+            dt=1 / args.sim_hz,
+            perception_pipeline=pipeline,
+            capture=sink is not None,
         )
     except _SOURCE_ERRORS as exc:
+        # The pipeline's worker thread already exists by this point -- if
+        # construction fails there is no later `finally` to reach, so it is
+        # torn down here instead of leaking a live `ThreadPoolExecutor`. `sink`
+        # never had `write` called on it, so there is nothing worth flushing.
+        if pipeline is not None:
+            pipeline.shutdown()
         print(f"error: {exc}")
         return 1
 
@@ -237,8 +476,12 @@ def _serve(args) -> int:
     sock = _bind(args.host, port)
     real_port = sock.getsockname()[1]
 
-    loop = SimLoop(sim, hz=args.sim_hz)
-    app = create_app(loop, tick_hz=args.tick_hz)
+    loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
+    # Address suggestions need a real geocoder; SyntheticGrid has none, and
+    # asking it for one would be a lie the dropdown would then show as an
+    # empty result anyway -- `None` here makes that explicit instead.
+    geocoder = source.geocoder if isinstance(source, OsmSceneSource) else None
+    app = create_app(loop, tick_hz=args.tick_hz, geocoder=geocoder)
 
     print(
         f"StreetLab serving {sim.scene.description.scenario_id} on "
@@ -247,7 +490,7 @@ def _serve(args) -> int:
     )
     print(f"Point the frontend at:  ?backend=ws://{args.host}:{real_port}", file=sys.stderr)
 
-    _start_stdin_watchdog()
+    _start_stdin_watchdog(sink)
 
     ready = {
         "ws": f"ws://{args.host}:{real_port}",
@@ -257,7 +500,34 @@ def _serve(args) -> int:
     }
     print(f"STREETLAB_READY {json.dumps(ready)}", flush=True)
 
-    uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
+    try:
+        uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
+    finally:
+        # Same lifecycle spot `loop.stop()` uses inside `create_app`'s
+        # lifespan: process teardown, not a per-request concern.
+        if pipeline is not None:
+            pipeline.shutdown()
+        # The *final, authoritative* write of `labels.json` happens here --
+        # `CaptureSink` accumulates every COCO record in memory and
+        # `finalize()` (idempotent -- see its docstring) flushes the
+        # complete, correct set. This `finally` is reached by `SIGINT`
+        # (confirmed empirically: uvicorn's own graceful shutdown) and by
+        # `.run()` simply returning. It is *not* reached by `SIGKILL`, nor
+        # by the stdin watchdog's exit path when the parent (not this
+        # process) dies -- both were observed, before this task's fix, to
+        # lose every annotation while leaving the JPEGs on disk under
+        # `frames/`, because they bypass this `finally` entirely (no Python
+        # frame to unwind). Plain `SIGTERM` to *this* process was also
+        # observed, in this environment, to exit without reaching here --
+        # `_start_stdin_watchdog` now finalizes the sink itself before its
+        # own `os._exit(0)`, which closes that gap for any parent-death or
+        # signal path that races the watchdog rather than this `finally`.
+        # `CaptureSink.write`'s periodic rewrite (see its docstring) is the
+        # last line of defence, for a `SIGKILL` of this process itself,
+        # which no userspace code -- this `finally`, the watchdog, nothing
+        # -- can ever run code in response to.
+        if sink is not None:
+            sink.finalize()
     return 0
 
 
@@ -274,14 +544,35 @@ class _Trace:
 
 
 def _run(args) -> int:
+    pipeline = perception_pipeline_for(args)
+
     try:
         sim = Simulation(
-            scene_source_for(args.source), args.scenario, seed=args.seed, dt=1 / args.hz
+            scene_source_for(args.source),
+            args.scenario,
+            seed=args.seed,
+            dt=1 / args.hz,
+            perception_pipeline=pipeline,
         )
     except _SOURCE_ERRORS as exc:
+        # Same leak as `_serve`'s: the pipeline's worker thread already
+        # exists, and this early return skips the `finally` below entirely.
+        if pipeline is not None:
+            pipeline.shutdown()
         print(f"error: {exc}")
         return 1
 
+    try:
+        return _run_loop(args, sim)
+    finally:
+        # Same shutdown the sim thread itself never has to do: `run` is a
+        # single process with no server lifespan to hook, so the pipeline's
+        # worker thread is torn down explicitly here instead.
+        if pipeline is not None:
+            pipeline.shutdown()
+
+
+def _run_loop(args, sim: Simulation) -> int:
     scene = sim.scene.description
     print(f"scenario {scene.scenario_id}  seed {args.seed}  {args.duration:g}s @ {args.hz:g} Hz")
     print(f"route {sim.scene.ego_route.length_m:.0f} m, limit {sim.scene.speed_limit_mps * MPS_TO_MPH:.0f} mph")

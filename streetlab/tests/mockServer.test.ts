@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MockSim, createMockTransport } from '../src/net/mockServer';
 import { SCENARIOS } from '../src/net/mockCity';
@@ -20,6 +22,7 @@ describe('mock scene', () => {
     expect(s.stop_signs.length).toBeGreaterThan(0);
     expect(s.street_signs.some((n) => n.kind === 'street_name')).toBe(true);
     expect(s.catalog.length).toBe(5);
+    expect(s.hazards.map((h) => h.code)).toContain('cut_in');
   });
 
   it('keeps every building inside the map bounds', () => {
@@ -210,6 +213,16 @@ describe('mock commands', () => {
     expect(res.ok).toBe(true);
     expect(res.message).toBe('building Nob Hill');
   });
+
+  it('refuses set_perception, mirroring the real backend with no pipeline', () => {
+    // sim/loop.py's `_cmd_set_perception` refuses whenever
+    // `self.perception_pipeline is None` — true of every mock, always, since
+    // it never builds one. A silent `ok: true` here would let the UI believe
+    // it switched perception modes when nothing downstream is listening.
+    const sim = new MockSim();
+    const res = sim.apply({ id: '10', cmd: 'set_perception', mode: 'ml' });
+    expect(res.ok).toBe(false);
+  });
 });
 
 describe('mock transport', () => {
@@ -248,6 +261,32 @@ describe('mock transport', () => {
     const acks = messages.filter((m) => m.type === 'ack');
     expect(acks).toHaveLength(1);
     expect(acks[0]).toMatchObject({ id: 'p', cmd: 'set_paused', ok: true });
+  });
+
+  it('never acks a camera_frame, mirroring the real backend intercepting it at the socket', async () => {
+    // ws_server.py's `_handle` special-cases `camera_frame` before it ever
+    // reaches the command queue and its ack path (`_ingest_frame` returns
+    // without acking). The mock has nowhere to route a frame either — it
+    // should drop the same way, not fabricate an ack nobody on the wire
+    // would send.
+    const transport = createMockTransport();
+    const messages: ServerMessage[] = [];
+    transport.connect({
+      onMessage: (m) => messages.push(m),
+      onStatus: () => {},
+      onInvalid: (e) => {
+        throw new Error(e);
+      },
+    });
+    transport.send({
+      id: 'f1', cmd: 'camera_frame', seq: 0, t: 0, width: 640, height: 384,
+      format: 'jpeg', data: 'AAAA',
+      camera: { x: 0, y: 0, z: 1.33, yaw: 0, pitch: 0, roll: 0, fov_y_deg: 50, aspect: 1.67 },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    transport.close();
+
+    expect(messages.some((m) => m.type === 'ack' && m.id === 'f1')).toBe(false);
   });
 
   it('acks load_location immediately and then emits a relabelled scene', async () => {
@@ -385,6 +424,23 @@ describe('mock transport', () => {
 
     setTimeoutSpy.mockRestore();
     clearTimeoutSpy.mockRestore();
+  });
+});
+
+describe('mock hazard menu', () => {
+  it('lists exactly the backend hazards, in the backend order', () => {
+    const backend = JSON.parse(
+      readFileSync(resolve(__dirname, '../../contract/fixtures/scene_description.json'), 'utf8'),
+    ) as SceneDescription;
+    expect(new MockSim().scene.hazards).toEqual(backend.hazards);
+  });
+
+  it('stages cut_in and declines everything else by name', () => {
+    const sim = new MockSim();
+    expect(sim.apply({ id: 'a', cmd: 'inject_hazard', kind: 'cut_in' }).ok).toBe(true);
+    const res = sim.apply({ id: 'b', cmd: 'inject_hazard', kind: 'jaywalker' });
+    expect(res.ok).toBe(false);
+    expect(res.message).toBe('jaywalker: the in-process mock only stages cut_in');
   });
 });
 

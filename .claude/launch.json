@@ -1,0 +1,95 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "streetlab-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 1420
+    },
+    {
+      "name": "streetlab-backend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd streetlab-backend && uv run streetlab serve"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "streetlab-backend-ml",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd streetlab-backend && uv run streetlab serve --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "streetlab-capture-a",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd streetlab-backend && uv run streetlab serve --scenario grid-merge --seed 4 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /private/tmp/claude-501/-Users-jasonpereira-Jason-Projects-tesla-fsd1-streetlab--claude-worktrees-system-workflow-review-369fda/71f673bb-7031-4578-86fc-7c02a1e80ced/scratchpad/bench-capture"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "streetlab-capture-b",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd streetlab-backend && uv run streetlab serve --scenario grid-merge --seed 4 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /private/tmp/claude-501/-Users-jasonpereira-Jason-Projects-tesla-fsd1-streetlab--claude-worktrees-system-workflow-review-369fda/71f673bb-7031-4578-86fc-7c02a1e80ced/scratchpad/bench-capture-b"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "streetlab-capture-lever-b",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/jasonpereira/Jason/Projects/tesla-fsd1/streetlab/.claude/worktrees/system-workflow-review-369fda/streetlab-backend && uv run streetlab serve --scenario grid-merge --seed 4 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /private/tmp/claude-501/-Users-jasonpereira-Jason-Projects-tesla-fsd1-streetlab--claude-worktrees-system-workflow-review-369fda/71f673bb-7031-4578-86fc-7c02a1e80ced/scratchpad/lever-b-capture"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "streetlab-web-lever-b",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/jasonpereira/Jason/Projects/tesla-fsd1/streetlab/.claude/worktrees/system-workflow-review-369fda/streetlab && npm run dev"
+      ],
+      "port": 1420
+    },
+    {
+      "name": "streetlab-capture-lever-b-control",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/jasonpereira/Jason/Projects/tesla-fsd1/streetlab/.claude/worktrees/system-workflow-review-369fda/streetlab-backend && uv run streetlab serve --scenario grid-merge --seed 4 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /private/tmp/claude-501/-Users-jasonpereira-Jason-Projects-tesla-fsd1-streetlab--claude-worktrees-system-workflow-review-369fda/71f673bb-7031-4578-86fc-7c02a1e80ced/scratchpad/lever-b-control-capture"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "streetlab-capture-lever-b-unfixed",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/jasonpereira/Jason/Projects/tesla-fsd1/streetlab/.claude/worktrees/system-workflow-review-369fda/streetlab-backend && uv run streetlab serve --scenario grid-merge --seed 4 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /private/tmp/claude-501/-Users-jasonpereira-Jason-Projects-tesla-fsd1-streetlab--claude-worktrees-system-workflow-review-369fda/71f673bb-7031-4578-86fc-7c02a1e80ced/scratchpad/lever-b-unfixed-capture"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "streetlab-capture-lever-b-fixed",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/jasonpereira/Jason/Projects/tesla-fsd1/streetlab/.claude/worktrees/system-workflow-review-369fda/streetlab-backend && uv run streetlab serve --scenario grid-merge --seed 4 --perception ml --detector-model /Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx --capture /private/tmp/claude-501/-Users-jasonpereira-Jason-Projects-tesla-fsd1-streetlab--claude-worktrees-system-workflow-review-369fda/71f673bb-7031-4578-86fc-7c02a1e80ced/scratchpad/lever-b-fixed-capture"
+      ],
+      "port": 8765
+    }
+  ]
+}

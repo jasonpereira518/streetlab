@@ -4,7 +4,7 @@
  * into a `set_param` or `toggle_layer` command — the panel never reaches into
  * the renderer or the simulator directly.
  */
-import type { LayerKey, ParamValue } from '../schema';
+import type { HazardSummary, LayerKey, ParamValue } from '../schema';
 import { LAYER_KEYS } from '../schema';
 import { useTelemetryCanvas } from '../store/hooks';
 import { PARAM_DEFS, useSimStore } from '../store/simStore';
@@ -12,12 +12,22 @@ import type { ParamDef, RightTab } from '../store/simStore';
 import { EventLog } from './EventLog';
 import { ActivityIcon, LayersIcon, MapIcon, SlidersIcon } from './Icons';
 import { ColorPicker, Field, Select, Slider, Toggle } from './controls';
+import { PerceptionPanel } from './PerceptionPanel';
 import { alpha, classColor, color } from './theme';
 
 type Tab = RightTab;
 
-const TABS: Array<{ id: Tab; label: string; icon: typeof MapIcon }> = [
-  { id: 'parameters', label: 'Parameters', icon: SlidersIcon },
+const TABS: Array<{
+  id: Tab;
+  label: string;
+  /** Spoken/hover name; defaults to `label` where the two agree. */
+  name?: string;
+  icon: typeof MapIcon;
+}> = [
+  // "Parameters" spelled out cannot share a quarter of the tab strip with an
+  // icon at any panel width the shell offers; the full word lives on `name`,
+  // which becomes the tab's title and accessible name.
+  { id: 'parameters', label: 'Params', name: 'Parameters', icon: SlidersIcon },
   { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'layers', label: 'Layers', icon: LayersIcon },
   { id: 'events', label: 'Events', icon: ActivityIcon },
@@ -46,6 +56,49 @@ const GROUP_TITLES = {
   render: 'Rendering',
 } as const;
 
+const HAZARD_GROUPS: Array<{ key: HazardSummary['group']; title: string }> = [
+  { key: 'ahead', title: 'Ahead' },
+  { key: 'crossing', title: 'Crossing' },
+  { key: 'behind', title: 'Behind' },
+];
+
+/** Stable empty list: a selector returning a fresh `[]` re-renders forever. */
+const NO_HAZARDS: HazardSummary[] = [];
+
+function HazardMenu() {
+  const hazards = useSimStore((s) => s.scene?.hazards ?? NO_HAZARDS);
+  const injectHazard = useSimStore((s) => s.injectHazard);
+
+  if (hazards.length === 0) {
+    return <p className="hazard-empty">No hazards for this scene</p>;
+  }
+  return (
+    <div className="hazard-menu">
+      {HAZARD_GROUPS.map(({ key, title }) => {
+        const items = hazards.filter((h) => h.group === key);
+        if (items.length === 0) return null;
+        return (
+          <div key={key} className="hazard-group" role="group" aria-label={`${title} hazards`}>
+            <span className="hazard-group-title">{title}</span>
+            <div className="hazard-grid">
+              {items.map((h) => (
+                <button
+                  key={h.code}
+                  type="button"
+                  className="panel-action panel-action--sm"
+                  onClick={() => injectHazard(h.code)}
+                >
+                  {h.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function RightPanel() {
   const tab = useSimStore((s) => s.rightTab);
   const setTab = useSimStore((s) => s.setRightTab);
@@ -53,16 +106,20 @@ export function RightPanel() {
   return (
     <aside className="panel" aria-label="Inspector">
       <div className="panel-tabs" role="tablist">
-        {TABS.map(({ id, label, icon: Icon }) => (
+        {TABS.map(({ id, label, name = label, icon: Icon }) => (
           <button
             key={id}
             type="button"
             role="tab"
             aria-selected={tab === id}
+            // Narrow windows drop the label to icons only (see styles.css), so
+            // the name has to live somewhere the CSS cannot take away.
+            aria-label={name}
+            title={name}
             className={`panel-tab${tab === id ? ' is-active' : ''}`}
             onClick={() => setTab(id)}
           >
-            <Icon size={15} />
+            <Icon size={14} />
             <span>{label}</span>
           </button>
         ))}
@@ -83,8 +140,8 @@ export function RightPanel() {
 function ParametersTab() {
   const params = useSimStore((s) => s.params);
   const setParam = useSimStore((s) => s.setParam);
-  const injectHazard = useSimStore((s) => s.injectHazard);
   const lastAck = useSimStore((s) => s.lastAck);
+  const perception = useSimStore((s) => s.perception);
 
   const groups = (['planner', 'traffic', 'render'] as const).map((g) => ({
     key: g,
@@ -106,16 +163,21 @@ function ParametersTab() {
         </Field>
       ))}
 
-      <Field title="Actions">
-        <button type="button" className="panel-action" onClick={injectHazard}>
-          Inject cut-in hazard
-        </button>
+      <Field title="Inject hazard">
+        <HazardMenu />
         {lastAck && (
           <p className={`ack${lastAck.ok ? '' : ' ack--error'}`}>
             <code>{lastAck.cmd}</code>
             <span>{lastAck.message ?? (lastAck.ok ? 'ok' : 'failed')}</span>
           </p>
         )}
+      </Field>
+
+      {/* Quiet by default: with no ML perception running (the ordinary
+       * ground-truth configuration) this renders as a single "not running"
+       * line via PerceptionPanel's own null branch, not an empty box. */}
+      <Field title="Perception">
+        <PerceptionPanel stats={perception} />
       </Field>
     </>
   );

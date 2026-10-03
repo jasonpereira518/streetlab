@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 7;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -58,10 +58,18 @@ export const RoadClassSchema = z.enum([
   'service',
 ]);
 
+/**
+ * US convention (MUTCD 3A.05): yellow separates OPPOSING directions and marks
+ * the left edge of a one-way roadway; white separates same-direction lanes and
+ * marks the right edge. The colour carries the meaning, so both patterns of
+ * each colour are on the wire rather than one standing in for the pair.
+ */
 export const LaneMarkingSchema = z.enum([
   'none',
   'dashed_white',
   'solid_white',
+  'broken_yellow',
+  'solid_yellow',
   'double_yellow',
 ]);
 
@@ -78,7 +86,14 @@ export const RoadSchema = z.object({
   oneway: z.boolean(),
   /** Marking drawn on the centre divider. */
   center_marking: LaneMarkingSchema,
-  has_sidewalk: z.boolean(),
+  /**
+   * Which side of the way carries a pavement, in the way's own node order
+   * (+lateral is the left of travel). A single boolean could not express
+   * `sidewalk=right`, which 16 of the Nob Hill extract's 264 drivable ways
+   * say, so the renderer drew a pavement OSM says is not there.
+   */
+  sidewalk_left: z.boolean(),
+  sidewalk_right: z.boolean(),
 });
 
 export const BuildingSchema = z.object({
@@ -153,6 +168,16 @@ export const ScenarioSummarySchema = z.object({
   preview_route: z.array(Vec2Schema),
 });
 
+/** One entry in the hazard menu. `code` is what `inject_hazard.kind` takes. */
+export const HazardSummarySchema = z.object({
+  code: z.string(),
+  label: z.string(),
+  level: z.enum(['info', 'warn', 'critical']),
+  group: z.enum(['ahead', 'crossing', 'behind']),
+  /** Why this hazard, or the reaction to it, cannot work under ML perception; null if nothing is known to stop it. */
+  ml_limitation: z.string().nullable(),
+});
+
 export const SceneDescriptionSchema = z.object({
   type: z.literal('scene_description'),
   protocol: z.number().int(),
@@ -179,6 +204,8 @@ export const SceneDescriptionSchema = z.object({
   street_signs: z.array(StreetSignSchema),
   /** Scenarios the server can load; drives the left sidebar. */
   catalog: z.array(ScenarioSummarySchema),
+  /** Hazards `inject_hazard` can stage; drives the hazard menu. */
+  hazards: z.array(HazardSummarySchema),
 });
 
 /* ------------------------------------------------------------------ */
@@ -210,6 +237,56 @@ export const DetectionSchema = z.object({
   ttc_s: z.number().nullable(),
   /** Lane index relative to ego: -1 right, 0 same, +1 left, null if unknown. */
   lane_offset: z.number().int().nullable(),
+  /** Lights and siren on. Ground truth only; ML perception always sends false. */
+  emergency: z.boolean(),
+});
+
+export const PerceptionModeSchema = z.enum(['ground-truth', 'ml']);
+
+/**
+ * The camera that produced one frame, in WIRE world coordinates:
+ * `+x` east, `+y` north, `+z` up, ground plane at `z = 0`.
+ * The frontend converts out of Three.js's Y-up frame before sending, so the
+ * backend never learns that a renderer convention exists.
+ */
+export const CameraParamsSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  /** radians, 0 = +x (east), CCW positive — same convention as Pose.heading */
+  yaw: z.number(),
+  /** radians, positive tilts the view upward (nose up), rotation about the
+   * camera's local right axis — see perception/geometry.py */
+  pitch: z.number(),
+  /** radians, rotation about the camera's forward (optical) axis. Not
+   * applied by ground-plane projection today; no camera on the wire sends
+   * non-zero roll yet. */
+  roll: z.number(),
+  fov_y_deg: z.number().positive(),
+  aspect: z.number().positive(),
+});
+
+/** Transport and quality numbers for the ML perception path. */
+export const PerceptionStatsSchema = z.object({
+  mode: PerceptionModeSchema,
+  /** Model inference time. Null until Phase 2 lands a model. */
+  detector_ms: z.number().nonnegative().nullable(),
+  /**
+   * Socket arrival -> detections available, measured entirely on the
+   * backend (both ends `time.perf_counter()`, process-wide consistent). Named
+   * `server_*` deliberately: it excludes the offscreen render, GPU readback,
+   * row flip, JPEG encode, base64 and the websocket transfer, which on a
+   * stub-detector run are most of the actual latency. A true end-to-end figure
+   * needs a frontend `performance.now()` stamp plus a clock-offset estimate
+   * (browser and Python clocks share no epoch) — Phase 3 work.
+   */
+  server_e2e_ms: z.number().nonnegative().nullable(),
+  frames_received: z.number().int().nonnegative(),
+  frames_dropped: z.number().int().nonnegative(),
+  /** Quality fields stay null until scoring lands in Phase 3. */
+  precision: z.number().min(0).max(1).nullable(),
+  recall: z.number().min(0).max(1).nullable(),
+  mean_pos_err_m: z.number().nonnegative().nullable(),
 });
 
 export const RadarPointSchema = z.object({
@@ -282,9 +359,9 @@ export const TrajectorySampleSchema = z.object({
 export const TrajectoryPredictionSchema = z.object({
   horizon_s: z.number().positive(),
   planned: z.array(TrajectorySampleSchema),
-  /** Predicted path of the cutting-in agent, or null when nobody is cutting in. */
-  cutin: z.array(TrajectorySampleSchema).nullable(),
-  cutin_label: z.string().nullable(),
+  /** Predicted lateral path of the object the car is reacting to, or null. */
+  threat: z.array(TrajectorySampleSchema).nullable(),
+  threat_label: z.string().nullable(),
 });
 
 export const TelemetrySchema = z.object({
@@ -304,6 +381,9 @@ export const ManeuverSchema = z.enum([
   'lane_change_right',
   'stop',
   'yield',
+  'arrived',
+  'emergency_brake',
+  'pull_over',
 ]);
 
 export const PlanSchema = z.object({
@@ -312,6 +392,8 @@ export const PlanSchema = z.object({
   target_speed_mps: z.number().nonnegative(),
   maneuver: ManeuverSchema,
   confidence: z.number().min(0).max(1),
+  /** The detection the planner's current reaction is to, or null. */
+  reaction_source_id: z.string().nullable(),
 });
 
 export const CruiseModeSchema = z.enum(['off', 'cruise', 'autosteer', 'fsd']);
@@ -345,6 +427,9 @@ export const SimEventSchema = z.object({
   level: z.enum(['info', 'warn', 'critical']),
   code: z.string(),
   message: z.string(),
+  /** How far a `location_progress` event's build has gotten, 0..1. Absent
+   * for every other event code. */
+  progress: z.number().min(0).max(1).optional(),
 });
 
 export const StateUpdateSchema = z.object({
@@ -358,10 +443,21 @@ export const StateUpdateSchema = z.object({
   scenario_id: z.string(),
   ego: EgoSchema,
   detections: z.array(DetectionSchema),
+  /**
+   * The perception source that is NOT driving, when both are running.
+   * `null` when there is no second source at all (no ML pipeline running) --
+   * distinct from `[]`, which means the other source ran and saw nothing.
+   * Collapsing the two would make "no ML running" indistinguishable from
+   * "ML saw an empty road". Present (possibly null) on every frame; see
+   * `perception` below for the same `.nullable()` discipline.
+   */
+  detections_shadow: z.array(DetectionSchema).nullable(),
   plan: PlanSchema,
   telemetry: TelemetrySchema,
   signals: z.array(SignalStateSchema),
   events: z.array(SimEventSchema),
+  /** Null when no ML perception is running — distinct from "measured, and zero". */
+  perception: PerceptionStatsSchema.nullable(),
 });
 
 /* ------------------------------------------------------------------ */
@@ -401,6 +497,9 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
     cmd: z.literal('load_location'),
     query: z.string().min(1),
     radius_m: z.number().positive().optional(),
+    /** A second address to route TO. Absent means "drive an auto-discovered
+     * loop near `query`", exactly as before this existed. */
+    destination: z.string().min(1).optional(),
   }),
   cmd({
     cmd: z.literal('set_param'),
@@ -414,6 +513,23 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   }),
   cmd({ cmd: z.literal('set_camera'), view: CameraViewSchema }),
   cmd({ cmd: z.literal('inject_hazard'), kind: z.string() }),
+  cmd({ cmd: z.literal('set_perception'), mode: PerceptionModeSchema }),
+  /** Answered directly by the server's connection handler, not routed
+   * through the sim command queue — see `SuggestAddress` in schema.py. */
+  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1) }),
+  cmd({
+    cmd: z.literal('camera_frame'),
+    /** Monotonic per connection; the backend drops anything out of order. */
+    seq: z.number().int().nonnegative(),
+    /** Sim seconds the frame depicts. */
+    t: z.number(),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    format: z.literal('jpeg'),
+    /** base64. Capped: an uncapped field here is an OOM waiting for a bad client. */
+    data: z.string().max(524288),
+    camera: CameraParamsSchema,
+  }),
 ]);
 
 /* ------------------------------------------------------------------ */
@@ -431,6 +547,21 @@ export const AckSchema = z.object({
   t: z.number(),
 });
 
+export const AddressSuggestionSchema = z.object({
+  label: z.string(),
+  lat: z.number(),
+  lon: z.number(),
+});
+
+/** Reply to `suggest_address`. `id` echoes the command's id. */
+export const AddressSuggestionsSchema = z.object({
+  type: z.literal('address_suggestions'),
+  protocol: z.number().int(),
+  id: z.string(),
+  query: z.string(),
+  suggestions: z.array(AddressSuggestionSchema),
+});
+
 /* ------------------------------------------------------------------ */
 /* Envelope + helpers                                                  */
 /* ------------------------------------------------------------------ */
@@ -439,6 +570,7 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   SceneDescriptionSchema,
   StateUpdateSchema,
   AckSchema,
+  AddressSuggestionsSchema,
 ]);
 
 /* ---- inferred types ---- */
@@ -457,10 +589,14 @@ export type StopSign = z.infer<typeof StopSignSchema>;
 export type Tree = z.infer<typeof TreeSchema>;
 export type StreetSign = z.infer<typeof StreetSignSchema>;
 export type ScenarioSummary = z.infer<typeof ScenarioSummarySchema>;
+export type HazardSummary = z.infer<typeof HazardSummarySchema>;
 export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
 
 export type DetectionClass = z.infer<typeof DetectionClassSchema>;
 export type Detection = z.infer<typeof DetectionSchema>;
+export type PerceptionMode = z.infer<typeof PerceptionModeSchema>;
+export type CameraParams = z.infer<typeof CameraParamsSchema>;
+export type PerceptionStats = z.infer<typeof PerceptionStatsSchema>;
 export type RadarPoint = z.infer<typeof RadarPointSchema>;
 export type LaneNeighbor = z.infer<typeof LaneNeighborSchema>;
 export type LaneState = z.infer<typeof LaneStateSchema>;
@@ -493,6 +629,8 @@ export type CommandInput = Command extends infer C
     : never
   : never;
 export type Ack = z.infer<typeof AckSchema>;
+export type AddressSuggestion = z.infer<typeof AddressSuggestionSchema>;
+export type AddressSuggestions = z.infer<typeof AddressSuggestionsSchema>;
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 
 export type ParseResult<T> =

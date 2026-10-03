@@ -4,6 +4,7 @@ import { createTransportFromLocation } from './net/wsClient';
 import { useSimStore } from './store/simStore';
 import { Renderer } from './three/Renderer';
 import { LeftScenarioSidebar } from './ui/LeftScenarioSidebar';
+import { PanelHandle } from './ui/PanelHandle';
 import { PerfOverlay } from './ui/PerfOverlay';
 import { RightPanel } from './ui/RightPanel';
 import { StartupOverlay } from './ui/StartupOverlay';
@@ -14,6 +15,7 @@ type BootPhase = 'starting' | 'ready' | 'error';
 
 export default function App() {
   const attach = useSimStore((s) => s.attach);
+  const collapsed = useSimStore((s) => s.collapsed);
   const [boot, setBoot] = useState<BootPhase>('starting');
   const [bootError, setBootError] = useState('');
   const cleanup = useRef<(() => void) | undefined>(undefined);
@@ -47,17 +49,32 @@ export default function App() {
     setBoot('ready');
   };
 
+  // Collapsed panels unmount rather than shrink to zero: nothing offscreen
+  // stays focusable, and the widget canvases stop drawing entirely. The
+  // matching track sizes are zeroed in CSS off these same classes.
+  const shell = [
+    'app',
+    collapsed.scenarios && 'is-scenarios-collapsed',
+    collapsed.inspector && 'is-inspector-collapsed',
+    collapsed.telemetry && 'is-telemetry-collapsed',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div className="app">
+    <div className={shell}>
       <TopToolbar />
       <div className="stage">
-        <LeftScenarioSidebar />
+        {!collapsed.scenarios && <LeftScenarioSidebar />}
         <main className="stage-main">
           <Renderer />
+          <PanelHandle panel="scenarios" edge="left" />
+          <PanelHandle panel="inspector" edge="right" />
+          <PanelHandle panel="telemetry" edge="bottom" />
         </main>
-        <RightPanel />
+        {!collapsed.inspector && <RightPanel />}
       </div>
-      <TelemetryRow />
+      {!collapsed.telemetry && <TelemetryRow />}
       <PerfOverlay />
       {boot !== 'ready' && (
         <StartupOverlay

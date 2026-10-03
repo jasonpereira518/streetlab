@@ -10,9 +10,11 @@ Launch it, load a scenario, and inject a hazard — watch the planner react.
 This is what's actually built today: Cycle 1's synthetic 3×3 grid,
 ground-truth perception and centerline tracker; Cycle 2's real OpenStreetMap
 data — either behind `--source osm` at startup or typed into the running app's
-address box; and Cycle 3's junction compliance, lane changes, reactive
-IDM/MOBIL traffic and five distinct hazard scenarios. See the root
-[`README.md`](README.md#roadmap) for what's deliberately not built yet.
+address box; Cycle 3's junction compliance, lane changes, reactive
+IDM/MOBIL traffic and five distinct hazard scenarios; and Cycle 4's real ONNX
+detector, which runs and is measured honestly — including the result that it
+can't drive the car yet. See the root [`README.md`](README.md#roadmap) for
+what's deliberately not built yet.
 
 Two ways to run it — pick one:
 
@@ -134,17 +136,18 @@ completely fresh install.
 
 ## Inject a hazard
 
-Open the right panel's **Parameters** tab and click **Inject cut-in hazard**.
+Open the right panel's **Params** tab and, in the **Inject hazard** menu,
+click **Cut-in**.
 A neighbouring vehicle slides into the ego's lane 1.5 seconds of travel ahead
 at half the ego's speed, and the ack log shows `injected cut_in: veh_NN
 cutting in N m ahead`. Watch the TTC readout in the toolbar drop and the
 planner respond — the orange hazard overlay renders around the flagged vehicle
-in the 3D view, and the trajectory graph's cut-in curve shows the predicted
+in the 3D view, and the trajectory graph's threat curve shows the predicted
 path.
 
-The button sends one of five scenarios (`streetlab-backend/sim/events.py`),
-and the wire's `kind` is a free string, so the other four are reachable from
-any client that speaks the protocol:
+The menu offers every scenario in `streetlab-backend/sim/events.py`, grouped
+Ahead, Crossing and Behind. A hazard the scene cannot host right now acks
+false and says why — no signal ahead, a one-way street:
 
 | `kind` | What it stages |
 |---|---|
@@ -152,7 +155,12 @@ any client that speaks the protocol:
 | `sudden_brake` | The vehicle leading the ego's lane stops dead for 8 s |
 | `jaywalker` | A pedestrian crosses the ego's path 30 m ahead, then leaves |
 | `obstacle` | Something stationary and unclassifiable sits in the lane 40 m ahead |
-| `emergency_vehicle` | A vehicle behind runs at 1.6× the limit and works its way past |
+| `emergency_vehicle` | The nearest vehicle behind runs lights and siren, wanting 1.6× the limit, and queues behind the ego |
+| `stalled_vehicle` | A broken-down car sits in the ego's lane 40 m ahead until it is towed |
+| `cyclist_drift` | A cyclist 25 m ahead drifts slowly in from the kerb |
+| `tailgater` | A car pulls up close behind the ego and stays there for 30 s |
+| `oncoming_drift` | An oncoming car drifts 0.8 m over the centre line as it reaches the ego |
+| `red_light_runner` | A car runs the red across the ego's green, timed to arrive when the ego does |
 
 An unknown `kind` acks false rather than raising, so a newer client cannot
 break an older backend.
@@ -175,6 +183,63 @@ backend's `/health` endpoint at 1 Hz — the backend's own sim-step time
 (p50/p95) and resident memory. All six numbers come from the real running
 processes, not fixture data.
 
+## See the ML detector — and what it doesn't see
+
+Cycle 4 added a real RT-DETR ONNX detector running on rendered camera
+frames. It's worth seeing run, and worth seeing what it actually finds,
+which is nothing — a genuine result, not a placeholder.
+
+```bash
+cd streetlab-backend
+uv run streetlab serve --perception ml
+```
+
+(Option A's packaged app always runs ground-truth only, so this needs
+Option B.) Start the frontend as above and load a scenario. `--perception ml`
+does not change who drives — ground truth still does — it starts the
+detector pipeline running *alongside* it, in shadow: both sources answer the
+same question every frame, so the numbers below are live from the first
+scenario load, not from the moment you switch anything.
+
+Open the right panel's **Parameters** tab and find the **Perception** field
+at the bottom. `frames` and `detector` (ms) tick up in real time — the
+pipeline is genuinely decoding JPEGs and running the model at ~10 Hz. Watch
+`precision`, `recall`, and `mean position error` instead: in every frame
+measured they read `0.00` or `—`. That's not a UI bug — it's the detector
+scoring zero matched vehicles against exact ground truth, frame after frame.
+
+Now look at the 3D view. The right panel's **Layers** tab has a
+**Detections** toggle (on by default) that gates three things together: the
+solid traffic meshes, the hazard overlay, and the shadow source's purple
+wireframe outlines (`detections_shadow` — whichever source is *not*
+currently driving, drawn unfilled so the two readings stay visually
+distinct). Ground truth is still driving right now, so traffic renders
+solid and normal. In every frame measured, not one of those solid vehicles
+gets a purple outline: that absence is the visual read on the gap the
+panel's numbers report — the detector isn't drawing boxes around the wrong
+things, it's drawing none around cars at all, because its highest-confidence
+guesses per frame land on unmapped COCO classes (umbrella, vase, stop sign —
+a class StreetLab genuinely has; see
+`docs/measurements/2026-08-20-detector-comparison.md` for the full
+diagnosis).
+
+Switch driving to it from the toolbar: click the eye-icon **Perception**
+menu and select **ML** (it carries an **Experimental** badge, both on the
+trigger and in the menu — that label is earned, not decorative). Ground
+truth and the ML source trade places, and the traffic on screen changes
+with them: the solid meshes and the hazard overlay are drawn from the wire's
+`detections` field, the one the *driving* source publishes — and with ML
+now driving and detecting nothing, that field is empty. **The road empties
+out.** All that's left are the purple ground-truth outlines, still drawn in
+shadow, now marking cars the car itself can no longer see. That's the
+strongest single piece of visual evidence in this demo, and it's an honest
+one: it isn't a rendering glitch, it's exactly what zero detections looks
+like once something is actually driving on them. Switch back to
+**Ground truth** before continuing the demo. This is why Cycle 4's roadmap
+entry reads "Built" and not "working": the pipeline is real end to end, and
+it was measured honestly enough to say plainly that it can't drive the car
+yet.
+
 ## What this demo does not show
 
 - Turn restrictions, multi-tile streaming, or OSM-driven signal phase timing
@@ -183,7 +248,15 @@ processes, not fixture data.
   grid regardless of what the real signals actually do.
 - Reactive traffic that responds to the ego car (Cycle 3) — the scripted
   agents follow their routes regardless of what the ego does.
-- A trained perception model (Cycle 4) — detections are ground truth read
-  directly off the simulation state, not inferred from any sensor data.
+- A perception model that works (Cycle 5) — Cycle 4's detector is real and
+  runs real inference (see above), but it's COCO-pretrained and untuned for
+  this renderer's geometry, and it detects zero vehicles here. That
+  zero-detections result survives every configuration Cycle 5 Phase 2
+  tested; the *causal* half of the sentence is what narrowed. The shipped
+  weights are **int8-quantized**, and unquantized fp32 weights of the same
+  architecture more than double the peak car score on a 60-frame benchmark
+  — so "untuned for this geometry" was, for two cycles, measured only on
+  quantized weights nobody had compared against. Fine-tuning on
+  sim-generated data is Cycle 5's job, not this one's.
 - Code signing or notarization — the built `.app` is unsigned, fine for local
   use but not for distributing to another machine.

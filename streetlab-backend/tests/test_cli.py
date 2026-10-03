@@ -86,3 +86,48 @@ def test_unimplemented_commands_explain_themselves(capsys, command, cycle):
     assert code != 0
     assert "not yet implemented" in out.lower()
     assert f"cycle {cycle}" in out.lower()
+
+
+# --------------------------------------------------------------------------- #
+# `--perception ml` builds a real detector — offline, and without weights.     #
+# --------------------------------------------------------------------------- #
+
+
+def _never_called():  # pragma: no cover - the assertion is that it is not
+    raise AssertionError("the weights cache must not be touched for a local path")
+
+
+def test_ground_truth_builds_no_pipeline():
+    from server.cli import build_parser, perception_pipeline_for
+
+    args = build_parser().parse_args(["run"])
+    assert perception_pipeline_for(args) is None
+
+
+def test_a_local_model_path_is_used_directly_without_the_cache(tmp_path, monkeypatch):
+    """`--detector-model` is the development path: no download, no hashing,
+    no cache directory touched at all."""
+    from perception.detector import OnnxDetector
+    from server import cli
+
+    monkeypatch.setattr(cli, "model_cache_dir", _never_called)
+    weights = tmp_path / "local.onnx"
+    weights.write_bytes(b"not really a model, never loaded here")
+
+    detector = cli.build_detector(str(weights))
+    assert isinstance(detector, OnnxDetector)
+    # Lazily, on the executor: building a session at startup would make a
+    # slow model load look like a backend that failed to boot.
+    assert detector.provider is None
+
+
+def test_unresolvable_weights_degrade_to_the_stub_rather_than_refusing_to_start(caplog):
+    """A download that failed must cost perception, not the whole backend."""
+    from perception.pipeline import StubDetector
+    from server.cli import build_detector
+
+    with caplog.at_level("WARNING", logger="streetlab.cli"):
+        detector = build_detector("/nonexistent/definitely-not-a-model.onnx")
+
+    assert isinstance(detector, StubDetector)
+    assert "detector weights unavailable" in caplog.text

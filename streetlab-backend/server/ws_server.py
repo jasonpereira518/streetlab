@@ -14,22 +14,43 @@ disconnects are all logged and answered, never propagated.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import resource
 import sys
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 
-from schema import PROTOCOL_VERSION, SceneDescription, StateUpdate
+from map.geocode import Geocoder
+from perception.capture import label_frame
+from perception.frames import CameraFrame
+from schema import (
+    PROTOCOL_VERSION,
+    AddressSuggestion,
+    AddressSuggestions,
+    CameraFrameCmd,
+    SceneDescription,
+    StateUpdate,
+    SuggestAddress,
+    format_issues,
+)
 from sim.loop import CommandOutcome, SimLoop, make_ack
 
 log = logging.getLogger("streetlab.server")
 
 DEFAULT_TICK_HZ = 60.0
+# Nominatim's own policy is one request/second; a keystroke-driven field
+# fires far faster than that, so results are capped small rather than
+# widened -- five candidates is plenty for a dropdown and keeps each answer
+# a light `asyncio.to_thread` hop instead of a multi-second one.
+SUGGESTION_LIMIT = 5
 
 
 def _rss_mb() -> float:
@@ -42,7 +63,9 @@ def _rss_mb() -> float:
     return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
 
 
-def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
+def create_app(
+    loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ, geocoder: Geocoder | None = None
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         loop.start()
@@ -90,11 +113,11 @@ def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
     # endpoint.
     @app.websocket("/")
     async def root(ws: WebSocket) -> None:
-        await _serve(ws, loop, tick_hz, clients)
+        await _serve(ws, loop, tick_hz, clients, geocoder)
 
     @app.websocket("/ws")
     async def ws_path(ws: WebSocket) -> None:
-        await _serve(ws, loop, tick_hz, clients)
+        await _serve(ws, loop, tick_hz, clients, geocoder)
 
     return app
 
@@ -102,9 +125,12 @@ def create_app(loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ) -> FastAPI:
 class _Connection:
     """One client. Owns its own `seq` counter and its own outbound ordering."""
 
-    def __init__(self, ws: WebSocket, loop: SimLoop, tick_hz: float) -> None:
+    def __init__(
+        self, ws: WebSocket, loop: SimLoop, tick_hz: float, geocoder: Geocoder | None = None
+    ) -> None:
         self.ws = ws
         self.loop = loop
+        self.geocoder = geocoder
         self.period = 1.0 / tick_hz
         self.seq = 0
         # Serialises the streaming task against command replies, so a scene and
@@ -119,6 +145,12 @@ class _Connection:
         # the swap land in that same gap and be missed entirely, since the
         # epoch would already read as "seen" for content the client never got.
         self._sent_epoch = loop.scene_epoch
+        # A reconnecting client's frame `seq` restarts at 0. Without this, the
+        # frame slot's sequence gate would still hold the previous connection's
+        # high-water mark and reject every frame of the new one as stale.
+        pipeline = loop.sim.perception_pipeline
+        if pipeline is not None:
+            pipeline.reset()
 
     async def send_model(self, message: SceneDescription | StateUpdate | Any) -> None:
         async with self._send_lock:
@@ -185,6 +217,22 @@ class _Connection:
             log.warning("dropping non-object command: %r", type(raw).__name__)
             return
 
+        # Camera frames bypass the sim-thread command queue entirely: they are a
+        # data push at ~10 Hz, and routing them through `submit()` would put
+        # base64 decode on the sim thread and ack every one of them.
+        if raw.get("cmd") == "camera_frame":
+            self._ingest_frame(raw)
+            return
+
+        # Same bypass as `camera_frame`, for the same reason: a geocode call
+        # is network I/O, and the sim thread's command queue must never wait
+        # on the network. Unlike `camera_frame` this does reply -- just with
+        # its own message type instead of an ack, since there is no command
+        # outcome to report, only a payload.
+        if raw.get("cmd") == "suggest_address":
+            await self._suggest_address(raw)
+            return
+
         command_id = raw.get("id")
         command_name = raw.get("cmd")
         outcome = await self._apply(raw)
@@ -210,12 +258,164 @@ class _Connection:
             log.error("simulation did not answer command in time: %r", raw)
             return CommandOutcome(ok=False, message="simulation busy")
 
+    async def _suggest_address(self, raw: dict) -> None:
+        """Answer a `suggest_address` with candidates, or an empty list.
 
-async def _serve(ws: WebSocket, loop: SimLoop, tick_hz: float, clients: dict[str, int]) -> None:
+        Never fails loudly: a malformed command, a missing geocoder (the
+        synthetic scenarios have none), or a Nominatim outage all resolve to
+        `suggestions: []` rather than a dropped connection or a surfaced
+        error over what the user is still typing.
+        """
+        try:
+            cmd = SuggestAddress.model_validate(raw)
+        except ValidationError as exc:
+            log.warning("dropping malformed suggest_address: %s", format_issues(exc))
+            return
+
+        places = []
+        if self.geocoder is not None:
+            # `Geocoder.suggest` calls out to Nominatim (rate-limited to 1
+            # req/s) and must not run on the event loop -- `to_thread` keeps
+            # a burst of keystrokes from stalling every other connection's
+            # frame stream.
+            places = await asyncio.to_thread(self.geocoder.suggest, cmd.query, SUGGESTION_LIMIT)
+
+        await self.send_model(
+            AddressSuggestions(
+                id=cmd.id,
+                query=cmd.query,
+                suggestions=[
+                    AddressSuggestion(label=p.display_name, lat=p.lat, lon=p.lon) for p in places
+                ],
+            )
+        )
+
+    def _ingest_frame(self, raw: dict) -> None:
+        """Validate, decode and hand off one camera frame. Never acks, never raises.
+
+        The frontend learns about drops from the `perception` stats block in
+        `StateUpdate` (`frames_received`/`frames_dropped`), not from a reply to
+        this message — so failure here is a log line, never an exception that
+        would take down the socket.
+
+        `--capture` (Cycle 5) piggybacks on this same decode rather than
+        opening a second path to the wire: `_capture_frame` below is only
+        ever reached once a frame has already cleared validation and base64
+        decoding for the pipeline. It does NOT gain its own bypass of the
+        `perception_pipeline is None` check just above — that guard, and the
+        frontend's matching `perception !== null` gate in `Renderer.tsx`,
+        are what keep a plain `streetlab serve` (no `--perception ml`) from
+        paying for an offscreen render, GPU readback, JPEG encode and
+        ~0.5 MB/s over the socket for nobody. `--capture` without
+        `--perception ml` is diagnosed loudly at startup instead — see
+        `capture_sink_for` in `server/cli.py`.
+        """
+        pipeline = self.loop.sim.perception_pipeline
+        if pipeline is None:
+            return
+        try:
+            cmd = CameraFrameCmd.model_validate(raw)
+        except ValidationError as exc:
+            log.warning("dropping malformed camera frame: %s", format_issues(exc))
+            return
+        try:
+            jpeg = base64.b64decode(cmd.data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            log.warning("dropping camera frame with bad base64: %s", exc)
+            return
+
+        pipeline.submit_frame(
+            CameraFrame(
+                seq=cmd.seq,
+                t=cmd.t,
+                width=cmd.width,
+                height=cmd.height,
+                jpeg=jpeg,
+                camera=cmd.camera,
+                received_ms=time.perf_counter() * 1000.0,
+            )
+        )
+
+        self._capture_frame(cmd, jpeg)
+
+    def _capture_frame(self, cmd: CameraFrameCmd, jpeg: bytes) -> None:
+        """Label one already-decoded frame against simulation truth and hand
+        it to the capture sink, if `--capture` attached one to this loop.
+
+        Truth, heading and extent all come from the *recorded* snapshot at
+        `cmd.t` — `pose_history.at(cmd.t)`, `headings_at(cmd.t)` and
+        `sizes_at(cmd.t)` respectively — never from the world or
+        `self._traffic` as they stand *now*. Same rule `_score_ml` follows, and for the same
+        reason: by the time this frame arrived, the world has moved on,
+        and reading live agent state here (as an earlier version of
+        this method did, via a since-removed `Simulation.agent_headings`)
+        would silently orient a box by a heading the frame's instant never
+        actually had. `None` from `at` means no snapshot exists for this
+        instant (older than the buffer, or a scene swap cleared it), and
+        the frame is skipped rather than labelled against the wrong world.
+        `()` — a snapshot that exists and is simply empty — is not this
+        case; `PoseHistory.at` keeps the two apart on purpose (see its
+        docstring), and an empty road is a label the benchmark needs, not
+        a frame to drop. Neither `headings_at` nor `sizes_at` can
+        legitimately disagree with `at` about whether an instant was
+        recorded (all three read the same locked snapshot list) — the
+        `or {}` fallbacks below are defensive, not code paths any of them
+        is expected to take. When `sizes_at` does come back empty,
+        `label_frame` falls back to the class prior and marks every box
+        `extent_from_truth=False` rather than failing the frame, so the
+        degradation is recorded in the output rather than invisible.
+
+        Wrapped in one broad `except`, matching the never-raises discipline
+        `_ingest_frame` already documents for the rest of this method: a
+        capture failure (a bad truth lookup, a full disk, whatever) must
+        degrade to a log line, not take the socket down — the pipeline
+        submission above has already happened by the time this runs, so a
+        capture-only failure must not un-happen it.
+
+        Buildings come from the *live* scene rather than the snapshot, which
+        is safe for the one reason that matters: a scene swap clears
+        `pose_history`, so `at(cmd.t)` returns `None` and the frame is
+        dropped before it can be labelled against another world's geometry.
+        Footprint rings are far too large to copy into every snapshot.
+        """
+        sink = self.loop.capture_sink
+        if sink is None:
+            return
+        try:
+            truth = self.loop.sim.pose_history.at(cmd.t)
+            if truth is None:
+                return
+            headings = self.loop.sim.pose_history.headings_at(cmd.t) or {}
+            sizes = self.loop.sim.pose_history.sizes_at(cmd.t) or {}
+            buildings = self.loop.sim.scene.description.buildings
+            frame = label_frame(
+                jpeg,
+                self.loop.next_capture_seq(),
+                cmd.t,
+                cmd.width,
+                cmd.height,
+                cmd.camera,
+                truth,
+                headings,
+                sizes,
+                buildings,
+            )
+            sink.write(frame)
+        except Exception:
+            log.exception("capture failed for frame t=%.3f; dropping", cmd.t)
+
+
+async def _serve(
+    ws: WebSocket,
+    loop: SimLoop,
+    tick_hz: float,
+    clients: dict[str, int],
+    geocoder: Geocoder | None = None,
+) -> None:
     await ws.accept()
     clients["count"] += 1
     try:
-        conn = _Connection(ws, loop, tick_hz)
+        conn = _Connection(ws, loop, tick_hz, geocoder)
 
         try:
             await conn.send_model(loop.sim.scene_description())

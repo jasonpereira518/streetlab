@@ -19,11 +19,14 @@
 import { create } from 'zustand';
 import type {
   Ack,
+  AddressSuggestion,
   CameraView,
   Command,
   CommandInput,
   LayerKey,
   ParamValue,
+  PerceptionMode,
+  PerceptionStats,
   SceneDescription,
   ScenarioSummary,
   ServerMessage,
@@ -231,6 +234,13 @@ export const DEFAULT_RELOAD_PAGE = (): void => {
  */
 export type RightTab = 'parameters' | 'map' | 'layers' | 'events';
 
+/**
+ * The three shell surfaces the user can fold away to give the viewport more
+ * room. Keyed rather than three booleans so `togglePanel` stays one action and
+ * a new surface cannot be added without the reducer seeing it.
+ */
+export type PanelId = 'scenarios' | 'inspector' | 'telemetry';
+
 export interface SimStoreState {
   /* connection */
   status: ConnectionStatus;
@@ -253,17 +263,55 @@ export interface SimStoreState {
    * building", not which specific query a late event belongs to.
    */
   locationPending: string | null;
+  /**
+   * The most recent `location_progress` event for the in-flight build, or
+   * `null` while none has arrived yet (the ack-to-first-checkpoint gap, or a
+   * cache-hit build that finishes before ever reporting one). Cleared
+   * whenever `locationPending` is — a fresh `loadLocation` call, the
+   * eventual `scene_description`, or a `location_failed` event.
+   */
+  locationProgress: { stage: string; fraction: number } | null;
+  /**
+   * Plain, user-facing text from the most recent `location_failed` event, or
+   * `null` when nothing has failed since the last attempt. Cleared the
+   * instant a new `loadLocation` call goes out, and on a successful
+   * `scene_description` — same lifecycle as `locationPending`, just carrying
+   * the failure text rather than only a boolean.
+   */
+  locationError: string | null;
+  /**
+   * True once a `trip_complete` event has arrived for the currently-loaded
+   * scene (a point-to-point route the ego has actually stopped at the end
+   * of). Cleared on every `loadLocation`/`loadScenario` call and on a fresh
+   * `scene_description`, so it never carries over from a previous trip.
+   */
+  tripComplete: boolean;
+  /**
+   * Replies to in-flight `suggest_address` requests, keyed by the request's
+   * own command id — not by query text, so two fields typing similar
+   * addresses at once (start + destination) never clobber each other's
+   * results. Callers look up their own id and ignore the rest; entries are
+   * pruned oldest-first past `MAX_ADDRESS_SUGGESTIONS` so a long session
+   * typing many addresses doesn't grow this without bound.
+   */
+  addressSuggestions: Record<string, { query: string; items: AddressSuggestion[] }>;
 
   /* mirrored frame fields (only updated on change) */
   paused: boolean;
   assistActive: boolean;
   hasFrames: boolean;
+  /** Null when no ML perception is running — distinct from "measured, and
+   * zero"; see PerceptionPanel. Updated on every frame, unlike the fields
+   * above, since its counters are expected to change every tick. */
+  perception: PerceptionStats | null;
 
   /* UI state */
   layers: Record<LayerKey, boolean>;
   params: Record<string, ParamValue>;
   cameraView: CameraView;
   rightTab: RightTab;
+  /** Purely local chrome state — collapsing a panel sends no command. */
+  collapsed: Record<PanelId, boolean>;
   perfOverlayVisible: boolean;
   /** A `refreshAll` is in flight; the button that starts one is disabled. */
   refreshPending: boolean;
@@ -283,19 +331,28 @@ export interface SimStoreState {
   send(command: CommandInput): string;
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
-  loadLocation(query: string): void;
+  loadLocation(query: string, destination?: string): void;
+  /** Fire off a `suggest_address` request and return its command id, so the
+   * caller can look its result up in `addressSuggestions` once it arrives. */
+  suggestAddress(query: string): string;
   setParam(key: string, value: ParamValue): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
+  setPerceptionMode(mode: PerceptionMode): void;
   setRightTab(tab: RightTab): void;
+  togglePanel(panel: PanelId): void;
   togglePerfOverlay(): void;
   resetSim(): void;
   refreshAll(): Promise<void>;
-  injectHazard(): void;
+  injectHazard(kind: string): void;
 }
 
 let transportRef: Transport | null = null;
 let commandSeq = 0;
+
+/** Bounds `addressSuggestions` the same way `commandLog`'s `.slice(0, 50)`
+ * bounds itself — small, since only the two search fields ever populate it. */
+const MAX_ADDRESS_SUGGESTIONS = 8;
 
 export const useSimStore = create<SimStoreState>((set, get) => ({
   status: 'idle',
@@ -308,15 +365,21 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   catalog: [],
   activeScenarioId: null,
   locationPending: null,
+  locationProgress: null,
+  locationError: null,
+  tripComplete: false,
+  addressSuggestions: {},
 
   paused: false,
   assistActive: false,
   hasFrames: false,
+  perception: null,
 
   layers: { ...DEFAULT_LAYERS },
   params: { ...DEFAULT_PARAMS },
   cameraView: 'chase',
   rightTab: 'parameters',
+  collapsed: { scenarios: false, inspector: false, telemetry: false },
   perfOverlayVisible: false,
   refreshPending: false,
   reloadPage: DEFAULT_RELOAD_PAGE,
@@ -378,6 +441,16 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     const id = partial.id ?? `c${++commandSeq}`;
     const command = { ...partial, id } as Command;
     transportRef?.send(command);
+    // `camera_frame` is excluded from the log the same way it is excluded
+    // from the ack path everywhere else (wsClient.ts, ws_server.py,
+    // harness.tsx): at 10 Hz it would be 100% of a 50-entry log within five
+    // seconds, permanently hiding diagnostics like LayersTab's last-toggle
+    // readout, and would force every commandLog subscriber to re-render at
+    // 10 Hz forever since `send()` allocates a new array on every call.
+    // `suggest_address` is excluded for the same reason at a smaller
+    // scale: it fires on every debounced keystroke in an address field and
+    // never gets an ack, so it would just be noise among real commands.
+    if (command.cmd === 'camera_frame' || command.cmd === 'suggest_address') return id;
     set((s) => ({
       commandLog: [
         { id, cmd: command.cmd, at: Date.now() },
@@ -392,15 +465,34 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   },
 
   loadScenario(scenarioId) {
-    set({ activeScenarioId: scenarioId });
+    set({
+      activeScenarioId: scenarioId,
+      locationProgress: null,
+      locationError: null,
+      tripComplete: false,
+    });
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
   },
 
-  loadLocation(query) {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-    set({ locationPending: trimmed });
-    get().send({ cmd: 'load_location', query: trimmed });
+  loadLocation(query, destination) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) return;
+    const trimmedDest = destination?.trim() || undefined;
+    set({
+      locationPending: trimmedDest ? `${trimmedQuery} → ${trimmedDest}` : trimmedQuery,
+      locationProgress: null,
+      locationError: null,
+      tripComplete: false,
+    });
+    get().send({
+      cmd: 'load_location',
+      query: trimmedQuery,
+      ...(trimmedDest ? { destination: trimmedDest } : {}),
+    });
+  },
+
+  suggestAddress(query) {
+    return get().send({ cmd: 'suggest_address', query });
   },
 
   setParam(key, value) {
@@ -420,8 +512,22 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     get().send({ cmd: 'set_camera', view });
   },
 
+  setPerceptionMode(mode) {
+    // Optimistic local update, same shape as setCameraView above: the
+    // backend's next frame carries the confirmed `perception.mode`, so a
+    // refused switch (no pipeline running) corrects itself on the next
+    // tick. There's nothing to update locally if no pipeline exists yet —
+    // the control is disabled in that case, so this branch is defensive.
+    set((s) => (s.perception ? { perception: { ...s.perception, mode } } : {}));
+    get().send({ cmd: 'set_perception', mode });
+  },
+
   setRightTab(tab) {
     set({ rightTab: tab });
+  },
+
+  togglePanel(panel) {
+    set((s) => ({ collapsed: { ...s.collapsed, [panel]: !s.collapsed[panel] } }));
   },
 
   togglePerfOverlay() {
@@ -474,14 +580,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     get().reloadPage();
   },
 
-  injectHazard() {
-    // `cut_in` is the backend's own name for this scenario
-    // (`streetlab-backend/sim/events.py`). This shipped as `cutin`, which cost
-    // nothing while every kind produced the identical hard-brake and would
-    // cost the button its ack now that they do not. The backend still accepts
-    // the old spelling as an alias, so an older build of this app keeps
-    // working against a newer sidecar.
-    get().send({ cmd: 'inject_hazard', kind: 'cut_in' });
+  injectHazard(kind) {
+    // `kind` is a `HazardSummary.code` from the scene's `hazards`; the
+    // backend declines, by name, one the scene cannot host.
+    get().send({ cmd: 'inject_hazard', kind });
   },
 }));
 
@@ -511,6 +613,9 @@ function applyServerMessage(
         hasFrames: false,
         events: [],
         locationPending: null,
+        locationProgress: null,
+        locationError: null,
+        tripComplete: false,
       }));
       return;
 
@@ -521,6 +626,17 @@ function applyServerMessage(
       perfMetrics.reportTick(performance.now());
       const s = get();
       const patch: Partial<SimStoreState> = {};
+      // Unlike the other mirrored fields, perception is not gated on strict
+      // equality: its counters (frames_received, frames_dropped) are expected
+      // to move on essentially every tick while ML perception is running, and
+      // a fresh object reference would defeat a `!==` check every time
+      // anyway. But it must still be gated on *something*, or `patch` is
+      // never empty and `set()` below fires 60 times a second even when
+      // perception is null and nothing else changed. Both sides null is the
+      // one case guaranteed not to be a change.
+      if (s.perception !== null || msg.perception !== null) {
+        patch.perception = msg.perception;
+      }
       if (s.paused !== msg.paused) patch.paused = msg.paused;
       if (s.assistActive !== msg.assist_active) {
         patch.assistActive = msg.assist_active;
@@ -536,11 +652,26 @@ function applyServerMessage(
         // sim/loop.py's `submit_scene`. Without this the box would stay
         // disabled forever on any bad address, the single most likely thing
         // a first-time user types.
-        if (
-          s.locationPending !== null &&
-          msg.events.some((e) => e.code === 'location_failed')
-        ) {
-          patch.locationPending = null;
+        const failure = msg.events.find((e) => e.code === 'location_failed');
+        if (failure) {
+          if (s.locationPending !== null) patch.locationPending = null;
+          patch.locationProgress = null;
+          patch.locationError = failure.message;
+        }
+        // A point-to-point trip's own arrival, surfaced next to the search
+        // box the same way a failure is — see LeftScenarioSidebar.tsx.
+        if (!s.tripComplete && msg.events.some((e) => e.code === 'trip_complete')) {
+          patch.tripComplete = true;
+        }
+        // The build's own checkpoints, for a live progress bar. Last one in
+        // this batch wins — events land in the order the backend emitted
+        // them (see sim/loop.py's `submit_scene`), so the last is the
+        // farthest along. A `location_progress` event always carries a
+        // `progress` fraction (sim/loop.py's `emit_progress` never omits
+        // it); the `?? 0` only guards a hand-built test fixture that didn't.
+        const progress = [...msg.events].reverse().find((e) => e.code === 'location_progress');
+        if (progress) {
+          patch.locationProgress = { stage: progress.message, fraction: progress.progress ?? 0 };
         }
       }
       if (Object.keys(patch).length) set(patch);
@@ -559,10 +690,33 @@ function applyServerMessage(
       // `synthetic`). Typing an address there is the documented behaviour in
       // DEMO.md, and it used to brick the sidebar.
       if (msg.cmd === 'load_location' && !msg.ok) {
-        set({ lastAck: msg, locationPending: null });
+        set({
+          lastAck: msg,
+          locationPending: null,
+          locationProgress: null,
+          locationError: msg.message,
+        });
         return;
       }
       set({ lastAck: msg });
+      return;
+
+    case 'address_suggestions':
+      set((s) => {
+        const ids = Object.keys(s.addressSuggestions);
+        const evicted =
+          ids.length >= MAX_ADDRESS_SUGGESTIONS
+            ? Object.fromEntries(
+                ids.slice(ids.length - MAX_ADDRESS_SUGGESTIONS + 1).map((id) => [id, s.addressSuggestions[id]]),
+              )
+            : s.addressSuggestions;
+        return {
+          addressSuggestions: {
+            ...evicted,
+            [msg.id]: { query: msg.query, items: msg.suggestions },
+          },
+        };
+      });
       return;
   }
 }
