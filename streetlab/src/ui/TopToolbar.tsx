@@ -105,13 +105,19 @@ export function TopToolbar() {
           </div>
         </div>
         <span className="toolbar-sep" />
-        <IconButton label="New session">
+        {/* Disabled, not removed. These three have never had an onClick, but
+            hover, focus-visible and aria-pressed all fired on them, so they
+            were indistinguishable from "Reset scenario" two buttons along —
+            the UI promising an affordance it does not keep. Marking them
+            disabled with a reason keeps the roadmap signal and stops the
+            promise. Delete them, or implement them, and this goes away. */}
+        <IconButton label="New session" disabled title="New session — not implemented yet">
           <FileIcon />
         </IconButton>
-        <IconButton label="Save scenario">
+        <IconButton label="Save scenario" disabled title="Save scenario — not implemented yet">
           <SaveIcon />
         </IconButton>
-        <IconButton label="Undo">
+        <IconButton label="Undo" disabled title="Undo — not implemented yet">
           <UndoIcon />
         </IconButton>
       </div>

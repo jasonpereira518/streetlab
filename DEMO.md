@@ -246,8 +246,6 @@ yet.
   — a loaded address still drives a single, fixed-radius extract, and every
   intersection uses the same fixed-timing signal controller as the synthetic
   grid regardless of what the real signals actually do.
-- Reactive traffic that responds to the ego car (Cycle 3) — the scripted
-  agents follow their routes regardless of what the ego does.
 - A perception model that works (Cycle 5) — Cycle 4's detector is real and
   runs real inference (see above), but it's COCO-pretrained and untuned for
   this renderer's geometry, and it detects zero vehicles here. That

@@ -14,6 +14,7 @@ export function IconButton({
   active,
   disabled,
   tone = 'neutral',
+  title,
   children,
 }: {
   label: string;
@@ -23,6 +24,9 @@ export function IconButton({
   active?: boolean;
   disabled?: boolean;
   tone?: 'neutral' | 'accent';
+  /** Hover text, when it needs to say more than the accessible name —
+   *  a disabled control explaining why it is disabled, for instance. */
+  title?: string;
   children: ReactNode;
 }) {
   return (

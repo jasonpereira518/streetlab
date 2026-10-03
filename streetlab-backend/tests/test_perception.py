@@ -109,3 +109,42 @@ def test_ttc_falls_as_a_lead_vehicle_slows(built, traffic, ego):
     slow = ttc_with(1.0)
     assert slow, "a slower lead should produce a finite TTC"
     assert min(slow) < min(fast or [math.inf])
+
+
+def test_an_agent_on_its_own_route_ahead_and_in_lane_is_still_a_threat():
+    """A crossing pedestrian is on a route of its own, by construction
+    (`sim/events.py::_jaywalker`) -- a walker sharing the ego route could only
+    walk *along* it. Gating the gap on route object identity therefore made
+    every jaywalker permanently invisible to TTC and to the hazard overlay,
+    however squarely it stood in front of the car.
+
+    The gap is a question about geometry, not about which Route object an
+    agent happens to hold: `plan/control.py::_closest_lead` and
+    `sim/loop.py::_neighbor` both already answer it by projecting the agent's
+    position onto the ego route. This pins perception to the same answer.
+    """
+    from sim.agents import Agent
+    from sim.route import Route
+    from schema import Size
+
+    ego_route = Route([(0.0, 0.0), (200.0, 0.0)], closed=False)
+    ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=10.0)
+
+    crossing = Route([(20.0, -5.0), (20.0, 5.0)], closed=False)
+    walker = Agent(
+        id="hzd_jaywalker_1",
+        cls="pedestrian",
+        state=VehicleState(x=20.0, y=0.0, heading=math.pi / 2, speed_mps=1.4),
+        size=Size(length=0.6, width=0.6, height=1.75),
+        route=crossing,
+        s=5.0,
+        target_speed_mps=1.4,
+        lifetime_s=10.0,
+    )
+
+    det = GroundTruthPerception().observe(ego, [walker], ego_route)[0]
+
+    assert det.lane_offset == 0, "the walker is squarely in the ego lane"
+    assert det.ttc_s == pytest.approx(20.0 / (10.0 - 1.4), rel=1e-3)
+    assert det.hazard is True
+    assert det.hazard_label == "Pedestrian in path"

@@ -321,11 +321,24 @@ export function LeftScenarioSidebar() {
       </div>
 
       <footer className="sidebar-foot">
-        <button type="button" className="foot-btn" title="New scenario">
+        {/* Inert, like the three icon buttons in the toolbar. `.foot-btn`'s
+            dashed border reads as "placeholder" for New and much less so for
+            Open, so both say it outright rather than relying on the border. */}
+        <button
+          type="button"
+          className="foot-btn"
+          disabled
+          title="New scenario — not implemented yet"
+        >
           <PlusIcon size={16} />
           <span>New</span>
         </button>
-        <button type="button" className="foot-btn" title="Open folder">
+        <button
+          type="button"
+          className="foot-btn"
+          disabled
+          title="Open folder — not implemented yet"
+        >
           <FolderIcon size={16} />
           <span>Open</span>
         </button>

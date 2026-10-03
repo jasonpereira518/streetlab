@@ -60,10 +60,19 @@ CUT_IN_FLOOR_MPS = 4.0
 #: The run-off exists so the walker never reaches the end of its route: arc
 #: length wraps (`ScriptedTraffic._advance`), and a pedestrian that wrapped
 #: would step back to the near kerb in one frame.
-JAYWALK_AHEAD_M = 30.0
 JAYWALK_HALF_SPAN_M = 8.0
 JAYWALK_RUN_OFF_M = 12.0
 JAYWALK_SPEED_MPS = 1.4
+
+#: How far ahead the crossing is placed, when the ego is standing still.
+#: Far enough not to spawn a pedestrian on the bonnet, close enough that a
+#: stopped car still gets a crossing worth seeing.
+JAYWALK_MIN_AHEAD_M = 12.0
+
+#: How far ahead of the ego the walker should still be at the moment it
+#: reaches the lane. Without it the two arrive together, which is a collision
+#: rather than a hazard.
+JAYWALK_MARGIN_M = 6.0
 
 #: Where an obstacle lands, and how long before it is cleared away.
 #:
@@ -366,14 +375,32 @@ def _cut_in(sim: "Simulation") -> str | Declined:
 
 
 def _jaywalker(sim: "Simulation") -> str | Declined:
-    """A pedestrian crosses the ego's path `JAYWALK_AHEAD_M` ahead.
+    """A pedestrian crosses the ego's path, far enough ahead to intercept it.
 
     On a route of its own, perpendicular to the ego's, because that is what a
     crossing IS -- and because `Agent` is a route plus an arc length, a walker
     that shared the ego route could only ever walk along it.
     """
     route = sim.scene.ego_route
-    at = _ego_s(sim) + JAYWALK_AHEAD_M
+    # Where the crossing goes has to depend on how fast the ego is closing on
+    # it. A fixed distance ahead does not: the walker needs
+    # `JAYWALK_HALF_SPAN_M / JAYWALK_SPEED_MPS` seconds to reach the lane, and
+    # a car doing 10 m/s covers 57 m in that time, so a crossing pinned 30 m
+    # ahead was one the car had already passed -- the walker stepped out 12-19 m
+    # BEHIND it, and the only `critical` hazard in the set never produced a
+    # conflict. Lead the ego by its own stopping-distance-worth of travel
+    # instead, so the walker is still `JAYWALK_MARGIN_M` ahead on arrival.
+    # Lead by the scene limit rather than by the ego's CURRENT speed: the car
+    # is usually still accelerating while the walker crosses, so current speed
+    # under-predicts its travel (measured: it arrived 1.6 m short). The limit
+    # is the speed the ego is accelerating towards, so it bounds the distance
+    # covered over `lead_time_s` from above and the walker gets there first
+    # whatever the car does in between. `MAX_RANGE_M` is 90 m, so even at the
+    # fastest scene limit the crossing is spawned inside sensor range.
+    lead_time_s = JAYWALK_HALF_SPAN_M / JAYWALK_SPEED_MPS
+    closing_mps = max(sim.ego.speed_mps, sim.scene.speed_limit_mps)
+    ahead = max(JAYWALK_MIN_AHEAD_M, closing_mps * lead_time_s + JAYWALK_MARGIN_M)
+    at = _ego_s(sim) + ahead
     cx, cy = route.point_at(at)
     heading = route.heading_at(at)
     nx, ny = -math.sin(heading), math.cos(heading)
@@ -393,7 +420,7 @@ def _jaywalker(sim: "Simulation") -> str | Declined:
         # never reaches the end of its route and wraps.
         lifetime_s=2 * JAYWALK_HALF_SPAN_M / JAYWALK_SPEED_MPS + 2.0,
     )
-    return f"{agent.id} crossing {JAYWALK_AHEAD_M:.0f} m ahead"
+    return f"{agent.id} crossing {ahead:.0f} m ahead"
 
 
 def _obstacle(sim: "Simulation") -> str | Declined:

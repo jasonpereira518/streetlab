@@ -1337,7 +1337,49 @@ class SimLoop:
         # thread every frame, so an executor thread appending to it directly
         # would be a race; a queue is the same shape commands already use.
         self._events: queue.Queue[SimEvent] = queue.Queue()
+        # Every event ever published, with a monotonic index, so a reader that
+        # missed the frame an event rode on can still collect it.
+        #
+        # `Simulation.state_update()` DRAINS `world.events` into the frame it
+        # builds, and `_run` builds one frame per tick while publishing only
+        # the newest to `_latest`. A client reads `snapshot()` on its own
+        # independent clock, so the two loops drift and the reader skips
+        # frames -- taking their events with them, permanently. Measured: a
+        # `location_failed` raised by an off-thread build was logged by the
+        # backend every time and reached the browser only most of the time,
+        # leaving the location search box disabled forever when it did not.
+        # Hazards, `reset` and `scenario_loaded` ride the same channel.
+        #
+        # Bounded because this is a live stream, not a log: a client that
+        # vanishes for a minute has no claim on a minute of backlog. 512 is
+        # ~8 s at the fastest rate events are plausibly raised, and far beyond
+        # the one-or-two-frame slip this exists to absorb.
+        self._event_log: deque[tuple[int, SimEvent]] = deque(maxlen=512)
+        self._event_seq = 0
         sim.set_build_sink(self.submit_scene)
+
+    def _record_events(self, events: Sequence[SimEvent]) -> None:
+        """Append this frame's events to the replayable log. Sim thread only."""
+        if not events:
+            return
+        with self._lock:
+            for event in events:
+                self._event_seq += 1
+                self._event_log.append((self._event_seq, event))
+
+    def events_since(self, cursor: int) -> tuple[int, list[SimEvent]]:
+        """Events newer than `cursor`, and the cursor to pass in next time.
+
+        A caught-up reader gets `(cursor, [])`. A reader whose cursor has
+        fallen off the back of the bounded log gets whatever is still there
+        rather than an error -- dropping the oldest events is the documented
+        cost of the bound, and it beats stalling the stream.
+        """
+        with self._lock:
+            if not self._event_log:
+                return self._event_seq, []
+            fresh = [event for seq, event in self._event_log if seq > cursor]
+            return self._event_seq, fresh
 
     def next_capture_seq(self) -> int:
         """A fresh, gap-free frame number for the capture sink.
@@ -1491,6 +1533,9 @@ class SimLoop:
             self.sim.step()
             frame = self.sim.state_update()
             step_ms = (time.perf_counter() - step_start) * 1000.0
+            # Before publishing: the log has to hold this frame's events even
+            # if no reader ever sees this particular frame.
+            self._record_events(frame.events)
             with self._lock:
                 self._latest = frame
                 self._step_times_ms.append(step_ms)

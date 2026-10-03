@@ -164,10 +164,26 @@ class GroundTruthPerception:
             if frame.range_to(ax, ay) > self.max_range_m:
                 continue
 
-            # An agent on a different route shares no arc-length with ego, so
-            # there is no gap to measure -- and `time_to_collision` says so
-            # with None rather than a number nobody can defend.
-            gap = frame.gap_to(ax, ay) if agent.route is route else None
+            # The gap is a question about geometry, not about which Route
+            # object an agent happens to hold, so it is measured by projecting
+            # the agent onto the ego route -- the same answer
+            # `plan/control.py::_closest_lead` and `sim/loop.py::_neighbor`
+            # have always given.
+            #
+            # This used to be gated on `agent.route is route`. That reasoning
+            # ("a different route shares no arc-length with ego") is true of
+            # arc length and false of position, and it made the crossing
+            # pedestrian permanently invisible: `sim/events.py::_jaywalker`
+            # must put its walker on a route of its own -- a walker sharing
+            # the ego route could only ever walk *along* it -- so the only
+            # `critical` hazard in the set could never raise `hazard`, never
+            # draw the overlay billboard, and never reach the TTC readout,
+            # however squarely it stood in front of the car. `hazard_label`'s
+            # "Pedestrian in path" was unreachable for exactly this reason.
+            #
+            # `time_to_collision` still gates on `lane_offset == 0`, so
+            # oncoming and other-lane traffic stay out on their own merits.
+            gap = frame.gap_to(ax, ay)
             lane_offset = frame.lane_offset(ax, ay)
             threat = frame.threat(gap, lane_offset, agent.cls, agent.state.speed_mps)
 

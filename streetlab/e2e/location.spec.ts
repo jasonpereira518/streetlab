@@ -146,15 +146,32 @@ test('searching an address loads and drives it', async ({ page }) => {
 });
 
 /**
- * No network required: `NominatimGeocoder.raw()` (`map/geocode.py`) wraps
- * every httpx failure — a genuine "no results" response from a reachable
- * Nominatim, or a connection failure because there is no network at all —
- * in the same `GeocodeError`, which `submit_scene` (`sim/loop.py`) turns
- * into the same `location_failed` event either way. So this spec produces
- * its target event regardless of whether the sandbox running it has
- * outbound network access.
+ * No network required for the event itself: `NominatimGeocoder.raw()`
+ * (`map/geocode.py`) wraps every httpx failure — a genuine "no results" from
+ * a reachable Nominatim, or a connection failure because there is no network
+ * at all — in the same `GeocodeError`, which `submit_scene` (`sim/loop.py`)
+ * turns into the same `location_failed` event either way.
+ *
+ * But "no network required" is not the same as "bounded in 30 s", and the
+ * original budget assumed it was. Two paths reach this assertion and they
+ * differ by an order of magnitude:
+ *
+ *   - Nominatim answers `[]` (or is unreachable): `raw()` is `timeout=15.0`
+ *     with no retries, so `location_failed` lands in well under 16 s. This is
+ *     the path that runs essentially always — measured at 0.30 s end to end
+ *     over a live network, and 0.16-0.30 s for the geocode alone.
+ *   - Nominatim *resolves* the string to something. It is a fuzzy geocoder
+ *     whose answer varies by server and index state, and on a resolve the
+ *     build proceeds to Overpass — `timeout=30.0` x `retries=3` with
+ *     exponential backoff (`map/overpass.py`), i.e. 90 s+ before it gives up.
+ *
+ * The 30 s assertion covered the first and not the second, so a rare resolve
+ * showed up as an unexplained flake with the sidebar still locked. The budget
+ * now covers the slow path; the fast one still finishes in under a second, so
+ * this costs nothing on the runs that matter.
  */
 test('a nonsense address surfaces an event and clears the pending state', async ({ page }) => {
+  test.setTimeout(150_000);
   const { proc, handshake } = await spawnBackend(['--source', 'osm']);
   try {
     page.on('pageerror', (err) => {
@@ -168,6 +185,7 @@ test('a nonsense address surfaces an event and clears the pending state', async 
     await expect(page.getByText(/OpenStreetMap contributors/)).toBeVisible();
     const loadScenarioButton = page.locator('.scenario .play-btn').first();
     await expect(loadScenarioButton).toBeEnabled();
+    const sceneBefore = await page.getByTestId('scene-name').textContent();
 
     await page.getByLabel('Start address').fill('zzzqqq not a real place 99999');
     await page.keyboard.press('Enter');
@@ -178,12 +196,31 @@ test('a nonsense address surfaces an event and clears the pending state', async 
     await expect(loadScenarioButton).toBeDisabled();
 
     await page.getByRole('tab', { name: /events/i }).click();
-    await expect(page.getByText(/location_failed/)).toBeVisible({ timeout: 30_000 });
 
-    // The box — and the scenario list — must not stay stuck spinning on a
-    // failure.
-    await expect(page.getByLabel('Start address')).toBeEnabled();
+    // Unlocking is the invariant, and it is the one this test exists for:
+    // whatever the geocoder decides, the sidebar must not stay stuck
+    // spinning. Wait on THAT rather than on `location_failed`, because which
+    // event arrives is Nominatim's decision and not ours (see the note above
+    // this test) — waiting on the event made the suite flaky, and a longer
+    // timeout could not fix it, because on a resolve the event never comes at
+    // all.
+    await expect(page.getByLabel('Start address')).toBeEnabled({ timeout: 120_000 });
     await expect(loadScenarioButton).toBeEnabled();
+
+    // Then pin what actually happened. Exactly one of these is true, and both
+    // are correct behaviour: the query failed and said so, or it resolved and
+    // produced a scene. What would be a bug is unlocking silently, having
+    // done neither.
+    //
+    // The success side is checked by the scene NAME, not by an event: a
+    // `scene_description` resets `events: []` (`store/simStore.ts`), so a
+    // completed build erases the very log it would have been announced in.
+    const failed = await page.getByText(/location_failed/).count();
+    const sceneName = await page.getByTestId('scene-name').textContent();
+    expect(
+      failed > 0 || sceneName !== sceneBefore,
+      `unlocked without either failing or building a scene (scene still ${sceneName})`,
+    ).toBe(true);
   } finally {
     killBackend(proc);
   }

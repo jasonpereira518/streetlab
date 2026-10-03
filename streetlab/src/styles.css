@@ -1179,10 +1179,15 @@ canvas {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 18px;
+  /* 24px, not 18px: WCAG 2.2 AA (2.5.8) wants a 24px minimum on the pointer
+     target, and the input IS the target. The compensating margin keeps the
+     outer box at the same 24px it always occupied (18 + 4 + 2), and the track
+     centres in the taller content box exactly where the old margin put it, so
+     nothing moves visually. */
+  height: 24px;
   /* A range input carries a UA margin of `4px 2px 2px`; the 2px sides pushed
      every track out of the panel's text column and 2px past its right inset. */
-  margin: 4px 0 2px;
+  margin: 1px 0 -1px;
   background: none;
   cursor: pointer;
 }
@@ -1546,6 +1551,20 @@ canvas {
   border-radius: 4px;
 }
 
+/*
+ * This quiets the CHROME — hover fades, panel transitions, the startup
+ * spinner. It deliberately does NOT quiet the 3D scene or the six telemetry
+ * canvases: those are driven by `requestAnimationFrame` (`three/Renderer.tsx`,
+ * `store/hooks.ts`), which no CSS rule reaches, and they are the app's
+ * content rather than its decoration. A driving simulator that froze the road
+ * on this preference would have nothing left to show.
+ *
+ * Recorded because it was previously an omission rather than a decision:
+ * measured under `prefers-reduced-motion: reduce`, the renderer keeps running
+ * at full rate (the stats chip ticks 44 -> 43 draws between samples). If that
+ * is ever the wrong call, the lever is a `reduced-motion` flag threaded into
+ * those two rAF loops, not another CSS selector.
+ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1569,8 +1588,65 @@ canvas {
     width: 48px;
     height: 42px;
   }
-  .brand-sub { display: none; }
+  /* Narrow it, do NOT hide it. `.brand-sub` is the only place the toolbar
+     names the running scene, and `.brand` carries no title, so hiding it here
+     meant that below 1320 the app stopped saying what it was simulating —
+     the name survived only in the sidebar's active card, and collapsing the
+     sidebar at 1180 left nothing on screen identifying the scene at all.
+     130px -> 92px buys back the space the hide was after; the toolbar is a
+     full-width row and was never the thing the breakpoint was short of. */
+  .brand-sub { max-width: 92px; }
   /* Four labelled tabs no longer fit the narrower panel; the icons carry it,
      with the full name on the button's title and accessible name. */
   .panel-tab span { display: none; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Pointer target sizes (WCAG 2.2 AA, 2.5.8)                           */
+/* ------------------------------------------------------------------ */
+/* Three controls are drawn smaller than the 24px minimum. Their SIZE is
+   deliberate — a 24px rail would be a slab down the middle of the window, and
+   24px swatches would break the colour row's rhythm — so the fix expands the
+   pointer target without touching the paint: a transparent `::after` centred
+   on the control, outside the layout, hit-testable because the parent is the
+   button. Measured before: .rail 18x52, .swatch 20x20 (22x22 with its border),
+   .switch 36x20.
+
+   The rails matter most. They are the ONLY way to bring a collapsed panel
+   back, so an 18px-wide miss is not a cosmetic annoyance — it is the recovery
+   affordance being hard to hit. */
+/* `.rail` is already `position: absolute` and must stay that way — it is
+   anchored to the viewport, and making it `relative` drops it back into
+   `.stage-main`'s flex row, which pushes the viewport out of its gutter.
+   Only the two static controls need a containing block established. */
+.swatch,
+.switch {
+  position: relative;
+}
+
+.rail::after,
+.swatch::after,
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 24px;
+  min-height: 24px;
+  width: 100%;
+  height: 100%;
+}
+
+/* The switch is a <button> whose knob is an absolutely-positioned child; the
+   overlay must not sit above it and swallow the paint. It is transparent, so
+   only stacking order is at stake. */
+.switch::after {
+  z-index: 0;
+}
+
+/* A disabled foot button reads the same way a disabled icon button does. */
+.foot-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }

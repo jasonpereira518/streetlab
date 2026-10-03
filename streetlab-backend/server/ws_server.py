@@ -145,6 +145,12 @@ class _Connection:
         # the swap land in that same gap and be missed entirely, since the
         # epoch would already read as "seen" for content the client never got.
         self._sent_epoch = loop.scene_epoch
+        # Same idea as `_sent_epoch`, for events: this connection remembers how
+        # far down the loop's event log it has delivered, so a frame this
+        # client never read cannot take its events with it. Starting at the
+        # loop's current cursor rather than 0 means a client joining an
+        # hour-old simulation gets the events from now on, not the backlog.
+        self._event_cursor = loop.events_since(0)[0]
         # A reconnecting client's frame `seq` restarts at 0. Without this, the
         # frame slot's sequence gate would still hold the previous connection's
         # high-water mark and reject every frame of the new one as stale.
@@ -195,7 +201,17 @@ class _Connection:
             if frame is not None:
                 # `seq` is a per-connection counter: a client joining an
                 # hour-old simulation still starts counting from zero.
-                await self.send_model(frame.model_copy(update={"seq": self.seq}))
+                #
+                # `events` is replaced rather than passed through. The frame
+                # carries only the events of the single tick it was built on,
+                # and this loop reads the NEWEST frame on its own clock, so
+                # any tick it skipped would otherwise lose its events for good.
+                # The cursor makes delivery a property of the connection
+                # instead of a property of which frame happened to be latest.
+                self._event_cursor, events = self.loop.events_since(self._event_cursor)
+                await self.send_model(
+                    frame.model_copy(update={"seq": self.seq, "events": events})
+                )
                 self.seq += 1
             await asyncio.sleep(self.period)
 
