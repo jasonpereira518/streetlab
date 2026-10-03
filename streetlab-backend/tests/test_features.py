@@ -4,16 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from map.features import (
-    _TREE_MIN_SPACING_M,
-    _tagged_nodes,
-    build_buildings,
-    build_crosswalks,
-    build_stop_signs,
-    build_traffic_lights,
-    build_trees,
-    signal_groups,
-)
+from map.features import _TREE_MIN_SPACING_M, build_buildings, build_trees
 from map.lanes import LANE_W, drivable_ways
 from map.osm_model import parse_overpass
 from map.projection import LatLon, signed_area_x2, to_latlon, to_local
@@ -84,36 +75,6 @@ def test_degenerate_building_rings_are_dropped():
         ]}
     )
     assert build_buildings(graph, ORIGIN) == []
-
-
-def test_traffic_lights_and_stop_signs_come_from_tagged_nodes():
-    graph = parse_overpass(
-        {"elements": [
-            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156,
-             "tags": {"highway": "traffic_signals"}},
-            {"type": "node", "id": 2, "lat": 37.7946, "lon": -122.4157,
-             "tags": {"highway": "stop"}},
-            {"type": "node", "id": 3, "lat": 37.7947, "lon": -122.4158,
-             "tags": {"highway": "crossing"}},
-        ]}
-    )
-    assert [t.id for t in build_traffic_lights(graph, ORIGIN)] == ["osm_tl_1"]
-    assert [s.id for s in build_stop_signs(graph, ORIGIN)] == ["osm_ss_2"]
-    assert [c.id for c in build_crosswalks(graph, ORIGIN)] == ["osm_cw_3"]
-
-
-def test_signal_groups_assign_every_light_to_ns_or_ew():
-    graph = parse_overpass(
-        {"elements": [
-            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156,
-             "tags": {"highway": "traffic_signals"}},
-            {"type": "node", "id": 2, "lat": 37.7950, "lon": -122.4156,
-             "tags": {"highway": "traffic_signals"}},
-        ]}
-    )
-    groups = signal_groups(build_traffic_lights(graph, ORIGIN))
-    assert set(groups.values()) <= {"ns", "ew"}
-    assert len(groups) == 2
 
 
 def test_trees_have_valid_geometry_on_the_real_fixture(graph):
@@ -223,7 +184,7 @@ def test_procedural_verge_trees_supplement_sparse_tagged_coverage(graph):
     which returns immediately with exactly the 43 tagged trees and never
     reaches the procedural loop.
     """
-    tagged_count = len(_tagged_nodes(graph, "natural", "tree"))
+    tagged_count = len(graph.tagged_nodes("natural", "tree"))
     assert tagged_count == 43  # pins the fixture's real, sparse OSM coverage
 
     trees = build_trees(graph, ORIGIN)
@@ -288,9 +249,9 @@ def _point_to_segment_distance(
     point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
 ) -> float:
     """Distance from `point` to the segment `a`-`b` (clamped, not the infinite
-    line) -- written independently of `map.features._point_to_segment_distance`
-    so this test checks the geometry itself, not just that the two copies of
-    the formula agree.
+    line) -- written independently of `map.lanes.segment_distance` so this test
+    checks the geometry itself, not just that the two copies of the formula
+    agree.
     """
     px, py = point
     ax, ay = a
@@ -375,18 +336,6 @@ def test_procedural_trees_are_dropped_near_an_already_placed_tagged_tree():
     procedural_ids = [t.id for t in trees if t.id.startswith("osm_tv_")]
     assert tagged_ids == ["osm_tr_3"]
     assert procedural_ids == ["osm_tv_10_0_-1"]
-
-
-def test_counts_on_the_real_fixture_match_verified_osm_tag_counts(graph):
-    """Exact regression pin, not a loose floor: the fixture is a committed,
-    unchanging file, and its `highway=traffic_signals` / `highway=stop` /
-    `highway=crossing` node counts were verified directly (58 / 145 / 370).
-    A builder that silently starts dropping tagged nodes should fail this,
-    not slip through on a `>= N` guard.
-    """
-    assert len(build_traffic_lights(graph, ORIGIN)) == 58
-    assert len(build_stop_signs(graph, ORIGIN)) == 145
-    assert len(build_crosswalks(graph, ORIGIN)) == 370
 
 
 def test_trees_are_deterministic_across_runs(graph):

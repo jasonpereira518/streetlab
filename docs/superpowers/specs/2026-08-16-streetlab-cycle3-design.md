@@ -64,7 +64,9 @@ apart from rest and `v·dt = 0.149 m` apart at the 8.92 m/s Nob Hill lap mean.
 hysteresis, a commitment timer or a stop-line latch would tick twice per frame
 against a discontinuous ego.
 
-**OSM props carry no heading.** `build_traffic_lights` and `build_stop_signs`
+**OSM props carry no heading.** *(Fixed after this spec — see Deferred, below.
+Kept as written, because Cycle 3's control-point design is a response to it.)*
+`build_traffic_lights` and `build_stop_signs`
 (`map/features.py:149,162`) set `heading=0.0` for every node. `world.ts:762-768`
 rotates each stop sign by that heading, so **all 145 Nob Hill stop signs and all
 58 traffic lights face due east in the shipped app**, whatever street they are
@@ -353,14 +355,22 @@ degree of freedom — it is currently `route` + scalar `s`.
   Cycle 2's spec. They need junction topology that `RouteGraph` discards after
   scene build; carrying it onto `BuiltScene` is a prerequisite worth its own
   decision rather than a smuggled one.
-- **OSM prop headings.** Every OSM light and stop sign is `heading=0.0`, so the
-  renderer faces all 203 of them due east (`map/features.py:149,162`;
-  `world.ts:762-768`). Deriving each from the way its node lies on would fix a
-  visible defect and let one control-point rule serve both scene sources — but it
-  is a rendering fix in map ingest, not planning depth, and Cycle 3 works without
-  it by letting each source filter its own candidates.
-- **Real signal phasing.** `signal_groups` alternates by id order across the
-  whole scene. Per-junction grouping needs the junction topology above.
+- ~~**OSM prop headings.**~~ **Shipped since.** The deferral held that deriving
+  each heading from the way its node lies on was "a rendering fix in map ingest,
+  not planning depth". Both halves turned out to be understated: the props were
+  not merely facing the wrong way but standing ON the centreline, because an OSM
+  `highway=stop` node marks where the rule applies, not where the sign stands.
+  `map/props.py` now derives position and heading from the approach — OSM's own
+  `direction=` tag where it exists (137 of 145 stop nodes), way geometry
+  otherwise — and one control-point rule (`map.lanes.faces_the_route`) does serve
+  both scene sources, exactly as this entry predicted it would.
+- ~~**Real signal phasing.**~~ **Per-junction grouping shipped**, and did not
+  need the deferred junction topology after all: once each head carries an
+  approach direction, its phase group is a fact about that direction
+  (`map/props.py:signal_groups`), so opposing approaches run together and
+  crossing ones conflict. The TIMING is still fixed-time two-phase and still not
+  a model of any real junction — OSM carries no phase data, and that part of this
+  entry stands.
 - **Frenet candidate sampling.** `plan/control.py:5` names it, but with the
   tracker retained and lane changes expressible as a bounded lateral transition,
   nothing in Phases 1–3 needs a candidate set. Revisit if lane changes prove

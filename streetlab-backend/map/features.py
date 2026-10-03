@@ -1,9 +1,15 @@
-"""Scene furniture from OSM tags.
+"""Buildings and trees from OSM tags.
 
-Everything here is best-effort: OSM's coverage of buildings is good, of signals
-patchy, and of street trees close to nonexistent. Missing data produces a
-plausible default rather than an empty world, because a city with no buildings
-reads as a bug even when the data really is absent.
+Everything here is best-effort: OSM's coverage of buildings is good and of
+street trees close to nonexistent. Missing data produces a plausible default
+rather than an empty world, because a city with no buildings reads as a bug
+even when the data really is absent.
+
+Traffic control devices -- signals, stop signs, crosswalks -- used to live here
+too. They moved to `map/props.py`, which has to reason about which approach of
+which junction a device governs; that is a different problem from scattering
+furniture across a tile, and it needs a hundred lines of approach geometry that
+buildings and trees have no use for.
 
 All randomness is seeded from OSM ids through sha256. Python salts `hash()` per
 process, so using it would make the same location build differently on every
@@ -43,8 +49,9 @@ by running the real Nob Hill fixture rather than only synthetic data:
   procedural trees sat inside some carriageway that was not the one they were
   generated against, the worst by 0.14 m inside a Broadway segment.
   `_procedural_verge_trees` now checks every candidate against every drivable
-  way's actual road surface (segment distance, not the parent way's line
-  alone), not only its own. Tagged trees are never checked or dropped by this
+  way's actual road surface (`map.lanes.carriageway_intrusion_m`, which
+  measures segment distance rather than the parent way's line alone), not only
+  its own. Tagged trees are never checked or dropped by this
   -- a `natural=tree` node in a median or plaza is OSM's own survey data, not
   something this pipeline should second-guess.
 """
@@ -55,11 +62,16 @@ import hashlib
 import math
 from random import Random
 
-from map.lanes import LANE_W, drivable_ways
-from map.osm_model import OsmGraph, OsmNode
+from map.lanes import (
+    LANE_W,
+    carriageway_geometry,
+    carriageway_half_width_m,
+    carriageway_intrusion_m,
+    drivable_ways,
+)
+from map.osm_model import OsmGraph
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import lane_counts, road_class
-from schema import Building, Crosswalk, StopSign, TrafficLight, Tree
+from schema import Building, Tree
 
 METRES_PER_LEVEL = 3.2
 DEFAULT_BUILDING_HEIGHT_M = 9.0
@@ -132,66 +144,6 @@ def build_buildings(graph: OsmGraph, origin: LatLon) -> list[Building]:
     return buildings
 
 
-def _tagged_nodes(graph: OsmGraph, key: str, value: str) -> list[OsmNode]:
-    return sorted(
-        (n for n in graph.nodes.values() if n.tags.get(key) == value),
-        key=lambda n: n.id,
-    )
-
-
-def build_traffic_lights(graph: OsmGraph, origin: LatLon) -> list[TrafficLight]:
-    lights = []
-    for node in _tagged_nodes(graph, "highway", "traffic_signals"):
-        lights.append(
-            TrafficLight(
-                id=f"osm_tl_{node.id}",
-                position=to_local(node.lat, node.lon, origin),
-                heading=0.0,
-                mast_arm_m=0.0,
-                height_m=6.0,
-            )
-        )
-    return lights
-
-
-def build_stop_signs(graph: OsmGraph, origin: LatLon) -> list[StopSign]:
-    return [
-        StopSign(
-            id=f"osm_ss_{node.id}",
-            position=to_local(node.lat, node.lon, origin),
-            heading=0.0,
-        )
-        for node in _tagged_nodes(graph, "highway", "stop")
-    ]
-
-
-def build_crosswalks(graph: OsmGraph, origin: LatLon) -> list[Crosswalk]:
-    return [
-        Crosswalk(
-            id=f"osm_cw_{node.id}",
-            center=to_local(node.lat, node.lon, origin),
-            heading=0.0,
-            width_m=4.0,
-            length_m=7.2,
-            style="continental",
-        )
-        for node in _tagged_nodes(graph, "highway", "crossing")
-    ]
-
-
-def signal_groups(lights: list[TrafficLight]) -> dict[str, str]:
-    """Alternate phase groups so opposing approaches are never both green.
-
-    Without OSM phase data (which is effectively never tagged), the honest
-    approach is a stable arbitrary split rather than an invented one: lights
-    are assigned by id order, which is deterministic and keeps an
-    intersection's heads from all showing green at once. It is not a model of
-    the real signal phasing -- OSM does not carry that -- and callers must
-    treat it as such.
-    """
-    return {light.id: ("ns" if i % 2 == 0 else "ew") for i, light in enumerate(lights)}
-
-
 def _new_tree(id_: str, position: tuple[float, float], seed: str) -> Tree:
     rng = Random(_seed(seed))
     return Tree(
@@ -214,13 +166,6 @@ def _new_tree(id_: str, position: tuple[float, float], seed: str) -> Tree:
 _TREE_MIN_SPACING_M = 8.0
 
 
-def _carriageway_half_width_m(tags: dict[str, str]) -> float:
-    """Half the total carriageway width -- centreline to kerb -- for a way."""
-    cls = road_class(tags) or "residential"
-    forward, backward = lane_counts(tags, cls)
-    return (forward + backward) * LANE_W / 2
-
-
 def _verge_offset_m(tags: dict[str, str]) -> float:
     """Distance from a way's centreline to plant a verge tree, clear of the
     carriageway.
@@ -235,39 +180,7 @@ def _verge_offset_m(tags: dict[str, str]) -> float:
     spacing rather than pulling its trees in closer than before.
     """
     verge_margin_m = 2.0
-    return max(_carriageway_half_width_m(tags) + verge_margin_m, LANE_W + 2.0)
-
-
-def _point_to_segment_distance(
-    point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
-) -> float:
-    """Distance from `point` to the segment `a`-`b` (clamped, not the infinite line)."""
-    px, py = point
-    ax, ay = a
-    bx, by = b
-    dx, dy = bx - ax, by - ay
-    length_sq = dx * dx + dy * dy
-    if length_sq < 1e-12:  # a and b coincide
-        return math.dist(point, a)
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length_sq))
-    return math.dist(point, (ax + t * dx, ay + t * dy))
-
-
-def _inside_any_carriageway(
-    point: tuple[float, float],
-    ways_geometry: list[tuple[list[tuple[float, float]], float]],
-) -> bool:
-    """True if `point` falls on the road surface of any way, clearing that
-    way's own half-width -- not just the way the candidate was generated
-    against. A verge tree that clears its parent way can still land inside a
-    different, wider way's carriageway a few metres away, most often near an
-    intersection; checking only the parent missed that case.
-    """
-    for points, half_width in ways_geometry:
-        for a, b in zip(points, points[1:]):
-            if _point_to_segment_distance(point, a, b) < half_width:
-                return True
-    return False
+    return max(carriageway_half_width_m(tags) + verge_margin_m, LANE_W + 2.0)
 
 
 def _procedural_verge_trees(
@@ -279,21 +192,10 @@ def _procedural_verge_trees(
     within `_TREE_MIN_SPACING_M` of one is dropped rather than doubling up on
     the same spot with visibly overlapping canopies. A candidate is also
     dropped if it falls inside *any* drivable way's carriageway, not only the
-    way it was generated against -- see `_inside_any_carriageway`.
+    way it was generated against -- see `map.lanes.carriageway_intrusion_m`.
     """
     ways = drivable_ways(graph)
-    # Each way's local points and half-width, computed once and reused both
-    # as the outer loop's own geometry and as every other candidate's
-    # cross-way carriageway check -- a brute-force all-pairs scan, not a
-    # spatial index, per the ~790 candidates x 264 ways this fixture has,
-    # which is trivial either way.
-    ways_geometry = [
-        (
-            [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)],
-            _carriageway_half_width_m(way.tags),
-        )
-        for way in ways
-    ]
+    ways_geometry = carriageway_geometry(graph, origin)
 
     trees: list[Tree] = []
     for way, (points, _half_width) in zip(ways, ways_geometry):
@@ -308,7 +210,7 @@ def _procedural_verge_trees(
                 py = a[1] + uy * length * 0.5 + ux * side * offset
                 if any(math.dist((px, py), p) < _TREE_MIN_SPACING_M for p in avoid):
                     continue
-                if _inside_any_carriageway((px, py), ways_geometry):
+                if carriageway_intrusion_m((px, py), ways_geometry) > 0.0:
                     continue
                 trees.append(
                     _new_tree(
@@ -334,7 +236,7 @@ def build_trees(graph: OsmGraph, origin: LatLon) -> list[Tree]:
     """
     tagged = [
         _new_tree(f"osm_tr_{node.id}", to_local(node.lat, node.lon, origin), f"tree:{node.id}")
-        for node in _tagged_nodes(graph, "natural", "tree")
+        for node in graph.tagged_nodes("natural", "tree")
     ]
     tagged_positions = [t.position for t in tagged]
     return tagged + _procedural_verge_trees(graph, origin, tagged_positions)

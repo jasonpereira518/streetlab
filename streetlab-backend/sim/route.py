@@ -49,7 +49,7 @@ class Route:
 
     points: list[Point]
     closed: bool = True
-    #: Posted limit governing each segment of `_ring`, in m/s, or None when the
+    #: Posted limit governing each segment of `ring`, in m/s, or None when the
     #: scene has nothing better to say than its single scene-wide figure.
     #: Deliberately NOT carried through `offset`/`fillet`/`resample`: those
     #: rebuild the geometry, and a limit list silently kept alongside points it
@@ -64,12 +64,12 @@ class Route:
             raise ValueError("a route needs at least two points")
         self.points = [(float(x), float(y)) for x, y in self.points]
         self._cum = [0.0]
-        for a, b in zip(self._ring, self._ring[1:]):
+        for a, b in zip(self.ring, self.ring[1:]):
             self._cum.append(self._cum[-1] + math.dist(a, b))
         if self.length_m <= 0:
             raise ValueError("a route needs non-zero length")
         if self.segment_limits is not None:
-            expected = len(self._ring) - 1
+            expected = len(self.ring) - 1
             if len(self.segment_limits) != expected:
                 raise ValueError(
                     f"segment_limits has {len(self.segment_limits)} entries for "
@@ -78,7 +78,7 @@ class Route:
             self.segment_limits = [float(v) for v in self.segment_limits]
 
     @property
-    def _ring(self) -> list[Point]:
+    def ring(self) -> list[Point]:
         """Vertices in traversal order, repeating the first for a closed route."""
         return self.points + [self.points[0]] if self.closed else self.points
 
@@ -123,14 +123,14 @@ class Route:
 
     def point_at(self, s: float) -> Point:
         i, f = self._locate(s)
-        ring = self._ring
+        ring = self.ring
         ax, ay = ring[i]
         bx, by = ring[i + 1]
         return (ax + (bx - ax) * f, ay + (by - ay) * f)
 
     def heading_at(self, s: float) -> float:
         i, _ = self._locate(s)
-        ring = self._ring
+        ring = self.ring
         ax, ay = ring[i]
         bx, by = ring[i + 1]
         return math.atan2(by - ay, bx - ax)
@@ -138,7 +138,7 @@ class Route:
     def project(self, p: Point) -> float:
         """Arc length of the closest point on the route to `p`."""
         best_s, best_d2 = 0.0, math.inf
-        ring = self._ring
+        ring = self.ring
         for i in range(len(ring) - 1):
             ax, ay = ring[i]
             bx, by = ring[i + 1]
@@ -169,6 +169,25 @@ class Route:
         """Sample the route forward from `s`, for the plan ribbon."""
         n = max(1, int(length_m / step_m))
         return [self.point_at(s + i * step_m) for i in range(n + 1)]
+
+    def resample(self, step_m: float) -> list[Point]:
+        """The whole route as an evenly spaced, drawable polyline.
+
+        `points` is the route's INTERNAL vertex list and is not fit to draw.
+        Offsetting, filleting and self-intersection splicing leave it dense and
+        uneven: measured on the Nob Hill loop, 224 of its 339 legs are under a
+        centimetre long, and one 1.5 cm stub doubles back on itself at 175
+        degrees. Arc-length parameterisation steps straight past all of that, so
+        the simulator never notices -- but a renderer computing a perpendicular
+        at each vertex sees the normal flip on that stub and tears the band it
+        is drawing.
+
+        Sampling by arc length instead gives uniform spacing, no stubs and no
+        reversals. A closed route's last sample lands exactly on its first, so
+        the result draws as an open polyline either way.
+        """
+        n = max(2, math.ceil(self.length_m / step_m))
+        return [self.point_at(i * self.length_m / n) for i in range(n + 1)]
 
     def offset(self, distance_m: float) -> Route:
         """A parallel route `distance_m` to the left (negative for the right).

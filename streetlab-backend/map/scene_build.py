@@ -20,7 +20,14 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Protocol, runtime_checkable
 
-from map.lanes import derive_lanes, project_control_points
+from map.lanes import (
+    REFERENCE_STEP_M,
+    STOP_LINE_SETBACK_M,
+    derive_lanes,
+    faces_the_route,
+    project_control_points,
+)
+from map.props import KERB_MARGIN_M
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -94,15 +101,6 @@ SIDEWALK_W = 2.4
 # so anything above roughly 6 m puts the racing line over the kerb and through
 # the buildings behind it. `test_world_sanity.py` pins this.
 TURN_RADIUS_M = 6.0
-
-# How far before a junction centre the car halts. Clears the widest crossing
-# carriageway here (an arterial's 7.2 m half-width) with room to spare.
-STOP_LINE_SETBACK_M = 9.0
-
-# How closely a head's approach direction must agree with the route heading for
-# that head to be the one governing the ego. Generous, because the route is
-# filleted through the junction and its heading there is not the street's.
-HEAD_TOL_RAD = math.radians(60.0)
 
 MPH = 0.44704
 
@@ -242,6 +240,7 @@ class SyntheticGrid:
             stop_signs=self._stop_signs(),
             trees=self._trees(rng),
             street_signs=self._street_signs(),
+            reference_path=ego_route.resample(REFERENCE_STEP_M),
             catalog=self.scenarios(),
         )
 
@@ -376,29 +375,50 @@ class SyntheticGrid:
     def _signal_heads(self) -> list[tuple[str, tuple[float, float], float, tuple[float, float]]]:
         """`(id, position, heading, junction_centre)` for every signal head.
 
-        The junction centre is what a stop line is measured from -- a head sits
-        a full crossing carriageway beyond the junction it governs, so the head
-        position is the wrong origin for a setback.
+        `position` is the POLE base, which stands at the kerb on the far side of
+        the junction, on the driver's RIGHT. It is not the head: the renderer
+        hangs that at `position + mast_arm_m * (sin h, -cos h)`, an arm pointing
+        to the driver's left, so a right-hand pole reaches back over the lanes
+        it governs. An earlier version put the pole on the carriageway
+        centreline, which stood it in the middle of the road and sent its arm
+        out over the opposite pavement.
+
+        The junction centre is the fourth element because it, not the pole, is
+        what a stop line is measured from -- a head sits a full crossing
+        carriageway beyond the junction it governs.
         """
         heads = []
         for ns, ew in self._intersections():
             if not self._is_signalised(ns, ew):
                 continue
             cx, cy = ns.at, ew.at
-            # Stop line stand-off: clear of the crossing carriageway plus a lane.
+            # Far-side stand-off: clear of the crossing carriageway plus a lane.
             ns_off = ew.half_width + LANE_W
             ew_off = ns.half_width + LANE_W
+            # Kerbside stand-off, on the approach's own carriageway.
+            ns_kerb = ns.half_width + KERB_MARGIN_M
+            ew_kerb = ew.half_width + KERB_MARGIN_M
             tag = f"{int(cx)}_{int(cy)}"
-            for name, pos, heading in (
-                ("n", (cx, cy + ns_off), -math.pi / 2),  # governs northbound
-                ("s", (cx, cy - ns_off), math.pi / 2),  # governs southbound
-                ("e", (cx + ew_off, cy), math.pi),  # governs eastbound
-                ("w", (cx - ew_off, cy), 0.0),  # governs westbound
+            for name, pos, heading, arm in (
+                # Governs northbound: far side is +y, driver's right is +x.
+                ("n", (cx + ns_kerb, cy + ns_off), -math.pi / 2, ns_kerb),
+                ("s", (cx - ns_kerb, cy - ns_off), math.pi / 2, ns_kerb),
+                # Governs eastbound: far side is +x, driver's right is -y.
+                ("e", (cx + ew_off, cy - ew_kerb), math.pi, ew_kerb),
+                ("w", (cx - ew_off, cy + ew_kerb), 0.0, ew_kerb),
             ):
-                heads.append((f"tl_{tag}_{name}", pos, heading, (cx, cy)))
+                heads.append((f"tl_{tag}_{name}", pos, heading, (cx, cy), arm))
         return heads
 
     def _stop_sign_heads(self) -> list[tuple[str, tuple[float, float], float, tuple[float, float]]]:
+        """`(id, position, heading, junction_centre)` for every stop sign.
+
+        Unlike a signal head, a stop sign stands on the NEAR side -- a driver
+        has to read it before the line, not after it -- and, like the signal
+        pole, on the driver's RIGHT. An earlier version had both backwards,
+        putting every sign past the junction on the left kerb, where it faced
+        the right way but governed a line the driver had already crossed.
+        """
         heads = []
         for ns, ew in self._intersections():
             if self._is_signalised(ns, ew):
@@ -406,19 +426,23 @@ class SyntheticGrid:
             cx, cy = ns.at, ew.at
             ns_off = ew.half_width + 2.0
             ew_off = ns.half_width + 2.0
+            ns_kerb = ns.half_width + 1.5
+            ew_kerb = ew.half_width + 1.5
             tag = f"{int(cx)}_{int(cy)}"
             for name, pos, heading in (
-                ("n", (cx - ns.half_width - 1.5, cy + ns_off), -math.pi / 2),
-                ("s", (cx + ns.half_width + 1.5, cy - ns_off), math.pi / 2),
-                ("e", (cx + ew_off, cy + ew.half_width + 1.5), math.pi),
-                ("w", (cx - ew_off, cy - ew.half_width - 1.5), 0.0),
+                # Governs northbound: approaches from -y, driver's right is +x.
+                ("n", (cx + ns_kerb, cy - ns_off), -math.pi / 2),
+                ("s", (cx - ns_kerb, cy + ns_off), math.pi / 2),
+                # Governs eastbound: approaches from -x, driver's right is -y.
+                ("e", (cx - ew_off, cy - ew_kerb), math.pi),
+                ("w", (cx + ew_off, cy + ew_kerb), 0.0),
             ):
                 heads.append((f"ss_{tag}_{name}", pos, heading, (cx, cy)))
         return heads
 
     def _traffic_lights(self) -> list[TrafficLight]:
         lights = []
-        for light_id, pos, heading, (cx, cy) in self._signal_heads():
+        for light_id, pos, heading, (cx, cy), arm in self._signal_heads():
             ns = next(s for s in NS_STREETS if s.at == cx)
             ew = next(s for s in EW_STREETS if s.at == cy)
             lights.append(
@@ -426,7 +450,11 @@ class SyntheticGrid:
                     id=light_id,
                     position=pos,
                     heading=heading,
-                    mast_arm_m=5.5 if max(ns.lanes, ew.lanes) > 1 else 0.0,
+                    # Reach from the kerb back to about the approach's
+                    # centreline, so the head hangs over the lanes it governs.
+                    # A single-lane-each-way street gets a pole-mounted head
+                    # instead, which is what the arm-less case means.
+                    mast_arm_m=arm if max(ns.lanes, ew.lanes) > 1 else 0.0,
                     height_m=6.0,
                 )
             )
@@ -456,33 +484,13 @@ class SyntheticGrid:
         route heading at the junction picks it out.
         """
         candidates = []
-        for cp_id, _pos, heading, centre in self._signal_heads():
-            if self._faces_the_route(ego_route, heading, centre):
+        for cp_id, _pos, heading, centre, _arm in self._signal_heads():
+            if faces_the_route(ego_route, heading, centre, STOP_LINE_SETBACK_M):
                 candidates.append((cp_id, "signal", centre, STOP_LINE_SETBACK_M))
         for cp_id, _pos, heading, centre in self._stop_sign_heads():
-            if self._faces_the_route(ego_route, heading, centre):
+            if faces_the_route(ego_route, heading, centre, STOP_LINE_SETBACK_M):
                 candidates.append((cp_id, "stop_sign", centre, STOP_LINE_SETBACK_M))
         return project_control_points(ego_route, candidates)
-
-    @staticmethod
-    def _faces_the_route(
-        ego_route: Route, lamp_heading: float, centre: tuple[float, float]
-    ) -> bool:
-        """True if the lamp at `centre` faces traffic travelling the way the
-        ego does, evaluated where the ego actually has to obey it.
-
-        The junction centre itself sits mid-turn on a filleted corner -- its
-        route heading is neither the entry nor the exit street's, so no head
-        matches it well and more than one can pass a generous tolerance. The
-        STOP LINE, `STOP_LINE_SETBACK_M` back from the centre, is where the
-        car is still on its approach leg and the route heading is the real
-        street heading -- the same point `project_control_points` measures
-        `s` from. Mirroring that here is what makes this an exact match
-        rather than a coin flip between two heads that share a phase group.
-        """
-        stop_s = ego_route.normalise(ego_route.project(centre) - STOP_LINE_SETBACK_M)
-        travel = lamp_heading + math.pi
-        return abs(math.remainder(ego_route.heading_at(stop_s) - travel, math.tau)) < HEAD_TOL_RAD
 
     def _crosswalks(self) -> list[Crosswalk]:
         walks = []

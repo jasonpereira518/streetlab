@@ -26,6 +26,7 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof MapIcon }> = [
 const LAYER_LABELS: Record<LayerKey, string> = {
   detections: 'Detections',
   plan_path: 'Plan path',
+  reference_path: 'Racing line',
   lane_markings: 'Lane markings',
   crosswalks: 'Crosswalks',
   buildings: 'Buildings',

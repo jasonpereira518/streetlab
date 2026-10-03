@@ -27,6 +27,7 @@ import type {
   Vec2,
 } from '../schema';
 import { PROTOCOL_VERSION } from '../schema';
+import { makeRectRoute, Route } from './route';
 
 /* ---------------------------------------------------------------- */
 /* Grid definition                                                   */
@@ -517,6 +518,23 @@ export const SCENARIOS: ScenarioSummary[] = [
 /* Assembly                                                          */
 /* ---------------------------------------------------------------- */
 
+/**
+ * The line the ego drives: the inner lane of `LOOP_BLOCK`, filleted at the
+ * corners. One definition, used both by the mock simulator to move the car and
+ * by `buildScene` to publish `reference_path`, so the black line on the road
+ * and the car's actual motion can never disagree.
+ */
+export function makeEgoRoute(): Route {
+  return makeRectRoute(
+    LOOP_BLOCK.x0 + EGO_LANE_INSET,
+    LOOP_BLOCK.y0 + EGO_LANE_INSET,
+    LOOP_BLOCK.x1 - EGO_LANE_INSET,
+    LOOP_BLOCK.y1 - EGO_LANE_INSET,
+    10,
+    true,
+  );
+}
+
 /** Build the full static scene for a scenario. */
 export function buildScene(scenarioId: string): SceneDescription {
   const scenario =
@@ -543,6 +561,10 @@ export function buildScene(scenarioId: string): SceneDescription {
     stop_signs: buildStopSigns(),
     trees: buildTrees(),
     street_signs: buildStreetSigns(),
+    reference_path: (() => {
+      const r = makeEgoRoute();
+      return r.polyline(0, r.length, 2);
+    })(),
     catalog: SCENARIOS,
   };
 }

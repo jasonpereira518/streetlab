@@ -9,7 +9,7 @@ import pytest
 
 from map.cache import BundledExtracts, DiskCache
 from map.geocode import GeocodeError, Place, StubGeocoder
-from map.lanes import NoDrivableRoad
+from map.lanes import REFERENCE_STEP_M, NoDrivableRoad
 from map.osm_source import ATTRIBUTION, BUNDLED, LocationSpec, OsmSceneSource, default_source
 from map.overpass import BBox, OverpassClient, OverpassError
 from map.scene_build import SceneSource
@@ -1030,18 +1030,37 @@ def test_the_building_clearance_check_would_catch_a_building_in_the_road():
 
 
 def test_the_osm_scene_carries_control_points_for_the_driven_route(nob_hill_scene):
-    """Measured: 58 lights and 145 stop signs in the extract, of which 4 and 12
-    are within 12 m of the driven route. The list is the ones the ego meets.
+    """The stop lines the ego meets, not every prop it drives past.
+
+    Measured on the 1182 m Nob Hill loop: 16 distinct OSM signal and stop
+    nodes fall within the 12 m match radius, fanning out into 28 approaches.
+    Only 8 of those approaches govern traffic travelling the way the ego does;
+    the rest govern the crossing street or the opposite direction.
+
+    Taking all 16 -- which is what this test used to assert, back when every
+    OSM prop shipped `heading=0.0` and there was no approach direction to
+    filter on -- put the ego at stop lines belonging to the cross street, and
+    at signal heads whose phase group is red exactly when its own is green.
+    Now `map.lanes.faces_the_route` picks the governing head, the same way
+    `SyntheticGrid` always has.
+
+    One stop line every ~148 m on a city-block loop, alternating around the
+    circuit (south, south, south, west, west, north, north, east) as the route
+    turns -- which is the shape of a lap, and the cheapest check that the
+    filter kept the right eight rather than eight arbitrary ones.
     """
     scene = nob_hill_scene
-    assert scene.control_points
-    assert len(scene.control_points) < 40, "matched far more props than the route passes"
-    # Lower bound too (12 stop signs + 4 signals measured): a cheap second
-    # backstop against a regression that silently drops most projections
-    # while still leaving `assert scene.control_points` truthy.
-    assert len(scene.control_points) >= 16, "matched far fewer props than the route passes"
-    kinds = {cp.kind for cp in scene.control_points}
-    assert kinds <= {"signal", "stop_sign"}
+    assert len(scene.control_points) == 8
+    assert {cp.kind for cp in scene.control_points} <= {"signal", "stop_sign"}
+    # Every kept head faces the direction the ego travels where it must obey it.
+    for cp in scene.control_points:
+        travel = scene.ego_route.heading_at(cp.s)
+        approach = cp.id.rsplit("_", 1)[1]
+        expected = {"e": 0.0, "n": math.pi / 2, "w": math.pi, "s": -math.pi / 2}[approach]
+        assert abs(math.remainder(travel - expected, math.tau)) < math.radians(60.0), (
+            f"{cp.id} governs {approach}bound traffic but the route heads "
+            f"{math.degrees(travel):.1f} deg at its stop line"
+        )
 
 
 def test_osm_control_points_are_ordered_along_the_route(nob_hill_scene):
@@ -1057,3 +1076,21 @@ def test_every_osm_signal_control_point_has_a_phase_group(nob_hill_scene):
     for cp in scene.control_points:
         if cp.kind == "signal":
             assert cp.id in scene.signal_groups
+
+
+def test_the_osm_reference_path_is_drawable(nob_hill_scene):
+    """The same contract `test_scene_build.py` pins for the synthetic grid, on
+    the source that actually exposed the problem.
+
+    `SyntheticGrid`'s hand-built loop is tidy enough that shipping its raw
+    vertex list would have looked fine. The OSM route is not: offsetting,
+    filleting and self-intersection splicing leave `Route.points` with 224 legs
+    under a centimetre out of 339, and a 1.5 cm stub that doubles back at 175
+    degrees. Sampling by arc length is what makes it a line rather than a tear.
+    """
+    path = nob_hill_scene.description.reference_path
+    assert len(path) > 100
+    gaps = [math.dist(a, b) for a, b in zip(path, path[1:])]
+    assert min(gaps) > 0.5
+    assert max(gaps) <= REFERENCE_STEP_M + 1e-9
+    assert path[0] == pytest.approx(path[-1])

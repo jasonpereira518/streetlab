@@ -97,7 +97,13 @@ export class Route {
     return { x, y, heading, curvature };
   }
 
-  /** Densely sampled polyline, for plan ribbons and minimap previews. */
+  /** Densely sampled polyline, for plan ribbons and minimap previews.
+   *
+   * Sampled, not a vertex list: elements alternate lines and fillet ARCS, so
+   * corner vertices alone would cut every turn straight through. Called with
+   * the full length it yields a closed ring whose last point repeats the first,
+   * which is what `SceneDescription.reference_path` ships.
+   */
   polyline(s0: number, len: number, step: number, lateral = 0): Vec2[] {
     const out: Vec2[] = [];
     const n = Math.max(2, Math.ceil(len / step));

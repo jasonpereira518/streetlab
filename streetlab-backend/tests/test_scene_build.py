@@ -10,6 +10,7 @@ import math
 
 import pytest
 
+from map.lanes import REFERENCE_STEP_M
 from map.scene_build import SceneSource, SyntheticGrid
 from schema import SceneDescription, parse_server_message
 
@@ -222,3 +223,125 @@ def test_every_synthetic_scenario_builds_control_points():
     for summary in SyntheticGrid().scenarios():
         scene = SyntheticGrid().build(summary.id)
         assert scene.control_points, f"{summary.id} has none"
+
+
+# --------------------------------------------------------------------------- #
+# Where the props stand                                                        #
+# --------------------------------------------------------------------------- #
+#
+# `test_only_the_head_facing_the_ego_becomes_a_control_point` above already
+# pins every head's HEADING, via the `_n`/`_s`/`_e`/`_w` suffix convention. It
+# says nothing about POSITION, and the two were wrong in different ways: the
+# grid's stop signs faced the right traffic from the left kerb, past the
+# junction, and its signal poles stood on the carriageway centreline with the
+# mast arm reaching away from the road. A head can govern the correct approach
+# and still be somewhere no sign has ever stood.
+
+
+def _travel_for(prop_id: str) -> float:
+    """Direction of travel a head's id suffix governs -- the same convention
+    `_signal_heads` and `_stop_sign_heads` encode as `heading = travel + pi`."""
+    return {"n": math.pi / 2, "s": -math.pi / 2, "e": 0.0, "w": math.pi}[
+        prop_id.rsplit("_", 1)[1]
+    ]
+
+
+def _junction_of(prop_id: str) -> tuple[float, float]:
+    """The `cx_cy` embedded in a head's id, e.g. `tl_-80_0_n` -> (-80, 0)."""
+    _kind, cx, cy, _suffix = prop_id.split("_")
+    return (float(cx), float(cy))
+
+
+def _along_and_right(prop_id, position) -> tuple[float, float]:
+    travel = _travel_for(prop_id)
+    cx, cy = _junction_of(prop_id)
+    dx, dy = position[0] - cx, position[1] - cy
+    along = dx * math.cos(travel) + dy * math.sin(travel)
+    right = dx * math.sin(travel) - dy * math.cos(travel)
+    return along, right
+
+
+def test_stop_signs_stand_before_the_junction_on_the_drivers_right(built):
+    """Right-hand traffic reads its stop sign on the right, before the line.
+
+    Both halves were inverted: every sign sat on the driver's left, past the
+    junction it governed -- correctly facing a driver who had already crossed
+    the line it stood for.
+    """
+    signs = built.description.stop_signs
+    assert signs
+    for sign in signs:
+        along, right = _along_and_right(sign.id, sign.position)
+        assert along < 0.0, f"{sign.id} stands past the junction it governs"
+        assert right > 0.0, f"{sign.id} stands on the driver's left"
+
+
+def test_signal_poles_stand_clear_of_the_carriageway(built):
+    """A pole on the centreline is a pole in the middle of the road.
+
+    The narrowest street here is one lane each way (3.6 m half-width), so any
+    pole less than that from its approach's centreline is standing in traffic.
+    """
+    lights = built.description.traffic_lights
+    assert lights
+    for light in lights:
+        _along, right = _along_and_right(light.id, light.position)
+        assert right >= 3.6, (
+            f"{light.id}'s pole is {right:.2f} m from the centreline, inside the "
+            "carriageway it governs"
+        )
+
+
+def test_signal_heads_hang_over_the_lanes_their_pole_serves(built):
+    """The renderer hangs the head at `position + mast_arm_m * (sin h, -cos h)`,
+    an arm pointing to the driver's LEFT. A right-hand pole therefore reaches
+    back over the road; the earlier centreline pole reached out over the
+    opposite pavement instead. Only arm-bearing heads are checked -- a zero arm
+    is a pole-mounted head on a one-lane-each-way street, which stays at the
+    kerb by design.
+    """
+    for light in built.description.traffic_lights:
+        if light.mast_arm_m == 0.0:
+            continue
+        head = (
+            light.position[0] + math.sin(light.heading) * light.mast_arm_m,
+            light.position[1] - math.cos(light.heading) * light.mast_arm_m,
+        )
+        _along, right = _along_and_right(light.id, head)
+        assert abs(right) < 1e-9, (
+            f"{light.id}'s head hangs {right:.2f} m off its approach's centreline"
+        )
+
+
+def test_the_reference_path_is_drawable(built):
+    """`reference_path` is consumed by a renderer, not by the simulator, so it
+    has to satisfy a stricter contract than `Route.points` does.
+
+    A renderer takes a perpendicular at each point to lay a band along it. That
+    breaks on the two things a route's internal vertex list is full of after
+    offsetting and filleting: sub-centimetre legs, where the tangent is noise,
+    and stubs that double back, where the normal flips and the band tears.
+    Measured on the real Nob Hill loop, `Route.points` has 224 legs under a
+    centimetre and one 1.5 cm stub reversing at 175 degrees; `Route.resample`
+    is what turns that into something drawable.
+    """
+    path = built.description.reference_path
+    assert len(path) > 20
+    gaps = [math.dist(a, b) for a, b in zip(path, path[1:])]
+    assert min(gaps) > 0.5, "a sub-metre leg means the raw vertex list leaked through"
+    assert max(gaps) <= REFERENCE_STEP_M + 1e-9
+    # The ego route is a loop, and a closed one must return to its start so the
+    # renderer can draw it as a plain open polyline.
+    assert path[0] == pytest.approx(path[-1])
+
+
+def test_the_reference_path_is_the_line_the_car_actually_drives(built):
+    """Not the road centreline: the ego drives a lane, offset from it.
+
+    Every sample must sit on the route the simulator tracks, which is what
+    makes this a picture of the car's own path rather than a decoration.
+    """
+    route = built.ego_route
+    for point in built.description.reference_path:
+        on_route = route.point_at(route.project(point))
+        assert math.dist(point, on_route) < 0.05

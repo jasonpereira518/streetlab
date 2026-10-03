@@ -35,6 +35,7 @@ import {
   KERB_LANE_INSET,
   LANE_W,
   LOOP_BLOCK,
+  makeEgoRoute,
   SCENARIOS,
   STREETS,
   buildScene,
@@ -152,14 +153,7 @@ export class MockSim {
 
   constructor(scenarioId = SCENARIOS[0].id) {
     this.scene = buildScene(scenarioId);
-    this.route = makeRectRoute(
-      LOOP_BLOCK.x0 + EGO_LANE_INSET,
-      LOOP_BLOCK.y0 + EGO_LANE_INSET,
-      LOOP_BLOCK.x1 - EGO_LANE_INSET,
-      LOOP_BLOCK.y1 - EGO_LANE_INSET,
-      10,
-      true,
-    );
+    this.route = makeEgoRoute();
     this.controls = this.findControlPoints();
     this.resetDynamics();
   }

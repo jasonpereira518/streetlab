@@ -42,6 +42,23 @@ class OsmGraph:
             if nid in self.nodes
         ]
 
+    def resolvable(self, way: OsmWay) -> list[int]:
+        """`way.node_ids` minus any the extract did not include.
+
+        A bbox cuts ways at its edge, so a way can name nodes that are not in
+        the graph. Indices into this list line up with `way_points`; indices
+        into `way.node_ids` do not, which is the kind of off-by-a-few that
+        silently points a sign down the wrong street.
+        """
+        return [nid for nid in way.node_ids if nid in self.nodes]
+
+    def tagged_nodes(self, key: str, value: str) -> list[OsmNode]:
+        """Every node carrying `key=value`, in id order for determinism."""
+        return sorted(
+            (n for n in self.nodes.values() if n.tags.get(key) == value),
+            key=lambda n: n.id,
+        )
+
 
 def _tags(raw: object) -> dict[str, str]:
     if not isinstance(raw, dict):

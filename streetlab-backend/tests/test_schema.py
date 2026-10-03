@@ -72,15 +72,21 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 2
+    assert dumped["protocol"] == PROTOCOL_VERSION == 3
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_two():
+def test_protocol_is_three():
+    """Bumped from 2 when `SceneDescription.reference_path` was added.
+
+    `wsClient.ts` rejects a backend whose `protocol` differs from its own, so
+    this constant and `PROTOCOL_VERSION` in `schema.ts` must move together --
+    which is exactly what the exact-match assertion is here to force.
+    """
     from schema import PROTOCOL_VERSION
 
-    assert PROTOCOL_VERSION == 2
+    assert PROTOCOL_VERSION == 3
 
 
 def test_load_location_parses_with_and_without_radius():

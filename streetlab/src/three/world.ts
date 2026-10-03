@@ -47,19 +47,59 @@ const C = {
   pole: new THREE.Color('#4A525C'),
   signalBody: new THREE.Color('#2E353D'),
   stopRed: new THREE.Color('#C0392B'),
+  referenceLine: new THREE.Color('#16191D'),
   signGreen: new THREE.Color('#0B6B45'),
 };
 
 const CANOPY_GREENS = ['#7FA867', '#6E9A5C', '#8CB575', '#5F8E52'];
 
+/** Width of the driven line drawn on the road. Narrower than a lane marking's
+ * 0.13 m would read at distance, wider and it competes with them. */
+const REFERENCE_LINE_W = 0.22;
+
 const SIDEWALK_W = 2.8;
 const SIDEWALK_H = 0.16;
+
+/**
+ * Vertical separation between two road surfaces that overlap at an
+ * intersection. Enough to give the depth buffer a stable winner at the ranges
+ * the chase camera works over; small enough that a stack of them stays thin.
+ */
+const ROAD_LEVEL_STEP = 0.0009;
+
+/**
+ * How many distinct heights road surfaces may occupy.
+ *
+ * Roads used to be staggered by their own index — `Y.road + i * 0.0009` —
+ * which is unbounded in the size of the scene. That is invisible on the
+ * six-road synthetic grid (the stack tops out at 0.0245 m) and catastrophic on
+ * real OSM data: Nob Hill has 264 roads, so the last one sat at 0.2567 m and
+ * buried everything meant to be drawn ON the road. Measured against that
+ * scene, of 264 roads the number rendering ABOVE each overlay was:
+ *
+ *     lane markings  (0.050 m)   230
+ *     crosswalks     (0.055 m)   225
+ *     sidewalk kerbs (0.160 m)   108
+ *     plan ribbon    (0.085 m)   191
+ *
+ * The stagger only ever needed to separate roads that actually overlap, which
+ * is a graph colouring, not a counter. Greedy-colouring Nob Hill's overlap
+ * graph needs 6 levels — its most-crossed road meets 11 others — so 12 is
+ * roomy. `assignRoadLevels` falls back to wrapping if a scene ever exceeds it,
+ * which costs a little z-fighting at one junction rather than sinking the
+ * entire overlay stack.
+ */
+const ROAD_LEVELS = 12;
 
 /** Height stack, kept in one place so nothing z-fights. */
 const Y = {
   road: 0.02,
+  /** Top of the road band: every overlay below must clear this. */
+  roadTop: 0.02 + (ROAD_LEVELS - 1) * ROAD_LEVEL_STEP,
   marking: 0.05,
   crosswalk: 0.055,
+  /** The driven line, drawn over the markings but under the kerbs. */
+  reference: 0.062,
   sidewalk: SIDEWALK_H,
 };
 
@@ -85,6 +125,8 @@ const carriagewayHalfWidth = (r: Road): number =>
 interface Crossing {
   /** Arc length along the road being cut. */
   s: number;
+  /** Index of the road doing the cutting. */
+  road: number;
   /** Half-width of the crossing road. */
   half: number;
   /** Crossing point in world coordinates. */
@@ -132,6 +174,7 @@ function findCrossings(roads: Road[], lines: Polyline[]): Crossing[][] {
           const s = li.cum[si - 1] + hit.ta * segLen;
           out[i].push({
             s,
+            road: j,
             half: carriagewayHalfWidth(roads[j]),
             at: [
               li.points[si - 1][0] +
@@ -145,6 +188,72 @@ function findCrossings(roads: Road[], lines: Polyline[]): Crossing[][] {
     }
   }
   return out;
+}
+
+/**
+ * Lay a constant-width band down a polyline, as one quad per segment.
+ *
+ * Vertices are offset along the AVERAGE of the two adjoining segment normals,
+ * not each segment's own. Offsetting per segment leaves a wedge of daylight on
+ * the outside of every corner, which on a filleted turn sampled every couple of
+ * metres reads as a scalloped edge rather than a line. Averaging shares one
+ * pair of vertices between neighbouring quads, so the band is continuous by
+ * construction — the same trick `pathRibbon.ts` uses for the live plan.
+ */
+function polylineBand(
+  builder: MeshBuilder,
+  points: Vec2[],
+  width: number,
+  height: number,
+  color: THREE.Color,
+): void {
+  const n = points.length;
+  if (n < 2) return;
+  const half = width / 2;
+  const edges: Array<[Vec2, Vec2]> = [];
+  for (let i = 0; i < n; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(n - 1, i + 1)];
+    let tx = next[0] - prev[0];
+    let ty = next[1] - prev[1];
+    const len = Math.hypot(tx, ty) || 1;
+    tx /= len;
+    ty /= len;
+    const p = points[i];
+    edges.push([
+      [p[0] - ty * half, p[1] + tx * half],
+      [p[0] + ty * half, p[1] - tx * half],
+    ]);
+  }
+  for (let i = 1; i < n; i++) {
+    const [aL, aR] = edges[i - 1];
+    const [bL, bR] = edges[i];
+    builder.flatQuad([aR, bR, bL, aL], height, color);
+  }
+}
+
+/**
+ * A height level per road, such that no two roads that cross share one.
+ *
+ * Greedy graph colouring over the intersections `findCrossings` already found,
+ * in road order so the same scene always builds the same way. Roads that never
+ * meet reuse level 0, which is what keeps the band flat no matter how large the
+ * extract is — see `ROAD_LEVELS`.
+ */
+function assignRoadLevels(crossings: Crossing[][]): number[] {
+  const levels = new Array<number>(crossings.length).fill(0);
+  for (let i = 0; i < crossings.length; i++) {
+    const taken = new Set<number>();
+    for (const c of crossings[i]) {
+      if (c.road < i) taken.add(levels[c.road]);
+    }
+    let level = 0;
+    while (taken.has(level)) level++;
+    // Wrapping beyond the budget re-risks z-fighting at that one junction,
+    // which is strictly better than letting the band grow into the overlays.
+    levels[i] = level % ROAD_LEVELS;
+  }
+  return levels;
 }
 
 /* ------------------------------------------------------------------ */
@@ -171,12 +280,16 @@ export function buildWorld(scene: SceneDescription): World {
   const surface = new MeshBuilder();
   const paving = new MeshBuilder();
 
+  const roadLevels = assignRoadLevels(crossings);
+
   scene.roads.forEach((road, i) => {
     const line = lines[i];
     const half = carriagewayHalfWidth(road);
-    // A hair of vertical separation per road guarantees a stable draw order
-    // where carriageways overlap at intersections.
-    const yRoad = Y.road + i * 0.0009;
+    // A hair of vertical separation guarantees a stable draw order where
+    // carriageways overlap. Keyed on the level, not the road index: the index
+    // grows without bound and used to push the last road of a real OSM extract
+    // 0.26 m into the air, over the markings and the plan ribbon both.
+    const yRoad = Y.road + roadLevels[i] * ROAD_LEVEL_STEP;
     const col = road.road_class === 'arterial' ? C.asphaltArterial : C.asphalt;
 
     stripe(surface, line, { from: 0, to: line.length }, 0, half * 2, yRoad, col);
@@ -322,6 +435,29 @@ export function buildWorld(scene: SceneDescription): World {
   markMesh.name = 'lane-markings';
   root.add(markMesh);
   track('lane_markings', markMesh);
+
+  /* -------- the driven line -------- */
+
+  // The whole circuit the car follows: straight down each block, curving
+  // through every corner, sent once with the scene. Sits above the lane
+  // markings so it reads as the line laid over them, and below the kerbs so it
+  // never appears to run up onto a pavement.
+  if (scene.reference_path.length >= 2) {
+    const refBuilder = new MeshBuilder();
+    polylineBand(
+      refBuilder,
+      scene.reference_path,
+      REFERENCE_LINE_W,
+      Y.reference,
+      C.referenceLine,
+    );
+    const refMat = flatMaterial();
+    const refMesh = new THREE.Mesh(refBuilder.build(), refMat);
+    refMesh.name = 'reference-path';
+    root.add(refMesh);
+    track('reference_path', refMesh);
+    disposables.push(refMesh.geometry, refMat);
+  }
   disposables.push(markMesh.geometry, markMat);
 
   /* -------- crosswalks -------- */

@@ -51,6 +51,57 @@ def drivable_ways(graph: OsmGraph) -> list[OsmWay]:
     return [w for w in graph.ways if road_class(w.tags) is not None]
 
 
+def carriageway_geometry(
+    graph: OsmGraph, origin: LatLon
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Every drivable way's local centreline paired with its half-width.
+
+    Computed once and reused across every candidate, because both callers ask
+    the same question of the whole network for hundreds of points: is this spot
+    on a road surface? A brute-force all-pairs scan rather than a spatial
+    index, per the ~800 candidates x 264 ways this fixture has -- trivial
+    either way, and a spatial index is a thing to maintain.
+    """
+    return [
+        (
+            [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)],
+            carriageway_half_width_m(way.tags),
+        )
+        for way in drivable_ways(graph)
+    ]
+
+
+def carriageway_intrusion_m(
+    point: tuple[float, float],
+    geometry: list[tuple[list[tuple[float, float]], float]],
+) -> float:
+    """How far `point` lies inside the deepest road surface it overlaps, or 0.
+
+    Every way, not just the one the point was generated against. A prop that
+    clears its own street can still land inside a different, wider one a few
+    metres away -- the common case is near an intersection, where one street
+    is split into segments of differing lane counts and the wide segment
+    continues past the narrow one the prop was placed off.
+    """
+    worst = 0.0
+    for points, half_width in geometry:
+        for a, b in zip(points, points[1:]):
+            worst = max(worst, half_width - segment_distance(point, a, b))
+    return max(worst, 0.0)
+
+
+def carriageway_half_width_m(tags: dict[str, str]) -> float:
+    """Half the total carriageway width -- centreline to kerb -- for a way.
+
+    Every caller that has to keep something off the road surface needs this:
+    `map/features.py` to plant a verge tree clear of it, `map/props.py` to
+    stand a signal pole at the kerb of the approach it governs.
+    """
+    cls = road_class(tags) or "residential"
+    forward, backward = lane_counts(tags, cls)
+    return (forward + backward) * LANE_W / 2
+
+
 def _local_points(graph: OsmGraph, way: OsmWay, origin: LatLon) -> list[tuple[float, float]]:
     return [to_local(lat, lon, origin) for lat, lon in graph.way_points(way)]
 
@@ -149,15 +200,20 @@ def _polyline_length(points: list[tuple[float, float]]) -> float:
     return sum(math.dist(a, b) for a, b in zip(points, points[1:]))
 
 
-def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
-    """Junction-to-junction edges for every drivable way.
+def junction_node_ids(graph: OsmGraph) -> set[Junction]:
+    """Every node where a driver has a decision to make.
 
     A junction is any node shared by two or more drivable ways, plus each way's
     own endpoints. Splitting there — rather than at every node — keeps the
     search space to real decision points.
+
+    Shared by `build_route_graph` and `map/props.py`, which has to know whether
+    a `highway=stop` node sits at a crossroads (governing every leg of it) or
+    part-way down a street (governing one direction of travel). Two independent
+    definitions of "junction" would eventually disagree and place a sign on a
+    leg the router does not believe exists.
     """
     ways = drivable_ways(graph)
-
     seen: dict[int, int] = {}
     for way in ways:
         for nid in way.node_ids:
@@ -167,6 +223,13 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
         if way.node_ids:
             junctions.add(way.node_ids[0])
             junctions.add(way.node_ids[-1])
+    return junctions
+
+
+def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
+    """Junction-to-junction edges for every drivable way."""
+    ways = drivable_ways(graph)
+    junctions = junction_node_ids(graph)
 
     rg = RouteGraph()
     for way in ways:
@@ -639,9 +702,10 @@ _LIMIT_CELL_M = 25.0
 _LIMIT_MAX_MATCH_M = 35.0
 
 
-def _segment_distance(
+def segment_distance(
     p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
 ) -> float:
+    """Distance from `p` to the segment `a`-`b` -- clamped, not the infinite line."""
     ax, ay = a
     vx, vy = b[0] - ax, b[1] - ay
     wx, wy = p[0] - ax, p[1] - ay
@@ -713,7 +777,7 @@ def nearest_road_along(route: Route, roads: list[Road]) -> list[int | None]:
                             continue
                         seen.add(idx)
                         sa, sb, road_idx = segments[idx]
-                        d = _segment_distance(mid, sa, sb)
+                        d = segment_distance(mid, sa, sb)
                         if d < best_d:
                             best_d, best_road = d, road_idx
             r += 1
@@ -1037,6 +1101,59 @@ CONTROL_POINT_MATCH_M = 12.0
 #: not four consecutive halts.
 CONTROL_POINT_MERGE_M = 6.0
 
+#: How far before a junction centre the car halts. Clears the widest crossing
+#: carriageway either scene source builds (an arterial's 7.2 m half-width) with
+#: room to spare. Only correct for an anchor that IS a junction centre: a
+#: device already tagged at the stop bar needs `props.STOP_BAR_SETBACK_M`
+#: instead, or the car halts a junction's width short of the line.
+STOP_LINE_SETBACK_M = 9.0
+
+#: Spacing of `SceneDescription.reference_path` samples. Two metres keeps a 6 m
+#: fillet visibly round -- the chord sags about 4 cm off the true arc, well under
+#: the width of the line drawn along it -- while a 1.2 km loop still fits in
+#: under 600 points.
+REFERENCE_STEP_M = 2.0
+
+#: How closely a head's approach direction must agree with the route heading for
+#: that head to be the one governing the ego. Generous, because the route is
+#: filleted through the junction and its heading there is not the street's.
+HEAD_TOL_RAD = math.radians(60.0)
+
+
+def faces_the_route(
+    route: Route,
+    lamp_heading: float,
+    anchor: tuple[float, float],
+    setback_m: float,
+    *,
+    tol_rad: float = HEAD_TOL_RAD,
+) -> bool:
+    """True if a head at `anchor` faces traffic travelling the way the ego does.
+
+    Four heads govern each crossroads, in two opposing phase groups. Taking all
+    four would put the ego at one stop line facing a group that is red whenever
+    the other is green -- it would never move. The head that governs a driver is
+    the one whose lamp faces back at them, so `lamp_heading + pi` is the
+    direction that driver travels; the route heading picks it out.
+
+    Evaluated at the STOP LINE, `setback_m` back from `anchor`, not at `anchor`
+    itself. A junction centre sits mid-turn on a filleted corner -- its route
+    heading is neither the entry nor the exit street's, so no head matches it
+    well and more than one can pass a generous tolerance. At the stop line the
+    car is still on its approach leg and the route heading is the real street
+    heading -- the same point `project_control_points` measures `s` from.
+    Mirroring that here is what makes this an exact match rather than a coin
+    flip between two heads that share a phase group.
+
+    Both scene sources use this. `SyntheticGrid` always passes a junction centre
+    and `STOP_LINE_SETBACK_M`; `OsmSceneSource` passes whatever anchor the OSM
+    node gave it, which for a node already at the stop bar is a near-zero
+    setback (`map/props.py`).
+    """
+    stop_s = route.normalise(route.project(anchor) - setback_m)
+    travel = lamp_heading + math.pi
+    return abs(math.remainder(route.heading_at(stop_s) - travel, math.tau)) < tol_rad
+
 
 def project_control_points(
     route: Route,
@@ -1058,12 +1175,12 @@ def project_control_points(
     projecting that scene's 203 props takes 16.7 ms -- twice the whole 8 ms
     sim_step p95 budget.
 
-    Candidates are supplied by the scene source rather than filtered here.
-    `SyntheticGrid` models four directional heads per junction and knows which
-    one faces the ego; `OsmSceneSource` has one undirected node per junction
-    and `map/features.py` gives it `heading=0.0`, so it has nothing to filter
-    on. A single rule would either strand the synthetic car at four conflicting
-    heads or invent an approach direction the OSM data does not carry.
+    Candidates are supplied by the scene source rather than filtered here, but
+    both sources now filter them the same way: every head carries a real
+    approach heading, so `faces_the_route` above picks the one head at each
+    junction that governs the ego. (`OsmSceneSource` used to have nothing to
+    filter on, because `map/features.py` shipped every OSM node with
+    `heading=0.0`; `map/props.py` derives the approach direction instead.)
     """
     projected: list[ControlPoint] = []
     for cp_id, kind, position, setback_m in candidates:

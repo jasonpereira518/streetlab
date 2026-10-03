@@ -11,8 +11,8 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
-it('is protocol 2', () => {
-  expect(PROTOCOL_VERSION).toBe(2);
+it('is protocol 3', () => {
+  expect(PROTOCOL_VERSION).toBe(3);
 });
 
 it('accepts load_location with and without a radius', () => {

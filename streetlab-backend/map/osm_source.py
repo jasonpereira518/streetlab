@@ -19,26 +19,30 @@ from dataclasses import replace
 from pathlib import Path
 
 from map.cache import BundledExtracts, DiskCache, default_cache_dir
-from map.features import (
-    build_buildings,
-    build_crosswalks,
-    build_stop_signs,
-    build_traffic_lights,
-    build_trees,
-    signal_groups,
-)
+from map.features import build_buildings, build_trees
 from map.geocode import Geocoder, NominatimGeocoder, Place
 from map.lanes import (
+    REFERENCE_STEP_M,
     build_roads,
     build_route_graph,
     derive_lanes,
+    faces_the_route,
     project_control_points,
     select_ego_route,
     speed_limits_along,
 )
+from map.osm_model import OsmGraph
 from map.overpass import BBox, HttpxFetcher, OverpassClient
 from map.projection import LatLon
-from map.scene_build import STOP_LINE_SETBACK_M, BuiltScene
+from map.props import (
+    build_crosswalks,
+    build_stop_signs,
+    build_traffic_lights,
+    signal_approaches,
+    signal_groups,
+    stop_sign_approaches,
+)
+from map.scene_build import BuiltScene
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -52,7 +56,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import Route
+from sim.route import ControlPoint, Route
 
 log = logging.getLogger("streetlab.map")
 
@@ -266,6 +270,9 @@ class OsmSceneSource:
             stop_signs=stop_signs,
             trees=trees,
             street_signs=[],
+            # After `select_ego_route`, so this is the offset, filleted line the
+            # car actually drives -- not the raw OSM centreline it came from.
+            reference_path=ego_route.resample(REFERENCE_STEP_M),
             # Filled in by `build`; see the note there on why it cannot be done
             # inline without the builder re-entering itself.
             catalog=[],
@@ -280,26 +287,57 @@ class OsmSceneSource:
         # list (see `speed_limits_along`).
         ego_route.segment_limits = speed_limits_along(ego_route, roads)
 
-        # Every OSM light and stop sign is `heading=0.0` (`map/features.py`),
-        # so there is no approach direction to filter on -- but an OSM signals
-        # node sits ON the way at the junction it governs, so proximity to the
-        # driven route is itself the filter, and several nodes at one crossroads
-        # collapse into one stop line by the projector's merge window.
-        control_points = project_control_points(
-            ego_route,
-            [(tl.id, "signal", tl.position, STOP_LINE_SETBACK_M) for tl in lights]
-            + [(ss.id, "stop_sign", ss.position, STOP_LINE_SETBACK_M) for ss in stop_signs],
-        )
+        control_points = self._control_points(graph, origin, ego_route)
 
         return BuiltScene(
             description=description,
             ego_route=ego_route,
             agent_routes=self._agent_routes(ego_route, spec.traffic),
-            signal_groups=signal_groups(lights),
+            signal_groups=signal_groups(graph, origin),
             speed_limit_mps=self._speed_limit(roads),
             traffic_count=spec.traffic,
             control_points=control_points,
             lanes=derive_lanes(ego_route, roads),
+        )
+
+    def _control_points(
+        self, graph: OsmGraph, origin: LatLon, ego_route: Route
+    ) -> list[ControlPoint]:
+        """The stop lines on the ego's own route, from the heads facing it.
+
+        Two things here that the earlier version could not do, both unlocked by
+        `map/props.py` deriving a real approach direction per device:
+
+        - The stop line is measured from the approach's ANCHOR -- the
+          on-centreline OSM node -- not from the prop, which now stands a
+          carriageway half-width away at the kerb and would project onto the
+          route at the wrong `s`, or miss the 12 m match radius entirely on a
+          narrow street.
+        - Each approach carries its OWN setback. An OSM `highway=stop` node is
+          usually already at the bar (median 10.4 m from the junction centre on
+          Nob Hill), so adding the full junction setback on top halted the car
+          about two car lengths early; a node tagged on the junction node
+          itself still gets the full setback, because there the anchor really
+          is the centre.
+
+        `faces_the_route` then drops the heads governing the crossing street,
+        exactly as `SyntheticGrid` has always done -- four heads at one junction
+        in two opposing phase groups would otherwise leave the ego at a stop
+        line facing a group that is red whenever the other is green.
+        """
+        candidates = [
+            (f"osm_tl_{a.id}", "signal", a) for a in signal_approaches(graph, origin)
+        ] + [
+            (f"osm_ss_{a.id}", "stop_sign", a)
+            for a in stop_sign_approaches(graph, origin)
+        ]
+        return project_control_points(
+            ego_route,
+            [
+                (cp_id, kind, a.anchor, a.setback_m)
+                for cp_id, kind, a in candidates
+                if faces_the_route(ego_route, a.heading, a.anchor, a.setback_m)
+            ],
         )
 
     def _bounds(

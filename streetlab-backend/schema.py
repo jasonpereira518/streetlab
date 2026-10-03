@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -202,6 +202,14 @@ class SceneDescription(Wire):
     stop_signs: list[StopSign]
     trees: list[Tree]
     street_signs: list[StreetSign]
+    # The line the car is driving: its lane centre, straight along each block
+    # and filleted through every corner. Distinct from `Plan.polyline`, which is
+    # the live ~40 m lookahead the planner recomputes every tick -- this is the
+    # whole fixed circuit, sent once with the scene.
+    #
+    # Closed routes repeat their first point as their last, so a consumer can
+    # draw it as an open polyline without knowing whether it loops.
+    reference_path: list[Vec2]
     # Scenarios the server can load; drives the left sidebar.
     catalog: list[ScenarioSummary]
 
