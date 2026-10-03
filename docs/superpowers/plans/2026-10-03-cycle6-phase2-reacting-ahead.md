@@ -51,11 +51,13 @@
 
 ## Task 0 — Baseline and fact check
 
-- [ ] Branch from current `origin/main`. Run backend `uv run pytest -q` (≈300–500 s; **run it alone** — `test_sim_step_stays_well_inside_the_60_hz_budget_on_a_real_osm_scene` is timing-sensitive), frontend `npx vitest run`, `npx tsc --noEmit`. Record the counts; this plan was written against backend 1104 passed / 1 skipped, frontend 226.
+- [ ] Branch from current `origin/main`. Run backend `uv run pytest -q` (≈300–500 s; **run it alone** — `test_sim_step_stays_well_inside_the_60_hz_budget_on_a_real_osm_scene` is timing-sensitive), frontend `npx vitest run`, `npx tsc --noEmit`. Record the counts; measured 2026-10-03 on `d1a5bfd`: backend **1180 passed / 1 skipped** (480 s, run with another session's pytest also active on the machine); the plan was first written against 1104, which was stale. Frontend: not yet re-run (this phase is backend-only).
 - [ ] Verify each row of the facts table above still holds. Where one does not, fix the plan before building on it.
 - [ ] Launch long runs with `nohup … & disown` and redirect to **distinct** log filenames with `>>` (this machine reaps long background jobs, and a relaunch once overwrote a probe's log).
 
-## Task 1 — Measure the stopping table
+## Task 1 — Measure the stopping table  ✅ done 2026-10-03
+
+**Outcome** (`docs/measurements/2026-10-03-cycle6-stopping-table.md`): gate exceeded (1.59× textbook at 6 m/s), so `aeb` uses `stopping_distance(v) = (v−0.3)/0.9` for `v ≤ 5`, else `(v²−25)/9 + 4.7/0.9` — derived from `_SPEED_GAIN` / `_MAX_DECEL_MPS2`, within +1.4 % of every measured row and never under. Task 6's `a_req` is therefore defined from it (below).
 
 The emergency-braking constants are replaced by measurement; they are not derived from textbook physics (the spec's own correction: ~16.3 m, not 13.4 m, from 11.18 m/s).
 
@@ -119,7 +121,7 @@ class Reaction:
 
 ## Task 6 — `aeb`
 
-- [ ] Covers anything in the strip now, or predicted to be in it when the ego arrives. Default form (Task 1 may replace it): `a_req = closing² / (2·(bumper_gap − 2.0))`, infinite when the bracket ≤ 0, `closing = max(v_ego − v_along, 0)`.
+- [ ] Covers anything in the strip now, or predicted to be in it when the ego arrives. Form (set by Task 1's gate): the ego must stop in `room = bumper_gap − 2.0` m. Let `d_stop = stopping_distance(closing)` with `closing = max(v_ego − v_along, 0)`. `a_req = closing² / (2·room)` as before — **but it only counts as avoidable-by-braking while `d_stop ≤ room`**; once `d_stop > room` the demand is reported as infinite (the ego cannot stop in time at the cap, and `aeb` fires at once). Infinite also when `room ≤ 0`.
 - [ ] Fires at `a_req ≥ 3.0 m/s²` → ceiling 0, `maneuver="emergency_brake"`. Releases once `a_req < 1.0 m/s²` for 0.5 s, or the detection leaves the strip. Both numbers are initial values that Task 1's table replaces.
 - [ ] Tests: fires; releases; **does not flicker** (assert the on/off sequence over a noisy `a_req` trace crossing 3.0 and 1.0); `cut_in` staging geometry triggers no `aeb` from 6–15 m/s and does at ≤ 4 m/s; a stopped obstacle already inside the strip at 8 m/s fires; the same obstacle behind a junction stop line the FSM is already stopping for yields a ceiling equal to the FSM's when that is lower (ceilings combine by minimum).
 
