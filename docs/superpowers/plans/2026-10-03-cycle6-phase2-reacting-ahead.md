@@ -1,5 +1,7 @@
 # Cycle 6 Phase 2 — Reacting to Hazards Ahead
 
+> **Status: built 2026-10-03** (branch `claude/cycle6-phase2-plan`). Read **"What was built, and where it departed from this plan"** at the end first — the plan below is as written before the work; that section is what is true.
+
 **Phase 2 of 5.** Spec: `docs/superpowers/specs/2026-09-16-streetlab-cycle6-design.md` (§ "Phase 2", § "The threat layer", § "The path strip"). Requires Phase 1 (merged, PR #11): the hazard menu, the ten stagings and protocol 7.
 
 **Goal:** the ego stops reacting to hazards only by accident. A `ThreatAssessor` that can only *lower* the speed ceiling brakes hard for anything in, or about to be in, the ego's swept path (`aeb`), and yields to a predicted lane entry (`yield_to_entry`). The trajectory graph's `threat` series then draws the prediction the planner is acting on instead of a decay curve.
@@ -175,3 +177,26 @@ class Reaction:
 - **Cross-street projection artefacts.** An agent on a different route is projected onto the ego route; near a bend the nearest-vertex projection can place it metres from where the paths cross. Covered by the Task 3 cross-route test; if it fails, intersect the agent's own predicted path with the strip instead of projecting its position.
 - **Stopping distances do not travel between machines or sessions** (a Cycle 5 lesson). Quote ratios and give tolerances from the measured spread.
 - **PRs #10 and #13 are open and conflicting** and both touch `sim/loop.py` (see Task 8).
+
+---
+
+## What was built, and where it departed from this plan
+
+Tasks 0–10 are done. Gates at the end: backend **1246 passed / 1 skipped** before the closed-loop file landed (that file adds 18 tests and ~4.4 min), frontend 253, `tsc` clean, contract fixtures regenerated and accepted by both validators. No protocol change.
+
+**Departures, each with the reason it happened:**
+
+1. **`aeb`'s avoidability test is `approach_distance`, not `stopping_distance` (Task 6).** The plan said an `aeb` is unavoidable once `stopping_distance(closing) > room`. That treats a car cutting in at half the ego's speed as stationary, and called the spec's own avoidable cut-in (1.9 m/s² at 6 m/s) unavoidable. The test that caught it was the spec's "cut-in triggers no `aeb` from 6–15 m/s". The ego only has to shed the speed *difference*, so `approach_distance(v_ego, v_obj)` brakes the model down to the object's speed; it equals `stopping_distance` for a stationary one.
+2. **The strip is centred on the ego's own line, not its route (Task 3/7).** Not in the plan. With the strip on the route, `aeb` braked for the stopped car the ego was swinging out around, and 16 lane-change and event tests failed. `strip_window(..., centre_m)` now takes the ego's actual lateral offset, drawn toward the destination lane by the same `blend` as the aim point on the way out — and committed to the destination from the first tick while a change is **returning**. That last half was found by the closed-loop sweep (below).
+3. **A lane change in progress keeps its `lane_change_*` label (Task 7).** The plan said the reaction's maneuver wins. The suite asserts a car off its lane is never labelled otherwise, and it was right: `emergency_brake` on a car 2 m off its lane says nothing about why. The braking still shows in the target speed, `reaction_source_id` and the trajectory graph.
+4. **`yield_to_entry` only applies to detections currently *outside* the strip (Task 5).** One already inside is a lead, and yielding to a slower car in the lane would stop the ego behind traffic it should simply follow.
+5. **A second contract fixture, `state_update_reaction` (Task 7).** The planner now brakes for a cut-in before TTC can flag it, so the TTC/hazard-flag frame and the reaction frame cannot be the same frame. `state_update_hazard` keeps the first, the new fixture the second; the TypeScript validator globs the directory and needed no change.
+6. **Hazard-free replays are not zero-activation (Task 9).** Measured: 4 of 6 scenes are silent; `grid-merge` brakes twice and `grid-arterial` yields once. Each is a real proximity event from reactive traffic (a return 1.5 m behind an unpassed car; a car already overlapping the ego by 1.7 m; a car drifting into the lane 7 m ahead). The asserted guard is that no activation starts with its source more than 10 m away.
+7. **Recovery is "above half the limit, or held by the junction FSM" (Task 9).** A red light is the junction layer's to hold, and the Nob Hill runs meet several.
+8. **Two existing tests changed (not weakened):** `test_a_larger_follow_distance_yields_a_lower_target` (lead moved 18 m → 30 m: at 9 m/s the old position sat on the `aeb` boundary and zeroed both targets), and `test_a_red_light_runner_meets_the_ego_at_the_junction` (collision course now checked with the reaction layer off; the reactive outcome is the closed-loop suite's). `test_a_cut_in_raises_a_hazard_flag_whatever_speed_the_ego_is_doing` now also accepts the planner naming the car as its reaction.
+
+**What the closed-loop sweep found that nothing else did:** `cyclist_drift` on `grid-loop` overlapped the ego by 0.6 m (1.35 m with the threat layer off). The ego swung out around the cyclist, a junction interrupted the manoeuvre, and the return into the old lane began while the cyclist was still 7.6 m ahead in it. That early return is a **pre-existing Cycle 3 defect** (`plan/behavior.py`, the junction-interrupted abort); Phase 2 now brakes for it instead of fixing it. It was seen again in `grid-loop` lane-change replays and in `grid-merge` at t = 75 s. It is worth its own look.
+
+**Left for later phases:** `IdmTraffic._leader` overlap (traffic cars overlapping the ego, seen at −1.7 m in `grid-merge`) is Phase 3's; evasion of `obstacle`/`stalled_vehicle` and the oncoming-lane pass are Phase 4's; ML-mode reactions are Phase 5's.
+
+**Reproduce the numbers:** `uv run python ../scripts/stopping_table.py` (from `streetlab-backend/`) for the table; the closed-loop file for the rest. Neither depends on wall-clock time, so the results travel between machines.

@@ -141,9 +141,12 @@ click **Cut-in**.
 A neighbouring vehicle slides into the ego's lane 1.5 seconds of travel ahead
 at half the ego's speed, and the ack log shows `injected cut_in: veh_NN
 cutting in N m ahead`. Watch the TTC readout in the toolbar drop and the
-planner respond — the orange hazard overlay renders around the flagged vehicle
-in the 3D view, and the trajectory graph's threat curve shows the predicted
-path.
+planner respond. At cruising speed the orange hazard overlay renders around
+the flagged vehicle in the 3D view and the ordinary following law slows the
+car; below ~4 m/s the cut-in lands too close for that, so the planner
+emergency-brakes before the car reaches the lane — closing speed collapses, TTC
+never flags it, and you see the `Emergency braking` label and the trajectory
+graph's threat curve instead of the overlay.
 
 The menu offers every scenario in `streetlab-backend/sim/events.py`, grouped
 Ahead, Crossing and Behind. A hazard the scene cannot host right now acks
@@ -158,12 +161,34 @@ false and says why — no signal ahead, a one-way street:
 | `emergency_vehicle` | The nearest vehicle behind runs lights and siren, wanting 1.6× the limit, and queues behind the ego |
 | `stalled_vehicle` | A broken-down car sits in the ego's lane 40 m ahead until it is towed |
 | `cyclist_drift` | A cyclist 25 m ahead drifts slowly in from the kerb |
-| `tailgater` | A car pulls up close behind the ego and stays there for 30 s |
+| `tailgater` | A car pulls up close behind the ego and holds that gap for up to 30 s (it keeps its own target speed, so a fast ego can leave it behind sooner) |
 | `oncoming_drift` | An oncoming car drifts 0.8 m over the centre line as it reaches the ego |
 | `red_light_runner` | A car runs the red across the ego's green, timed to arrive when the ego does |
 
 An unknown `kind` acks false rather than raising, so a newer client cannot
 break an older backend.
+
+### What the car does about each one
+
+Cycle 6 Phase 2 added a threat layer (`plan/hazard.py`) that can only *lower*
+the car's speed ceiling. It brakes at the cap for anything it cannot stop for
+gently (`Emergency braking`) and yields to something about to step or drive
+into its path (`Yield`). The plan ribbon, target speed and trajectory graph all
+show it.
+
+| `kind` | The ego |
+|---|---|
+| `cut_in` | Follows the car down at speed; emergency-brakes if it lands too close (see above) |
+| `sudden_brake` | Follows the lead down smoothly; emergency-brakes only if it cannot stop gently |
+| `jaywalker` | Yields as the pedestrian steps out; emergency-brakes if it is too late; does nothing for one standing still at the kerb |
+| `cyclist_drift` | Brakes or yields as the cyclist drifts into the lane; passes where it can |
+| `red_light_runner` | Emergency-brakes if it is moving; a car already stopped at the red has nothing to do |
+| `obstacle`, `stalled_vehicle` | Changes lane around it where that is legal; emergency-brakes if it cannot; otherwise stops short and waits |
+| `emergency_vehicle`, `tailgater`, `oncoming_drift` | **No reaction yet** — Cycle 6 Phase 3 |
+
+Measured on `grid-loop` and Nob Hill across seeded runs with randomised
+injection times, the ego's outline never touched a hazard's. That is a
+measurement of these runs, not a safety claim.
 
 ## See it survive a dropped connection
 
@@ -201,7 +226,7 @@ detector pipeline running *alongside* it, in shadow: both sources answer the
 same question every frame, so the numbers below are live from the first
 scenario load, not from the moment you switch anything.
 
-Open the right panel's **Parameters** tab and find the **Perception** field
+Open the right panel's **Params** tab and find the **Perception** field
 at the bottom. `frames` and `detector` (ms) tick up in real time — the
 pipeline is genuinely decoding JPEGs and running the model at ~10 Hz. Watch
 `precision`, `recall`, and `mean position error` instead: in every frame

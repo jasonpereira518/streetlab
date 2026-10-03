@@ -193,6 +193,7 @@ touching the cycles before it.
 | 3 | Traffic-light/stop-sign compliance, lane-level overtaking, reactive IDM/MOBIL traffic, hazard scenarios | **Built** |
 | 4 | Real ONNX object detector wired end-to-end (camera → inference → 2D-to-world tracking → scoring) | **Built** — measured zero vehicle detections; ground truth stays the default driver, ML mode is labelled experimental |
 | 5 | Sim-generated training data, model fine-tuning, quantization/precision analysis | **Built** — full train/eval pipeline shipped; fine-tuning itself returned a null result (see [Results](#results)) |
+| 6 | Hazards the car reacts to: a ten-hazard menu, emergency braking and yielding, then reactions to hazards behind, oncoming and blocking the road, and the detector measured on them ([spec](docs/superpowers/specs/2026-09-16-streetlab-cycle6-design.md)) | **In progress — Phases 1–2 of 5.** The menu and ten stagings ship; the car brakes or yields for what is ahead of it and crossing ([stopping-distance table](docs/measurements/2026-10-03-cycle6-stopping-table.md)). Not yet: hazards behind, oncoming drift, evading a blockage, ML reactions |
 
 Detailed, dated measurement reports and design docs for every cycle live
 under [`docs/measurements/`](docs/measurements/) and
