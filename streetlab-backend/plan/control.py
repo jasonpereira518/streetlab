@@ -202,9 +202,14 @@ class CenterlineFollower:
         aim_route = route if away is None else away.route
         blend = 0.0 if away is None else self.fsm.lane_change.blend
 
+        # Going out, the strip is drawn toward the new lane gradually (the car
+        # is leaving what is in the old one). Coming back, it is committed to
+        # the destination lane from the first tick: whatever is ahead in that
+        # lane is a threat now, not once the aim point has finished moving.
+        returning = self.fsm.lane_change is not None and self.fsm.lane_change.returning
         reaction = self.assessor.assess(
             detections, ego, route, s, context.dt,
-            centre_m=_strip_centre(ego, route, s, aim_route, blend),
+            centre_m=_strip_centre(ego, route, s, aim_route, 1.0 if returning else blend),
         )
 
         steer = self._pure_pursuit_blended(ego, route, aim_route, s, lookahead, blend)
