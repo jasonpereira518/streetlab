@@ -72,7 +72,7 @@ from map.placement import (
 )
 from map.osm_model import OsmGraph, OsmNode, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import has_sidewalk, lane_counts, road_class
+from map.tags import has_sidewalk, lane_counts, oneway_direction, road_class
 from schema import Building, Crosswalk, StopSign, TrafficLight, Tree
 
 log = logging.getLogger("streetlab.map")
@@ -235,7 +235,7 @@ def _governed_travel(
     governed traffic runs with the way's node order or against it. The two
     fallbacks below only ever run for the handful of untagged nodes:
 
-    * a oneway street has only one answer,
+    * a oneway street has only one answer, whichever way it is drawn,
     * otherwise the sign faces the nearer end of its way, because a stop node
       sits just before a junction and a junction is where ways end.
     """
@@ -247,8 +247,9 @@ def _governed_travel(
         return tangent
     if direction == "backward":
         return -tangent[0], -tangent[1]
-    if tags.get("oneway") == "yes":
-        return tangent
+    oneway = oneway_direction(tags)
+    if oneway:
+        return tangent if oneway > 0 else (-tangent[0], -tangent[1])
     ahead = sum(
         math.dist(points[i], points[i + 1]) for i in range(index, len(points) - 1)
     )
