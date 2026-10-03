@@ -7,7 +7,12 @@ import { act } from '@testing-library/react';
 import type { Command, SceneDescription, ServerMessage, StateUpdate } from '../src/schema';
 import type { Transport, TransportHandlers } from '../src/net/transport';
 import { MockSim } from '../src/net/mockServer';
-import { PARAM_DEFS, frameBus, useSimStore } from '../src/store/simStore';
+import {
+  DEFAULT_RELOAD_PAGE,
+  PARAM_DEFS,
+  frameBus,
+  useSimStore,
+} from '../src/store/simStore';
 import { LAYER_KEYS } from '../src/schema';
 
 export interface Harness {
@@ -45,6 +50,10 @@ const INITIAL = {
   invalidCount: 0,
   lastInvalid: null,
   commandLog: [],
+  refreshPending: false,
+  // Restored per test: a spy left in place here would quietly disarm the
+  // reload for every test that follows.
+  reloadPage: DEFAULT_RELOAD_PAGE,
 };
 
 /** Reset the singleton store so tests do not leak into one another. */

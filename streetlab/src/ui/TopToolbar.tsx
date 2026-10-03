@@ -18,6 +18,7 @@ import {
   FileIcon,
   PauseIcon,
   PlayIcon,
+  RefreshIcon,
   ResetIcon,
   SaveIcon,
   SettingsIcon,
@@ -75,6 +76,8 @@ export function TopToolbar() {
   );
   const togglePaused = useSimStore((s) => s.togglePaused);
   const resetSim = useSimStore((s) => s.resetSim);
+  const refreshAll = useSimStore((s) => s.refreshAll);
+  const refreshPending = useSimStore((s) => s.refreshPending);
   const setCameraView = useSimStore((s) => s.setCameraView);
   const setPerceptionMode = useSimStore((s) => s.setPerceptionMode);
   const setRightTab = useSimStore((s) => s.setRightTab);
@@ -125,6 +128,14 @@ export function TopToolbar() {
         </button>
         <IconButton label="Reset scenario" onClick={resetSim}>
           <ResetIcon />
+        </IconButton>
+        <IconButton
+          label="Restart session"
+          title="Reset the simulator and reload the app"
+          onClick={() => void refreshAll()}
+          disabled={refreshPending}
+        >
+          <RefreshIcon />
         </IconButton>
       </div>
 

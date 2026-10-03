@@ -31,6 +31,8 @@ import { TrafficFleet } from './agents';
 import { ChaseCamera } from './chaseCam';
 import { PathRibbon } from './pathRibbon';
 import { HazardOverlay } from './hazardOverlay';
+import { RenderTimeline } from './renderTimeline';
+import type { RenderSample } from './renderTimeline';
 import { createShadowBoxes } from './shadowBoxes';
 import { createDetectorCamera, DETECTOR_FRAME } from './detectorCamera';
 import type { Backend } from './detectorCamera';
@@ -353,6 +355,9 @@ function mount(
   const fleet = new TrafficFleet();
   const ribbon = new PathRibbon();
   const hazards = new HazardOverlay();
+  // The ego and its plan are drawn on a playback clock rather than straight
+  // off the newest arrival; see renderTimeline.ts for why.
+  const timeline = new RenderTimeline();
   const shadowBoxes = createShadowBoxes(scene);
   ego.group.add(radar.mesh);
   scene.add(ego.group, fleet.group, ribbon.mesh, hazards.group);
@@ -417,6 +422,9 @@ function mount(
     world = buildWorld(state.scene);
     scene.add(world.root);
     builtEpoch = state.sceneEpoch;
+    // A new world means the previous frames describe a different place;
+    // nothing in them is worth interpolating from.
+    timeline.reset();
     buildings = world.root.getObjectByName('buildings') ?? null;
     applyLayers(state.layers);
     cameraReset = true;
@@ -424,6 +432,16 @@ function mount(
 
   let cameraReset = true;
   let cameraView: CameraView = useSimStore.getState().cameraView;
+
+  // Subscribed rather than read off `frameBus.latest` in the loop: the
+  // timeline interpolates between frames, so it needs every frame the wire
+  // delivers. A display slower than the stream (or a backgrounded window,
+  // where rAF stops entirely) would otherwise skip some.
+  const unsubscribeFrames = frameBus.subscribe((frame) => timeline.push(frame));
+  // A remount (StrictMode, an HMR reload) arrives with the bus already
+  // holding a frame that will never be published again; without this the
+  // viewport would sit empty until the next one.
+  if (frameBus.latest) timeline.push(frameBus.latest);
 
   const unsubscribe = useSimStore.subscribe((state, prev) => {
     if (state.sceneEpoch !== prev.sceneEpoch) rebuildWorld(state);
@@ -501,17 +519,17 @@ function mount(
   let sinceCaptureMs = 0;
   let captureSeq = 0;
 
-  const applyFrame = (frame: StateUpdate, dt: number) => {
-    ego.setPose(frame.ego.pose);
-    ego.setAttitude(frame.ego.steering_angle, frame.ego.accel_mps2);
+  const applyFrame = (frame: StateUpdate, sample: RenderSample, dt: number) => {
+    ego.setPose(sample.pose);
+    ego.setAttitude(sample.steering_angle, sample.accel_mps2);
     fleet.update(frame.detections, dt);
-    ribbon.update(frame.plan.polyline);
+    ribbon.update(sample.plan);
     hazards.update(frame.detections, cam.camera);
     shadowBoxes.update(frame.detections_shadow);
     world?.updateSignals(frame.signals, frame.t);
 
     // Keep the shadow frustum centred on the car so a 160 m box is enough.
-    sunTarget.position.set(frame.ego.pose.x, 0, -frame.ego.pose.y);
+    sunTarget.position.set(sample.pose.x, 0, -sample.pose.y);
     sun.position.copy(sunTarget.position).addScaledVector(sunDir, 150);
   };
 
@@ -520,16 +538,22 @@ function mount(
     const dt = Math.min(0.1, (now - lastTime) / 1000);
     lastTime = now;
 
+    timeline.advance(dt);
     const frame = frameBus.latest;
-    if (frame) {
+    const sample = timeline.sample();
+    if (frame && sample) {
       if (cameraReset) {
-        cam.reset(frame.ego.pose, buildings);
+        cam.reset(sample.pose, buildings);
         cameraReset = false;
       }
       // Re-run scene-graph updates every display frame even if the simulator
-      // has not produced a new one: damping still has work to do.
-      applyFrame(frame, dt);
-      cam.update(frame.ego.pose, frame.ego.speed_mps, cameraView, dt, buildings);
+      // has not produced a new one: the playback clock has moved and damping
+      // still has work to do.
+      applyFrame(frame, sample, dt);
+      // The camera follows the pose that is actually on screen. Chasing the
+      // raw wire pose instead would put the two on different clocks again,
+      // which is the whole defect this exists to avoid.
+      cam.update(sample.pose, sample.speed_mps, cameraView, dt, buildings);
       lastSeq = frame.seq;
     }
 
@@ -615,6 +639,7 @@ function mount(
 
   return () => {
     renderer.setAnimationLoop(null);
+    unsubscribeFrames();
     unsubscribe();
     ro.disconnect();
     canvas.removeEventListener('pointerdown', onPointerDown);
