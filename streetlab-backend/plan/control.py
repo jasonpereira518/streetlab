@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from plan.behavior import BehaviorFSM
+from plan.hazard import NO_REACTION, Reaction, ThreatAssessor
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
@@ -126,6 +127,10 @@ class PlanResult:
     plan: Plan
     steer_rad: float
     accel_mps2: float
+    #: The threat layer's answer this tick. Not on the wire -- `Plan` carries
+    #: only its source id -- but `sim/loop.py` draws the trajectory graph's
+    #: `threat` series from it.
+    reaction: Reaction = NO_REACTION
 
 
 @runtime_checkable
@@ -154,10 +159,12 @@ class Planner(Protocol):
 class CenterlineFollower:
     wheelbase_m: float = 2.9
     fsm: BehaviorFSM = field(default_factory=BehaviorFSM)
+    assessor: ThreatAssessor = field(default_factory=ThreatAssessor)
     last_steer: float = 0.0
 
     def reset(self) -> None:
         self.fsm.reset()
+        self.assessor.reset()
         self.last_steer = 0.0
 
     def _away_lane(self, context: PlanContext) -> Lane | None:
@@ -188,6 +195,8 @@ class CenterlineFollower:
             detections=detections,
             limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
         )
+
+        reaction = self.assessor.assess(detections, ego, route, s, context.dt)
 
         # The blend is the FSM's, not derived here: going out and coming back it
         # runs between the HOME lane (`route`) and the other lane of the manoeuvre.
@@ -231,22 +240,23 @@ class CenterlineFollower:
             target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / kappa_cmd))
         # The behaviour ceiling folds in exactly like the curvature and
         # lead-vehicle caps: another upper bound, not a separate control path.
-        target = min(target, decision.speed_ceiling_mps)
+        # So does the threat layer's: it can only lower the target.
+        target = min(target, decision.speed_ceiling_mps, reaction.speed_ceiling_mps)
         accel = _clamp(
             _SPEED_GAIN * (target - ego.speed_mps), -_MAX_DECEL_MPS2, _MAX_ACCEL_MPS2
         )
 
         lead, _gap = _closest_lead(detections, route, s)
-        reaction = None
+        source_id = None
         if decision.target is not None:
-            reaction = decision.target.id
+            source_id = decision.target.id
         elif self.fsm.lane_change is not None and self.fsm.lane_change.lead_id:
-            reaction = self.fsm.lane_change.lead_id
+            source_id = self.fsm.lane_change.lead_id
         elif decision.maneuver in ("stop", "yield", "arrived", "emergency_brake"):
             # Only attribute a reaction source when the manoeuvre is a rules
             # response — ordinary car-following should not fill the chip.
             if lead is not None:
-                reaction = lead.id
+                source_id = lead.id
 
         return PlanResult(
             plan=Plan(
@@ -254,12 +264,13 @@ class CenterlineFollower:
                     s, length_m=_PLAN_LENGTH_M, step_m=_PLAN_STEP_M
                 ),
                 target_speed_mps=max(0.0, target),
-                maneuver=decision.maneuver or _maneuver(route, s),
+                maneuver=reaction.maneuver or decision.maneuver or _maneuver(route, s),
                 confidence=1.0 if limits.assist_enabled else 0.35,
-                reaction_source_id=reaction,
+                reaction_source_id=reaction.source_id or source_id,
             ),
             steer_rad=steer,
             accel_mps2=accel,
+            reaction=reaction,
         )
 
     def _pure_pursuit_blended(
