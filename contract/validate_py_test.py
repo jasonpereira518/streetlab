@@ -34,7 +34,11 @@ VALID_NAMES = [
     "state_update_moving",
     "state_update_hazard",
     "state_update_events",
+<<<<<<< HEAD
     "state_update_run_summary",
+=======
+    "state_update_reaction",
+>>>>>>> 7e0f487 (Regenerate the contract fixtures; add state_update_reaction)
     "ack_ok",
     "ack_error",
 ]
@@ -72,6 +76,15 @@ def generate() -> dict[str, dict]:
     # inside `plan.ttc.HAZARD_TTC_S` at all, the best TTC in 300 s being 4.03 s
     # against a 4.0 s threshold. A fixture named for `threat`/`threat_label`
     # asking for a cut-in is also simply the honest version.
+    #
+    # Two fixtures come out of this one injection, because since Cycle 6 Phase 2
+    # they cannot be the same frame. The planner reacts to a cut-in by braking
+    # before the car reaches its lane, which collapses the closing speed, so
+    # TTC (and with it the `hazard` flag) is undefined exactly while the
+    # planner is reacting; and while TTC flags the car, the following law is
+    # handling it and the planner is not "reacting". `state_update_hazard`
+    # proves the TTC/flag fields; `state_update_reaction` proves
+    # `plan.reaction_source_id` and the `threat` series.
     sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
     # The frame an event lands on is the ONLY one that carries it:
     # `state_update()` drains `world.events` into the frame it builds. Every
@@ -82,12 +95,21 @@ def generate() -> dict[str, dict]:
     # below consumes it.
     hazard = sim.state_update()
     out["state_update_events"] = hazard.model_dump(mode="json")
+    reaction = None
     for _ in range(60 * 30):
         sim.step()
         hazard = sim.state_update()
+        if (
+            reaction is None
+            and hazard.plan.reaction_source_id is not None
+            and hazard.telemetry.trajectory.threat
+        ):
+            reaction = hazard
         if hazard.telemetry.ttc_s is not None and any(d.hazard for d in hazard.detections):
             break
+    assert reaction is not None, "the planner never reacted to the injected cut-in"
     out["state_update_hazard"] = hazard.model_dump(mode="json")
+    out["state_update_reaction"] = reaction.model_dump(mode="json")
 
     # A scorecard mid-run, carrying the hazard and its reaction from above.
     sim.apply_dict({"id": "rs", "cmd": "run_summary"})
@@ -174,8 +196,17 @@ def test_the_hazard_fixture_exercises_non_null_optionals(generated):
     assert frame.telemetry.ttc_s is not None, "no TTC — the frame proves little"
     assert any(d.ttc_s is not None for d in frame.detections)
     assert any(d.hazard and d.hazard_label is not None for d in frame.detections)
+
+
+def test_the_reaction_fixture_exercises_the_planner_reaction_fields(generated):
+    """`plan.reaction_source_id` and `threat` are nullable; a fixture where both
+    are null proves neither survives the wire."""
+    frame = StateUpdate.model_validate(generated["state_update_reaction"])
+    assert frame.plan.reaction_source_id is not None
+    assert frame.plan.maneuver in {"emergency_brake", "yield"}
     assert frame.telemetry.trajectory.threat, "threat is null — nullable path untested"
     assert frame.telemetry.trajectory.threat_label is not None
+    assert frame.plan.reaction_source_id in {d.id for d in frame.detections}
 
 
 def test_the_events_fixture_actually_carries_an_event(generated):
