@@ -120,7 +120,25 @@ STOP_BAR_SETBACK_M = 2.2
 
 # How far before a junction centre the car halts. Clears the widest crossing
 # carriageway here (an arterial's 7.2 m half-width) with room to spare.
+#
+# Correct only when the anchor IS a junction centre. An OSM `highway=stop` node
+# is usually not: 139 of Nob Hill's 145 sit part-way down a street, which is the
+# painted bar itself, a median 10.4 m back from the junction. Measuring another
+# 9 m from there halted the car about two car lengths short of the line it was
+# stopping for -- see `STOP_AT_BAR_SETBACK_M`.
 STOP_LINE_SETBACK_M = 9.0
+
+# Spacing of `SceneDescription.reference_path` samples. Two metres keeps a 6 m
+# fillet visibly round -- the chord sags about 4 cm off the true arc, well under
+# the width of the line drawn along it -- while a 1.2 km loop still fits in
+# under 600 points.
+REFERENCE_STEP_M = 2.0
+
+# How far before an anchor that is ALREADY the stop bar the car halts. Just
+# enough that the car's nose rests at the line rather than over it; the bar's
+# own clearance from the crossing carriageway is already baked into where OSM
+# put the node.
+STOP_AT_BAR_SETBACK_M = 1.0
 
 MPH = 0.44704
 
@@ -315,6 +333,7 @@ class SyntheticGrid:
             stop_signs=self._stop_signs(),
             trees=self._trees(rng),
             street_signs=self._street_signs(),
+            reference_path=ego_route.resample(REFERENCE_STEP_M),
             catalog=self.scenarios(),
             hazards=[],
         )

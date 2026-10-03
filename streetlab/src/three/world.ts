@@ -38,6 +38,7 @@ import { speedLimitTexture, stopFaceTexture, streetNameTexture } from './labels'
 const C = {
   asphalt: new THREE.Color('#7E8894'),
   asphaltArterial: new THREE.Color('#78828E'),
+  referenceLine: new THREE.Color('#16191D'),
   sidewalk: new THREE.Color('#D5DAE1'),
   kerb: new THREE.Color('#BFC6CF'),
   markWhite: new THREE.Color('#F2F5F8'),
@@ -54,6 +55,10 @@ const CANOPY_GREENS = ['#7FA867', '#6E9A5C', '#8CB575', '#5F8E52'];
 
 const SIDEWALK_W = 2.8;
 const SIDEWALK_H = 0.16;
+
+/** Width of the driven line. Narrower than this and it disappears at distance;
+ * wider and it competes with the 0.13 m lane markings it sits over. */
+const REFERENCE_LINE_W = 0.22;
 
 /* ---- stop sign proportions, all in metres ---- */
 /** Thickness of the octagonal plate, along the direction it faces. */
@@ -96,8 +101,14 @@ const BLADE_PROUD = 0.06;
 /** Height stack, kept in one place so nothing z-fights. */
 const Y = {
   road: 0.02,
+  // Arterials get their own level so that where two carriageways overlap the
+  // wider one wins consistently. They are also the only pair whose colours
+  // differ, so a coplanar fight between them is the one a viewer would see.
+  roadArterial: 0.024,
   marking: 0.05,
   crosswalk: 0.055,
+  // The driven line, over the markings and under the kerbs.
+  reference: 0.062,
   sidewalk: SIDEWALK_H,
 };
 
@@ -452,6 +463,48 @@ function junctionApron(
 /* Build                                                               */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Lay a constant-width band down a polyline, as one quad per segment.
+ *
+ * Vertices are offset along the AVERAGE of the two adjoining segment normals,
+ * not each segment's own. Offsetting per segment leaves a wedge of daylight on
+ * the outside of every corner, which on a filleted turn sampled every couple of
+ * metres reads as a scalloped edge rather than a line. Averaging shares one
+ * pair of vertices between neighbouring quads, so the band is continuous by
+ * construction — the same trick `pathRibbon.ts` uses for the live plan.
+ */
+function polylineBand(
+  builder: MeshBuilder,
+  points: Vec2[],
+  width: number,
+  height: number,
+  color: THREE.Color,
+): void {
+  const n = points.length;
+  if (n < 2) return;
+  const half = width / 2;
+  const edges: Array<[Vec2, Vec2]> = [];
+  for (let i = 0; i < n; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(n - 1, i + 1)];
+    let tx = next[0] - prev[0];
+    let ty = next[1] - prev[1];
+    const len = Math.hypot(tx, ty) || 1;
+    tx /= len;
+    ty /= len;
+    const p = points[i];
+    edges.push([
+      [p[0] - ty * half, p[1] + tx * half],
+      [p[0] + ty * half, p[1] - tx * half],
+    ]);
+  }
+  for (let i = 1; i < n; i++) {
+    const [aL, aR] = edges[i - 1];
+    const [bL, bR] = edges[i];
+    builder.flatQuad([aR, bR, bL, aL], height, color);
+  }
+}
+
 export function buildWorld(scene: SceneDescription): World {
   const root = new THREE.Group();
   root.name = 'world';
@@ -476,9 +529,16 @@ export function buildWorld(scene: SceneDescription): World {
   scene.roads.forEach((road, i) => {
     const line = lines[i];
     const half = carriagewayHalfWidth(road);
-    // A hair of vertical separation per road guarantees a stable draw order
-    // where carriageways overlap at intersections.
-    const yRoad = Y.road + i * 0.0009;
+    // A hair of vertical separation guarantees a stable draw order where
+    // carriageways overlap. Keyed on road CLASS, not on the road's index: the
+    // index grows without bound, so on a real extract the stack climbed into
+    // everything meant to be drawn on top of the road. Nob Hill has 264 roads,
+    // which put the last one at 0.2567 m -- above the lane markings (0.05),
+    // the crosswalks (0.055), the kerbs (0.16) and the plan ribbon (0.085)
+    // alike. Two fixed levels are bounded by construction and enough in
+    // practice: same-class carriageways that overlap are the same colour, so
+    // the depth fight between them has nothing to show.
+    const yRoad = road.road_class === 'arterial' ? Y.roadArterial : Y.road;
     const col = road.road_class === 'arterial' ? C.asphaltArterial : C.asphalt;
 
     stripe(surface, line, { from: 0, to: line.length }, 0, half * 2, yRoad, col);
@@ -638,6 +698,28 @@ export function buildWorld(scene: SceneDescription): World {
   markMesh.name = 'lane-markings';
   root.add(markMesh);
   track('lane_markings', markMesh);
+
+  /* -------- the driven line -------- */
+
+  // The whole circuit the car follows, sent once with the scene. Over the lane
+  // markings so it reads as laid on top of them, under the kerbs so it never
+  // appears to climb a pavement.
+  if (scene.reference_path.length >= 2) {
+    const refBuilder = new MeshBuilder();
+    polylineBand(
+      refBuilder,
+      scene.reference_path,
+      REFERENCE_LINE_W,
+      Y.reference,
+      C.referenceLine,
+    );
+    const refMat = flatMaterial();
+    const refMesh = new THREE.Mesh(refBuilder.build(), refMat);
+    refMesh.name = 'reference-path';
+    root.add(refMesh);
+    track('reference_path', refMesh);
+    disposables.push(refMesh.geometry, refMat);
+  }
   disposables.push(markMesh.geometry, markMat);
 
   /* -------- crosswalks -------- */

@@ -11,7 +11,7 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
-it('is protocol 7', () => {
+it('is protocol 8', () => {
   // Bumped to 5 when `LaneMarking` gained `broken_yellow` and
   // `solid_yellow`. A new enum value is additive for a NEW client reading an
   // OLD server, but an old client rejects the new value on every frame -- and
@@ -26,7 +26,7 @@ it('is protocol 7', () => {
   // two new `Maneuver` values, and `cutin`/`cutin_label` renamed to
   // `threat`/`threat_label` -- new required keys and a rename both break an
   // old client, matching the reasoning above.
-  expect(PROTOCOL_VERSION).toBe(7);
+  expect(PROTOCOL_VERSION).toBe(8);
 });
 
 it('accepts load_location with and without a radius', () => {
@@ -252,7 +252,7 @@ describe('StateUpdate', () => {
     delete noSource.plan.reaction_source_id;
     expect(StateUpdateSchema.safeParse(noSource).success).toBe(false);
 
-    expect(PROTOCOL_VERSION).toBe(7);
+    expect(PROTOCOL_VERSION).toBe(8);
   });
 });
 

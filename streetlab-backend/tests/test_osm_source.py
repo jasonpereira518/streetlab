@@ -9,8 +9,11 @@ from pathlib import Path
 import pytest
 
 from map.cache import BundledExtracts, DiskCache
+from map.features import stop_node_id
+from map.osm_model import parse_overpass
+from map.scene_build import REFERENCE_STEP_M, STOP_AT_BAR_SETBACK_M, STOP_LINE_SETBACK_M
 from map.geocode import GeocodeError, GeocodeNotFound, GeocodeUnavailable, Place, StubGeocoder
-from map.lanes import NoDrivableRoad, NoRouteFound
+from map.lanes import NoDrivableRoad, NoRouteFound, junction_node_ids
 from map.osm_source import (
     ATTRIBUTION,
     BUNDLED,
@@ -1475,3 +1478,97 @@ def test_describe_build_failure_distinguishes_not_found_from_unavailable():
     assert describe_build_failure(GeocodeNotFound("x")) != describe_build_failure(
         GeocodeUnavailable("x")
     )
+
+
+# --------------------------------------------------------------------------- #
+# Stop lines                                                                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_the_ego_halts_at_an_osm_stop_bar_not_a_junction_width_short_of_it(
+    nob_hill_scene,
+):
+    """An OSM `highway=stop` node usually IS the painted bar, not the junction.
+
+    `control_anchors` anchors a stop sign at its own node, and 139 of this
+    fixture's 145 stop nodes sit part-way down a street -- a median 10.4 m back
+    from the junction centre, which is where the bar is painted. Measuring a
+    further `STOP_LINE_SETBACK_M` (9 m, sized to clear a junction) from there
+    stopped the car about two car lengths short of the line it was stopping
+    for, on every one of them.
+
+    The setback is chosen per sign now: the full junction width only for the
+    few nodes tagged ON a junction, where the anchor really is its centre.
+    """
+    route = nob_hill_scene.ego_route
+    stops = [cp for cp in nob_hill_scene.control_points if cp.kind == "stop_sign"]
+    assert stops, "the driven loop passes no stop sign"
+    for cp in stops:
+        short_by = route.signed_gap(cp.s, route.project(cp.position))
+        assert short_by == pytest.approx(STOP_AT_BAR_SETBACK_M, abs=0.05), (
+            f"{cp.id} halts {short_by:.1f} m before its bar; the old uniform "
+            f"{STOP_LINE_SETBACK_M} m setback is what this guards against"
+        )
+
+
+def test_a_stop_tagged_on_the_junction_node_keeps_the_full_setback():
+    """The other half of the rule, which the real fixture barely exercises.
+
+    Six of its 145 stop nodes sit on a junction node. There the anchor IS the
+    junction centre, so the car has to halt a full crossing carriageway back --
+    stopping 1 m short of a junction centre would put it in the intersection.
+    """
+    elements = [
+        {"type": "node", "id": i + 1, "lat": 37.7945, "lon": -122.4166 + i * 0.0005}
+        for i in range(5)
+    ]
+    # Node 3 is shared by both ways, so it is a junction; tag the stop there.
+    elements[2]["tags"] = {"highway": "stop"}
+    elements += [
+        {"type": "node", "id": 10, "lat": 37.7935, "lon": -122.4156},
+        {"type": "node", "id": 11, "lat": 37.7955, "lon": -122.4156},
+        {"type": "way", "id": 100, "nodes": [1, 2, 3, 4, 5],
+         "tags": {"highway": "residential"}},
+        {"type": "way", "id": 200, "nodes": [10, 3, 11],
+         "tags": {"highway": "residential"}},
+    ]
+    graph = parse_overpass({"elements": elements})
+    junctions = junction_node_ids(graph)
+    assert 3 in junctions, "node 3 is shared by two drivable ways"
+    assert stop_node_id("osm_ss_3") == 3
+    # The branch the setback is chosen on; the full build is exercised by the
+    # fixture test above.
+    assert stop_node_id("osm_ss_3") in junctions
+
+
+def test_stop_node_id_refuses_to_guess():
+    """An unrecognised id falls through to the conservative branch -- the full
+    junction setback -- rather than inventing a node number that might collide
+    with a real junction."""
+    assert stop_node_id("osm_ss_12345") == 12345
+    assert stop_node_id("osm_tl_12345_0") is None
+    assert stop_node_id("ss_0_0_n") is None
+    assert stop_node_id("osm_ss_") is None
+
+
+def test_the_osm_reference_path_is_drawable(nob_hill_scene):
+    """The same contract `test_scene_build.py` pins for the synthetic grid, on
+    the source that actually exposed the problem.
+
+    `SyntheticGrid`'s hand-built loop is tidy enough that shipping its raw
+    vertex list would have looked fine. The OSM route is not: offsetting,
+    filleting and self-intersection splicing leave `Route.points` with 224 legs
+    under a centimetre out of 339, and a 1.5 cm stub that doubles back at 175
+    degrees. Sampling by arc length is what makes it a line rather than a tear.
+    """
+    path = nob_hill_scene.description.reference_path
+    assert len(path) > 100
+    gaps = [math.dist(a, b) for a, b in zip(path, path[1:])]
+    assert min(gaps) > 0.5
+    assert max(gaps) <= REFERENCE_STEP_M + 1e-9
+    assert path[0] == path[-1]
+
+    # The raw list this replaced, to show the gap is real and not theoretical.
+    raw = nob_hill_scene.ego_route.points
+    raw_gaps = [math.dist(a, b) for a, b in zip(raw, raw[1:])]
+    assert sum(1 for g in raw_gaps if g < 0.01) > 100

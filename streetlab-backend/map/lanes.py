@@ -173,15 +173,21 @@ def _polyline_length(points: list[tuple[float, float]]) -> float:
     return sum(math.dist(a, b) for a, b in zip(points, points[1:]))
 
 
-def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
-    """Junction-to-junction edges for every drivable way.
+def junction_node_ids(graph: OsmGraph) -> set[Junction]:
+    """Every node where a driver has a decision to make.
 
     A junction is any node shared by two or more drivable ways, plus each way's
     own endpoints. Splitting there — rather than at every node — keeps the
     search space to real decision points.
+
+    Extracted so `OsmSceneSource` can ask the same question when it decides how
+    far before a device the ego should halt: a `highway=stop` node tagged ON a
+    junction is the junction centre and needs the full setback, while one
+    tagged part-way down a street is already the stop bar and needs almost
+    none. Two independent definitions of "junction" would eventually disagree,
+    and the symptom would be a car braking in the wrong place.
     """
     ways = drivable_ways(graph)
-
     seen: dict[int, int] = {}
     for way in ways:
         for nid in way.node_ids:
@@ -191,6 +197,13 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
         if way.node_ids:
             junctions.add(way.node_ids[0])
             junctions.add(way.node_ids[-1])
+    return junctions
+
+
+def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
+    """Junction-to-junction edges for every drivable way."""
+    ways = drivable_ways(graph)
+    junctions = junction_node_ids(graph)
 
     rg = RouteGraph()
     for way in ways:

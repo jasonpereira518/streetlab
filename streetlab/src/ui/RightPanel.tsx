@@ -36,6 +36,7 @@ const TABS: Array<{
 const LAYER_LABELS: Record<LayerKey, string> = {
   detections: 'Detections',
   plan_path: 'Plan path',
+  reference_path: 'Driven line',
   lane_markings: 'Lane markings',
   crosswalks: 'Crosswalks',
   buildings: 'Buildings',

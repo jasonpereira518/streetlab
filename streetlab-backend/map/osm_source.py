@@ -37,6 +37,7 @@ from map.features import (
     control_anchors,
     junction_of,
     signal_groups,
+    stop_node_id,
 )
 from map.geocode import GeocodeError, Geocoder, GeocodeNotFound, GeocodeUnavailable, NominatimGeocoder, Place
 from map.lanes import (
@@ -48,6 +49,7 @@ from map.lanes import (
     build_roads,
     build_route_graph,
     derive_lanes,
+    junction_node_ids,
     nearest_junction,
     project_control_points,
     select_ego_route,
@@ -57,7 +59,12 @@ from map.lanes import (
 from map.overpass import BBox, HttpxFetcher, OverpassClient, OverpassError
 from map.projection import LatLon, to_local
 from map.placement import faces_the_route
-from map.scene_build import STOP_LINE_SETBACK_M, BuiltScene
+from map.scene_build import (
+    REFERENCE_STEP_M,
+    STOP_AT_BAR_SETBACK_M,
+    STOP_LINE_SETBACK_M,
+    BuiltScene,
+)
 from schema import (
     PROTOCOL_VERSION,
     Bounds,
@@ -522,6 +529,10 @@ class OsmSceneSource:
             stop_signs=stop_signs,
             trees=trees,
             street_signs=[],
+            # Sampled after `select_ego_route` has offset and filleted, so this
+            # is the line the car actually drives rather than the raw OSM
+            # centreline it came from.
+            reference_path=ego_route.resample(REFERENCE_STEP_M),
             # Filled in by `build`; see the note there on why it cannot be done
             # inline without the builder re-entering itself.
             catalog=[],
@@ -559,12 +570,24 @@ class OsmSceneSource:
             if faces_the_route(ego_route, light.heading, at, STOP_LINE_SETBACK_M):
                 seen_junctions.add(junction)
                 candidates.append((light.id, "signal", at, STOP_LINE_SETBACK_M))
+        # A stop sign's anchor is its own OSM node, and where that node sits
+        # decides the setback. 139 of Nob Hill's 145 are tagged part-way down a
+        # street, which IS the painted bar -- measuring a junction's width back
+        # from there stopped the car ~9 m short of the line every time. The
+        # remaining few are tagged on the junction node itself, where the full
+        # setback is exactly right.
+        junctions = junction_node_ids(graph)
         for sign in stop_signs:
             at = anchors.get(sign.id)
             if at is None:
                 continue
-            if faces_the_route(ego_route, sign.heading, at, STOP_LINE_SETBACK_M):
-                candidates.append((sign.id, "stop_sign", at, STOP_LINE_SETBACK_M))
+            setback = (
+                STOP_LINE_SETBACK_M
+                if stop_node_id(sign.id) in junctions
+                else STOP_AT_BAR_SETBACK_M
+            )
+            if faces_the_route(ego_route, sign.heading, at, setback):
+                candidates.append((sign.id, "stop_sign", at, setback))
         control_points = project_control_points(ego_route, candidates)
         # An open, point-to-point route needs one more stop the planner
         # already knows how to bisect towards: the trip's own end. A closed

@@ -109,6 +109,7 @@ describe('pavement is drawn only on the sides that have one', () => {
       stop_signs: [],
       traffic_lights: [],
       street_signs: [],
+      reference_path: [],
       roads: [
         {
           id: 'r',

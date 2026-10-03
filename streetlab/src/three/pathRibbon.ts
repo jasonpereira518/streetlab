@@ -12,8 +12,21 @@ import type { Vec2 } from '../schema';
 import { color as tokens } from '../ui/theme';
 
 const MAX_POINTS = 192;
-/** Height above the carriageway: clear of lane markings, still hugging it. */
-const RIDE_HEIGHT = 0.085;
+/**
+ * Height above the carriageway.
+ *
+ * Two things buried this at 0.085 m. `world.ts` staggered each road surface by
+ * its own index, so on a 264-road OSM extract 191 of them rendered ABOVE the
+ * ribbon — that stack is now bounded by road class, so it tops out at 0.024 m.
+ * And the kerb stands at `SIDEWALK_H` = 0.16 m, which swallowed the ribbon
+ * wherever the plan clips a corner across a pavement, i.e. through every turn,
+ * exactly when a driver most wants to see where the car intends to go.
+ *
+ * So it now clears both. A projected plan is a head-up display, not a decal:
+ * reading slightly above the road is what keeps it legible over kerbs and
+ * traffic, and it still tracks the surface closely enough to sit on it.
+ */
+const RIDE_HEIGHT = 0.24;
 const HALF_WIDTH = 1.05;
 
 export class PathRibbon {

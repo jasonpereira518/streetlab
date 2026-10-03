@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -202,6 +202,14 @@ export const SceneDescriptionSchema = z.object({
   stop_signs: z.array(StopSignSchema),
   trees: z.array(TreeSchema),
   street_signs: z.array(StreetSignSchema),
+  /**
+   * The line the car drives: its lane centre, straight along each block and
+   * curved through every corner. Distinct from `Plan.polyline`, which is the
+   * live lookahead recomputed every tick — this is the whole fixed circuit,
+   * sent once with the scene. A closed route repeats its first point as its
+   * last, so it draws as an open polyline either way.
+   */
+  reference_path: z.array(Vec2Schema),
   /** Scenarios the server can load; drives the left sidebar. */
   catalog: z.array(ScenarioSummarySchema),
   /** Hazards `inject_hazard` can stage; drives the hazard menu. */
@@ -467,6 +475,7 @@ export const StateUpdateSchema = z.object({
 export const LayerKeySchema = z.enum([
   'detections',
   'plan_path',
+  'reference_path',
   'lane_markings',
   'crosswalks',
   'buildings',
