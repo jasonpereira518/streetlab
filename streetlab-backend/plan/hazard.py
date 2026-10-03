@@ -22,12 +22,13 @@ Both are right in their own convention -- do not mix them.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, field
+from typing import Protocol, Sequence
 
 from perception.service import MAX_RANGE_M
+from plan.behavior import stop_line_ceiling
 from plan.ttc import HAZARD_TTC_S
-from schema import Detection
+from schema import Detection, Maneuver
 from sim.route import Route
 from sim.vehicle import BicycleModel, VehicleState
 
@@ -73,6 +74,44 @@ def stopping_distance(speed_mps: float) -> float:
     return (v * v - SATURATION_MPS**2) / (2.0 * MAX_DECEL_MPS2) + (
         SATURATION_MPS - STOPPED_MPS
     ) / SPEED_GAIN
+
+
+def _braking(v0: float, v1: float) -> tuple[float, float]:
+    """(distance, time) for the tracker to brake from `v0` down to `v1` at ceiling 0.
+
+    The same two regimes as `stopping_distance`: the decel cap above
+    `SATURATION_MPS`, then `v(t) = v_s * exp(-SPEED_GAIN * t)`. `v1` is floored
+    at `STOPPED_MPS` -- the decay never reaches zero, and the tracker counts a
+    stop at 0.3 m/s.
+    """
+    v1 = max(v1, STOPPED_MPS)
+    if v0 <= v1:
+        return 0.0, 0.0
+    dist = time = 0.0
+    v = v0
+    if v > SATURATION_MPS:
+        v_a = max(v1, SATURATION_MPS)
+        time += (v - v_a) / MAX_DECEL_MPS2
+        dist += (v * v - v_a * v_a) / (2.0 * MAX_DECEL_MPS2)
+        v = v_a
+    if v > v1:
+        time += math.log(v / v1) / SPEED_GAIN
+        dist += (v - v1) / SPEED_GAIN
+    return dist, time
+
+
+def approach_distance(ego_speed_mps: float, object_speed_mps: float) -> float:
+    """Gap the ego closes while braking at ceiling 0 until it matches the object.
+
+    `object_speed_mps` is the object's signed speed along the route and is
+    taken as constant: stationary is 0, a car ahead is positive, an oncoming
+    one negative. It is `stopping_distance` for a stationary object. The
+    difference matters: a car cutting in at half the ego's speed keeps moving,
+    so the ego only has to shed the speed difference, not stop -- treating it
+    as stationary calls an avoidable cut-in unavoidable.
+    """
+    dist, time = _braking(ego_speed_mps, object_speed_mps)
+    return max(dist - object_speed_mps * time, 0.0)
 
 
 def strip_buffer_m(cls: str) -> float:
@@ -212,3 +251,239 @@ def windows(
         if w is not None:
             out.append(w)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Reactions                                                                    #
+# --------------------------------------------------------------------------- #
+
+#: `aeb` fires when stopping needs at least this much deceleration, and stays
+#: on until the demand has been under `AEB_RELEASE_MPS2` for `AEB_RELEASE_S`.
+#: The gap between the two is the hysteresis that stops it flickering.
+AEB_TRIGGER_MPS2 = 3.0
+AEB_RELEASE_MPS2 = 1.0
+AEB_RELEASE_S = 0.5
+#: Clearance `aeb` tries to keep when it stops, bumper to bumper.
+AEB_MARGIN_M = 2.0
+
+#: `yield_to_entry` stays on this long after the conflict has gone, so one
+#: noisy tick at the edge of the window cannot release and re-fire it.
+YIELD_RELEASE_S = 0.3
+
+#: Speed ceiling meaning "no reaction".
+_NO_CEILING = math.inf
+
+
+@dataclass(frozen=True, slots=True)
+class Reaction:
+    """What the threat layer asks of the tracker this tick.
+
+    Named `Reaction` because `perception/service.py` already defines `Threat`.
+    `kind` is "none" until a rule fires; Phases 3 and 4 add `pull_over`,
+    `give_space`, `oncoming_nudge` and `blockage`.
+    """
+
+    kind: str = "none"
+    speed_ceiling_mps: float = _NO_CEILING
+    source_id: str | None = None
+    maneuver: Maneuver | None = None
+    #: The strip window the reaction is to; `loop._trajectory` draws it.
+    source_window: StripWindow | None = None
+
+
+NO_REACTION = Reaction()
+
+
+@dataclass(frozen=True, slots=True)
+class RuleInput:
+    """Everything a rule sees on one tick. Strip windows are computed once."""
+
+    windows: Sequence[StripWindow]
+    ego: VehicleState
+    route: Route
+    ego_s: float
+    dt: float
+
+
+class Rule(Protocol):
+    """One reaction. May keep state (thresholds, dwell timers); `reset` clears it."""
+
+    def step(self, inp: RuleInput) -> Reaction | None: ...
+
+    def reset(self) -> None: ...
+
+
+def required_decel(window: StripWindow, ego_speed_mps: float) -> float:
+    """Deceleration needed to stop short of the window's detection, m/s^2.
+
+    `closing^2 / (2 * room)` with `room` the bumper-to-bumper gap less
+    `AEB_MARGIN_M`. Infinite when there is no room, and also when the tracker
+    could not stop in the room even at its cap: its stopping distance is longer
+    than `v^2/2a` (see `stopping_distance`), so a gap that looks adequate on the
+    textbook figure is not, and below ~8 m/s that is what decides.
+    """
+    closing = max(ego_speed_mps - window.along_speed_mps, 0.0)
+    if closing <= _EPS:
+        return 0.0
+    room = window.bumper_gap_m - AEB_MARGIN_M
+    if room <= 0.0 or approach_distance(ego_speed_mps, window.along_speed_mps) > room:
+        return math.inf
+    return closing * closing / (2.0 * room)
+
+
+@dataclass(slots=True)
+class AebRule:
+    """Emergency braking: brake at the cap for anything the ego cannot stop for gently.
+
+    Covers a detection in the strip now, or predicted to be in it when the ego
+    arrives. Fires at `AEB_TRIGGER_MPS2`; once on, follows the same detection
+    until the demand has stayed under `AEB_RELEASE_MPS2` for `AEB_RELEASE_S`, or
+    until it leaves the strip (no window, or no conflict).
+    """
+
+    active_id: str | None = None
+    quiet_s: float = 0.0
+
+    def reset(self) -> None:
+        self.active_id = None
+        self.quiet_s = 0.0
+
+    def step(self, inp: RuleInput) -> Reaction | None:
+        demands = {}
+        for w in inp.windows:
+            if conflict_time(w) is not None:
+                demands[w.detection_id] = (required_decel(w, inp.ego.speed_mps), w)
+
+        if self.active_id is not None:
+            held = demands.get(self.active_id)
+            if held is None:
+                self.reset()  # left the strip
+            elif held[0] < AEB_RELEASE_MPS2:
+                self.quiet_s += inp.dt
+                if self.quiet_s >= AEB_RELEASE_S:
+                    self.reset()
+            else:
+                self.quiet_s = 0.0
+
+        worst_id, worst = None, None
+        for det_id, (a_req, w) in demands.items():
+            if a_req >= AEB_TRIGGER_MPS2 and (worst is None or a_req > worst[0]):
+                worst_id, worst = det_id, (a_req, w)
+        if worst is not None and (self.active_id is None or worst[0] > demands[self.active_id][0]):
+            self.active_id, self.quiet_s = worst_id, 0.0
+
+        if self.active_id is None:
+            return None
+        w = demands[self.active_id][1]
+        return Reaction(
+            kind="aeb",
+            speed_ceiling_mps=0.0,
+            source_id=self.active_id,
+            maneuver="emergency_brake",
+            source_window=w,
+        )
+
+
+@dataclass(slots=True)
+class YieldToEntryRule:
+    """Yield to something about to enter the ego's path.
+
+    The predicted conflict point is a virtual stop line: the junction FSM's own
+    ceiling (`stop_line_ceiling`) is applied toward it, with `maneuver="yield"`.
+    Only detections currently OUTSIDE the strip qualify (`t_in > 0`): one
+    already inside is a lead, and `_closest_lead`'s following law owns it --
+    yielding to a slower car in the lane would stop the ego behind traffic it
+    ought simply to follow. Releases once the conflict has gone.
+    """
+
+    active_id: str | None = None
+    quiet_s: float = 0.0
+
+    def reset(self) -> None:
+        self.active_id = None
+        self.quiet_s = 0.0
+
+    def step(self, inp: RuleInput) -> Reaction | None:
+        best: tuple[float, StripWindow] | None = None
+        for w in inp.windows:
+            t_c = conflict_time(w)
+            if t_c is None or w.t_in <= 0.0:
+                continue
+            if best is None or t_c < best[0]:
+                best = (t_c, w)
+
+        if best is None:
+            if self.active_id is None:
+                return None
+            self.quiet_s += inp.dt
+            if self.quiet_s >= YIELD_RELEASE_S:
+                self.reset()
+                return None
+            return None  # nothing to draw while it winds down
+
+        t_c, w = best
+        self.active_id, self.quiet_s = w.detection_id, 0.0
+        # Where the detection's near edge will be when the ego arrives, less the
+        # ego's own front: how far the ego may still travel.
+        line_s = w.near_edge_s + w.along_speed_mps * t_c
+        distance = line_s - inp.ego_s - EGO_LENGTH_M / 2
+        return Reaction(
+            kind="yield_to_entry",
+            speed_ceiling_mps=stop_line_ceiling(max(distance, 0.0)),
+            source_id=w.detection_id,
+            maneuver="yield",
+            source_window=w,
+        )
+
+
+#: Highest priority first. Combining takes the minimum ceiling regardless, but
+#: the label, source and window come from the first rule that fired.
+_DEFAULT_PRIORITY = ("aeb", "yield_to_entry")
+
+
+@dataclass(slots=True)
+class ThreatAssessor:
+    """Runs every rule every tick and folds the answers into one `Reaction`.
+
+    Owned by `CenterlineFollower` and reset with its `BehaviorFSM`. Can only
+    lower the ceiling: the combined ceiling is the minimum over the rules that
+    fired, and `inf` when none did.
+    """
+
+    rules: list[Rule] = field(
+        default_factory=lambda: [AebRule(), YieldToEntryRule()]
+    )
+
+    def reset(self) -> None:
+        for r in self.rules:
+            r.reset()
+
+    def assess(
+        self,
+        detections: Sequence[Detection],
+        ego: VehicleState,
+        route: Route,
+        ego_s: float,
+        dt: float,
+    ) -> Reaction:
+        inp = RuleInput(windows(detections, ego, route, ego_s), ego, route, ego_s, dt)
+        # Every rule steps every tick, fired or not: a rule's dwell timers and
+        # latches must keep running while another rule is the one reported.
+        fired = [r for r in (rule.step(inp) for rule in self.rules) if r is not None]
+        if not fired:
+            return NO_REACTION
+        lead = min(fired, key=lambda r: _priority(r.kind))
+        return Reaction(
+            kind=lead.kind,
+            speed_ceiling_mps=min(r.speed_ceiling_mps for r in fired),
+            source_id=lead.source_id,
+            maneuver=lead.maneuver,
+            source_window=lead.source_window,
+        )
+
+
+def _priority(kind: str) -> int:
+    try:
+        return _DEFAULT_PRIORITY.index(kind)
+    except ValueError:
+        return len(_DEFAULT_PRIORITY)
