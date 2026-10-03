@@ -197,6 +197,28 @@ const DEFAULT_LAYERS = Object.fromEntries(
 ) as Record<LayerKey, boolean>;
 
 /* ------------------------------------------------------------------ */
+/* Session refresh                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How long `refreshAll` waits for the backend to confirm the reset before
+ * reloading regardless. Generous next to a local socket round trip, short
+ * enough that a wedged or already-dead backend never leaves the button stuck.
+ */
+export const RESET_ACK_TIMEOUT_MS = 600;
+
+/**
+ * Navigating is the one thing jsdom will not do, so the reload lives in the
+ * store as a swappable field rather than a bare `window.location.reload()`
+ * inside the action. That keeps the ordering this feature exists for —
+ * reset first, reload second — testable, which is the only part of it that
+ * can silently be wrong.
+ */
+export const DEFAULT_RELOAD_PAGE = (): void => {
+  window.location.reload();
+};
+
+/* ------------------------------------------------------------------ */
 /* Store                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -243,6 +265,10 @@ export interface SimStoreState {
   cameraView: CameraView;
   rightTab: RightTab;
   perfOverlayVisible: boolean;
+  /** A `refreshAll` is in flight; the button that starts one is disabled. */
+  refreshPending: boolean;
+  /** See `DEFAULT_RELOAD_PAGE` — swapped by tests, never at runtime. */
+  reloadPage: () => void;
 
   /* diagnostics */
   events: SimEvent[];
@@ -264,6 +290,7 @@ export interface SimStoreState {
   setRightTab(tab: RightTab): void;
   togglePerfOverlay(): void;
   resetSim(): void;
+  refreshAll(): Promise<void>;
   injectHazard(): void;
 }
 
@@ -291,6 +318,8 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   cameraView: 'chase',
   rightTab: 'parameters',
   perfOverlayVisible: false,
+  refreshPending: false,
+  reloadPage: DEFAULT_RELOAD_PAGE,
 
   events: [],
   lastAck: null,
@@ -401,6 +430,48 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
 
   resetSim() {
     get().send({ cmd: 'reset' });
+  },
+
+  /**
+   * Restart the whole session: reset the simulator, then reload the app.
+   *
+   * The wait between the two is the point. `reloadPage` tears down the
+   * websocket, and a `send` issued into a socket that is about to close is
+   * not guaranteed to be flushed — so reloading without waiting would
+   * intermittently come back to a simulation that never reset, which is the
+   * failure mode a "refresh everything" button most needs not to have.
+   */
+  async refreshAll() {
+    if (get().refreshPending) return;
+    set({ refreshPending: true });
+
+    await new Promise<void>((resolve) => {
+      let id = '';
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      };
+      const unsubscribe = useSimStore.subscribe((s, prev) => {
+        if (s.lastAck !== prev.lastAck && s.lastAck?.id === id) finish();
+      });
+      const timer = setTimeout(finish, RESET_ACK_TIMEOUT_MS);
+
+      id = get().send({ cmd: 'reset' });
+      // A transport that acks synchronously inside `send` — the in-process
+      // mock does — already ran the subscriber above, back when `id` was
+      // still the empty string it could not match. Check for that ack here,
+      // where the id finally exists.
+      if (get().lastAck?.id === id) finish();
+    });
+
+    // Only observable when `reloadPage` is a no-op, i.e. under test. In the
+    // app the navigation below ends this document.
+    set({ refreshPending: false });
+    get().reloadPage();
   },
 
   injectHazard() {

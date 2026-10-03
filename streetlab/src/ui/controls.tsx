@@ -9,6 +9,7 @@ import { useId } from 'react';
 
 export function IconButton({
   label,
+  title,
   onClick,
   active,
   disabled,
@@ -16,6 +17,8 @@ export function IconButton({
   children,
 }: {
   label: string;
+  /** Tooltip, when it should say more than the accessible label. */
+  title?: string;
   onClick?: () => void;
   active?: boolean;
   disabled?: boolean;
@@ -30,7 +33,7 @@ export function IconButton({
       disabled={disabled}
       aria-label={label}
       aria-pressed={active}
-      title={label}
+      title={title ?? label}
     >
       {children}
     </button>

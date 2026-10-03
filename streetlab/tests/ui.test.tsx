@@ -5,7 +5,7 @@ import { TopToolbar } from '../src/ui/TopToolbar';
 import { LeftScenarioSidebar } from '../src/ui/LeftScenarioSidebar';
 import { RightPanel } from '../src/ui/RightPanel';
 import { TelemetryRow } from '../src/ui/TelemetryRow';
-import { useSimStore } from '../src/store/simStore';
+import { RESET_ACK_TIMEOUT_MS, useSimStore } from '../src/store/simStore';
 import { toMph } from '../src/units';
 import { createHarness, resetStore } from './harness';
 import type { Harness } from './harness';
@@ -25,6 +25,44 @@ afterEach(() => {
 /** Run enough animation frames for the throttled hooks and canvases to settle. */
 function tick(frames = 4): void {
   act(() => flushFrames(frames, 120));
+}
+
+/**
+ * A transport that records commands but withholds the ack until the test says
+ * so — the harness acks synchronously inside `send`, which is exactly the
+ * ordering these tests need to be able to pull apart.
+ */
+function deferredAckTransport(): { transport: Transport; ack: () => void } {
+  let handlers: TransportHandlers | null = null;
+  let pending: string | null = null;
+  const transport: Transport = {
+    kind: 'mock',
+    label: 'deferred',
+    connect(h) {
+      handlers = h;
+      h.onStatus('open', 'deferred');
+    },
+    send(command) {
+      pending = command.id;
+    },
+    close() {
+      handlers = null;
+    },
+  };
+  return {
+    transport,
+    ack() {
+      handlers?.onMessage({
+        type: 'ack',
+        protocol: 1,
+        id: pending ?? '',
+        cmd: 'reset',
+        ok: true,
+        message: 'reset',
+        t: 0,
+      });
+    },
+  };
 }
 
 describe('TopToolbar', () => {
@@ -79,6 +117,94 @@ describe('TopToolbar', () => {
 
     fireEvent.click(screen.getByLabelText('Resume simulation'));
     expect(harness.sent.filter((c) => c.cmd === 'set_paused')).toHaveLength(2);
+  });
+
+  describe('restart session', () => {
+    /**
+     * The button's whole job is an ordering: reset the simulator, and only
+     * once the backend has confirmed it, reload the page. Reloading first (or
+     * without waiting) tears down the socket, and a `ws.send` issued into a
+     * socket that is about to close is not guaranteed to be flushed — which
+     * would leave the app reloading into a simulation that never reset.
+     */
+    it('resets the simulator and then reloads the page', async () => {
+      harness = createHarness();
+      const reload = vi.fn();
+      useSimStore.setState({ reloadPage: reload });
+      render(<TopToolbar />);
+      harness.emitScene();
+
+      fireEvent.click(screen.getByLabelText('Restart session'));
+      expect(harness.sent).toContainEqual(
+        expect.objectContaining({ cmd: 'reset' }),
+      );
+      expect(reload).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await useSimStore.getState().refreshAll();
+      });
+      expect(reload).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for the ack before reloading', async () => {
+      const { transport, ack } = deferredAckTransport();
+      resetStore();
+      const reload = vi.fn();
+      useSimStore.setState({ reloadPage: reload });
+      const detach = useSimStore.getState().attach(transport);
+
+      const done = useSimStore.getState().refreshAll();
+      await Promise.resolve();
+      expect(reload).not.toHaveBeenCalled();
+
+      act(() => ack());
+      await done;
+      expect(reload).toHaveBeenCalledTimes(1);
+      detach();
+    });
+
+    it('reloads anyway when the ack never arrives', async () => {
+      vi.useFakeTimers();
+      try {
+        const { transport } = deferredAckTransport();
+        resetStore();
+        const reload = vi.fn();
+        useSimStore.setState({ reloadPage: reload });
+        const detach = useSimStore.getState().attach(transport);
+
+        const done = useSimStore.getState().refreshAll();
+        await vi.advanceTimersByTimeAsync(RESET_ACK_TIMEOUT_MS + 10);
+        await done;
+        // A wedged or already-dead backend must not leave the button stuck.
+        expect(reload).toHaveBeenCalledTimes(1);
+        detach();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('ignores a second click while a refresh is in flight', async () => {
+      const { transport, ack } = deferredAckTransport();
+      resetStore();
+      useSimStore.setState({ reloadPage: vi.fn() });
+      const detach = useSimStore.getState().attach(transport);
+      render(<TopToolbar />);
+
+      const button = screen.getByLabelText('Restart session');
+      fireEvent.click(button);
+      await act(async () => {});
+      expect(button).toHaveProperty('disabled', true);
+
+      fireEvent.click(button);
+      expect(
+        useSimStore.getState().commandLog.filter((c) => c.cmd === 'reset'),
+      ).toHaveLength(1);
+
+      await act(async () => {
+        ack();
+      });
+      detach();
+    });
   });
 
   it('switches camera view through the menu', () => {

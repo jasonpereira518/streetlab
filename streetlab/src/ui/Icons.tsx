@@ -146,6 +146,16 @@ export const ResetIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** Two arrows, to read distinctly from `ResetIcon`'s single one. */
+export const RefreshIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M20 11a8 8 0 0 0-13.7-5.7L3 8" />
+    <path d="M4 13a8 8 0 0 0 13.7 5.7L21 16" />
+    <path d="M3 4v4h4" />
+    <path d="M21 20v-4h-4" />
+  </Svg>
+);
+
 export const ChevronDownIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="m6 9 6 6 6-6" />
