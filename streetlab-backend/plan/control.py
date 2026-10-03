@@ -196,13 +196,16 @@ class CenterlineFollower:
             limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
         )
 
-        reaction = self.assessor.assess(detections, ego, route, s, context.dt)
-
         # The blend is the FSM's, not derived here: going out and coming back it
         # runs between the HOME lane (`route`) and the other lane of the manoeuvre.
         away = self._away_lane(context)
         aim_route = route if away is None else away.route
         blend = 0.0 if away is None else self.fsm.lane_change.blend
+
+        reaction = self.assessor.assess(
+            detections, ego, route, s, context.dt,
+            centre_m=_strip_centre(ego, route, s, aim_route, blend),
+        )
 
         steer = self._pure_pursuit_blended(ego, route, aim_route, s, lookahead, blend)
         steer = _clamp(
@@ -264,7 +267,7 @@ class CenterlineFollower:
                     s, length_m=_PLAN_LENGTH_M, step_m=_PLAN_STEP_M
                 ),
                 target_speed_mps=max(0.0, target),
-                maneuver=reaction.maneuver or decision.maneuver or _maneuver(route, s),
+                maneuver=_label(decision.maneuver, reaction, route, s),
                 confidence=1.0 if limits.assist_enabled else 0.35,
                 reaction_source_id=reaction.source_id or source_id,
             ),
@@ -316,6 +319,44 @@ class CenterlineFollower:
         if lead is not None:
             target = min(target, _following_speed(lead, gap, ego, limits))
         return target
+
+
+_LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
+
+
+def _label(
+    decision_maneuver: str | None, reaction: Reaction, route: Route, s: float
+) -> str:
+    """The wire manoeuvre: a lane change in progress keeps its label.
+
+    Everywhere else a firing reaction names the manoeuvre. But a car mid-change
+    is off its lane by definition, and the wire says so with `lane_change_*`;
+    relabelling those frames `emergency_brake` would put a car 2 m off its lane
+    under a label that does not say why (the suite asserts the two never come
+    apart). The braking is still reported -- the target speed, the plan's
+    `reaction_source_id` and the trajectory graph all carry it.
+    """
+    if decision_maneuver in _LANE_CHANGE_LABELS:
+        return decision_maneuver
+    return reaction.maneuver or decision_maneuver or _maneuver(route, s)
+
+
+def _strip_centre(
+    ego: VehicleState, route: Route, s: float, aim_route: Route, blend: float
+) -> float:
+    """Offset from `route` of the line the ego is actually steering along.
+
+    Where the ego is now, drawn toward the lane it is changing into by the same
+    `blend` that interpolates the pure-pursuit aim point. The threat layer's
+    strip is centred here, so a stopped car in the lane being left is not
+    "in the path" of a car that is already on its way round it.
+    """
+    here = route.lateral_offset((ego.x, ego.y), s)
+    if blend <= 0.0:
+        return here
+    ts = aim_route.project((ego.x, ego.y))
+    tx, ty = aim_route.point_at(ts)
+    return here + (route.lateral_offset((tx, ty), s) - here) * blend
 
 
 def _closest_lead(

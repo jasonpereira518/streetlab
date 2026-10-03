@@ -552,3 +552,49 @@ def test_approach_distance_is_smaller_for_an_object_that_keeps_moving_away():
 def test_approach_distance_is_zero_when_not_closing_and_larger_head_on():
     assert approach_distance(5.0, 8.0) == 0.0
     assert approach_distance(8.0, -8.0) > approach_distance(8.0, 0.0)
+
+
+# --- the threat trajectory series -------------------------------------------- #
+
+from sim.loop import _TRAJECTORY_HORIZON_S, _TRAJECTORY_STEP_S, _threat_series  # noqa: E402
+
+_STEPS = int(_TRAJECTORY_HORIZON_S / _TRAJECTORY_STEP_S)
+
+
+def test_the_threat_series_is_absent_when_the_planner_is_not_reacting():
+    assert _threat_series(None, _STEPS) == (None, None)
+    assert _threat_series(NO_REACTION, _STEPS) == (None, None)
+
+
+def test_the_threat_series_is_the_strip_windows_own_sideways_prediction(route):
+    """The graph must show the prediction the planner acts on: same offset, same
+    sideways speed, taken from the window the reaction carries."""
+    r = ThreatAssessor().assess([ped(130.0, 5.0, vy=-1.4)], ego_at(10.0), route, EGO_S, DT)
+    assert r.kind == "yield_to_entry"
+    series, label = _threat_series(r, _STEPS)
+    w = r.source_window
+    assert label == "Yielding for pedestrian"
+    assert len(series) == _STEPS + 1 and series[0].t == 0.0
+    assert series[0].lateral_m == pytest.approx(w.offset_m)
+    for s in series:
+        expected = max(w.offset_m + w.lateral_speed_mps * s.t, -w.strip_half_m)
+        assert s.lateral_m == pytest.approx(expected, abs=1e-3)
+
+
+def test_the_threat_series_stops_at_the_far_edge_of_the_strip(route):
+    r = ThreatAssessor().assess([ped(130.0, 5.0, vy=-1.4)], ego_at(10.0), route, EGO_S, DT)
+    series, _ = _threat_series(r, _STEPS)
+    # 5 m out at -1.4 m/s is only at -0.6 m after the 4 s horizon, short of the
+    # -2.25 m far edge: nothing to clip, the straight line is all there is.
+    assert min(s.lateral_m for s in series) == pytest.approx(5.0 - 1.4 * 4.0)
+    # 3 m out would reach -2.6 m, past the edge, so the clip binds.
+    near = ThreatAssessor().assess([ped(130.0, 3.0, vy=-1.4)], ego_at(10.0), route, EGO_S, DT)
+    series, _ = _threat_series(near, _STEPS)
+    assert min(s.lateral_m for s in series) == pytest.approx(-near.source_window.strip_half_m)
+
+
+def test_a_stopped_car_in_the_path_is_a_flat_line_at_the_ego_s_own_line(route):
+    r = ThreatAssessor().assess([det(116.0, 0.0)], ego_at(8.0), route, EGO_S, DT)
+    series, label = _threat_series(r, _STEPS)
+    assert label == "Emergency braking for car"
+    assert all(s.lateral_m == 0.0 for s in series)

@@ -150,7 +150,11 @@ class StripWindow:
 
 
 def strip_window(
-    det: Detection, ego: VehicleState, route: Route, ego_s: float
+    det: Detection,
+    ego: VehicleState,
+    route: Route,
+    ego_s: float,
+    centre_m: float = 0.0,
 ) -> StripWindow | None:
     """The detection's window in the ego's path, or None if it never matters.
 
@@ -162,6 +166,13 @@ def strip_window(
     Offset and sideways speed are taken at the detection's OWN arc length:
     that is where it will cross, and on a bend the ego's tangent is the wrong
     axis. A detection on a different route is projected onto this one.
+
+    `centre_m` is the signed offset from `route` of the line the strip is
+    centred on: where the ego actually is or is heading, not where its route
+    is. It is 0 for a car holding the route, but a car changing lanes is
+    steering away from what is in its old lane, and a strip left on the old
+    lane would brake for the very thing the manoeuvre is avoiding.
+    `offset_m` on the result is relative to this centre.
     """
     ds = route.project((det.pose.x, det.pose.y))
     centre_gap = route.signed_gap(ego_s, ds)
@@ -175,7 +186,7 @@ def strip_window(
     nx, ny = -ty, tx  # left normal
     along_speed = det.velocity[0] * tx + det.velocity[1] * ty
     lateral_speed = det.velocity[0] * nx + det.velocity[1] * ny
-    offset = route.lateral_offset((det.pose.x, det.pose.y), ds)
+    offset = route.lateral_offset((det.pose.x, det.pose.y), ds) - centre_m
 
     # Its extent in the route's frame: the footprint of a rotated rectangle.
     rel = det.pose.heading - h
@@ -242,12 +253,16 @@ def conflict_time(w: StripWindow, horizon_s: float = HAZARD_TTC_S) -> float | No
 
 
 def windows(
-    detections: Sequence[Detection], ego: VehicleState, route: Route, ego_s: float
+    detections: Sequence[Detection],
+    ego: VehicleState,
+    route: Route,
+    ego_s: float,
+    centre_m: float = 0.0,
 ) -> list[StripWindow]:
     """Strip windows for every detection that has one, computed once per tick."""
     out = []
     for d in detections:
-        w = strip_window(d, ego, route, ego_s)
+        w = strip_window(d, ego, route, ego_s, centre_m)
         if w is not None:
             out.append(w)
     return out
@@ -465,8 +480,11 @@ class ThreatAssessor:
         route: Route,
         ego_s: float,
         dt: float,
+        centre_m: float = 0.0,
     ) -> Reaction:
-        inp = RuleInput(windows(detections, ego, route, ego_s), ego, route, ego_s, dt)
+        inp = RuleInput(
+            windows(detections, ego, route, ego_s, centre_m), ego, route, ego_s, dt
+        )
         # Every rule steps every tick, fired or not: a rule's dwell timers and
         # latches must keep running while another rule is the one reported.
         fired = [r for r in (rule.step(inp) for rule in self.rules) if r is not None]
