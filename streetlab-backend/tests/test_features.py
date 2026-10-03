@@ -480,3 +480,52 @@ def test_trees_are_deterministic_across_runs(graph):
     first = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
     second = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
     assert first == second
+
+
+# ---------------------------------------------- one-way spellings in the fallback
+
+def _oneway_stop_graph(oneway: str, *, stop_lon: float) -> dict:
+    """A west-to-east one-way street with an undirected stop node on it.
+
+    `stop_lon` decides which end of the way the node sits nearer, which is the
+    only thing the untagged fallback has to go on. No `direction` tag, so the
+    `oneway` branch is what has to answer.
+    """
+    return parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4160},
+            {"type": "node", "id": 2, "lat": 37.7945, "lon": stop_lon,
+             "tags": {"highway": "stop"}},
+            {"type": "node", "id": 3, "lat": 37.7945, "lon": -122.4150},
+            {"type": "way", "id": 500, "nodes": [1, 2, 3],
+             "tags": {"highway": "residential", "name": "Test St",
+                      "oneway": oneway}},
+        ]}
+    )
+
+
+def test_reversed_oneway_governs_traffic_against_the_drawn_direction():
+    """`oneway=-1` means traffic runs backwards along the way, not forwards.
+
+    The node sits nearer the way's east end, so the nearer-end fallback would
+    answer "eastbound" -- which is precisely the direction no car on a `-1`
+    street is driving. The sign must face the westbound traffic instead.
+    """
+    graph = _oneway_stop_graph("-1", stop_lon=-122.4151)
+    sign = build_stop_signs(graph, ORIGIN)[0]
+    # Traffic runs west, so the face looks east.
+    assert sign.heading == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("spelling", ["yes", "true", "1"])
+def test_every_truthy_oneway_spelling_governs_the_drawn_direction(spelling):
+    """OSM spells a forward one-way "yes", "true" or "1" -- `is_oneway` has
+    always accepted all three, and the approach fallback must agree with it.
+
+    The node sits nearer the way's west end, so the nearer-end fallback would
+    answer "westbound" and contradict the tag.
+    """
+    graph = _oneway_stop_graph(spelling, stop_lon=-122.4159)
+    sign = build_stop_signs(graph, ORIGIN)[0]
+    # Traffic runs east, so the face looks west.
+    assert abs(sign.heading) == pytest.approx(math.pi, abs=1e-6)
