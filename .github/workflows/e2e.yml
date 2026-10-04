@@ -1,0 +1,64 @@
+name: E2E (advisory)
+
+# Playwright end-to-end tests, kept out of the main CI workflow on purpose.
+# Hosted runners have no GPU, so the app renders through SwiftShader-backed
+# WebGL2, and the specs that screenshot or pixel-count the animating canvas
+# are slow and occasionally exceed their timeout there (measured on the first
+# hosted run: 15 passed, 2 failed, 3 flaky, 1 skipped of 21; see
+# docs/measurements/2026-10-04-e2e-flake-rate.md). On a developer machine the
+# full suite passes (`cd streetlab && npm run test:e2e`). This workflow still
+# runs and reports on every push, but it must not turn the main CI status red
+# for a runner limitation.
+
+on:
+  push:
+    # TEMPORARY: the feature branch is listed so this workflow can be trialled
+    # before it exists on main. Remove the second entry before merging.
+    branches: [main, claude/portfolio-credibility-plan-cbca8d]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # location.spec.ts's happy path needs live Nominatim/Overpass; it skips
+      # itself when this is set, keeping CI deterministic.
+      STREETLAB_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: streetlab/package-lock.json
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: streetlab-backend/uv.lock
+      - name: Install backend (three e2e specs spawn it)
+        run: uv sync --frozen
+        working-directory: streetlab-backend
+      - name: Install frontend
+        run: npm ci
+        working-directory: streetlab
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: streetlab
+      - name: Run Playwright
+        run: npm run test:e2e
+        working-directory: streetlab
+      - name: Keep traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: streetlab/test-results
