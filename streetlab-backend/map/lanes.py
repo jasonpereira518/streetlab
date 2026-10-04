@@ -522,9 +522,7 @@ def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
     if len(deduped) < 3:
         raise NoDrivableRoad("route degenerated to fewer than three points")
 
-    lane = Route(deduped, closed=True).offset(-EGO_LANE_INSET)
-    route = lane.fillet(radius_m=TURN_RADIUS_M)
-    return _drop_micro_segments(remove_self_intersections(route))
+    return _right_hand_lane(deduped, closed=True)
 
 
 def select_route_to_destination(
@@ -553,9 +551,7 @@ def select_route_to_destination(
     if len(deduped) < 2:
         raise NoDrivableRoad("route degenerated to fewer than two points")
 
-    lane = Route(deduped, closed=False).offset(-EGO_LANE_INSET)
-    route = lane.fillet(radius_m=TURN_RADIUS_M)
-    return _drop_micro_segments(remove_self_intersections(route))
+    return _right_hand_lane(deduped, closed=False)
 
 
 #: Shortest segment the finished ego route may contain. Well under a
@@ -602,6 +598,99 @@ def _drop_micro_segments(route: Route) -> Route:
     if len(points) < min_points:
         raise NoDrivableRoad("route degenerated to too few points to drive")
     return Route(points, closed=route.closed)
+
+
+#: Shortest leg of the source loop allowed through to `Route.offset`.
+#:
+#: The ego drives `EGO_LANE_INSET` to the right of the loop. On the inside of a
+#: corner that offset eats into both adjoining legs, so a leg shorter than the
+#: inset has its offset turned inside out when a corner sits at each end of it.
+#: Two right angles do it to anything under twice the inset, which is why that is
+#: the floor. OSM junctions are full of such legs -- a 0.5 m connector where a
+#: street meets a cross street -- and the inverted leg survives `fillet` as a
+#: near-zero-radius arc that `_drop_micro_segments` then collapses into a
+#: 175-degree cusp: the route reverses direction inside 0.05 m. Measured on the
+#: Nob Hill fixture, 15 of 17 distinct closed loops had one before this and none
+#: after (docs/superpowers/plans/2026-10-03-driving-realism-phase1-route-geometry.md).
+MIN_LOOP_LEG_M = 2 * EGO_LANE_INSET
+
+
+def _line_intersection(
+    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], d: tuple[float, float]
+) -> tuple[float, float] | None:
+    """Where the infinite line through a-b meets the one through c-d, or None."""
+    rx, ry = b[0] - a[0], b[1] - a[1]
+    qx, qy = d[0] - c[0], d[1] - c[1]
+    r_len, q_len = math.hypot(rx, ry), math.hypot(qx, qy)
+    if r_len < 1e-9 or q_len < 1e-9:
+        return None
+    cross = rx * qy - ry * qx
+    if abs(cross) < 1e-6 * r_len * q_len:
+        return None  # parallel
+    t = ((c[0] - a[0]) * qy - (c[1] - a[1]) * qx) / cross
+    return (a[0] + rx * t, a[1] + ry * t)
+
+
+def _strip_closing_vertex(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop a final vertex that repeats the first.
+
+    `_find_loop` closes its circuit by repeating the start, and `Route.offset`
+    documents that it assumes a closed route does NOT. Left in, the zero-length
+    closing leg has no direction, so the vertices either side of the seam are
+    offset along a meaningless bisector -- the source of the ~50 micron backwards
+    stitches `_drop_micro_segments` exists to remove after the fact.
+    """
+    if len(points) > 3 and math.dist(points[0], points[-1]) <= 1e-6:
+        return points[:-1]
+    return points
+
+
+def _collapse_short_legs(
+    points: list[tuple[float, float]], *, closed: bool, min_leg_m: float
+) -> list[tuple[float, float]]:
+    """Merge the two ends of every leg shorter than `min_leg_m` into one vertex.
+
+    The merged vertex is where the neighbouring legs' lines meet -- the corner
+    the short leg was rounding -- unless they are parallel or meet implausibly
+    far away, when the midpoint of the short leg is used. An open path never
+    moves its first or last vertex: a short leg at an end drops the vertex next
+    to it instead.
+    """
+    pts = list(points)
+    floor = 3 if closed else 2
+    for _ in range(len(points)):
+        n = len(pts)
+        if n <= floor:
+            break
+        legs = range(n) if closed else range(n - 1)
+        short = next(
+            (i for i in legs if 1e-9 < math.dist(pts[i], pts[(i + 1) % n]) < min_leg_m), None
+        )
+        if short is None:
+            break
+        j = (short + 1) % n
+        if not closed and short == 0:
+            del pts[1]
+        elif not closed and j == n - 1:
+            del pts[n - 2]
+        else:
+            mid = ((pts[short][0] + pts[j][0]) / 2, (pts[short][1] + pts[j][1]) / 2)
+            corner = _line_intersection(pts[short - 1], pts[short], pts[j], pts[(j + 1) % n])
+            pts[short] = (
+                corner if corner is not None and math.dist(corner, mid) <= 2 * min_leg_m else mid
+            )
+            del pts[j]
+    return pts
+
+
+def _right_hand_lane(points: list[tuple[float, float]], *, closed: bool) -> Route:
+    """The lane the ego drives along a loop or path of junction-to-junction points."""
+    if closed:
+        points = _strip_closing_vertex(points)
+    points = _collapse_short_legs(points, closed=closed, min_leg_m=MIN_LOOP_LEG_M)
+    lane = Route(points, closed=closed).offset(-EGO_LANE_INSET)
+    route = lane.fillet(radius_m=TURN_RADIUS_M)
+    return _drop_micro_segments(remove_self_intersections(route))
 
 
 # --------------------------------------------------------------------------- #

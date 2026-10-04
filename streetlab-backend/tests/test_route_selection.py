@@ -507,7 +507,10 @@ def test_a_neighbour_lane_route_can_also_be_repaired():
     this keeps binding on a live caller rather than on a deleted one.
     """
     graph = parse_overpass(json.loads(FIXTURE.read_text()))
-    ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (0.0, 0.0))
+    # Not (0, 0): until the route lost its cusps, the default loop's left offset
+    # self-crossed, and this test leaned on that. It no longer does; this origin
+    # (a different closed loop on the same extract) still needs the repair.
+    ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (13.91, 144.75))
     assert LinearRing(ego_route.points).is_simple  # the premise this test isolates
 
     neighbour_raw = Route(ego_route.points, closed=True).offset(LANE_W)
