@@ -590,6 +590,15 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
 ---
 
+## Execution notes (2026-10-04, as built)
+
+Where execution differed from the plan above; the code and README are the source of truth:
+
+- **Task 2, encoder import:** `gifenc` is CommonJS, so `import { GIFEncoder } from 'gifenc'` fails under Node ESM. The script uses a default import and destructures.
+- **Task 2, capture method:** the `page.screenshot` loop reached only ~4 fps on the WebGPU page and 800×500 cropped the app's right panel (below the 1320 px breakpoint). The script instead lays the page out at 1440×900 and records a CDP screencast (Chrome scales it to 720×450), decoding frames with `jpeg-js` (added as a second devDependency) and encoding with `gifenc`. Result: 95 frames over 10.1 s (9.4 fps), 4.87 MB, looping.
+- **Task 1/3, protocol number:** the Cycle 6 roadmap row said "wire protocol 7", but the running backend reports protocol 8. The number was dropped from the row rather than updated.
+- **Task 3, extra file:** `DEMO.md` linked to `README.md#roadmap`, which moved; it now points at `docs/ARCHITECTURE.md#roadmap`.
+
 ## Plan self-review notes
 
 - Spec coverage: refinement 1 (one source for numbers) → Task 1 + dated counts; 2 (remove false CI claim) → Task 1 Step 3; 3 (GIF) → Task 2; 4 (skim-ordered README ~120 lines) → Task 3 (target relaxed to ≤ 130 lines); 5 (Results framing) → Task 3 Step 3; 6 (CLAUDE.md) → Task 4.
