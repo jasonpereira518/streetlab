@@ -12,6 +12,35 @@ async function readStats(page: import('@playwright/test').Page) {
   return { backend, fps: Number(fps), draws: Number(draws) };
 }
 
+/**
+ * Read a text node once it has stopped changing.
+ *
+ * Numeric readouts are published by `useFrameValue(select, hz)`
+ * (`store/hooks.ts`), which THROTTLES: at 12 Hz it forwards at most one frame
+ * every ~83 ms. So a readout can still be showing a sample from before an
+ * event while the rest of the UI — anything reading the store's own `paused`,
+ * which updates on every frame — has already moved on. Sampling in that gap
+ * captures a value that is about to change for reasons unrelated to whatever
+ * is under test.
+ *
+ * `quietMs` only has to exceed one throttle window; 300 ms clears the slowest
+ * readout on screen (`useFrameValue(..., 4)` — 250 ms) with room to spare.
+ */
+async function settledText(
+  locator: import('@playwright/test').Locator,
+  { quietMs = 300, timeoutMs = 5_000 } = {},
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  let last = await locator.textContent();
+  while (Date.now() < deadline) {
+    await locator.page().waitForTimeout(quietMs);
+    const now = await locator.textContent();
+    if (now === last) return now;
+    last = now;
+  }
+  throw new Error(`readout never settled within ${timeoutMs} ms (last "${last}")`);
+}
+
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (err) => {
     throw new Error(`uncaught page error: ${err.message}`);
@@ -48,7 +77,19 @@ test('the toolbar shows live telemetry and pause halts the clock', async ({ page
   await page.getByLabel('Pause simulation').click();
   await expect(page.getByLabel('Resume simulation')).toBeVisible();
 
-  const paused = await speed.textContent();
+  // The claim is that the clock HALTS — that the readout stops moving and
+  // stays stopped. It is not a claim about how promptly a throttled readout
+  // notices, which is what sampling immediately after the button flips was
+  // really measuring: the button tracks `paused` (updated every frame) while
+  // the readout is throttled to 12 Hz, so the two are up to ~83 ms apart and
+  // the first sample was routinely one tick stale. Measured on main before
+  // this change, that read the wrong value in 5 of 6 runs.
+  //
+  // Verified on the wire, not assumed: with the sim paused the backend sends
+  // a steady stream of frames that are byte-identical in `t` and
+  // `ego.speed_mps`, so once the readout catches up there is nothing left
+  // that could move it.
+  const paused = await settledText(speed);
   await page.waitForTimeout(1200);
   expect(await speed.textContent()).toBe(paused);
 
