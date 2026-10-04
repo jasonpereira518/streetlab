@@ -336,7 +336,7 @@ def summarize(run: Run) -> dict:
         "seconds": float(run.t[-1]),
         "ego": {
             "longitudinal_accel": stats(run.accel),
-            "peak_decel_mps2": float(-run.accel.min()),
+            "peak_decel_mps2": float(max(0.0, -run.accel.min())),
             "longitudinal_jerk": stats(longitudinal_jerk(run)),
             "lateral_accel": stats(lateral_accel(run)),
             "lateral_jerk": stats(lateral_jerk(run)),

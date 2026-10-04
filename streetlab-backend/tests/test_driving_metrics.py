@@ -180,6 +180,11 @@ def test_recording_a_real_run_fills_every_column_consistently():
     assert set(run.phase) <= {"none", "outbound", "passing", "returning"}
 
 
+def test_peak_decel_is_zero_not_negative_when_the_ego_never_brakes():
+    run = make_run([1.0, 2.0, 3.0], accel=[0.9, 1.1, 1.0])
+    assert summarize(run)["ego"]["peak_decel_mps2"] == 0.0
+
+
 def test_summarize_returns_plain_json_values():
     import json
 
