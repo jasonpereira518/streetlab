@@ -143,13 +143,23 @@ GRID_LOOP_REPLAY_S = 300.0
 #: (12.25 s on grid-loop, 22 % of headroom) and BELOW that structural ceiling,
 #: so a backstop mis-tuned upward still trips this rather than being absorbed.
 #:
+#: RAISED again, 15.0 -> 20.0 s, by the explicit-blend lane change, and this is a
+#: second weakening to weigh. The aim point now crosses a lane over
+#: `LANE_CHANGE_RAMP_S` = 4.5 s (it was 2.6 s), so a manoeuvre is longer by design:
+#: measured worst 17.4 s over 400 s on grid-loop. The structural ceiling is now
+#: `LANE_CHANGE_OUTBOUND_MAX_S + LANE_CHANGE_PASS_MAX_S +
+#: LANE_CHANGE_RETURN_MAX_S` = 7.5 + 6.0 + 8.0 = 21.5 s. 20.0 s is above the
+#: measured worst (15 % of headroom) and still BELOW that ceiling, so a backstop
+#: mis-tuned upward still trips this rather than being absorbed. The 12.25 s,
+#: 15.0 s and 16.5 s figures above are R3's, kept as the history of the bound.
+#:
 #: End-of-run offset: worst 0.296 m on grid-loop, 0.475 m on Nob Hill (the one
 #: episode whose return runs out at a crawl in a fillet). 1.2 m clears that by
 #: 60 % and is still inside `map.lanes.LANE_W / 2`, so it is a strictly
 #: stronger statement than the 2.0 m guard, made on exactly the frames that
 #: guard refuses to look at. Unchanged by R3: the extra phase makes runs
 #: longer, not less finished.
-MAX_LABELLED_RUN_S = 15.0
+MAX_LABELLED_RUN_S = 20.0
 SETTLED_BY_END_M = 1.2
 
 
