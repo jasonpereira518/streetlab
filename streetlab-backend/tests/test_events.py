@@ -706,3 +706,12 @@ def test_a_cut_in_does_not_land_on_top_of_a_vehicle(sim):
     inject(sim, "cut_in")
     assert mover.lateral_m and mover.lane_id == blocker.lane_id
     assert not _overlaps(sim, mover), "the cut-in landed inside a parked car"
+
+
+def test_a_stalled_vehicle_is_not_staged_inside_a_vehicle(sim):
+    from sim.events import STALLED_AHEAD_M
+
+    _park_in_the_way(sim, STALLED_AHEAD_M)
+    assert inject(sim, "stalled_vehicle").ok
+    (car,) = _spawned(sim, "stalled_vehicle")
+    assert not _overlaps(sim, car), "the stalled car landed inside a parked car"

@@ -529,7 +529,10 @@ def _stalled_vehicle(sim: "Simulation") -> str | Declined:
         speed_mps=0.0,
         lifetime_s=STALLED_LIFE_S,
     )
-    _place(agent, route, _ego_s(sim) + STALLED_AHEAD_M)
+    at = _clear_of_traffic(
+        sim, route, _ego_s(sim) + STALLED_AHEAD_M, agent.size.length, moving=agent
+    )
+    _place(agent, route, at)
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
     return f"{agent.id} stalled in the lane {STALLED_AHEAD_M:.0f} m ahead"
 
