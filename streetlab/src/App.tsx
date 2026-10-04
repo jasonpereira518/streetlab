@@ -3,6 +3,7 @@ import { createMockTransport } from './net/mockServer';
 import { createTransportFromLocation } from './net/wsClient';
 import { useSimStore } from './store/simStore';
 import { Renderer } from './three/Renderer';
+import { DemoBanner } from './ui/DemoBanner';
 import { LeftScenarioSidebar } from './ui/LeftScenarioSidebar';
 import { PanelHandle } from './ui/PanelHandle';
 import { PerfOverlay } from './ui/PerfOverlay';
@@ -63,6 +64,7 @@ export default function App() {
 
   return (
     <div className={shell}>
+      {import.meta.env.VITE_DEMO === '1' && <DemoBanner />}
       <TopToolbar />
       <div className="stage">
         {!collapsed.scenarios && <LeftScenarioSidebar />}
