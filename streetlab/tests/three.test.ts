@@ -73,6 +73,108 @@ describe('meshBuilder helpers', () => {
   });
 });
 
+/** Highest y in a named merged mesh, or null if it is absent. */
+function peakY(world: ReturnType<typeof buildWorld>, name: string): number | null {
+  const mesh = world.root.getObjectByName(name) as THREE.Mesh | undefined;
+  if (!mesh?.geometry) return null;
+  const pos = mesh.geometry.getAttribute('position');
+  let top = -Infinity;
+  for (let i = 0; i < pos.count; i++) top = Math.max(top, pos.getY(i));
+  return top;
+}
+
+describe('the road surface stack stays under the overlays', () => {
+  /**
+   * Regression pin for the defect that made the plan ribbon invisible.
+   *
+   * Roads were staggered by `Y.road + i * 0.0009` — the road's own INDEX. That
+   * is fine on the six-road synthetic grid and wrong on real map data: Nob Hill
+   * has 264 roads, so the last sat 0.2567 m up and rendered over the lane
+   * markings (0.05 m), the crosswalks (0.055 m), the kerbs (0.16 m) and the
+   * plan ribbon alike. Nothing caught it, because every test scene was small
+   * enough for the bug to stay invisible.
+   *
+   * A 400-road scene is the cheapest way to state the invariant that actually
+   * matters: the band is bounded, however large the extract.
+   */
+  const many = (() => {
+    const base = new MockSim().scene;
+    const roads = Array.from({ length: 400 }, (_, i) => ({
+      ...base.roads[0],
+      id: `r${i}`,
+      // A fan through a shared origin, so they genuinely cross each other.
+      centerline: [
+        [0, 0],
+        [Math.cos((i * Math.PI) / 37) * 300, Math.sin((i * Math.PI) / 37) * 300],
+      ] as [number, number][],
+    }));
+    return buildWorld({ ...base, roads } as never);
+  })();
+
+  it('keeps every road surface below the lane markings', () => {
+    expect(peakY(many, 'roads') as number).toBeLessThan(peakY(many, 'lane-markings') as number);
+  });
+
+  it('keeps every road surface below the plan ribbon', () => {
+    const ribbon = new PathRibbon();
+    ribbon.update([
+      [0, 0],
+      [10, 0],
+    ]);
+    const rideHeight = (
+      ribbon.mesh.geometry.getAttribute('position') as THREE.BufferAttribute
+    ).getY(0);
+    expect(peakY(many, 'roads') as number).toBeLessThan(rideHeight);
+    ribbon.dispose();
+  });
+
+  it('bounds the band however many roads there are', () => {
+    const small = buildWorld(new MockSim().scene);
+    // 400 roads must stack no higher than a handful do — that is the point.
+    expect((peakY(many, 'roads') as number) - (peakY(small, 'roads') as number)).toBeLessThan(0.01);
+  });
+});
+
+describe('the driven line', () => {
+  const world = buildWorld(new MockSim().scene);
+
+  it('is laid down wherever the scene carries a reference path', () => {
+    expect(new MockSim().scene.reference_path.length).toBeGreaterThan(50);
+    expect(world.root.getObjectByName('reference-path')).toBeTruthy();
+  });
+
+  it('sits above the lane markings but below the kerbs', () => {
+    const ref = peakY(world, 'reference-path') as number;
+    expect(ref).toBeGreaterThan(peakY(world, 'lane-markings') as number);
+    // 0.16 m is SIDEWALK_H: painted on the road, not up the kerb.
+    expect(ref).toBeLessThan(0.16);
+  });
+
+  it('is skipped entirely when the scene carries no path', () => {
+    const base = new MockSim().scene;
+    const bare = buildWorld({ ...base, reference_path: [] } as never);
+    expect(bare.root.getObjectByName('reference-path')).toBeFalsy();
+  });
+
+  it('follows the filleted route rather than cutting its corners', () => {
+    const path = new MockSim().scene.reference_path;
+    // A rectangle loop with 10 m fillets: no sample may sit at the bare corner
+    // of the block, which is what a vertex list would have produced.
+    expect(
+      path.filter(([x, y]) => Math.abs(x - 5.4) < 0.5 && Math.abs(y - 5.4) < 0.5),
+    ).toHaveLength(0);
+    let maxTurn = 0;
+    for (let i = 2; i < path.length; i++) {
+      const a = Math.atan2(path[i - 1][1] - path[i - 2][1], path[i - 1][0] - path[i - 2][0]);
+      const b = Math.atan2(path[i][1] - path[i - 1][1], path[i][0] - path[i - 1][0]);
+      let d = Math.abs(b - a);
+      if (d > Math.PI) d = 2 * Math.PI - d;
+      maxTurn = Math.max(maxTurn, d);
+    }
+    expect(maxTurn).toBeLessThan(Math.PI / 6);
+  });
+});
+
 describe('buildWorld', () => {
   const scene = new MockSim().scene;
   const world = buildWorld(scene);
@@ -270,8 +372,10 @@ describe('PathRibbon', () => {
       expect(midX).toBeCloseTo(wx, 4);
       expect(midZ).toBeCloseTo(-wy, 4);
     }
-    expect(pos.getY(0)).toBeGreaterThan(0);
-    expect(pos.getY(0)).toBeLessThan(0.2);
+    // Clears the road AND the 0.16 m kerb it crosses on turns — being buried
+    // under both is what made the plan invisible on real OSM scenes.
+    expect(pos.getY(0)).toBeGreaterThan(0.16);
+    expect(pos.getY(0)).toBeLessThan(0.5);
 
     ribbon.dispose();
   });
@@ -635,6 +739,7 @@ describe('ChaseCamera on the real Nob Hill route', () => {
       traffic_lights: [],
       stop_signs: [],
       street_signs: [],
+      reference_path: [],
     } as never;
     const world = buildWorld(scene);
     const blockers = world.root.getObjectByName('buildings') ?? null;

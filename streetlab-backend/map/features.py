@@ -707,6 +707,21 @@ def junction_of(light_id: str) -> str:
     return parts[0] if len(parts) == 2 and parts[1].isdigit() else light_id
 
 
+def stop_node_id(sign_id: str) -> int | None:
+    """The OSM node behind `osm_ss_<node>`, or None if the id is not one.
+
+    The caller needs it to ask whether that node is a junction, which decides
+    how far before the sign the ego halts (`OsmSceneSource._build_uncached`).
+    Returning None rather than guessing keeps an unrecognised id on the
+    conservative branch -- the full junction setback -- instead of inventing a
+    node number.
+    """
+    if not sign_id.startswith("osm_ss_"):
+        return None
+    raw = sign_id[len("osm_ss_") :]
+    return int(raw) if raw.isdigit() else None
+
+
 def control_anchors(
     graph: OsmGraph, origin: LatLon
 ) -> dict[str, tuple[float, float]]:

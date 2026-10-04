@@ -28,6 +28,7 @@ import type {
   Vec2,
 } from '../schema';
 import { PROTOCOL_VERSION } from '../schema';
+import { makeRectRoute, Route } from './route';
 
 /* ---------------------------------------------------------------- */
 /* Grid definition                                                   */
@@ -69,6 +70,23 @@ const street = (axis: 'ns' | 'ew', at: number): StreetSpec => {
 
 /** The block the ego route circles, in street-centreline coordinates. */
 export const LOOP_BLOCK = { x0: 0, x1: 80, y0: 0, y1: 80 };
+
+/**
+ * The line the ego drives: the inner lane of `LOOP_BLOCK`, filleted at the
+ * corners. One definition, used both by the mock simulator to move the car and
+ * by `buildScene` to publish `reference_path` — so the line drawn on the road
+ * and the car's actual motion cannot disagree.
+ */
+export function makeEgoRoute(): Route {
+  return makeRectRoute(
+    LOOP_BLOCK.x0 + EGO_LANE_INSET,
+    LOOP_BLOCK.y0 + EGO_LANE_INSET,
+    LOOP_BLOCK.x1 - EGO_LANE_INSET,
+    LOOP_BLOCK.y1 - EGO_LANE_INSET,
+    10,
+    true,
+  );
+}
 
 /** Ego drives the inner (left) lane; a cut-in comes from the kerb lane. */
 export const EGO_LANE_INSET = LANE_W * 1.5; // 5.4 m from centreline
@@ -584,6 +602,10 @@ export function buildScene(scenarioId: string): SceneDescription {
     stop_signs: buildStopSigns(),
     trees: buildTrees(),
     street_signs: buildStreetSigns(),
+    reference_path: (() => {
+      const r = makeEgoRoute();
+      return r.polyline(0, r.length, 2);
+    })(),
     catalog: SCENARIOS,
     hazards: HAZARDS,
   };

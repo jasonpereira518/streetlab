@@ -72,18 +72,26 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 7
+    assert dumped["protocol"] == PROTOCOL_VERSION == 8
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_7():
-    assert PROTOCOL_VERSION == 7
+def test_protocol_is_8():
+    """Bumped from 7 when `SceneDescription.reference_path` was added.
+
+    `wsClient.ts` rejects a backend whose `protocol` differs from its own, so
+    this and `PROTOCOL_VERSION` in `schema.ts` must move together -- which is
+    exactly what an exact-match assertion is here to force.
+    """
+    assert PROTOCOL_VERSION == 8
 
 
-def test_the_fixtures_carry_the_protocol_7_fields():
+def test_the_fixtures_carry_the_protocol_7_and_8_fields():
     scene = SceneDescription.model_validate(load_fixture("scene_description"))
     assert scene.hazards, "the hazard menu is empty"
+    # Protocol 8's only addition.
+    assert len(scene.reference_path) > 20, "the driven line is empty"
     frame = StateUpdate.model_validate(load_fixture("state_update_hazard"))
     assert frame.detections and all(d.emergency is False for d in frame.detections)
     assert frame.plan.reaction_source_id is None
@@ -324,7 +332,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 7
+    assert PROTOCOL_VERSION == 8
 
     raw = {
         "id": "f1",

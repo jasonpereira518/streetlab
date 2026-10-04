@@ -233,3 +233,60 @@ def test_geometry_transforms_drop_limits_rather_than_carrying_them_along():
     )
     assert route.offset(1.0).segment_limits is None
     assert route.fillet(radius_m=4.0).segment_limits is None
+
+
+# --------------------------------------------------------------------------- #
+# resample                                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_resample_is_evenly_spaced_and_closes_the_ring():
+    route = Route(points=[(0.0, 0.0), (30.0, 0.0), (30.0, 30.0)], closed=True)
+    pts = route.resample(2.0)
+    gaps = [math.dist(a, b) for a, b in zip(pts, pts[1:])]
+    # Even by ARC length, which is what bounds how far the drawn chord sags off
+    # the true path. The straight-line gap is shorter wherever a corner falls
+    # between two samples, because the chord cuts across it -- that is the
+    # corner being drawn, not an irregularity.
+    assert max(gaps) <= 2.0 + 1e-9
+    assert min(gaps) > 0.5
+    # Exactly closed, so a consumer can draw it as a plain open polyline and
+    # can also test closure with `==` rather than a tolerance.
+    assert pts[0] == pts[-1]
+
+
+def test_resample_of_an_open_route_spans_end_to_end():
+    route = Route(points=[(0.0, 0.0), (10.0, 0.0)], closed=False)
+    pts = route.resample(3.0)
+    assert pts[0] == pytest.approx((0.0, 0.0))
+    assert pts[-1] == pytest.approx((10.0, 0.0))
+    # An open route must NOT be snapped shut.
+    assert pts[0] != pts[-1]
+
+
+def test_resample_erases_the_stubs_that_points_carries():
+    """Why `SceneDescription.reference_path` ships a resample, not `points`.
+
+    A route's vertex list is an internal artefact of offsetting and filleting,
+    not a drawable shape. Measured on the real Nob Hill loop, 224 of its 339
+    legs are under a centimetre and one 1.5 cm stub doubles back at 175
+    degrees. Arc-length parameterisation steps past all of it, so the simulator
+    is untroubled -- but a renderer taking a perpendicular at each vertex sees
+    the normal flip there and tears the band it is laying down.
+
+    This reproduces that shape in miniature: a straight run with a
+    sub-centimetre backward stub spliced into it.
+    """
+    route = Route(
+        points=[(0.0, 0.0), (20.0, 0.0), (19.995, 0.0), (40.0, 0.0)],
+        closed=False,
+    )
+    raw = [math.dist(a, b) for a, b in zip(route.points, route.points[1:])]
+    assert min(raw) < 0.01  # the stub really is there in `points`
+
+    pts = route.resample(2.0)
+    assert min(math.dist(a, b) for a, b in zip(pts, pts[1:])) > 0.5
+    for i in range(2, len(pts)):
+        before = math.atan2(pts[i - 1][1] - pts[i - 2][1], pts[i - 1][0] - pts[i - 2][0])
+        after = math.atan2(pts[i][1] - pts[i - 1][1], pts[i][0] - pts[i - 1][0])
+        assert abs(math.remainder(after - before, math.tau)) < 1e-6

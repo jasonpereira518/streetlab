@@ -271,6 +271,7 @@ describe('crossing styles are painted as they are on the road', () => {
       stop_signs: [],
       traffic_lights: [],
       street_signs: [],
+      reference_path: [],
       crosswalks: [
         {
           id: 'cw',
