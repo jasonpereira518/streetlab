@@ -166,6 +166,13 @@ def test_lead_summary_counts_overlap_and_reads_the_gap_at_rest():
     assert summary["standstill_gap_m"] == pytest.approx(3.0)
 
 
+def test_waiting_at_a_line_with_a_lead_far_ahead_is_not_a_standstill_gap():
+    # Three frames queued 3 m behind a lead, then four waiting at a stop sign with
+    # a car 11 m ahead. Only the queue is a following gap.
+    run = make_run([0.0] * 7, lead_gap=[3.0, 3.0, 3.0, 11.0, 11.0, 11.0, 11.0])
+    assert lead_summary(run)["standstill_gap_m"] == pytest.approx(3.0)
+
+
 def test_recording_a_real_run_fills_every_column_consistently():
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     run = record(sim, 3.0, "smoke")

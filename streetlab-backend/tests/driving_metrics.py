@@ -37,6 +37,11 @@ STOP_WINDOW_S = 10.0
 #: lead, not for the line: the stop says nothing about where it stops at one.
 QUEUE_GAP_M = 12.0
 
+#: A lead further than this is not what a stopped ego is waiting for: the budget
+#: for the gap is 2-4 m, so 6 m leaves room to see a too-large gap fail while
+#: still excluding a car waiting at a stop sign with a lead 11 m ahead.
+STANDSTILL_QUEUE_M = 6.0
+
 #: The nearest in-lane vehicle within this far ahead is the lead.
 LEAD_HORIZON_M = 80.0
 
@@ -211,9 +216,11 @@ def lead_summary(run: Run) -> dict[str, float | int | None]:
     """Gaps to the in-lane lead: how close, how often overlapping, how far at rest."""
     seen = run.lead_gap[np.isfinite(run.lead_gap)]
     # Only frames where the ego is held up BY the lead: at rest with a lead
-    # further off than `QUEUE_GAP_M` it is waiting at a line, not following.
+    # further off than `STANDSTILL_QUEUE_M` it is waiting at a line, not following.
     at_rest = run.lead_gap[
-        np.isfinite(run.lead_gap) & (run.speed < REST_MPS) & (run.lead_gap < QUEUE_GAP_M)
+        np.isfinite(run.lead_gap)
+        & (run.speed < REST_MPS)
+        & (run.lead_gap < STANDSTILL_QUEUE_M)
     ]
     return {
         "frames_with_lead": int(seen.size),
