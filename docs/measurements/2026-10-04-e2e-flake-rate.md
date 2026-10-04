@@ -34,3 +34,9 @@ Consequence: Playwright runs in its own advisory workflow (`e2e.yml`) so a
 runner limitation cannot turn the main `CI` status red. Frontend (typecheck +
 vitest) and backend (pytest + contract) run in `ci.yml` and are the status the
 README badge reflects.
+
+Second hosted run (run 37235298214, commit `41c210b`, the new advisory
+workflow): **17 passed, 1 failed, 2 flaky, 1 skipped** in 14 minutes. The
+implicated specs were again the canvas-screenshot ones (`app.spec.ts:100`,
+`:122`, `:179`). Two hosted runs, same specs, different pass counts: that is
+the signature of a throughput limit, not a deterministic defect.
