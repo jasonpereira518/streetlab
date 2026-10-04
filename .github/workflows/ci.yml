@@ -47,7 +47,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: streetlab-backend/uv.lock
       - run: uv sync --frozen
-      - run: uv run pytest -q tests ../contract
+      # The contract tests take under a second; running them first surfaces a
+      # wire-contract break in about a minute instead of after the full suite.
+      - name: Contract tests
+        run: uv run pytest -q ../contract
+      - name: Backend tests
+        run: uv run pytest -q tests
 
   e2e:
     runs-on: ubuntu-latest
