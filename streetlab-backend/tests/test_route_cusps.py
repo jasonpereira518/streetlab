@@ -11,7 +11,10 @@ vertex, leaving a route that reverses direction inside 0.05 m. Traffic spins
 13 m/s. `max_turning_deg` measures it: a 6 m fillet round a right angle turns
 about 29 degrees in 3 m, a cusp 175 or more.
 """
+
+import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -21,12 +24,22 @@ from map.lanes import (
     TURN_RADIUS_M,
     _collapse_short_legs,
     _drop_micro_segments,
+    _find_loop,
     _right_hand_lane,
     _strip_closing_vertex,
+    build_route_graph,
+    nearest_junction,
     remove_self_intersections,
+    select_ego_route,
+    select_route_to_destination,
 )
+from map.osm_model import parse_overpass
+from map.projection import LatLon
 from sim.route import Route
 from tests.driving_metrics import max_turning_deg
+
+FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
+ORIGIN = LatLon(lat=37.7945, lon=-122.4156)
 
 #: More total turning than this inside 3 m is a reversal, not a corner. The
 #: sharpest honest corner on the Nob Hill fixture measures 90.
@@ -121,3 +134,42 @@ def test_a_repeated_closing_vertex_changes_nothing():
     repeated = _right_hand_lane(points + [points[0]], closed=True)
     assert len(repeated.points) == len(plain.points)
     assert repeated.length_m == pytest.approx(plain.length_m)
+
+
+# -- the defect, on the real extract ----------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def route_graph():
+    return build_route_graph(parse_overpass(json.loads(FIXTURE.read_text())), ORIGIN)
+
+
+#: Origins spread across the Nob Hill extract, each resolving to a closed loop.
+#: Measured before the fix, 15 of the 17 distinct loops they give had a cusp.
+LOOP_ORIGINS = [
+    (0.0, 0.0), (-157.22, 26.54), (-78.03, 62.35), (75.43, -260.68), (-292.10, 202.48),
+    (-144.39, -159.40), (297.39, -17.84), (201.88, -14.19), (83.44, -209.63), (80.92, 220.83),
+    (13.91, 144.75), (102.85, -261.58), (154.94, 54.66), (-63.02, 180.55), (227.32, -241.53),
+    (75.99, -119.38),
+]
+
+
+@pytest.mark.parametrize("origin", LOOP_ORIGINS)
+def test_every_sampled_nob_hill_loop_is_free_of_cusps(route_graph, origin):
+    assert _find_loop(route_graph, nearest_junction(route_graph, origin)) is not None, (
+        "this origin no longer resolves to a closed loop, so it is not testing a loop"
+    )
+    route = select_ego_route(route_graph, origin)
+    assert route.closed is True
+    assert max_turning_deg(route.points) <= CUSP_DEG
+
+
+#: Two of these gave 259 and 219 degrees before the fix.
+DESTINATIONS = [(-245.60, 185.79), (116.06, -274.87), (4.70, 52.43), (77.93, 175.79)]
+
+
+@pytest.mark.parametrize("destination", DESTINATIONS)
+def test_destination_routes_are_free_of_cusps(route_graph, destination):
+    route = select_route_to_destination(route_graph, (0.0, 0.0), destination)
+    assert route.closed is False
+    assert max_turning_deg(route.points, closed=False) <= CUSP_DEG

@@ -34,10 +34,8 @@ BASELINE_FAILS: dict[tuple[str, str], str] = {
     ("ego_jerk", "nobhill"): "p99 6.5, max 286 m/s3; Phase 3",
     ("ego_jerk", "grid"): "p99 7.6, max 169 m/s3; Phase 3",
     ("ego_jerk", "grid_slow"): "p99 6.2, max 355 m/s3; Phase 3",
-    ("lateral_accel", "nobhill"): "p99 2.56, max 3.15 m/s2, from the route cusps; Phase 1",
     ("lateral_accel", "grid"): "p99 4.4, max 9.80 m/s2, the lane-change return; Phase 2",
     ("lateral_accel", "grid_slow"): "p99 2.86, max 8.55 m/s2, the lane-change return; Phase 2",
-    ("lateral_jerk", "nobhill"): "p99 3.4 m/s3, from the route cusps; Phase 1",
     ("lateral_jerk", "grid"): "p99 18.1 m/s3, the lane-change return; Phase 2",
     ("lateral_jerk", "grid_slow"): "p99 8.4 m/s3, the lane-change return; Phase 2",
     ("lane_change", "grid"): "outbound 2.36, passing 4.06, returning 9.80 m/s2; Phase 2",
@@ -48,12 +46,11 @@ BASELINE_FAILS: dict[tuple[str, str], str] = {
     ("stop_decel", "grid"): "peak 4.07 m/s2; Phase 3",
     ("stop_decel", "grid_slow"): "peak 2.63 m/s2; Phase 3",
     ("overlap", "grid_slow"): "100 frames overlapping, min gap -1.16 m; cause not isolated",
-    ("agent_heading", "nobhill"): "174.7 deg per tick at the route cusps (Phase 1), then 11.3 deg at each fillet vertex (Phase 4)",
+    ("agent_heading", "nobhill"): "11.3 deg per tick at each fillet vertex, because Route.heading_at is piecewise constant; Phase 4",
     ("agent_heading", "grid"): "27.1 deg per tick at the start of a lane-change slide; Phase 4",
     ("agent_heading", "grid_slow"): "36.4 deg per tick at the start of a lane-change slide; Phase 4",
     ("agent_decel", "nobhill"): "p99 4.50 m/s2, the IDM floor; Phase 4",
     ("agent_decel", "grid"): "p99 4.50 m/s2, the IDM floor; Phase 4",
-    ("route_turning", "nobhill"): "up to 260 deg of turning in 3 m on the ego lane; Phase 1",
 }
 
 

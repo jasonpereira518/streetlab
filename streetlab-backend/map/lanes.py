@@ -509,9 +509,7 @@ def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
     if len(deduped) < 3:
         raise NoDrivableRoad("route degenerated to fewer than three points")
 
-    lane = Route(deduped, closed=True).offset(-EGO_LANE_INSET)
-    route = lane.fillet(radius_m=TURN_RADIUS_M)
-    return _drop_micro_segments(remove_self_intersections(route))
+    return _right_hand_lane(deduped, closed=True)
 
 
 def select_route_to_destination(
@@ -540,9 +538,7 @@ def select_route_to_destination(
     if len(deduped) < 2:
         raise NoDrivableRoad("route degenerated to fewer than two points")
 
-    lane = Route(deduped, closed=False).offset(-EGO_LANE_INSET)
-    route = lane.fillet(radius_m=TURN_RADIUS_M)
-    return _drop_micro_segments(remove_self_intersections(route))
+    return _right_hand_lane(deduped, closed=False)
 
 
 #: Shortest segment the finished ego route may contain. Well under a
