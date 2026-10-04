@@ -254,7 +254,7 @@ describe('StateUpdate', () => {
     delete noSource.plan.reaction_source_id;
     expect(StateUpdateSchema.safeParse(noSource).success).toBe(false);
 
-    expect(PROTOCOL_VERSION).toBe(8);
+    expect(PROTOCOL_VERSION).toBe(9);
   });
 });
 
