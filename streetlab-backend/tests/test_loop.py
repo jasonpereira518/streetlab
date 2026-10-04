@@ -1884,3 +1884,44 @@ def test_a_pipeline_brings_the_ml_source_that_consumes_it():
         assert detail == "ml detector"
     finally:
         pipeline.shutdown()
+
+
+def test_an_event_survives_a_frame_the_reader_never_saw():
+    """Events must not depend on a client reading every single frame.
+
+    `Simulation.state_update()` DRAINS `world.events` into the frame it
+    builds, and the sim thread builds one frame per tick while keeping only
+    the newest in `_latest`. `WsClient.stream()` reads `snapshot()` on its own
+    independent clock, so any jitter between the two loops -- CPU contention,
+    a slow send, GC -- makes the reader skip a frame. A skipped frame took its
+    events with it permanently: no retry, no re-emit.
+
+    That is how `location_failed` went missing intermittently. The backend
+    logged "scene build failed" every time, and the browser's search box stayed
+    disabled forever because the one frame carrying the event was never sent.
+    Hazards, `reset` and `scenario_loaded` ride the same channel and were
+    equally droppable.
+
+    This drives the sim forward twice between reads -- exactly what a reader
+    that fell one tick behind does -- and asks for the event anyway.
+    """
+    sim = Simulation(SyntheticGrid(), seed=1)
+    loop = SimLoop(sim, hz=120)
+
+    sim._emit("location_failed", "no results", level="warn")
+
+    # Two steps, one read: the event was raised before the first frame and the
+    # reader only ever sees the second.
+    loop._drain_events()
+
+    # Two frames, and a reader that only ever sees the second. `_record_events`
+    # is what the sim thread calls as it publishes each frame.
+    sim.step()
+    loop._record_events(sim.state_update().events)   # carried the event, never sent
+    sim.step()
+    loop._record_events(sim.state_update().events)   # empty
+
+    cursor, events = loop.events_since(0)
+    assert [e.code for e in events] == ["location_failed"]
+    # And a reader that is caught up gets nothing twice.
+    assert loop.events_since(cursor) == (cursor, [])

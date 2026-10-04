@@ -613,3 +613,43 @@ def test_a_tailgater_declines_by_name_when_no_car_is_behind(sim):
     outcome = inject(sim, "tailgater")
     assert outcome.ok is False
     assert outcome.message == "tailgater: no car behind the ego to tailgate with"
+
+
+def test_a_jaywalker_actually_crosses_in_front_of_the_ego(sim):
+    """The walker must reach the ego's lane while the ego is still short of it.
+
+    `_jaywalker` placed its crossing a fixed `JAYWALK_AHEAD_M` down the route
+    and then took `JAYWALK_HALF_SPAN_M / JAYWALK_SPEED_MPS` seconds to walk
+    into it. Those two numbers are independent of how fast the ego is closing,
+    so at any normal speed the car cleared the crossing point first and the
+    walker stepped out behind it -- measured at 12-19 m *behind* the ego on
+    grid-merge. The only `critical` hazard in the set never produced a
+    conflict.
+
+    A crossing that the car has already passed is not a hazard, so this asks
+    for the one frame that makes the scenario mean anything: the pedestrian in
+    the ego's lane, ahead of the ego.
+    """
+    ego_route = sim.scene.ego_route
+    inject(sim, "jaywalker")
+
+    best_gap = None
+    for _ in range(int(20.0 / DT)):
+        sim.step()
+        frame = sim.state_update()
+        walker = next(
+            (d for d in frame.detections if d.id.startswith("hzd_jaywalker")), None
+        )
+        if walker is None or walker.lane_offset != 0:
+            continue
+        ego_s = ego_route.project((frame.ego.pose.x, frame.ego.pose.y))
+        gap = ego_route.signed_gap(ego_s, ego_route.project((walker.pose.x, walker.pose.y)))
+        if best_gap is None or gap > best_gap:
+            best_gap = gap
+        if gap > 0:
+            return
+
+    pytest.fail(
+        "the walker never reached the ego lane while still ahead of the ego; "
+        f"best along-route gap while in-lane was {best_gap}"
+    )

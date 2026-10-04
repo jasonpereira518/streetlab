@@ -9,8 +9,8 @@ none of the numbers below are safety claims.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![Status: Cycles 1–5 built](https://img.shields.io/badge/status-Cycles%201–5%20built-brightgreen.svg)](#roadmap)
-[![Backend tests](https://img.shields.io/badge/backend%20tests-910%20passing-success.svg)](#testing)
-[![Frontend tests](https://img.shields.io/badge/frontend%20tests-205%20vitest%20%2B%2012%20e2e-success.svg)](#testing)
+[![Backend tests](https://img.shields.io/badge/backend%20tests-1198%20passing-success.svg)](#testing)
+[![Frontend tests](https://img.shields.io/badge/frontend%20tests-276%20vitest%20%2B%2021%20e2e-success.svg)](#testing)
 
 ![StreetLab driving live OpenStreetMap-derived streets, with all six telemetry widgets active](docs/screenshots/hero.png)
 
@@ -175,9 +175,9 @@ frontend + backend as two dev processes).
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q         # 910 passing (906 + 4 contract), 1 skipped
-cd streetlab && npx vitest run                    # 205 tests, includes ../contract
-cd streetlab && npm run test:e2e                  # 12 Playwright specs
+cd streetlab-backend && uv run pytest -q tests ../contract   # 1198 passing (1193 + 5 contract), 1 skipped
+cd streetlab && npx vitest run                    # 276 tests, includes ../contract
+cd streetlab && npm run test:e2e                  # 21 Playwright tests in 4 specs
 ```
 
 ## Roadmap
