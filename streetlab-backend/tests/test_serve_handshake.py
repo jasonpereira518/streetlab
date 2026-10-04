@@ -132,3 +132,21 @@ def test_closing_stdin_makes_the_server_exit_on_its_own():
         except subprocess.TimeoutExpired:
             pytest.fail("server did not exit within 5s of stdin closing")
         assert code == 0
+
+
+def test_the_bound_socket_already_accepts_connections_before_ready_is_printed():
+    """STREETLAB_READY means "connect now". `_bind` runs before that line is
+    printed but well before uvicorn starts, so a socket that is only *bound*
+    refuses a client that connects in between (seen as flaky
+    ConnectionRefusedError on slower machines). It must already be listening;
+    connections then queue in the backlog until uvicorn accepts them.
+    """
+    from server.cli import _bind
+
+    sock = _bind("127.0.0.1", 0)
+    try:
+        port = sock.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            pass
+    finally:
+        sock.close()
