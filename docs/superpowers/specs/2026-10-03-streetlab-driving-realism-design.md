@@ -271,6 +271,40 @@ a jerk limit and a new stopping profile both move it, and Cycle 6's emergency-br
 thresholds are built on it. The algorithm for part 4 is chosen from the re-measured
 table.
 
+**Scope, as measured (2026-10-04,
+`docs/measurements/2026-10-04-driving-phase3-opening.md`).** A scratch prototype run on
+the budgets' own recordings changes what this phase is. The four parts above stand, and
+the stop is not the whole of the decel budget:
+
+- The ego's peak decel comes from three kinds of constraint, not one: the stop ceiling,
+  the 22 m curvature window (which can only slow the car at the 4.5 clamp), and the
+  lead-following law (whose target steps down when a slower car is seen, and whose
+  desired gap is sized from the ego's own speed, so it demands near-zero speed 15 m
+  behind a stopped queue). One braking-curve preview serves all three.
+- **Feed-forward replaces the margin.** Feeding the target's rate forward removes the
+  steady 2.2 m/s lag that `STOP_MARGIN_M = 6.5` stands in for; the margin becomes the
+  nose offset plus the target gap (3.6 m), and rest position stops depending on how the
+  approach began (nose gap -0.96 to +1.32 m at baseline, 1.14-1.17 m after).
+- **A jerk limit needs a braking curve that pays for its ramp**:
+  `v(x) = sqrt(c² + 2·a·x) - c`, `c = a²/(2J)`. Without the `c` term the ceiling reaches
+  zero while the car is still moving.
+- **Corners get a precomputed per-route profile**, not a sampled preview (which wobbles as
+  the apparent corner position quantises). The lane being left during a lane change gets
+  the same profile, so Phase 2's guarantee holds.
+- **The stop profile's decel should be `max(a, a_required)`.** A yellow that cannot be
+  cleared, met at 12.8 m/s and 44 m, needs at least 2.36 m/s² through a 2.5 m/s³ ramp; the
+  prototype's fixed planning decel peaked at 3.21-3.51 there, so roughly 1 m/s² of it was
+  the controller's. Untested.
+- Prototype results on the three recordings (planning decel 1.5, jerk 2.5): jerk p99/max
+  2.5 / 3 everywhere; every first-in-line stop 1.31-1.40 m short; peak decel 2.14 (grid)
+  and 2.35 (grid_slow), 3.21 on Nob Hill from the one yellow above. The overlap rows are
+  **not** this phase's (see Phase 4), and the standstill gap was not exercised by any
+  recording, so it needs a staged stop.
+- Not yet shown: a Nob Hill run with a lane change under the new controller, emergency
+  braking through the jerk limit (Cycle 6's `aeb` and stopping table assume the unmodified
+  law), and the full test suite, which this moves through `STOP_MARGIN_M`,
+  `COMFORT_DECEL_MPS2` (also the dilemma rule's threshold) and `APPROACH_M`.
+
 **Couplings that break silently**, all documented in `plan/behavior.py` and
 pinned by tests: `STOP_ZONE_M ≥ STOP_MARGIN_M`;
 `CONTROL_POINT_MERGE_M − CLEARED_M > CREEP_MPS / _SPEED_GAIN` (1.22 m of headroom
@@ -296,7 +330,10 @@ scenes, the dilemma-zone and latch tests in `tests/test_behavior.py` pass, and
   90° fillet's eight vertices, a snap every ~0.3 s at corner speed. Take it from a
   centred difference of `point_at`, as `lateral_unit` already does for the
   lateral normal. The 2° per tick budget cannot be met on any fillet without it.
-- **`_leader` gap.** Subtract the follower's half-length as well as the
+- **`_leader` gap.** *(Taken by PR #10: `2f3eb8c` on `claude/render-rules-onto-main`
+  adds `bumper_gap`, which subtracts both half-lengths between agents and when the ego
+  leads. Verify after it lands; the description below is the original and the ego-side
+  `_following_speed` fix stays in Phase 3.)* Subtract the follower's half-length as well as the
   leader's, between agents and when the ego leads. This is the prerequisite Cycle
   6 Phase 3 names. It must be done once, by whichever plan is written first; settle
   the owner before either plan is. Equilibrium spacing shifts by ~2.3 m; the
@@ -465,3 +502,21 @@ and checking its branch:
 - The lane-change ceiling is 2.0 m/s², not 1.5: the best measured peak is 1.93.
 - Phase 5 is retained, with a named defect (corner-exit acceleration) found while
   measuring Phase 2. The earlier note that it might be droppable is withdrawn.
+
+2026-10-04, after the Phase 3 opening measurement (a scratch prototype and the three
+recordings; `docs/measurements/2026-10-04-driving-phase3-opening.md`):
+
+- Phase 3 is wider than four parts about stopping: the ego decel budget is set by the stop
+  ceiling, the 22 m curvature window and the lead-following law, and one braking-curve
+  preview serves all three. It gains a per-route corner profile, a braking curve that pays
+  for the jerk ramp, and a stop decel of `max(a, a_required)` (the last untested).
+- Feed-forward removes the reason for `STOP_MARGIN_M`; rest position no longer depends on
+  how the approach began.
+- The `_leader` owner is settled by fact: PR #10's branch already has `bumper_gap`
+  (`2f3eb8c`) and records the `grid_slow` overlap going from 100 frames to 0. Phase 4's
+  bullet becomes "verify after #10 lands", and the overlap budget is not Phase 3's: the two
+  overlap events measured are a lane-change return into the car being passed (baseline) and
+  a car merging into the ego's lane 3 m ahead (prototype).
+- Nothing here changes a budget number. A first reading, that the dilemma-zone stop forced a
+  budget change, was withdrawn: the cause was a yellow, not a red, and the physical minimum
+  there (2.36 m/s²) is inside 2.5.
