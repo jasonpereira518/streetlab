@@ -33,6 +33,7 @@ VALID_NAMES = [
     "state_update_initial",
     "state_update_moving",
     "state_update_hazard",
+    "state_update_events",
     "ack_ok",
     "ack_error",
 ]
@@ -71,7 +72,15 @@ def generate() -> dict[str, dict]:
     # against a 4.0 s threshold. A fixture named for `threat`/`threat_label`
     # asking for a cut-in is also simply the honest version.
     sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
+    # The frame an event lands on is the ONLY one that carries it:
+    # `state_update()` drains `world.events` into the frame it builds. Every
+    # other fixture here is therefore captured with an empty `events` array,
+    # and the consequence was that `SimEvent`'s own fields were never checked
+    # against schema.ts at all -- a contract suite cannot catch drift in a
+    # field it never puts on the wire. Captured here, before the settle loop
+    # below consumes it.
     hazard = sim.state_update()
+    out["state_update_events"] = hazard.model_dump(mode="json")
     for _ in range(60 * 30):
         sim.step()
         hazard = sim.state_update()
@@ -162,6 +171,24 @@ def test_the_hazard_fixture_exercises_non_null_optionals(generated):
     assert any(d.hazard and d.hazard_label is not None for d in frame.detections)
     assert frame.telemetry.trajectory.threat, "threat is null — nullable path untested"
     assert frame.telemetry.trajectory.threat_label is not None
+
+
+def test_the_events_fixture_actually_carries_an_event(generated):
+    """An empty `events` array is how this contract lost its teeth once.
+
+    `state_update()` drains `world.events`, so a frame captured one tick late
+    has nothing in it -- which is what every other fixture here is, and why
+    `SimEvent.progress` reached the browser as `null` against a schema.ts that
+    only accepted a number or an absent key. Every event-carrying frame was
+    rejected wholesale by `parseServerMessage`, taking hazards, `reset` and
+    `location_failed` with it. Guarded here so the fixture cannot quietly go
+    back to proving nothing.
+    """
+    frame = StateUpdate.model_validate(generated["state_update_events"])
+    assert frame.events, "no events — the fixture proves nothing about SimEvent"
+    assert any(
+        e.progress is None for e in frame.events
+    ), "no event with a null `progress` — the exact shape that broke is untested"
 
 
 def test_hand_authored_shadow_fixture_round_trips():
