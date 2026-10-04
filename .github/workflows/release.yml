@@ -1,0 +1,69 @@
+name: Release
+
+# Builds the unsigned Apple Silicon StreetLab.app. A `v*` tag creates a DRAFT
+# GitHub Release (published by hand after checking the download). Any other
+# trigger only uploads the zip as a workflow artifact; it never makes a release.
+
+on:
+  push:
+    tags: ['v*']
+    # TEMPORARY: the feature branch is listed so the build can be trialled before
+    # this workflow exists on main (workflow_dispatch needs it on the default
+    # branch). The release step below is tag-only, so a branch push publishes
+    # nothing. Remove this `branches` entry before merging.
+    branches: [claude/portfolio-credibility-plan-cbca8d]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos-app:
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: streetlab/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: streetlab-backend/uv.lock
+      - name: Install dependencies
+        run: |
+          (cd streetlab-backend && uv sync --frozen)
+          (cd streetlab && npm ci)
+      - name: Build the packaged app
+        run: bash scripts/build_app.sh
+      - name: Package and check the bundle
+        run: |
+          APP="streetlab/src-tauri/target/release/bundle/macos/StreetLab.app"
+          test -d "$APP"
+          find "$APP" -name 'streetlab-server*' | grep -q . || { echo "sidecar missing from bundle"; exit 1; }
+          NAME="${REF_NAME//\//-}"
+          ZIP="StreetLab-${NAME}-macos-arm64.zip"
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          shasum -a 256 "$ZIP" > "$ZIP.sha256"
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          ls -lh "$ZIP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StreetLab-macos-arm64
+          path: |
+            StreetLab-*.zip
+            StreetLab-*.zip.sha256
+      - name: Create a DRAFT release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$REF_NAME" "$ZIP" "$ZIP.sha256" \
+            --draft --title "StreetLab $REF_NAME" --notes-file .github/release-notes.md
