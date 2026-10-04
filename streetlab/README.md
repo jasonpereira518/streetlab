@@ -14,9 +14,11 @@ in the UI knows or cares which one is on the other end.
 ```bash
 npm install
 npm run tauri dev      # native window, with the Python sidecar
-npm run dev            # or just the web app at localhost:1420, on the mock
-npx vitest run         # 151 unit tests, includes ../contract
-npm run test:e2e       # 12 Playwright tests against the real build
+npm run dev            # or just the web app at localhost:1420, against a
+                       # backend on ws://127.0.0.1:8765. Add ?mock=1 for the
+                       # in-process mock and no backend at all.
+npx vitest run         # 276 unit tests, includes ../contract
+npm run test:e2e       # 21 Playwright tests against the real build
 ```
 
 Requires Node ≥ 20 and a Rust toolchain (`aarch64-apple-darwin`).
@@ -120,7 +122,7 @@ Every command carries a client-generated `id` for ack correlation.
 - Angles that the UI treats as signed-left-positive: `steering_angle`,
   `lane.offset_m`, `lane.heading_error`, `radar.azimuth`,
   `trajectory.*.lateral_m`, and `lane_offset` on detections.
-- `trajectory.planned` / `trajectory.cutin` accept **negative `t`** for observed
+- `trajectory.planned` / `trajectory.threat` accept **negative `t`** for observed
   history; the graph draws everything left of `t = 0` as the past.
 
 ---

@@ -11,8 +11,11 @@ import math
 import pytest
 
 from map.lanes import (
+    ARRIVAL_CONTROL_ID,
+    ARRIVAL_SETBACK_M,
     CONTROL_POINT_MATCH_M,
     CONTROL_POINT_MERGE_M,
+    arrival_control_point,
     project_control_points,
 )
 from sim.route import ControlPoint, Route
@@ -47,6 +50,32 @@ def test_a_prop_beside_the_route_is_kept_if_it_is_close_enough(straight):
 def test_a_prop_off_the_route_is_dropped(straight):
     far = (40.0, CONTROL_POINT_MATCH_M + 1.0)
     assert project_control_points(straight, [("ss_a", "stop_sign", far, 0.0)]) == []
+
+
+# --------------------------------------------------------------------------- #
+# Arrival, for a point-to-point (open) route                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_arrival_control_point_is_none_for_a_closed_loop():
+    loop = Route([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)], closed=True)
+    assert arrival_control_point(loop) is None
+
+
+def test_arrival_control_point_sits_a_setback_short_of_the_open_routes_end(straight):
+    cp = arrival_control_point(straight)
+    assert cp is not None
+    assert cp.id == ARRIVAL_CONTROL_ID
+    assert cp.kind == "arrival"
+    assert cp.s == pytest.approx(straight.length_m - ARRIVAL_SETBACK_M)
+    assert cp.position == straight.point_at(straight.length_m)
+
+
+def test_arrival_control_point_never_goes_negative_on_a_short_route():
+    short = Route([(0.0, 0.0), (1.0, 0.0)], closed=False)
+    cp = arrival_control_point(short)
+    assert cp is not None
+    assert cp.s == 0.0
 
 
 def test_points_come_back_ordered_by_arc_length(straight):

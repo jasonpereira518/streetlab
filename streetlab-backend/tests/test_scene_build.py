@@ -10,7 +10,7 @@ import math
 
 import pytest
 
-from map.scene_build import SceneSource, SyntheticGrid
+from map.scene_build import REFERENCE_STEP_M, SceneSource, SyntheticGrid
 from schema import SceneDescription, parse_server_message
 
 THUMB_MIN, THUMB_MAX = 0.0, 100.0
@@ -222,3 +222,38 @@ def test_every_synthetic_scenario_builds_control_points():
     for summary in SyntheticGrid().scenarios():
         scene = SyntheticGrid().build(summary.id)
         assert scene.control_points, f"{summary.id} has none"
+
+
+# --------------------------------------------------------------------------- #
+# reference_path                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_the_reference_path_is_drawable(built):
+    """`reference_path` is consumed by a renderer, not by the simulator, so it
+    has to meet a stricter contract than `Route.points` does.
+
+    A renderer takes a perpendicular at each point to lay a band along it. That
+    breaks on the two things a route's internal vertex list is full of after
+    offsetting and filleting: sub-centimetre legs, where the tangent is noise,
+    and stubs that double back, where the normal flips and the band tears.
+    """
+    path = built.description.reference_path
+    assert len(path) > 20
+    gaps = [math.dist(a, b) for a, b in zip(path, path[1:])]
+    assert min(gaps) > 0.5, "a sub-metre leg means the raw vertex list leaked through"
+    assert max(gaps) <= REFERENCE_STEP_M + 1e-9
+    # The ego route is a loop, and a closed one must return to its start so the
+    # renderer can draw it as a plain open polyline.
+    assert path[0] == path[-1]
+
+
+def test_the_reference_path_is_the_line_the_car_actually_drives(built):
+    """Not the road centreline: the ego drives a lane, offset from it.
+
+    Every sample must sit on the route the simulator tracks, which is what
+    makes this a picture of the car's own path rather than a decoration.
+    """
+    route = built.ego_route
+    for point in built.description.reference_path:
+        assert math.dist(point, route.point_at(route.project(point))) < 0.05

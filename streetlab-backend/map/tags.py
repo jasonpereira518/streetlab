@@ -47,9 +47,26 @@ def road_class(tags: dict[str, str]) -> str | None:
     return _CLASS_BY_HIGHWAY.get(highway)
 
 
+_ONEWAY_FORWARD = ("yes", "true", "1")
+
+
 def is_oneway(tags: dict[str, str]) -> bool:
     # "-1" means one-way against the drawn direction; still one-way.
-    return tags.get("oneway", "no") in ("yes", "true", "1", "-1")
+    return tags.get("oneway", "no") in _ONEWAY_FORWARD + ("-1",)
+
+
+def oneway_direction(tags: dict[str, str]) -> int:
+    """Which way traffic runs relative to the way's drawn direction.
+
+    +1 along it, -1 against it, 0 if the way is not one-way. `is_oneway`
+    answers "is this one-way at all", which is all lane counts and carriageway
+    widths need; anything orienting a sign face or a lamp needs the sign too,
+    and collapsing "-1" to True there would point it at oncoming traffic.
+    """
+    value = tags.get("oneway", "no")
+    if value in _ONEWAY_FORWARD:
+        return 1
+    return -1 if value == "-1" else 0
 
 
 def _positive_int(raw: str | None) -> int | None:

@@ -7,7 +7,12 @@ import { act } from '@testing-library/react';
 import type { Command, SceneDescription, ServerMessage, StateUpdate } from '../src/schema';
 import type { Transport, TransportHandlers } from '../src/net/transport';
 import { MockSim } from '../src/net/mockServer';
-import { PARAM_DEFS, frameBus, useSimStore } from '../src/store/simStore';
+import {
+  DEFAULT_RELOAD_PAGE,
+  PARAM_DEFS,
+  frameBus,
+  useSimStore,
+} from '../src/store/simStore';
 import { LAYER_KEYS } from '../src/schema';
 
 export interface Harness {
@@ -29,6 +34,10 @@ const INITIAL = {
   catalog: [],
   activeScenarioId: null,
   locationPending: null,
+  locationProgress: null,
+  locationError: null,
+  tripComplete: false,
+  addressSuggestions: {},
   paused: false,
   assistActive: false,
   hasFrames: false,
@@ -41,6 +50,10 @@ const INITIAL = {
   invalidCount: 0,
   lastInvalid: null,
   commandLog: [],
+  refreshPending: false,
+  // Restored per test: a spy left in place here would quietly disarm the
+  // reload for every test that follows.
+  reloadPage: DEFAULT_RELOAD_PAGE,
 };
 
 /** Reset the singleton store so tests do not leak into one another. */
@@ -72,10 +85,13 @@ export function createHarness(scenarioId?: string): Harness {
     send(command) {
       sent.push(command);
       // Mirror the real mock: commands actually drive the simulator, so a test
-      // that pauses sees `paused: true` on the next frame. `camera_frame` is
-      // the one exception — like the real backend (ws_server.py `_handle`)
-      // and createMockTransport, it bypasses the command/ack path entirely.
-      if (command.cmd === 'camera_frame') return;
+      // that pauses sees `paused: true` on the next frame. `camera_frame` and
+      // `suggest_address` are the exceptions — like the real backend
+      // (ws_server.py `_handle`) and createMockTransport, they bypass the
+      // command/ack path entirely. Tests exercise `suggest_address` by
+      // emitting an `address_suggestions` message directly via `h.emit(...)`,
+      // the same way they drive `location_progress`/`location_failed`.
+      if (command.cmd === 'camera_frame' || command.cmd === 'suggest_address') return;
       const res = sim.apply(command);
       handlers?.onMessage({
         type: 'ack',

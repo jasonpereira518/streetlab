@@ -25,6 +25,15 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
+        // `devices['Desktop Chrome']` carries its own `viewport` (1280x720),
+        // and a project's `use` overrides the config's, so spreading it here
+        // silently discarded the 1440x900 above -- the size the Tauri window
+        // actually opens at (`tauri.conf.json`). Every e2e test had therefore
+        // only ever run at 1280, which is BELOW the 1320 px breakpoint in
+        // `styles.css`: the whole suite, including `shell.spec.ts`'s layout
+        // contract, was exercising the narrow layout and calling it the
+        // default. Restate it after the spread so the intent survives.
+        viewport: { width: 1440, height: 900 },
         launchOptions: {
           args: [
             '--enable-unsafe-webgpu',

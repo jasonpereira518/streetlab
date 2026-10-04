@@ -78,14 +78,27 @@ def test_run_never_leaves_the_lane(capsys):
 
 
 @pytest.mark.parametrize(
-    "command,cycle",
-    [("export-dataset", "5"), ("train", "5"), ("eval", "5")],
+    "command,script",
+    [
+        ("export-dataset", "run_capture.sh"),
+        ("train", "finetune_detector.py"),
+        ("eval", "sweep_threshold.py"),
+    ],
 )
-def test_unimplemented_commands_explain_themselves(capsys, command, cycle):
+def test_unimplemented_commands_explain_themselves(capsys, command, script):
+    """These three were scoped for Cycle 5 and never built.
+
+    They used to say "arrives in Cycle 5", which was accurate while that cycle
+    was open and became a promise outstanding against a closed cycle once the
+    roadmap marked it Built. Cycle 5's loop did ship -- through `scripts/` --
+    so the useful thing to tell someone who typed the subcommand is which
+    script does the job, not which cycle to wait for.
+    """
     code, out = run(capsys, command)
     assert code != 0
-    assert "not yet implemented" in out.lower()
-    assert f"cycle {cycle}" in out.lower()
+    assert "never implemented" in out.lower()
+    assert script in out
+    assert "arrives in cycle" not in out.lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -131,3 +144,21 @@ def test_unresolvable_weights_degrade_to_the_stub_rather_than_refusing_to_start(
 
     assert isinstance(detector, StubDetector)
     assert "detector weights unavailable" in caplog.text
+
+
+def test_run_reports_a_slowdown_the_car_actually_made(capsys):
+    """`obstacle` drops the planner's target from 25 to under 10 mph and the
+    car's own speed with it -- then the obstacle clears and the car speeds
+    back up. Sampling one instant three seconds after injection caught the
+    recovery, not the braking, and reported "held speed 18.2 -> 18.6 mph" for
+    a car that had demonstrably braked.
+
+    The question the line answers is "did the car slow down for this?", so it
+    has to look at the whole window, not one instant in it.
+    """
+    code, out = run(
+        capsys, "run", "--scenario", "grid-merge", "--seed", "4",
+        "--duration", "20", "--inject-at", "6", "--inject", "obstacle",
+    )
+    assert code == 0
+    assert "hazard response: slowed" in out, out[-400:]

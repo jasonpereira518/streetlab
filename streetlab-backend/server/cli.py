@@ -10,8 +10,9 @@ prints a reaction log you can read to see the car respond. Both accept
 so `serve --source osm` does not pay the geocode/Overpass round trip on first
 connect.
 
-`export-dataset`, `train` and `eval` exist as stubs. They belong to later
-cycles, and an explicit "arrives in Cycle N" is far more useful than a
+`export-dataset`, `train` and `eval` exist as stubs and were never built; the
+work they would have wrapped shipped through `scripts/` instead. Saying so
+explicitly, and naming the script that does the job, is far more useful than a
 traceback or a silently missing subcommand.
 """
 
@@ -66,11 +67,23 @@ _SOURCE_ERRORS = (
 MPS_TO_MPH = 2.236936292054402
 DEFAULT_PORT = 8765
 
-# Subcommands that belong to a later cycle, and which cycle that is.
+#: Subcommands that were scoped and never landed. Cycle 5 is closed and its
+#: capture -> label -> train -> export -> score loop shipped end to end, but it
+#: ran through `scripts/` (`run_capture.sh`, `finetune_detector.py`,
+#: `export_detector.py`, `sweep_threshold.py`), never through these three. They
+#: used to advertise themselves as "arrives in Cycle 5", which read as a
+#: promise still outstanding once the roadmap marked that cycle Built.
 DEFERRED = {
-    "export-dataset": (5, "auto-labelled COCO export from the simulation"),
-    "train": (5, "MPS fine-tuning of the Apache-2.0 detector"),
-    "eval": (5, "mAP evaluation on a held-out simulation split"),
+    "export-dataset": "auto-labelled COCO export from the simulation",
+    "train": "MPS fine-tuning of the Apache-2.0 detector",
+    "eval": "mAP evaluation on a held-out simulation split",
+}
+
+#: Where the work these three would have wrapped actually lives.
+DEFERRED_SCRIPTS = {
+    "export-dataset": "scripts/run_capture.sh + scripts/dataset_manifest.py",
+    "train": "scripts/finetune_detector.py",
+    "eval": "scripts/sweep_threshold.py",
 }
 
 
@@ -293,8 +306,8 @@ def build_parser() -> argparse.ArgumentParser:
     build_.add_argument("address", help="address or place name to ingest")
     build_.add_argument("--radius", type=float, default=500.0, help="metres")
 
-    for name, (cycle, what) in DEFERRED.items():
-        sub.add_parser(name, help=f"[Cycle {cycle}] {what}")
+    for name, what in DEFERRED.items():
+        sub.add_parser(name, help=f"[not built] {what}")
 
     return parser
 
@@ -307,10 +320,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help(sys.stdout)
         return 1
     if args.command in DEFERRED:
-        cycle, what = DEFERRED[args.command]
         print(
-            f"`streetlab {args.command}` is not yet implemented — "
-            f"arrives in Cycle {cycle} ({what})."
+            f"`streetlab {args.command}` was never implemented "
+            f"({DEFERRED[args.command]}). Cycle 5 shipped this work through "
+            f"scripts instead: {DEFERRED_SCRIPTS[args.command]}."
         )
         return 2
     if args.command == "scenarios":
@@ -455,8 +468,9 @@ def _serve(args) -> int:
     sink = capture_sink_for(args)
 
     try:
+        source = scene_source_for(args.source, args.traffic)
         sim = Simulation(
-            scene_source_for(args.source, args.traffic),
+            source,
             args.scenario,
             seed=args.seed,
             dt=1 / args.sim_hz,
@@ -478,7 +492,11 @@ def _serve(args) -> int:
     real_port = sock.getsockname()[1]
 
     loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
-    app = create_app(loop, tick_hz=args.tick_hz)
+    # Address suggestions need a real geocoder; SyntheticGrid has none, and
+    # asking it for one would be a lie the dropdown would then show as an
+    # empty result anyway -- `None` here makes that explicit instead.
+    geocoder = source.geocoder if isinstance(source, OsmSceneSource) else None
+    app = create_app(loop, tick_hz=args.tick_hz, geocoder=geocoder)
 
     print(
         f"StreetLab serving {sim.scene.description.scenario_id} on "
@@ -537,7 +555,13 @@ class _Trace:
     top_speed_mps: float = 0.0
     min_ttc_s: float | None = None
     speed_before_hazard: float | None = None
-    speed_after_hazard: float | None = None
+    #: The LOWEST speed reached after the injection, not a single later
+    #: sample. A hazard the car brakes for and then clears -- `obstacle`
+    #: expires after `OBSTACLE_LIFE_S`, `cut_in`'s merger pulls away -- is
+    #: fully recovered from within a second or two, so one instant three
+    #: seconds downstream reported "held speed 18.2 -> 18.6 mph" for a car
+    #: whose target had been driven from 25 mph to 9.9 mph in between.
+    min_speed_after_hazard: float | None = None
 
 
 def _run(args) -> int:
@@ -594,8 +618,12 @@ def _run_loop(args, sim: Simulation) -> int:
         trace.max_offset_m = max(trace.max_offset_m, abs(frame.telemetry.lane.offset_m))
         if frame.telemetry.ttc_s is not None:
             trace.min_ttc_s = min(trace.min_ttc_s or 1e9, frame.telemetry.ttc_s)
-        if inject_at is not None and i == inject_at + int(3.0 * args.hz):
-            trace.speed_after_hazard = sim.ego.speed_mps
+        if inject_at is not None and i > inject_at:
+            trace.min_speed_after_hazard = (
+                sim.ego.speed_mps
+                if trace.min_speed_after_hazard is None
+                else min(trace.min_speed_after_hazard, sim.ego.speed_mps)
+            )
 
         for event in frame.events:
             print(f"t={event.t:6.2f}  [{event.level}] {event.code}: {event.message}")
@@ -626,13 +654,16 @@ def _summarise(trace: _Trace, sim: Simulation) -> None:
     print(f"max lane offset {trace.max_offset_m:6.2f} m")
     if trace.min_ttc_s is not None:
         print(f"min TTC       {trace.min_ttc_s:8.2f} s")
-    if trace.speed_before_hazard is not None and trace.speed_after_hazard is not None:
-        delta = trace.speed_before_hazard - trace.speed_after_hazard
+    if (
+        trace.speed_before_hazard is not None
+        and trace.min_speed_after_hazard is not None
+    ):
+        delta = trace.speed_before_hazard - trace.min_speed_after_hazard
         verdict = "slowed" if delta > 0.1 else "held speed"
         print(
             f"hazard response: {verdict} "
             f"{trace.speed_before_hazard * MPS_TO_MPH:.1f} -> "
-            f"{trace.speed_after_hazard * MPS_TO_MPH:.1f} mph"
+            f"{trace.min_speed_after_hazard * MPS_TO_MPH:.1f} mph (lowest)"
         )
     print(f"laps          {trace.distance_m / sim.scene.ego_route.length_m:8.2f}")
 

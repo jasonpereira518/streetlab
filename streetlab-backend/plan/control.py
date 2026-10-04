@@ -215,6 +215,7 @@ class CenterlineFollower:
                 target_speed_mps=max(0.0, target),
                 maneuver=decision.maneuver or _maneuver(route, s),
                 confidence=1.0 if limits.assist_enabled else 0.35,
+                reaction_source_id=None,
             ),
             steer_rad=steer,
             accel_mps2=accel,

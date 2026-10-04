@@ -19,6 +19,7 @@
 import { create } from 'zustand';
 import type {
   Ack,
+  AddressSuggestion,
   CameraView,
   Command,
   CommandInput,
@@ -199,6 +200,28 @@ const DEFAULT_LAYERS = Object.fromEntries(
 ) as Record<LayerKey, boolean>;
 
 /* ------------------------------------------------------------------ */
+/* Session refresh                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How long `refreshAll` waits for the backend to confirm the reset before
+ * reloading regardless. Generous next to a local socket round trip, short
+ * enough that a wedged or already-dead backend never leaves the button stuck.
+ */
+export const RESET_ACK_TIMEOUT_MS = 600;
+
+/**
+ * Navigating is the one thing jsdom will not do, so the reload lives in the
+ * store as a swappable field rather than a bare `window.location.reload()`
+ * inside the action. That keeps the ordering this feature exists for —
+ * reset first, reload second — testable, which is the only part of it that
+ * can silently be wrong.
+ */
+export const DEFAULT_RELOAD_PAGE = (): void => {
+  window.location.reload();
+};
+
+/* ------------------------------------------------------------------ */
 /* Store                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -240,6 +263,38 @@ export interface SimStoreState {
    * building", not which specific query a late event belongs to.
    */
   locationPending: string | null;
+  /**
+   * The most recent `location_progress` event for the in-flight build, or
+   * `null` while none has arrived yet (the ack-to-first-checkpoint gap, or a
+   * cache-hit build that finishes before ever reporting one). Cleared
+   * whenever `locationPending` is — a fresh `loadLocation` call, the
+   * eventual `scene_description`, or a `location_failed` event.
+   */
+  locationProgress: { stage: string; fraction: number } | null;
+  /**
+   * Plain, user-facing text from the most recent `location_failed` event, or
+   * `null` when nothing has failed since the last attempt. Cleared the
+   * instant a new `loadLocation` call goes out, and on a successful
+   * `scene_description` — same lifecycle as `locationPending`, just carrying
+   * the failure text rather than only a boolean.
+   */
+  locationError: string | null;
+  /**
+   * True once a `trip_complete` event has arrived for the currently-loaded
+   * scene (a point-to-point route the ego has actually stopped at the end
+   * of). Cleared on every `loadLocation`/`loadScenario` call and on a fresh
+   * `scene_description`, so it never carries over from a previous trip.
+   */
+  tripComplete: boolean;
+  /**
+   * Replies to in-flight `suggest_address` requests, keyed by the request's
+   * own command id — not by query text, so two fields typing similar
+   * addresses at once (start + destination) never clobber each other's
+   * results. Callers look up their own id and ignore the rest; entries are
+   * pruned oldest-first past `MAX_ADDRESS_SUGGESTIONS` so a long session
+   * typing many addresses doesn't grow this without bound.
+   */
+  addressSuggestions: Record<string, { query: string; items: AddressSuggestion[] }>;
 
   /* mirrored frame fields (only updated on change) */
   paused: boolean;
@@ -258,6 +313,10 @@ export interface SimStoreState {
   /** Purely local chrome state — collapsing a panel sends no command. */
   collapsed: Record<PanelId, boolean>;
   perfOverlayVisible: boolean;
+  /** A `refreshAll` is in flight; the button that starts one is disabled. */
+  refreshPending: boolean;
+  /** See `DEFAULT_RELOAD_PAGE` — swapped by tests, never at runtime. */
+  reloadPage: () => void;
 
   /* diagnostics */
   events: SimEvent[];
@@ -272,7 +331,10 @@ export interface SimStoreState {
   send(command: CommandInput): string;
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
-  loadLocation(query: string): void;
+  loadLocation(query: string, destination?: string): void;
+  /** Fire off a `suggest_address` request and return its command id, so the
+   * caller can look its result up in `addressSuggestions` once it arrives. */
+  suggestAddress(query: string): string;
   setParam(key: string, value: ParamValue): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
@@ -281,11 +343,16 @@ export interface SimStoreState {
   togglePanel(panel: PanelId): void;
   togglePerfOverlay(): void;
   resetSim(): void;
-  injectHazard(): void;
+  refreshAll(): Promise<void>;
+  injectHazard(kind: string): void;
 }
 
 let transportRef: Transport | null = null;
 let commandSeq = 0;
+
+/** Bounds `addressSuggestions` the same way `commandLog`'s `.slice(0, 50)`
+ * bounds itself — small, since only the two search fields ever populate it. */
+const MAX_ADDRESS_SUGGESTIONS = 8;
 
 export const useSimStore = create<SimStoreState>((set, get) => ({
   status: 'idle',
@@ -298,6 +365,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   catalog: [],
   activeScenarioId: null,
   locationPending: null,
+  locationProgress: null,
+  locationError: null,
+  tripComplete: false,
+  addressSuggestions: {},
 
   paused: false,
   assistActive: false,
@@ -310,6 +381,8 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   rightTab: 'parameters',
   collapsed: { scenarios: false, inspector: false, telemetry: false },
   perfOverlayVisible: false,
+  refreshPending: false,
+  reloadPage: DEFAULT_RELOAD_PAGE,
 
   events: [],
   lastAck: null,
@@ -374,7 +447,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     // seconds, permanently hiding diagnostics like LayersTab's last-toggle
     // readout, and would force every commandLog subscriber to re-render at
     // 10 Hz forever since `send()` allocates a new array on every call.
-    if (command.cmd === 'camera_frame') return id;
+    // `suggest_address` is excluded for the same reason at a smaller
+    // scale: it fires on every debounced keystroke in an address field and
+    // never gets an ack, so it would just be noise among real commands.
+    if (command.cmd === 'camera_frame' || command.cmd === 'suggest_address') return id;
     set((s) => ({
       commandLog: [
         { id, cmd: command.cmd, at: Date.now() },
@@ -389,15 +465,34 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   },
 
   loadScenario(scenarioId) {
-    set({ activeScenarioId: scenarioId });
+    set({
+      activeScenarioId: scenarioId,
+      locationProgress: null,
+      locationError: null,
+      tripComplete: false,
+    });
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
   },
 
-  loadLocation(query) {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-    set({ locationPending: trimmed });
-    get().send({ cmd: 'load_location', query: trimmed });
+  loadLocation(query, destination) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) return;
+    const trimmedDest = destination?.trim() || undefined;
+    set({
+      locationPending: trimmedDest ? `${trimmedQuery} → ${trimmedDest}` : trimmedQuery,
+      locationProgress: null,
+      locationError: null,
+      tripComplete: false,
+    });
+    get().send({
+      cmd: 'load_location',
+      query: trimmedQuery,
+      ...(trimmedDest ? { destination: trimmedDest } : {}),
+    });
+  },
+
+  suggestAddress(query) {
+    return get().send({ cmd: 'suggest_address', query });
   },
 
   setParam(key, value) {
@@ -443,14 +538,52 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     get().send({ cmd: 'reset' });
   },
 
-  injectHazard() {
-    // `cut_in` is the backend's own name for this scenario
-    // (`streetlab-backend/sim/events.py`). This shipped as `cutin`, which cost
-    // nothing while every kind produced the identical hard-brake and would
-    // cost the button its ack now that they do not. The backend still accepts
-    // the old spelling as an alias, so an older build of this app keeps
-    // working against a newer sidecar.
-    get().send({ cmd: 'inject_hazard', kind: 'cut_in' });
+  /**
+   * Restart the whole session: reset the simulator, then reload the app.
+   *
+   * The wait between the two is the point. `reloadPage` tears down the
+   * websocket, and a `send` issued into a socket that is about to close is
+   * not guaranteed to be flushed — so reloading without waiting would
+   * intermittently come back to a simulation that never reset, which is the
+   * failure mode a "refresh everything" button most needs not to have.
+   */
+  async refreshAll() {
+    if (get().refreshPending) return;
+    set({ refreshPending: true });
+
+    await new Promise<void>((resolve) => {
+      let id = '';
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      };
+      const unsubscribe = useSimStore.subscribe((s, prev) => {
+        if (s.lastAck !== prev.lastAck && s.lastAck?.id === id) finish();
+      });
+      const timer = setTimeout(finish, RESET_ACK_TIMEOUT_MS);
+
+      id = get().send({ cmd: 'reset' });
+      // A transport that acks synchronously inside `send` — the in-process
+      // mock does — already ran the subscriber above, back when `id` was
+      // still the empty string it could not match. Check for that ack here,
+      // where the id finally exists.
+      if (get().lastAck?.id === id) finish();
+    });
+
+    // Only observable when `reloadPage` is a no-op, i.e. under test. In the
+    // app the navigation below ends this document.
+    set({ refreshPending: false });
+    get().reloadPage();
+  },
+
+  injectHazard(kind) {
+    // `kind` is a `HazardSummary.code` from the scene's `hazards`; the
+    // backend declines, by name, one the scene cannot host.
+    get().send({ cmd: 'inject_hazard', kind });
   },
 }));
 
@@ -480,6 +613,9 @@ function applyServerMessage(
         hasFrames: false,
         events: [],
         locationPending: null,
+        locationProgress: null,
+        locationError: null,
+        tripComplete: false,
       }));
       return;
 
@@ -516,11 +652,26 @@ function applyServerMessage(
         // sim/loop.py's `submit_scene`. Without this the box would stay
         // disabled forever on any bad address, the single most likely thing
         // a first-time user types.
-        if (
-          s.locationPending !== null &&
-          msg.events.some((e) => e.code === 'location_failed')
-        ) {
-          patch.locationPending = null;
+        const failure = msg.events.find((e) => e.code === 'location_failed');
+        if (failure) {
+          if (s.locationPending !== null) patch.locationPending = null;
+          patch.locationProgress = null;
+          patch.locationError = failure.message;
+        }
+        // A point-to-point trip's own arrival, surfaced next to the search
+        // box the same way a failure is — see LeftScenarioSidebar.tsx.
+        if (!s.tripComplete && msg.events.some((e) => e.code === 'trip_complete')) {
+          patch.tripComplete = true;
+        }
+        // The build's own checkpoints, for a live progress bar. Last one in
+        // this batch wins — events land in the order the backend emitted
+        // them (see sim/loop.py's `submit_scene`), so the last is the
+        // farthest along. A `location_progress` event always carries a
+        // `progress` fraction (sim/loop.py's `emit_progress` never omits
+        // it); the `?? 0` only guards a hand-built test fixture that didn't.
+        const progress = [...msg.events].reverse().find((e) => e.code === 'location_progress');
+        if (progress) {
+          patch.locationProgress = { stage: progress.message, fraction: progress.progress ?? 0 };
         }
       }
       if (Object.keys(patch).length) set(patch);
@@ -539,10 +690,33 @@ function applyServerMessage(
       // `synthetic`). Typing an address there is the documented behaviour in
       // DEMO.md, and it used to brick the sidebar.
       if (msg.cmd === 'load_location' && !msg.ok) {
-        set({ lastAck: msg, locationPending: null });
+        set({
+          lastAck: msg,
+          locationPending: null,
+          locationProgress: null,
+          locationError: msg.message,
+        });
         return;
       }
       set({ lastAck: msg });
+      return;
+
+    case 'address_suggestions':
+      set((s) => {
+        const ids = Object.keys(s.addressSuggestions);
+        const evicted =
+          ids.length >= MAX_ADDRESS_SUGGESTIONS
+            ? Object.fromEntries(
+                ids.slice(ids.length - MAX_ADDRESS_SUGGESTIONS + 1).map((id) => [id, s.addressSuggestions[id]]),
+              )
+            : s.addressSuggestions;
+        return {
+          addressSuggestions: {
+            ...evicted,
+            [msg.id]: { query: msg.query, items: msg.suggestions },
+          },
+        };
+      });
       return;
   }
 }

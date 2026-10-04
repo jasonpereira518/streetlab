@@ -100,6 +100,13 @@ export const PlusIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const SearchIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-3.5-3.5" />
+  </Svg>
+);
+
 export const FolderIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -150,6 +157,16 @@ export const ResetIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M3 12a9 9 0 1 0 2.6-6.4" />
     <path d="M3 4v5h5" />
+  </Svg>
+);
+
+/** Two arrows, to read distinctly from `ResetIcon`'s single one. */
+export const RefreshIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M20 11a8 8 0 0 0-13.7-5.7L3 8" />
+    <path d="M4 13a8 8 0 0 0 13.7 5.7L21 16" />
+    <path d="M3 4v4h4" />
+    <path d="M21 20v-4h-4" />
   </Svg>
 );
 

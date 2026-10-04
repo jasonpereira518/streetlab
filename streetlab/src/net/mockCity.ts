@@ -17,6 +17,7 @@ import { makeRng } from '../units';
 import type {
   Building,
   Crosswalk,
+  HazardSummary,
   Road,
   SceneDescription,
   ScenarioSummary,
@@ -27,6 +28,7 @@ import type {
   Vec2,
 } from '../schema';
 import { PROTOCOL_VERSION } from '../schema';
+import { makeRectRoute, Route } from './route';
 
 /* ---------------------------------------------------------------- */
 /* Grid definition                                                   */
@@ -68,6 +70,23 @@ const street = (axis: 'ns' | 'ew', at: number): StreetSpec => {
 
 /** The block the ego route circles, in street-centreline coordinates. */
 export const LOOP_BLOCK = { x0: 0, x1: 80, y0: 0, y1: 80 };
+
+/**
+ * The line the ego drives: the inner lane of `LOOP_BLOCK`, filleted at the
+ * corners. One definition, used both by the mock simulator to move the car and
+ * by `buildScene` to publish `reference_path` — so the line drawn on the road
+ * and the car's actual motion cannot disagree.
+ */
+export function makeEgoRoute(): Route {
+  return makeRectRoute(
+    LOOP_BLOCK.x0 + EGO_LANE_INSET,
+    LOOP_BLOCK.y0 + EGO_LANE_INSET,
+    LOOP_BLOCK.x1 - EGO_LANE_INSET,
+    LOOP_BLOCK.y1 - EGO_LANE_INSET,
+    10,
+    true,
+  );
+}
 
 /** Ego drives the inner (left) lane; a cut-in comes from the kerb lane. */
 export const EGO_LANE_INSET = LANE_W * 1.5; // 5.4 m from centreline
@@ -521,6 +540,42 @@ export const SCENARIOS: ScenarioSummary[] = [
 /* Assembly                                                          */
 /* ---------------------------------------------------------------- */
 
+/**
+ * The hazard menu. Mirrors `SCENARIOS` in `streetlab-backend/sim/events.py`
+ * entry for entry (`tests/mockServer.test.ts` holds the two together from
+ * Task 9); the mock itself only ever stages `cut_in`.
+ */
+export const HAZARDS: HazardSummary[] = [
+  { code: 'sudden_brake', label: 'Sudden brake', level: 'warn', group: 'ahead', ml_limitation: null },
+  { code: 'cut_in', label: 'Cut-in', level: 'warn', group: 'ahead', ml_limitation: null },
+  { code: 'jaywalker', label: 'Jaywalker', level: 'critical', group: 'crossing', ml_limitation: null },
+  {
+    code: 'obstacle',
+    label: 'Obstacle',
+    level: 'warn',
+    group: 'ahead',
+    ml_limitation: 'The detector has no class for an unclassified obstacle.',
+  },
+  {
+    code: 'emergency_vehicle',
+    label: 'Emergency vehicle',
+    level: 'info',
+    group: 'behind',
+    ml_limitation: 'ML perception has no rear camera and cannot see emergency lights.',
+  },
+  { code: 'stalled_vehicle', label: 'Stalled vehicle', level: 'warn', group: 'ahead', ml_limitation: null },
+  { code: 'cyclist_drift', label: 'Cyclist drift', level: 'warn', group: 'ahead', ml_limitation: null },
+  {
+    code: 'tailgater',
+    label: 'Tailgater',
+    level: 'info',
+    group: 'behind',
+    ml_limitation: 'ML perception has no rear camera.',
+  },
+  { code: 'oncoming_drift', label: 'Oncoming drift', level: 'critical', group: 'ahead', ml_limitation: null },
+  { code: 'red_light_runner', label: 'Red-light runner', level: 'critical', group: 'crossing', ml_limitation: null },
+];
+
 /** Build the full static scene for a scenario. */
 export function buildScene(scenarioId: string): SceneDescription {
   const scenario =
@@ -547,8 +602,13 @@ export function buildScene(scenarioId: string): SceneDescription {
     stop_signs: buildStopSigns(),
     trees: buildTrees(),
     street_signs: buildStreetSigns(),
+    reference_path: (() => {
+      const r = makeEgoRoute();
+      return r.polyline(0, r.length, 2);
+    })(),
     terrain: null,
     catalog: SCENARIOS,
+    hazards: HAZARDS,
   };
 }
 

@@ -154,6 +154,7 @@ class _FixedFrameMl:
                 hazard_label=None,
                 ttc_s=None,
                 lane_offset=0,
+                emergency=False,
             )
         ]
 

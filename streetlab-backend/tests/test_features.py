@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from map.features import (
+    PEDESTRIAN_GROUP,
     _TREE_MIN_SPACING_M,
     _tagged_nodes,
     build_buildings,
@@ -164,7 +165,10 @@ def test_signal_groups_assign_every_light_to_ns_or_ew():
     )
     lights = build_traffic_lights(graph, ORIGIN)
     groups = signal_groups(lights)
-    assert set(groups.values()) <= {"ns", "ew"}
+    # Two signals on one straight street, 55 m apart: neither has cross
+    # traffic, so both run the short-red pedestrian phase rather than an
+    # alternation that would hold the street at red for nobody.
+    assert set(groups.values()) <= {"ns", "ew", PEDESTRIAN_GROUP}
     assert len(groups) == len(lights)
     assert lights, "the fixture should produce heads to group"
 
@@ -453,9 +457,13 @@ def test_counts_on_the_real_fixture_match_verified_osm_tag_counts(graph):
     scene whose every signal was one east-facing pole in the middle of an
     intersection; the ratio is pinned here so a change to leg merging shows up
     as a diff rather than silently.
+
+    153, not the 162 one-junction-per-node gave: nodes within
+    `SIGNAL_CLUSTER_M` are one junction (58 nodes -> 54 junctions), and the
+    stretch between two of a junction's nodes is inside it, not an approach.
     """
-    assert len(build_traffic_lights(graph, ORIGIN)) == 162
-    assert len({t.id for t in build_traffic_lights(graph, ORIGIN)}) == 162
+    assert len(build_traffic_lights(graph, ORIGIN)) == 153
+    assert len({t.id for t in build_traffic_lights(graph, ORIGIN)}) == 153
     assert len(build_stop_signs(graph, ORIGIN)) == 145
     # Crossings are no longer one-per-node either, for a different reason:
     # 64 of the 370 are UNPAINTED in the data (`crossing=unmarked` or
@@ -472,3 +480,52 @@ def test_trees_are_deterministic_across_runs(graph):
     first = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
     second = [t.model_dump() for t in build_trees(graph, ORIGIN, build_buildings(graph, ORIGIN))]
     assert first == second
+
+
+# ---------------------------------------------- one-way spellings in the fallback
+
+def _oneway_stop_graph(oneway: str, *, stop_lon: float) -> dict:
+    """A west-to-east one-way street with an undirected stop node on it.
+
+    `stop_lon` decides which end of the way the node sits nearer, which is the
+    only thing the untagged fallback has to go on. No `direction` tag, so the
+    `oneway` branch is what has to answer.
+    """
+    return parse_overpass(
+        {"elements": [
+            {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4160},
+            {"type": "node", "id": 2, "lat": 37.7945, "lon": stop_lon,
+             "tags": {"highway": "stop"}},
+            {"type": "node", "id": 3, "lat": 37.7945, "lon": -122.4150},
+            {"type": "way", "id": 500, "nodes": [1, 2, 3],
+             "tags": {"highway": "residential", "name": "Test St",
+                      "oneway": oneway}},
+        ]}
+    )
+
+
+def test_reversed_oneway_governs_traffic_against_the_drawn_direction():
+    """`oneway=-1` means traffic runs backwards along the way, not forwards.
+
+    The node sits nearer the way's east end, so the nearer-end fallback would
+    answer "eastbound" -- which is precisely the direction no car on a `-1`
+    street is driving. The sign must face the westbound traffic instead.
+    """
+    graph = _oneway_stop_graph("-1", stop_lon=-122.4151)
+    sign = build_stop_signs(graph, ORIGIN)[0]
+    # Traffic runs west, so the face looks east.
+    assert sign.heading == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("spelling", ["yes", "true", "1"])
+def test_every_truthy_oneway_spelling_governs_the_drawn_direction(spelling):
+    """OSM spells a forward one-way "yes", "true" or "1" -- `is_oneway` has
+    always accepted all three, and the approach fallback must agree with it.
+
+    The node sits nearer the way's west end, so the nearer-end fallback would
+    answer "westbound" and contradict the tag.
+    """
+    graph = _oneway_stop_graph(spelling, stop_lon=-122.4159)
+    sign = build_stop_signs(graph, ORIGIN)[0]
+    # Traffic runs east, so the face looks west.
+    assert abs(sign.heading) == pytest.approx(math.pi, abs=1e-6)

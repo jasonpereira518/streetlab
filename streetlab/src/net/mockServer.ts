@@ -15,6 +15,7 @@ import {
 } from '../schema';
 import type {
   Ack,
+  AddressSuggestion,
   Command,
   Detection,
   LaneNeighbor,
@@ -35,6 +36,7 @@ import {
   KERB_LANE_INSET,
   LANE_W,
   LOOP_BLOCK,
+  makeEgoRoute,
   SCENARIOS,
   STREETS,
   buildScene,
@@ -55,11 +57,17 @@ const MAX_LAT_ACCEL = 2.6;
 const MAX_ACCEL = 2.1;
 const MAX_DECEL = -4.4;
 
-/** Signal cycle, seconds. */
+/**
+ * Signal cycle, seconds. Mirrors the backend's `SignalController`: 12 s green,
+ * 3 s yellow, 1 s all-red per group, so the two groups are never green (or
+ * yellow) together even for a frame.
+ */
 const CYCLE = 32;
-const NS_GREEN_END = 13;
-const NS_YELLOW_END = 16;
-const EW_GREEN_END = 29;
+const NS_GREEN_END = 12;
+const NS_YELLOW_END = 15;
+const EW_GREEN_START = 16;
+const EW_GREEN_END = 28;
+const EW_YELLOW_END = 31;
 
 /** How often the scripted cut-in fires, seconds. */
 const DEFAULT_CUTIN_PERIOD = 22;
@@ -152,14 +160,7 @@ export class MockSim {
 
   constructor(scenarioId = SCENARIOS[0].id) {
     this.scene = buildScene(scenarioId);
-    this.route = makeRectRoute(
-      LOOP_BLOCK.x0 + EGO_LANE_INSET,
-      LOOP_BLOCK.y0 + EGO_LANE_INSET,
-      LOOP_BLOCK.x1 - EGO_LANE_INSET,
-      LOOP_BLOCK.y1 - EGO_LANE_INSET,
-      10,
-      true,
-    );
+    this.route = makeEgoRoute();
     this.controls = this.findControlPoints();
     this.resetDynamics();
   }
@@ -281,9 +282,10 @@ export class MockSim {
       if (c < NS_YELLOW_END) return 'yellow';
       return 'red';
     }
-    if (c < NS_YELLOW_END) return 'red';
+    if (c < EW_GREEN_START) return 'red';
     if (c < EW_GREEN_END) return 'green';
-    return 'yellow';
+    if (c < EW_YELLOW_END) return 'yellow';
+    return 'red';
   }
 
   private signalStates(): SignalState[] {
@@ -296,7 +298,7 @@ export class MockSim {
       const bounds =
         group === 'ns'
           ? [NS_GREEN_END, NS_YELLOW_END, CYCLE]
-          : [NS_YELLOW_END, EW_GREEN_END, CYCLE];
+          : [EW_GREEN_START, EW_GREEN_END, EW_YELLOW_END, CYCLE];
       const next = bounds.find((b) => b > c) ?? CYCLE;
       return {
         id: tl.id,
@@ -622,6 +624,7 @@ export class MockSim {
         hazard_label: hazard ? 'Cut-in vehicle' : null,
         ttc_s: ttc == null ? null : Math.round(ttc * 100) / 100,
         lane_offset: clamp(Math.round(left / LANE_W), -2, 2),
+        emergency: false,
       });
 
       if (Math.abs(fwd) < 90) {
@@ -712,6 +715,7 @@ export class MockSim {
         ),
         maneuver,
         confidence: this.cutinPhase === 'merging' ? 0.71 : 0.94,
+        reaction_source_id: null,
       },
       telemetry: {
         radar,
@@ -822,22 +826,22 @@ export class MockSim {
     return {
       horizon_s: HORIZON,
       planned,
-      cutin: active ? cutinSeries : null,
-      cutin_label: active ? 'Cut-in vehicle' : null,
+      threat: active ? cutinSeries : null,
+      threat_label: active ? 'Cut-in vehicle' : null,
     };
   }
 
   /* ---------------- commands ---------------- */
 
-  // `camera_frame` is deliberately excluded from this parameter type: the
-  // real backend intercepts it at the socket, before the command queue
-  // (`ws_server.py` `_handle` -> `_ingest_frame`, never through `submit()`/
-  // `_apply()`), so `apply()` — the mock's equivalent of the sim-thread
-  // command executor — should never see one either. `createMockTransport`'s
-  // `send()` below is the mock's equivalent of `_handle` and does the
-  // intercepting.
+  // `camera_frame` and `suggest_address` are deliberately excluded from this
+  // parameter type: the real backend intercepts both at the socket, before
+  // the command queue (`ws_server.py` `_handle` -> `_ingest_frame` /
+  // `_suggest_address`, never through `submit()`/`_apply()`), so `apply()` —
+  // the mock's equivalent of the sim-thread command executor — should never
+  // see either. `createMockTransport`'s `send()` below is the mock's
+  // equivalent of `_handle` and does the intercepting.
   apply(
-    command: Exclude<Command, { cmd: 'camera_frame' }>,
+    command: Exclude<Command, { cmd: 'camera_frame' | 'suggest_address' }>,
   ): { ok: boolean; message: string | null; scene?: SceneDescription } {
     switch (command.cmd) {
       case 'set_paused':
@@ -885,6 +889,13 @@ export class MockSim {
         // refuses the same way when `self.perception_pipeline is None`.
         return { ok: false, message: 'no perception pipeline: start with --perception' };
       case 'inject_hazard':
+        // The mock scripts one hazard. The rest of the menu is the backend's
+        // (`sim/events.py`), so decline them by name, the way the backend
+        // declines a hazard the scene cannot host. `cutin` is the alias an
+        // older build of this app sent.
+        if (command.kind !== 'cut_in' && command.kind !== 'cutin') {
+          return { ok: false, message: `${command.kind}: the in-process mock only stages cut_in` };
+        }
         this.nextCutinAt = this.t;
         this.cutinPhase = 'idle';
         return { ok: true, message: `hazard ${command.kind} queued` };
@@ -929,6 +940,21 @@ export interface MockTransportOptions {
  * matches what Task 6 found perceptible by hand in a running browser.
  */
 const MOCK_LOCATION_BUILD_MS = 600;
+
+/**
+ * `?mock=1` has no geocoder to call, so `suggest_address` answers from this
+ * fixed catalog instead of an empty list — an empty dropdown in every dev/
+ * test run would make the feature impossible to exercise without a live
+ * backend. Real coordinates for real San Francisco landmarks, so a selected
+ * suggestion behaves the same as a real one if `load_location` follows it.
+ */
+const MOCK_ADDRESS_CATALOG: AddressSuggestion[] = [
+  { label: 'Nob Hill, San Francisco, CA', lat: 37.7945, lon: -122.4156 },
+  { label: 'Golden Gate Bridge, San Francisco, CA', lat: 37.8199, lon: -122.4783 },
+  { label: "Fisherman's Wharf, San Francisco, CA", lat: 37.808, lon: -122.4177 },
+  { label: 'Union Square, San Francisco, CA', lat: 37.788, lon: -122.4075 },
+  { label: 'Golden Gate Park, San Francisco, CA', lat: 37.7694, lon: -122.4862 },
+];
 
 export function createMockTransport(
   opts: MockTransportOptions = {},
@@ -1038,6 +1064,25 @@ export function createMockTransport(
       // perception pipeline don't exist client-side — so the faithful
       // behaviour is the same early return, not a fabricated ack.
       if (command.cmd === 'camera_frame') return;
+      // Same bypass as `camera_frame`, mirroring `ws_server.py`'s
+      // `suggest_address` early-out: answered directly, never acked, never
+      // routed through `sim.apply()`.
+      if (command.cmd === 'suggest_address') {
+        const q = command.query.trim().toLowerCase();
+        const suggestions = q
+          ? MOCK_ADDRESS_CATALOG.filter((s) => s.label.toLowerCase().includes(q)).slice(0, 5)
+          : [];
+        queueMicrotask(() => {
+          handlers?.onMessage({
+            type: 'address_suggestions',
+            protocol: PROTOCOL_VERSION,
+            id: command.id,
+            query: command.query,
+            suggestions,
+          });
+        });
+        return;
+      }
       const res = sim.apply(command);
       const ack: Ack = {
         type: 'ack',

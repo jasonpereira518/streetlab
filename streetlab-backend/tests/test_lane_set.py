@@ -306,7 +306,7 @@ def test_every_two_way_road_the_ego_drives_is_a_symmetric_carriageway(
 
 @pytest.mark.parametrize(
     "scene_name, expected",
-    [("grid_loop", {-1: 18}), ("nob_hill_scene", {-1: 33})],
+    [("grid_loop", {-1: 18}), ("nob_hill_scene", {-1: 29})],
 )
 def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, request):
     """Non-vacuousness, and the shape of the answer, in one assertion.
@@ -314,7 +314,9 @@ def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, re
     Without this the safety property above passes on a model that rules
     everything illegal. Measured: grid-loop admits a RIGHT change on the 9
     California St and 9 Hyde St segments (2 lanes each way, ego at -1.79 m); Nob
-    Hill on the 33 California Street segments. Neither scene admits a left
+    Hill on the 29 California Street segments (33 before the driving-realism
+    work removed the route's cusps and short connector legs, which took the
+    route from 339 vertices to 251: this counts segments, so it moves with them). Neither scene admits a left
     change anywhere, which is the direct consequence of the ego sitting in the
     inner forward lane -- it passes on the right and returns left.
     """
@@ -362,7 +364,7 @@ def _agent_samples_where_a_second_forward_lane_runs(scene):
 
 
 @pytest.mark.parametrize(
-    "scene_name, expected_samples", [("grid_loop", 54), ("nob_hill_scene", 132)]
+    "scene_name, expected_samples", [("grid_loop", 54), ("nob_hill_scene", 116)]
 )
 def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     scene_name, expected_samples, request
@@ -384,7 +386,8 @@ def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     traffic in the wrong lane fails here whatever the lane model believes.
 
     `expected_samples` is a measured fixture property (3 agents x 18 grid-loop
-    stations, 4 x 33 on Nob Hill), pinned exactly rather than as `> 0`. A
+    stations, 4 x 29 on Nob Hill; 4 x 33 before the route lost its cusps and
+    short connector legs, which is a segment count and moves with the vertex count), pinned exactly rather than as `> 0`. A
     source that shipped no traffic, or a route that stopped matching California
     Street, would otherwise satisfy the safety claim by having nothing to
     judge. Note what it does NOT prove: with every agent now on the ego route
@@ -413,15 +416,15 @@ def test_sacramento_street_refuses_both_directions(nob_hill_scene):
     """Where the ego's own placement is ambiguous, the rule refuses rather than guesses.
 
     Sacramento Street is oneway with two forward lanes, and the ego route
-    crosses its centreline (measured `ego_off` 0.00 m on all 16 matched
-    segments -- these are the fillet vertices of the turn across it, not a
+    crosses its centreline (measured `ego_off` 0.00 m on all 12 matched
+    segments (16 before the route lost its cusps and short connector legs) -- these are the fillet vertices of the turn across it, not a
     stretch driven along it). A lane 3.6 m either way needs 1.80 m of slack to
     fit inside a 7.2 m carriageway from there, well past `LANE_FIT_TOL_M`, so
     both directions are refused. A count-based rule says 2 here and would admit
     the change.
     """
     matched = [s for s, road in _segments(nob_hill_scene) if road.name == "Sacramento Street"]
-    assert len(matched) == 16, f"the fixture no longer matches Sacramento Street 16 times: {len(matched)}"
+    assert len(matched) == 12, f"the fixture no longer matches Sacramento Street 12 times: {len(matched)}"
     assert nob_hill_scene.lanes.count_at(matched[0]) == 2, "not the two-lane case any more"
     for s in matched:
         assert nob_hill_scene.lanes.legal_at(s) == ()

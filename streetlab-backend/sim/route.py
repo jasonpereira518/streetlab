@@ -36,8 +36,10 @@ class ControlPoint:
     """
 
     id: str
-    #: "signal" or "stop_sign". A signal resolves its phase through
-    #: `PlanContext.signals[id]`; a stop sign always requires a stop.
+    #: "signal", "stop_sign", or "arrival". A signal resolves its phase
+    #: through `PlanContext.signals[id]`; a stop sign always requires a stop;
+    #: "arrival" (`map.lanes.arrival_control_point`) marks an OPEN route's own
+    #: end and always requires a stop that never releases.
     kind: str
     s: float
     position: Point
@@ -169,6 +171,31 @@ class Route:
         """Sample the route forward from `s`, for the plan ribbon."""
         n = max(1, int(length_m / step_m))
         return [self.point_at(s + i * step_m) for i in range(n + 1)]
+
+    def resample(self, step_m: float) -> list[Point]:
+        """The whole route as an evenly spaced, drawable polyline.
+
+        `points` is this route's INTERNAL vertex list and is not fit to draw.
+        Offsetting, filleting and self-intersection splicing leave it dense and
+        uneven: measured on the Nob Hill loop, 224 of its 339 legs are under a
+        centimetre long and one 1.5 cm stub doubles back on itself at 175
+        degrees. Arc-length parameterisation steps straight past all of that, so
+        the simulator never notices -- but a renderer taking a perpendicular at
+        each vertex sees the normal flip on that stub and tears the band it is
+        laying down.
+
+        Sampling by arc length instead gives uniform spacing, no stubs and no
+        reversals. A closed route's last sample is snapped onto its first so the
+        ring closes exactly -- `n * length / n` is not bit-identical to `length`
+        in binary floating point, and the 1.5e-14 m of dust that leaves is
+        enough to fail an equality check a caller would reasonably write. Either
+        way the result draws as a plain open polyline.
+        """
+        n = max(2, math.ceil(self.length_m / step_m))
+        points = [self.point_at(i * self.length_m / n) for i in range(n + 1)]
+        if self.closed:
+            points[-1] = points[0]
+        return points
 
     def offset(self, distance_m: float) -> Route:
         """A parallel route `distance_m` to the left (negative for the right).

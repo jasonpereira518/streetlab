@@ -16,10 +16,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from random import Random
+from collections.abc import Mapping, Sequence
 from typing import Protocol, runtime_checkable
 
-from schema import Size
-from sim.route import EGO_LANE_ID, Lane, LaneSet, Route
+from schema import SignalState, Size
+from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import BicycleModel, VehicleState
 
 # How quickly a scripted agent converges on its target speed. Not a physical
@@ -72,6 +73,32 @@ class Agent:
     #: never left would re-cross forever (arc length wraps), and an obstacle
     #: that never cleared would deadlock a one-lane street permanently.
     lifetime_s: float | None = None
+    #: How fast `lateral_m` slides back to zero, m/s, or None for traffic's own
+    #: `_MOBIL_TRAVERSE_MPS`. A drifting cyclist wants a creep, not a lane change.
+    #: Set only on scenario-spawned agents, which expire (`lifetime_s`) and are
+    #: never recruited into another hazard -- which is why, unlike
+    #: `override_speed_mps`, `headway_s` and `emergency_speed_mps`, it has no
+    #: deadline of its own.
+    lateral_rate_mps: float | None = None
+    #: IDM time headway until `headway_until_s`, or None for `_IDM_HEADWAY_S`.
+    headway_s: float | None = None
+    headway_until_s: float = 0.0
+    #: While set, this agent is an emergency vehicle -- lights and siren on --
+    #: and this is its desired speed, until `emergency_until_s`. Unlike
+    #: `override_speed_mps` it still goes through car-following: an override
+    #: drives through whatever is ahead, the ego included (measured while
+    #: planning Cycle 6 Phase 1: centres 0.05 m apart on grid-loop).
+    emergency_speed_mps: float | None = None
+    emergency_until_s: float = 0.0
+    #: The stop sign this agent has already halted at and been released from,
+    #: so the line stops being a leader until the agent has driven past it.
+    cleared_control_id: str | None = None
+    #: Seconds spent stationary at the stop sign ahead.
+    control_dwell_s: float = 0.0
+    #: This tick's distance to a stop line the agent must halt at, as IDM
+    #: should see it, or inf. Set once per tick by `IdmTraffic._obey`, read by
+    #: `_leader` and by MOBIL, which must not see a red as a gap to escape into.
+    control_gap_m: float = math.inf
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +119,9 @@ class TrafficWorld:
     ego: VehicleState
     ego_route: Route
     t: float
+    #: This tick's signal phases by head id -- the SAME list the ego plans
+    #: against, so traffic and ego can never disagree about a light.
+    signals: Mapping[str, SignalState] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -114,11 +144,24 @@ class TrafficModel(Protocol):
     def hold(self, agent: Agent, *, at_mps: float, for_s: float) -> None:
         """Run one agent at a commanded speed for a while, then let it recover.
 
-        Not "slow": `sim/events.py` uses this in both directions -- a
-        `sudden_brake` holds its victim at zero, an `emergency_vehicle` holds
-        one above the posted limit -- and the recovery is the point either way.
+        `sim/events.py`'s `sudden_brake` holds its victim at zero, and the
+        recovery is the point. (`emergency_vehicle` held one above the limit
+        until Cycle 6, and drove it through the ego; it uses `emergency` now.)
         A permanent override deadlocks the world; the ego stops behind a
         stalled car and neither ever moves again.
+        """
+        ...
+
+    def tailgate(self, agent: Agent, *, headway_s: float, for_s: float) -> None:
+        """Follow at `headway_s` for a while, then fall back to traffic's own."""
+        ...
+
+    def emergency(self, agent: Agent, *, at_mps: float, for_s: float) -> None:
+        """Run as an emergency vehicle wanting `at_mps` for a while.
+
+        Not `hold`: a held agent ignores what is ahead of it, and an emergency
+        vehicle that drove through the car in front would be no test of
+        whether that car pulls over.
         """
         ...
 
@@ -211,6 +254,23 @@ class ScriptedTraffic:
         agent.override_speed_mps = max(0.0, at_mps)
         agent.override_until_s = self._elapsed + for_s
 
+    def tailgate(self, agent: Agent, *, headway_s: float, for_s: float) -> None:
+        agent.headway_s = max(0.1, headway_s)
+        agent.headway_until_s = self._elapsed + for_s
+
+    def emergency(self, agent: Agent, *, at_mps: float, for_s: float) -> None:
+        agent.emergency_speed_mps = max(0.0, at_mps)
+        agent.emergency_until_s = self._elapsed + for_s
+
+    def _expire_overrides(self, agent: Agent) -> None:
+        """Lift every time-limited override whose deadline has passed."""
+        if agent.override_speed_mps is not None and self._elapsed >= agent.override_until_s:
+            agent.override_speed_mps = None
+        if agent.headway_s is not None and self._elapsed >= agent.headway_until_s:
+            agent.headway_s = None
+        if agent.emergency_speed_mps is not None and self._elapsed >= agent.emergency_until_s:
+            agent.emergency_speed_mps = None
+
     def spawn(self, agent: Agent) -> None:
         if any(existing.id == agent.id for existing in self._agents):
             raise ValueError(f"an agent already has the id {agent.id!r}")
@@ -245,14 +305,12 @@ class ScriptedTraffic:
         self._elapsed += dt
         self._expire(dt)
         for agent in self._agents:
-            if (
-                agent.override_speed_mps is not None
-                and self._elapsed >= agent.override_until_s
-            ):
-                agent.override_speed_mps = None
+            self._expire_overrides(agent)
 
             if agent.override_speed_mps is not None:
                 wanted = agent.override_speed_mps
+            elif agent.emergency_speed_mps is not None:
+                wanted = agent.emergency_speed_mps
             else:
                 wanted = agent.target_speed_mps * self._speed_scale
             curvature = agent.route.peak_curvature(
@@ -388,6 +446,23 @@ _STANDSTILL_MPS = 0.5
 #: lane change and slower than the ego's own.
 _MOBIL_TRAVERSE_MPS = 1.2
 
+# Traffic control. Restated from `plan/behavior.py` rather than imported for
+# the same reason `_SAME_LANE_M` is: `sim` does not depend on `plan`.
+
+#: How long an agent stands at a stop sign before it may go. Matches the ego's
+#: `STOP_DWELL_S`.
+_STOP_DWELL_S = 1.0
+#: How close to a stop sign's line counts as "stopped at it" rather than
+#: queued behind someone else who is.
+_STOP_ZONE_M = 4.0
+#: Where an agent comes to rest, short of the line. IDM holds `_IDM_MIN_GAP_M`
+#: back from a stationary leader, so the virtual leader is placed that much
+#: minus this beyond the line.
+_STOP_SHORT_M = 1.0
+#: Once a cleared stop sign is this far behind, it is forgotten -- so a closed
+#: loop with one stop sign is obeyed again next lap.
+_CLEARED_FORGET_M = 30.0
+
 
 class IdmTraffic(ScriptedTraffic):
     """Intelligent Driver Model longitudinal control.
@@ -418,9 +493,12 @@ class IdmTraffic(ScriptedTraffic):
         seed: int = 0,
         speed_scale: float = 1.0,
         lanes: LaneSet | None = None,
+        control_points: Sequence[ControlPoint] = (),
+        ego_route: Route | None = None,
     ) -> None:
         super().__init__(routes, speed_limit_mps, seed=seed, speed_scale=speed_scale)
         self._lanes = lanes
+        self._controls = _controls_by_route(control_points, ego_route, lanes)
         # Which lane each agent's route IS, by object identity: `derive_lanes`
         # takes the ego route as-is rather than rebuilding it, so the route a
         # scene source handed this and the lane's route are the same object.
@@ -440,11 +518,7 @@ class IdmTraffic(ScriptedTraffic):
         ego_s_by_route = self._project_ego(world)
 
         for agent in self._agents:
-            if (
-                agent.override_speed_mps is not None
-                and self._elapsed >= agent.override_until_s
-            ):
-                agent.override_speed_mps = None
+            self._expire_overrides(agent)
 
             speed = agent.state.speed_mps
             if agent.override_speed_mps is not None:
@@ -453,16 +527,24 @@ class IdmTraffic(ScriptedTraffic):
                 # than being blended with what IDM would have chosen.
                 speed = _approach(speed, agent.override_speed_mps, _SPEED_RATE * dt)
             else:
+                self._obey(agent, world, dt)
                 gap, lead_speed = self._leader(agent, world, ego_s_by_route)
                 accel = _idm_accel(
-                    speed, self._desired_speed(agent), gap, lead_speed
+                    speed,
+                    self._desired_speed(agent),
+                    gap,
+                    lead_speed,
+                    headway_s=_IDM_HEADWAY_S if agent.headway_s is None else agent.headway_s,
                 )
                 speed = max(0.0, speed + accel * dt)
 
             # The slide into a lane just entered, resolved before the pose is
             # rebuilt so the two describe the same instant.
             was = agent.lateral_m
-            agent.lateral_m = _approach(was, 0.0, _MOBIL_TRAVERSE_MPS * dt)
+            rate = (
+                _MOBIL_TRAVERSE_MPS if agent.lateral_rate_mps is None else agent.lateral_rate_mps
+            )
+            agent.lateral_m = _approach(was, 0.0, rate * dt)
             if not agent.lateral_m:
                 agent.from_route = None
             agent.lane_change_cooldown_s = max(
@@ -477,8 +559,7 @@ class IdmTraffic(ScriptedTraffic):
             )
             if not stopped:
                 # A vehicle commanded to a standstill is not looking for a
-                # better lane. One commanded to a SPEED still is -- that is an
-                # emergency vehicle, and getting past is the whole scenario.
+                # better lane. One commanded to a speed still is.
                 self._consider_lane_change(agent, world, ego_s_by_route)
 
     def _project_ego(self, world: TrafficWorld | None) -> dict[int, tuple[float, float]]:
@@ -522,7 +603,10 @@ class IdmTraffic(ScriptedTraffic):
 
     def _desired_speed(self, agent: Agent) -> float:
         """Target speed, still capped by curvature as Cycle 1's agents were."""
-        wanted = agent.target_speed_mps * self._speed_scale
+        if agent.emergency_speed_mps is not None:
+            wanted = agent.emergency_speed_mps
+        else:
+            wanted = agent.target_speed_mps * self._speed_scale
         curvature = agent.route.peak_curvature(agent.s, distance_m=_CURVATURE_PREVIEW_M)
         if curvature > 1e-6:
             wanted = min(wanted, math.sqrt(_MAX_LATERAL_MPS2 / curvature))
@@ -552,7 +636,12 @@ class IdmTraffic(ScriptedTraffic):
         end (`_lane_end`), so a car that cannot yet merge home stops at the
         kerb instead of driving onto the pavement.
         """
-        best_gap, best_speed = math.inf, 0.0
+        # A stop line this agent must halt at (worked out by `_obey`) is a
+        # stationary leader at that distance. Folded in as it stands: it is a
+        # distance to a virtual wall already offset by `_IDM_MIN_GAP_M -
+        # _STOP_SHORT_M`, so IDM rests the agent's centre 1 m short of the line
+        # under either gap convention.
+        best_gap, best_speed = agent.control_gap_m, 0.0
         routes = [agent.route]
         if agent.from_route is not None:
             routes.append(agent.from_route)
@@ -584,6 +673,63 @@ class IdmTraffic(ScriptedTraffic):
             return math.inf, 0.0
         return best_gap, best_speed
 
+    # -- traffic control --------------------------------------------------- #
+
+    def _obey(self, agent: Agent, world: TrafficWorld | None, dt: float) -> None:
+        """Decide whether the next stop line is, this tick, a wall.
+
+        The answer is stored as `agent.control_gap_m` for `_leader` to fold in
+        as a stationary leader. Stateless for signals -- a car that has crossed
+        a line simply sees the next one -- and stateful only for stop signs,
+        which need a dwell and then a release.
+        """
+        agent.control_gap_m = math.inf
+        if agent.emergency_speed_mps is not None:
+            # Lights and siren: an ambulance crosses against the red, which is
+            # the whole point of the `emergency_vehicle` hazard. It still goes
+            # through car-following, so it does not drive through the queue.
+            agent.control_dwell_s = 0.0
+            return
+        points = self._controls.get(id(agent.route))
+        if not points or world is None:
+            return
+        loop = agent.route.length_m
+        target, gap = None, math.inf
+        for cp in points:
+            ahead = (cp.s - agent.s) % loop
+            if ahead < gap:
+                target, gap = cp, ahead
+        if target is None:
+            return
+
+        if agent.cleared_control_id is not None and (
+            agent.cleared_control_id != target.id or gap > _CLEARED_FORGET_M
+        ):
+            # Driven past the released line: it is now behind (a lap ahead),
+            # or a different line is the nearest. The release no longer applies.
+            agent.cleared_control_id = None
+        if gap > _IDM_HORIZON_M:
+            agent.control_dwell_s = 0.0
+            return
+
+        speed = agent.state.speed_mps
+        if target.kind == "stop_sign":
+            if agent.cleared_control_id == target.id:
+                return
+            if speed < _STANDSTILL_MPS and gap <= _STOP_ZONE_M:
+                agent.control_dwell_s += dt
+                if agent.control_dwell_s >= _STOP_DWELL_S:
+                    agent.cleared_control_id = target.id
+                    agent.control_dwell_s = 0.0
+                    return
+            else:
+                agent.control_dwell_s = 0.0
+            must_stop = True
+        else:
+            state = world.signals.get(target.id)
+            must_stop = _signal_says_stop(state, gap, speed)
+        if must_stop:
+            agent.control_gap_m = max(0.0, gap + _IDM_MIN_GAP_M - _STOP_SHORT_M)
     def _s_on(self, agent: Agent, route: Route) -> float | None:
         """`agent`'s arc length on `route` if it occupies that lane, else None.
 
@@ -766,10 +912,12 @@ class IdmTraffic(ScriptedTraffic):
             self._desired_speed(agent),
             *self._leader(agent, world, ego_s_by_route),
         )
+        there_gap, there_speed = _gap_ahead(occupants, my_s, agent.size.length, loop)
+        if agent.control_gap_m < there_gap:
+            # The light governs every lane of the approach alike.
+            there_gap, there_speed = agent.control_gap_m, 0.0
         there = _idm_accel(
-            agent.state.speed_mps,
-            self._desired_speed(agent),
-            *_gap_ahead(occupants, my_s, agent.size.length, loop),
+            agent.state.speed_mps, self._desired_speed(agent), there_gap, there_speed
         )
 
         behind = _nearest_behind(occupants, my_s, loop)
@@ -796,6 +944,57 @@ class IdmTraffic(ScriptedTraffic):
         )
 
 
+def _signal_says_stop(state: SignalState | None, gap: float, speed: float) -> bool:
+    """The ego's red/yellow rule (`BehaviorPlanner._must_stop`), minus its latch.
+
+    Red stops unless the car physically cannot -- braking at full authority it
+    would still cross the line -- which is what lets a car that was already on
+    top of the line when it changed carry on rather than stop in the junction.
+    Yellow stops unless stopping comfortably is no longer possible AND the line
+    can be reached before the yellow runs out. Green, anything else, or no
+    phase at all is go.
+    """
+    if state is None:
+        return False
+    if state.phase == "red":
+        return speed**2 / (2 * _IDM_MAX_BRAKE) < gap
+    if state.phase == "yellow":
+        if speed**2 / (2 * _IDM_COMFORT_DECEL) < gap:
+            return True
+        left = state.time_to_change_s
+        return left is None or speed <= 0.0 or gap / speed > left
+    return False
+
+
+def _controls_by_route(
+    points: Sequence[ControlPoint], ego_route: Route | None, lanes: LaneSet | None
+) -> dict[int, list[ControlPoint]]:
+    """The stop lines on every route traffic can be on, keyed by `id(route)`.
+
+    Scenes project control points onto the ego route only. Every lane in a
+    `LaneSet` is an offset of that route, so each line is carried across by
+    projecting its point on the ego route -- once, here, never per tick
+    (`Route.project` is O(n)).
+    """
+    if not points or ego_route is None:
+        return {}
+    out = {id(ego_route): sorted(points, key=lambda cp: cp.s)}
+    for lane in lanes.lanes if lanes is not None else ():
+        if id(lane.route) in out:
+            continue
+        out[id(lane.route)] = sorted(
+            (
+                ControlPoint(
+                    id=cp.id,
+                    kind=cp.kind,
+                    s=lane.route.project(ego_route.point_at(cp.s)),
+                    position=cp.position,
+                )
+                for cp in points
+            ),
+            key=lambda cp: cp.s,
+        )
+    return out
 def bumper_gap(
     ahead_s: float, ahead_len: float, behind_s: float, behind_len: float, loop: float
 ) -> float:
@@ -906,7 +1105,14 @@ def _sign(value: float) -> int:
 
 
 
-def _idm_accel(speed: float, desired: float, gap: float, lead_speed: float) -> float:
+def _idm_accel(
+    speed: float,
+    desired: float,
+    gap: float,
+    lead_speed: float,
+    *,
+    headway_s: float = _IDM_HEADWAY_S,
+) -> float:
     """The IDM acceleration law.
 
     `a = a_max * (1 - (v/v0)^delta - (s_star/s)^2)` with
@@ -932,7 +1138,7 @@ def _idm_accel(speed: float, desired: float, gap: float, lead_speed: float) -> f
     closing = speed - lead_speed
     s_star = _IDM_MIN_GAP_M + max(
         0.0,
-        speed * _IDM_HEADWAY_S
+        speed * headway_s
         + speed * closing / (2 * math.sqrt(_IDM_MAX_ACCEL * _IDM_COMFORT_DECEL)),
     )
     # A gap that has closed to nothing would divide by zero; the floor makes

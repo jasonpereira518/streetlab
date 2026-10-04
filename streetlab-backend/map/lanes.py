@@ -11,6 +11,7 @@ count for detail no driver can see.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import math
 from dataclasses import dataclass, field
@@ -175,6 +176,10 @@ class NoDrivableRoad(RuntimeError):
     """The extract contains nothing a car could drive."""
 
 
+class NoRouteFound(RuntimeError):
+    """Origin and destination are not connected by any drivable path in this extract."""
+
+
 @dataclass(frozen=True, slots=True)
 class Edge:
     to: Junction
@@ -193,15 +198,21 @@ def _polyline_length(points: list[tuple[float, float]]) -> float:
     return sum(math.dist(a, b) for a, b in zip(points, points[1:]))
 
 
-def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
-    """Junction-to-junction edges for every drivable way.
+def junction_node_ids(graph: OsmGraph) -> set[Junction]:
+    """Every node where a driver has a decision to make.
 
     A junction is any node shared by two or more drivable ways, plus each way's
     own endpoints. Splitting there — rather than at every node — keeps the
     search space to real decision points.
+
+    Extracted so `OsmSceneSource` can ask the same question when it decides how
+    far before a device the ego should halt: a `highway=stop` node tagged ON a
+    junction is the junction centre and needs the full setback, while one
+    tagged part-way down a street is already the stop bar and needs almost
+    none. Two independent definitions of "junction" would eventually disagree,
+    and the symptom would be a car braking in the wrong place.
     """
     ways = drivable_ways(graph)
-
     seen: dict[int, int] = {}
     for way in ways:
         for nid in way.node_ids:
@@ -211,6 +222,13 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
         if way.node_ids:
             junctions.add(way.node_ids[0])
             junctions.add(way.node_ids[-1])
+    return junctions
+
+
+def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
+    """Junction-to-junction edges for every drivable way."""
+    ways = drivable_ways(graph)
+    junctions = junction_node_ids(graph)
 
     rg = RouteGraph()
     for way in ways:
@@ -249,7 +267,7 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
     return rg
 
 
-def _nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> Junction:
+def nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> Junction:
     candidates = [nid for nid in rg.adjacency if nid in rg.points]
     if not candidates:
         raise NoDrivableRoad("no drivable junctions in this extract")
@@ -417,9 +435,95 @@ def _out_and_back(rg: RouteGraph, start: Junction) -> list[tuple[float, float]]:
     return best + list(reversed(best))[1:-1]
 
 
+def _reconstruct_path(
+    came_from: dict[Junction, tuple[Junction, Edge]],
+    start: Junction,
+    goal: Junction,
+) -> list[tuple[float, float]]:
+    """Stitch the edges `came_from` backtracks through, from `goal` to `start`,
+    into one point list in travel order."""
+    chain: list[Edge] = []
+    node = goal
+    while node != start:
+        prev, edge = came_from[node]
+        chain.append(edge)
+        node = prev
+    chain.reverse()
+
+    points = [chain[0].polyline[0]] if chain else []
+    for edge in chain:
+        points.extend(edge.polyline[1:])
+    return points
+
+
+def _astar(rg: RouteGraph, start: Junction, goal: Junction) -> list[tuple[float, float]] | None:
+    """Shortest drivable path from `start` to `goal`, by `Edge.length_m`.
+
+    Standard A* over `RouteGraph.adjacency`: `g` is cumulative distance
+    already travelled, and the heuristic is straight-line distance to `goal`
+    in the same local-metres frame `rg.points` already carries -- admissible
+    because a real road path is never shorter than a straight line between
+    its endpoints, so the search never overestimates and the first pop of
+    `goal` off the heap is optimal.
+
+    Deterministic like `_find_loop`'s edge ordering: a monotonic `counter` is
+    the heap's final tie-breaker, so two equal-priority entries never fall
+    back to comparing `Junction` ints against each other in a way that would
+    make the result depend on dict/heap iteration order.
+
+    Bounded by `_MAX_EXPANSIONS`, the same defensive budget `_find_loop` and
+    `_out_and_back` use: a dense downtown extract's junction count is
+    unbounded, and this runs once per scene build, not once per tick.
+    """
+    if start not in rg.points or goal not in rg.points:
+        return None
+    if start == goal:
+        return [rg.points[start]]
+
+    def h(node: Junction) -> float:
+        return math.dist(rg.points[node], rg.points[goal])
+
+    counter = 0
+    open_heap: list[tuple[float, float, int, Junction]] = [(h(start), 0.0, counter, start)]
+    best_g: dict[Junction, float] = {start: 0.0}
+    came_from: dict[Junction, tuple[Junction, Edge]] = {}
+    closed: set[Junction] = set()
+    expansions = 0
+
+    while open_heap:
+        _, g, _, node = heapq.heappop(open_heap)
+        if node in closed:
+            continue
+        closed.add(node)
+        if node == goal:
+            return _reconstruct_path(came_from, start, goal)
+        expansions += 1
+        if expansions > _MAX_EXPANSIONS:
+            log.warning(
+                "_astar hit its expansion budget (%d) before reaching the "
+                "destination; treating it as unreachable even though a path "
+                "may exist beyond the search budget",
+                _MAX_EXPANSIONS,
+            )
+            return None
+        for edge in rg.adjacency.get(node, []):
+            if edge.to in closed:
+                continue
+            tentative_g = g + edge.length_m
+            if tentative_g < best_g.get(edge.to, math.inf):
+                best_g[edge.to] = tentative_g
+                came_from[edge.to] = (node, edge)
+                counter += 1
+                heapq.heappush(
+                    open_heap, (tentative_g + h(edge.to), tentative_g, counter, edge.to)
+                )
+
+    return None
+
+
 def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
     """A drivable loop near the origin, offset into the right-hand lane."""
-    start = _nearest_junction(rg, origin_xy)
+    start = nearest_junction(rg, origin_xy)
     points = _find_loop(rg, start)
     if points is None:
         log.info("no closed circuit found; falling back to an out-and-back route")
@@ -443,9 +547,36 @@ def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
     if len(deduped) < 3:
         raise NoDrivableRoad("route degenerated to fewer than three points")
 
-    lane = Route(deduped, closed=True).offset(-EGO_LANE_INSET)
-    route = lane.fillet(radius_m=TURN_RADIUS_M)
-    return _drop_micro_segments(remove_self_intersections(route))
+    return _right_hand_lane(deduped, closed=True)
+
+
+def select_route_to_destination(
+    rg: RouteGraph, origin_xy: tuple[float, float], dest_xy: tuple[float, float]
+) -> Route:
+    """A drivable path from `origin_xy` to `dest_xy`, offset into the right-hand lane.
+
+    Point-to-point sibling of `select_ego_route`: instead of a circuit back to
+    the start, this runs `_astar` to the junction nearest `dest_xy` and
+    returns an OPEN route -- the ego drives it once and stops, rather than
+    lapping it forever.
+    """
+    start = nearest_junction(rg, origin_xy)
+    goal = nearest_junction(rg, dest_xy)
+    if start == goal:
+        raise NoRouteFound("origin and destination resolve to the same road junction")
+
+    points = _astar(rg, start, goal)
+    if points is None:
+        raise NoRouteFound("no drivable path connects these two points in this extract")
+
+    deduped = [points[0]]
+    for point in points[1:]:
+        if math.dist(point, deduped[-1]) > 1e-6:
+            deduped.append(point)
+    if len(deduped) < 2:
+        raise NoDrivableRoad("route degenerated to fewer than two points")
+
+    return _right_hand_lane(deduped, closed=False)
 
 
 #: Shortest segment the finished ego route may contain. Well under a
@@ -485,9 +616,106 @@ def _drop_micro_segments(route: Route) -> Route:
         and math.dist(points[-1], points[0]) <= _MIN_ROUTE_SEGMENT_M
     ):
         points.pop()
-    if len(points) < 3:
-        raise NoDrivableRoad("route degenerated to fewer than three points")
+    # A closed loop needs 3 distinct points to enclose any area at all; an
+    # open point-to-point route has no such requirement -- a straight,
+    # turn-free path from A to B is exactly 2 points, and legitimately so.
+    min_points = 3 if route.closed else 2
+    if len(points) < min_points:
+        raise NoDrivableRoad("route degenerated to too few points to drive")
     return Route(points, closed=route.closed)
+
+
+#: Shortest leg of the source loop allowed through to `Route.offset`.
+#:
+#: The ego drives `EGO_LANE_INSET` to the right of the loop. On the inside of a
+#: corner that offset eats into both adjoining legs, so a leg shorter than the
+#: inset has its offset turned inside out when a corner sits at each end of it.
+#: Two right angles do it to anything under twice the inset, which is why that is
+#: the floor. OSM junctions are full of such legs -- a 0.5 m connector where a
+#: street meets a cross street -- and the inverted leg survives `fillet` as a
+#: near-zero-radius arc that `_drop_micro_segments` then collapses into a
+#: 175-degree cusp: the route reverses direction inside 0.05 m. Measured on the
+#: Nob Hill fixture, 15 of 17 distinct closed loops had one before this and none
+#: after (docs/superpowers/plans/2026-10-03-driving-realism-phase1-route-geometry.md).
+MIN_LOOP_LEG_M = 2 * EGO_LANE_INSET
+
+
+def _line_intersection(
+    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], d: tuple[float, float]
+) -> tuple[float, float] | None:
+    """Where the infinite line through a-b meets the one through c-d, or None."""
+    rx, ry = b[0] - a[0], b[1] - a[1]
+    qx, qy = d[0] - c[0], d[1] - c[1]
+    r_len, q_len = math.hypot(rx, ry), math.hypot(qx, qy)
+    if r_len < 1e-9 or q_len < 1e-9:
+        return None
+    cross = rx * qy - ry * qx
+    if abs(cross) < 1e-6 * r_len * q_len:
+        return None  # parallel
+    t = ((c[0] - a[0]) * qy - (c[1] - a[1]) * qx) / cross
+    return (a[0] + rx * t, a[1] + ry * t)
+
+
+def _strip_closing_vertex(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop a final vertex that repeats the first.
+
+    `_find_loop` closes its circuit by repeating the start, and `Route.offset`
+    documents that it assumes a closed route does NOT. Left in, the zero-length
+    closing leg has no direction, so the vertices either side of the seam are
+    offset along a meaningless bisector -- the source of the ~50 micron backwards
+    stitches `_drop_micro_segments` exists to remove after the fact.
+    """
+    if len(points) > 3 and math.dist(points[0], points[-1]) <= 1e-6:
+        return points[:-1]
+    return points
+
+
+def _collapse_short_legs(
+    points: list[tuple[float, float]], *, closed: bool, min_leg_m: float
+) -> list[tuple[float, float]]:
+    """Merge the two ends of every leg shorter than `min_leg_m` into one vertex.
+
+    The merged vertex is where the neighbouring legs' lines meet -- the corner
+    the short leg was rounding -- unless they are parallel or meet implausibly
+    far away, when the midpoint of the short leg is used. An open path never
+    moves its first or last vertex: a short leg at an end drops the vertex next
+    to it instead.
+    """
+    pts = list(points)
+    floor = 3 if closed else 2
+    for _ in range(len(points)):
+        n = len(pts)
+        if n <= floor:
+            break
+        legs = range(n) if closed else range(n - 1)
+        short = next(
+            (i for i in legs if 1e-9 < math.dist(pts[i], pts[(i + 1) % n]) < min_leg_m), None
+        )
+        if short is None:
+            break
+        j = (short + 1) % n
+        if not closed and short == 0:
+            del pts[1]
+        elif not closed and j == n - 1:
+            del pts[n - 2]
+        else:
+            mid = ((pts[short][0] + pts[j][0]) / 2, (pts[short][1] + pts[j][1]) / 2)
+            corner = _line_intersection(pts[short - 1], pts[short], pts[j], pts[(j + 1) % n])
+            pts[short] = (
+                corner if corner is not None and math.dist(corner, mid) <= 2 * min_leg_m else mid
+            )
+            del pts[j]
+    return pts
+
+
+def _right_hand_lane(points: list[tuple[float, float]], *, closed: bool) -> Route:
+    """The lane the ego drives along a loop or path of junction-to-junction points."""
+    if closed:
+        points = _strip_closing_vertex(points)
+    points = _collapse_short_legs(points, closed=closed, min_leg_m=MIN_LOOP_LEG_M)
+    lane = Route(points, closed=closed).offset(-EGO_LANE_INSET)
+    route = lane.fillet(radius_m=TURN_RADIUS_M)
+    return _drop_micro_segments(remove_self_intersections(route))
 
 
 # --------------------------------------------------------------------------- #
@@ -591,51 +819,51 @@ def _splice_out_crossing(
     return [intersection] + points[i + 1 : j + 1]
 
 
-def remove_self_intersections(
-    route: Route, max_iterations: int = _MAX_SPLICE_ITERATIONS
-) -> Route:
-    """Splice out self-crossings so `route` is a simple closed ring.
-
-    `Route.offset()`'s mitre-join logic (shared with `SyntheticGrid`, and off
-    limits to change here) can push a vertex far enough at a sharp turn that
-    the offset polyline crosses itself: a small, near-zero-area spike where
-    the path runs out a short distance and doubles back over itself. This is
-    not cosmetic. `Route.project()` (`sim/route.py`) does a global
-    nearest-segment search with no continuity guard against the last known
-    position, and it runs every planner tick -- steering lookahead and
-    curvature-based target speed, lead-vehicle gap, and the perception
-    service's longitudinal ordering and lane offset. Near a self-crossing, a
-    world point can sit nearly equidistant from two segments many indices
-    apart -- tens of metres of arc length -- so as the ego moves through that
-    zone, `project()` can flip which segment it locks onto, taking the
-    planner's `s` with it in a discontinuous jump. The existing `isfinite`
-    guard never catches this: the resulting value is finite, just wrong.
-
-    Each crossing is repaired by cutting the *shorter* of the two arcs it
-    splits the ring into (see `_splice_out_crossing`) and replacing it with
-    the crossing point -- exactly as if the route had run straight through
-    rather than looping out and back to itself. Cutting the shorter arc,
-    rather than always the one between the lower and higher index, matters:
-    a crossing near the ring's own start/end wrap can otherwise look like the
-    "spike" is the entire route and the two-point sliver near the wrap is the
-    part to keep, which is backwards. Iterates until simple or
-    `max_iterations` is hit -- bounded the same way the route search itself
-    is (`_MAX_EXPANSIONS`), so a pathological offset artifact cannot spin the
-    scene build.
-
-    `shapely`'s `LinearRing.is_simple` is the authority on "are we done" --
-    not `_find_ring_crossing` returning `None` -- so a subtle bug in this
-    module's own hand-rolled intersection math cannot make the loop declare
-    victory early on a ring shapely would still reject. `_find_ring_crossing`
-    is only trusted to say *where* to splice, once `is_simple` has already
-    said a splice is needed.
+def _find_line_crossing(
+    points: list[tuple[float, float]],
+) -> tuple[int, int, tuple[float, float]] | None:
+    """The first pair of non-adjacent segments in the OPEN polyline `points`
+    that cross, as `(i, j, crossing_point)` with `i < j` -- or `None` if the
+    polyline is simple. Segment `k` runs from `points[k]` to `points[k + 1]`;
+    unlike `_find_ring_crossing` there is no wrap-around segment, so no
+    wrap-adjacency exclusion is needed either.
     """
-    if not route.closed or len(route.points) < 3:
-        # `LinearRing` requires at least 3 distinct points (it closes itself);
-        # fewer than that cannot form a self-crossing ring in the first
-        # place, so there is nothing to repair.
-        return route
+    n = len(points)
+    for i in range(n - 1):
+        a1, a2 = points[i], points[i + 1]
+        for j in range(i + 2, n - 1):
+            b1, b2 = points[j], points[j + 1]
+            hit = _segment_intersection(a1, a2, b1, b2)
+            if hit is not None:
+                return i, j, hit
+    return None
 
+
+def _dedupe_polyline(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop consecutive near-duplicate points. No wrap to check, unlike `_dedupe_ring`."""
+    out = [points[0]]
+    for point in points[1:]:
+        if math.dist(point, out[-1]) > 1e-6:
+            out.append(point)
+    return out
+
+
+def _splice_out_line_crossing(
+    points: list[tuple[float, float]], i: int, j: int, intersection: tuple[float, float]
+) -> list[tuple[float, float]]:
+    """Cut the interior loop a crossing at segments `i`/`j` creates in an open
+    polyline, replacing it with the crossing point.
+
+    Unlike `_splice_out_crossing`'s ring case, there is no wrap-around arc for
+    the interior loop to be ambiguous against: `points[i+1 : j+1]` is always
+    the local mitre-join artifact (a spike that runs out and doubles back),
+    and `points[:i+1] + [intersection] + points[j+1:]` is always the route
+    the car should actually drive.
+    """
+    return points[: i + 1] + [intersection] + points[j + 1 :]
+
+
+def _remove_ring_crossings(route: Route, max_iterations: int) -> Route:
     points = list(route.points)
     for _ in range(max_iterations):
         if LinearRing(points).is_simple:
@@ -663,6 +891,77 @@ def remove_self_intersections(
         max_iterations,
     )
     return Route(points, closed=True)
+
+
+def _remove_polyline_crossings(route: Route, max_iterations: int) -> Route:
+    points = list(route.points)
+    for _ in range(max_iterations):
+        if LineString(points).is_simple:
+            return Route(points, closed=False)
+        crossing = _find_line_crossing(points)
+        if crossing is None:
+            log.warning(
+                "route self-intersection repair could not locate a crossing "
+                "shapely still reports; returning the best-effort result"
+            )
+            return Route(points, closed=False)
+        i, j, intersection = crossing
+        points = _dedupe_polyline(_splice_out_line_crossing(points, i, j, intersection))
+
+    log.warning(
+        "route still self-intersects after %d splice iterations; returning "
+        "the best-effort result rather than looping further",
+        max_iterations,
+    )
+    return Route(points, closed=False)
+
+
+def remove_self_intersections(
+    route: Route, max_iterations: int = _MAX_SPLICE_ITERATIONS
+) -> Route:
+    """Splice out self-crossings so `route` is a simple ring or polyline.
+
+    `Route.offset()`'s mitre-join logic (shared with `SyntheticGrid`, and off
+    limits to change here) can push a vertex far enough at a sharp turn that
+    the offset polyline crosses itself: a small, near-zero-area spike where
+    the path runs out a short distance and doubles back over itself. This is
+    not cosmetic. `Route.project()` (`sim/route.py`) does a global
+    nearest-segment search with no continuity guard against the last known
+    position, and it runs every planner tick -- steering lookahead and
+    curvature-based target speed, lead-vehicle gap, and the perception
+    service's longitudinal ordering and lane offset. Near a self-crossing, a
+    world point can sit nearly equidistant from two segments many indices
+    apart -- tens of metres of arc length -- so as the ego moves through that
+    zone, `project()` can flip which segment it locks onto, taking the
+    planner's `s` with it in a discontinuous jump. The existing `isfinite`
+    guard never catches this: the resulting value is finite, just wrong.
+
+    Dispatches on `route.closed`. A closed ring's repair (`_remove_ring_crossings`)
+    cuts the *shorter* of the two arcs a crossing splits the ring into (see
+    `_splice_out_crossing`), because a crossing near the ring's own start/end
+    wrap can otherwise make the "spike" look like the entire route. An open
+    polyline (`_remove_polyline_crossings`, for a point-to-point route) has no
+    such wrap to be ambiguous about: the interior loop between the two
+    crossing segments is always the artifact (see `_splice_out_line_crossing`).
+    Both iterate until simple or `max_iterations` is hit -- bounded the same
+    way the route search itself is (`_MAX_EXPANSIONS`), so a pathological
+    offset artifact cannot spin the scene build.
+
+    `shapely`'s `is_simple` is the authority on "are we done" -- not the
+    hand-rolled crossing finders returning `None` -- so a subtle bug in this
+    module's own intersection math cannot make the loop declare victory early
+    on geometry shapely would still reject. The finders are only trusted to
+    say *where* to splice, once `is_simple` has already said a splice is
+    needed.
+    """
+    if len(route.points) < 3:
+        # Fewer than 3 points cannot self-cross, whether ring or polyline:
+        # `LinearRing` requires 3 distinct points to close over, and 2 points
+        # is a single segment with nothing else to cross.
+        return route
+    if route.closed:
+        return _remove_ring_crossings(route, max_iterations)
+    return _remove_polyline_crossings(route, max_iterations)
 
 
 # --------------------------------------------------------------------------- #
@@ -1102,12 +1401,11 @@ def project_control_points(
     projecting that scene's 203 props takes 16.7 ms -- twice the whole 8 ms
     sim_step p95 budget.
 
-    Candidates are supplied by the scene source rather than filtered here.
-    `SyntheticGrid` models four directional heads per junction and knows which
-    one faces the ego; `OsmSceneSource` has one undirected node per junction
-    and `map/features.py` gives it `heading=0.0`, so it has nothing to filter
-    on. A single rule would either strand the synthetic car at four conflicting
-    heads or invent an approach direction the OSM data does not carry.
+    Candidates are supplied by the scene source rather than filtered here:
+    each source knows which of a junction's heads face the ego route
+    (`SyntheticGrid` by construction, `OsmSceneSource` via `faces_the_route`
+    on the per-approach heads `map/features.py` builds) and passes only those,
+    one per junction, anchored at the junction rather than the pole.
     """
     projected: list[ControlPoint] = []
     for cp_id, kind, position, setback_m in candidates:
@@ -1140,3 +1438,36 @@ def project_control_points(
     ):
         kept.pop()
     return kept
+
+
+# --------------------------------------------------------------------------- #
+# Trip end, for a point-to-point (open) route                                  #
+# --------------------------------------------------------------------------- #
+
+#: Id of the synthetic control point marking an open route's destination.
+#: Free-string like every other `ControlPoint.id` (`schema.py`'s `Maneuver` is
+#: the only wire-typed piece of this), so `BehaviorFSM` can key off it without
+#: any dataclass or wire change.
+ARRIVAL_CONTROL_ID = "__trip_end__"
+
+#: How far short of the route's own endpoint the ego halts -- matches the
+#: setback every other control point gets (`STOP_LINE_SETBACK_M`,
+#: `map/scene_build.py`), so the car stops just clear of where a real
+#: driver would consider themselves "there", not exactly on top of the
+#: destination pin.
+ARRIVAL_SETBACK_M = 4.0
+
+
+def arrival_control_point(route: Route) -> ControlPoint | None:
+    """A control point at the end of an OPEN route, or `None` for a loop.
+
+    A closed route has no "end" to arrive at -- the ego laps it forever, same
+    as before this existed. An open, point-to-point route needs exactly one
+    more stop the planner already knows how to bisect towards: this is a
+    `ControlPoint` like any other, just synthesised from the route's own
+    geometry rather than projected from an OSM prop.
+    """
+    if route.closed:
+        return None
+    s = max(route.length_m - ARRIVAL_SETBACK_M, 0.0)
+    return ControlPoint(id=ARRIVAL_CONTROL_ID, kind="arrival", s=s, position=route.point_at(route.length_m))

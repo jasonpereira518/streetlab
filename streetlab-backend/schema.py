@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 9
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -186,6 +186,22 @@ class ScenarioSummary(Wire):
     preview_route: list[Vec2]
 
 
+HazardGroup = Literal["ahead", "crossing", "behind"]
+
+
+class HazardSummary(Wire):
+    """One entry in the hazard menu. `code` is what `inject_hazard.kind` takes."""
+
+    code: str
+    label: str
+    level: Literal["info", "warn", "critical"]
+    group: HazardGroup
+    # Why this hazard, or the car's reaction to it, cannot work under ML
+    # perception -- or null when nothing is known to stop it. No default, for
+    # the reason every other nullable field here has none.
+    ml_limitation: str | None
+
+
 class Origin(Wire):
     lat: Num
     lon: Num
@@ -238,10 +254,24 @@ class SceneDescription(Wire):
     stop_signs: list[StopSign]
     trees: list[Tree]
     street_signs: list[StreetSign]
+    # The line the car drives: its lane centre, straight along each block and
+    # curved through every corner. Distinct from `Plan.polyline`, which is the
+    # live lookahead the planner recomputes every tick -- this is the whole
+    # fixed circuit, sent once with the scene.
+    #
+    # Evenly sampled rather than the route's own vertex list, which is an
+    # internal artefact of offsetting and filleting and is not drawable (see
+    # `sim.route.Route.resample`). A closed route repeats its first point as
+    # its last, so this draws as an open polyline either way.
+    reference_path: list[Vec2]
     # Null where the ground is flat (the synthetic grid, or no elevation data).
     terrain: Terrain | None
     # Scenarios the server can load; drives the left sidebar.
     catalog: list[ScenarioSummary]
+    # Hazards `inject_hazard` can stage; drives the hazard menu. Attached by
+    # `Simulation.scene_description()` -- scene sources build `[]`, because what
+    # can be injected is the simulation's business, not the map's.
+    hazards: list[HazardSummary]
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +298,9 @@ class Detection(Wire):
     ttc_s: Num | None
     # Lane index relative to ego: -1 right, 0 same, +1 left, null if unknown.
     lane_offset: int | None
+    # Lights and siren on. Ground truth reads it off the agent; the ML source
+    # cannot perceive it and always says false.
+    emergency: bool
 
 
 PerceptionMode = Literal["ground-truth", "ml"]
@@ -383,9 +416,10 @@ class TrajectorySample(Wire):
 class TrajectoryPrediction(Wire):
     horizon_s: Pos
     planned: list[TrajectorySample]
-    # Predicted path of the cutting-in agent, or null when nobody is cutting in.
-    cutin: list[TrajectorySample] | None
-    cutin_label: str | None
+    # Predicted lateral path of the object the car is reacting to, or null.
+    # Named `cutin` through protocol 6, which it never was specific to.
+    threat: list[TrajectorySample] | None
+    threat_label: str | None
 
 
 class Telemetry(Wire):
@@ -405,6 +439,9 @@ Maneuver = Literal[
     "lane_change_right",
     "stop",
     "yield",
+    "arrived",
+    "emergency_brake",
+    "pull_over",
 ]
 
 
@@ -414,6 +451,9 @@ class Plan(Wire):
     target_speed_mps: NonNeg
     maneuver: Maneuver
     confidence: Unit
+    # The detection the planner's current reaction is to, or null. Always
+    # null until Cycle 6 Phase 2's `plan/hazard.py` exists.
+    reaction_source_id: str | None
 
 
 CruiseMode = Literal["off", "cruise", "autosteer", "fsd"]
@@ -450,6 +490,11 @@ class SimEvent(Wire):
     level: Literal["info", "warn", "critical"]
     code: str
     message: str
+    # How far a `location_progress` event's build has gotten, 0..1. Absent for
+    # every other event code -- this is not a general-purpose field, just the
+    # one thing a live-updating build progress bar needs alongside `message`'s
+    # stage label. `None` is the default so no other event code has to name it.
+    progress: Unit | None = None
 
 
 class StateUpdate(Wire):
@@ -542,6 +587,19 @@ class LoadLocation(_Cmd):
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
+    # A second address to route TO. Absent (the common case) means "drive an
+    # auto-discovered loop near `query`", exactly as before this existed.
+    destination: Annotated[str, Field(min_length=1)] | None = None
+
+
+class SuggestAddress(_Cmd):
+    """Ask for as-you-type address candidates. Answered directly by the
+    server's connection handler (see `server/ws_server.py`), never routed
+    through the sim thread's command queue -- same reason `camera_frame`
+    bypasses it: a network geocode call must not stall the physics step."""
+
+    cmd: Literal["suggest_address"] = "suggest_address"
+    query: Annotated[str, Field(min_length=1)]
 
 
 class SetParam(_Cmd):
@@ -591,6 +649,7 @@ Command = Annotated[
         Reset,
         LoadScenario,
         LoadLocation,
+        SuggestAddress,
         SetParam,
         ToggleLayer,
         SetCamera,
@@ -618,12 +677,31 @@ class Ack(Wire):
     t: Num
 
 
+class AddressSuggestion(Wire):
+    label: str
+    lat: Num
+    lon: Num
+
+
+class AddressSuggestions(Wire):
+    """Reply to `SuggestAddress`. `id` echoes the command's id -- like `Ack`,
+    but its own message type rather than a rider on `Ack` because it carries
+    a payload and, unlike an ack, is never paired with a command outcome."""
+
+    type: Literal["address_suggestions"] = "address_suggestions"
+    protocol: int = PROTOCOL_VERSION
+    id: str
+    query: str
+    suggestions: list[AddressSuggestion]
+
+
 # --------------------------------------------------------------------------- #
 # Envelope + helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 ServerMessage = Annotated[
-    Union[SceneDescription, StateUpdate, Ack], Field(discriminator="type")
+    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions],
+    Field(discriminator="type"),
 ]
 
 _COMMAND_ADAPTER: TypeAdapter[Any] = TypeAdapter(Command)

@@ -16,6 +16,7 @@ import pytest
 import uvicorn
 from websockets.asyncio.client import connect
 
+from map.geocode import Place, StubGeocoder
 from map.scene_build import SyntheticGrid
 from schema import PROTOCOL_VERSION, parse_server_message
 from server.ws_server import create_app
@@ -227,6 +228,82 @@ async def test_unknown_scenario_is_acked_false_with_a_message(server):
         assert ack.message and "atlantis" in ack.message
 
 
+# -- suggest_address ---------------------------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def geocoded_server():
+    """A second world, wired to a `StubGeocoder`, so suggestion behaviour can
+    be tested independently of `server`'s geocoder-less `SyntheticGrid`."""
+    loop = SimLoop(Simulation(SyntheticGrid(), seed=5), hz=120)
+    geocoder = StubGeocoder(Place(lat=37.79, lon=-122.42, display_name="Nob Hill, SF"))
+    app = create_app(loop, tick_hz=120, geocoder=geocoder)
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    srv = uvicorn.Server(config)
+    thread = threading.Thread(target=srv.run, daemon=True)
+    thread.start()
+
+    for _ in range(200):
+        if srv.started:
+            break
+        threading.Event().wait(0.05)
+    else:
+        raise RuntimeError("server did not start")
+
+    yield f"ws://127.0.0.1:{port}/"
+
+    srv.should_exit = True
+    thread.join(timeout=5)
+
+
+async def test_suggest_address_with_no_geocoder_answers_an_empty_list(server):
+    """`server`'s world is a bare `SyntheticGrid` with no geocoder wired --
+    the common case for anything that isn't `--source osm`."""
+    async with connect(server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s1", "cmd": "suggest_address", "query": "1600 Amphitheatre"})
+        reply = await recv_typed(ws, "address_suggestions")
+        assert reply.id == "s1"
+        assert reply.query == "1600 Amphitheatre"
+        assert reply.suggestions == []
+
+
+async def test_suggest_address_is_not_acked_and_never_touches_the_command_log(server):
+    """`suggest_address` bypasses the sim thread entirely (see `_handle`), so
+    unlike every other command it must not produce an `ack`."""
+    async with connect(server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s2", "cmd": "suggest_address", "query": "anywhere"})
+        await recv_typed(ws, "address_suggestions")
+        # If an ack were coming, it would already be queued behind the
+        # suggestion reply; a state_update proves none arrived in between.
+        frame = await recv_typed(ws, "state_update")
+        assert frame.type == "state_update"
+
+
+async def test_suggest_address_with_a_geocoder_returns_its_candidates(geocoded_server):
+    async with connect(geocoded_server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s3", "cmd": "suggest_address", "query": "nob hill"})
+        reply = await recv_typed(ws, "address_suggestions")
+        assert reply.id == "s3"
+        assert [s.label for s in reply.suggestions] == ["Nob Hill, SF"]
+        assert reply.suggestions[0].lat == pytest.approx(37.79)
+
+
+async def test_suggest_address_with_a_blank_query_is_dropped_silently(geocoded_server):
+    """`SuggestAddress.query` requires `min_length=1`; a blank one fails
+    validation in `_suggest_address` and gets no reply at all, same as any
+    other malformed command dropped before an id can be extracted."""
+    async with connect(geocoded_server) as ws:
+        await recv_typed(ws, "scene_description")
+        await send(ws, {"id": "s4", "cmd": "suggest_address", "query": ""})
+        await send(ws, {"id": "s5", "cmd": "suggest_address", "query": "nob hill"})
+        reply = await recv_typed(ws, "address_suggestions")
+        assert reply.id == "s5"
+
+
 async def test_toggle_layer_is_acked_as_a_client_concern(server):
     async with connect(server) as ws:
         await recv_typed(ws, "scene_description")
@@ -361,7 +438,7 @@ async def test_a_scene_swap_is_pushed_to_a_connected_client(server, sim_loop):
     async with connect(server) as ws:
         first = await recv_typed(ws, "scene_description")
         assert first.type == "scene_description"
-        sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-arterial"))
+        sim_loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         # The new scene must arrive unsolicited, with no command sent. Bounded
         # by wall-clock time rather than a message count: a fixed iteration
         # count times a per-recv timeout compounds into a worst case of
@@ -383,7 +460,7 @@ async def test_a_client_never_sees_a_frame_for_a_scene_it_has_not_received(serve
     sent — must never observe a `state_update` naming a scenario it was
     never told about, regardless of which side of that race wins.
     """
-    sim_loop.submit_scene(lambda: SyntheticGrid().build("grid-signals"))
+    sim_loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-signals"))
     async with connect(server) as ws:
         known_scenarios: set[str] = set()
         # See the comment on the previous test: bounded by wall-clock time,

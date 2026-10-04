@@ -1143,8 +1143,14 @@ def test_the_ego_is_never_adrift_between_lanes(
     )
 
 
-def test_all_seven_wire_maneuvers_are_now_reachable():
-    """4 of 7 were dead protocol before Cycle 3.
+#: Maneuvers a hazard-free drive must never produce: `emergency_brake` firing
+#: without a hazard is phantom braking, and `pull_over` needs an emergency
+#: vehicle. Cycle 6's closed-loop hazard tests are where they are reached.
+HAZARD_ONLY_MANEUVERS = {"emergency_brake", "pull_over"}
+
+
+def test_every_hazard_free_wire_maneuver_is_reachable():
+    """4 of the original 7 were dead protocol before Cycle 3.
 
     `lane_change_right` was previously excluded here: nothing returned the
     car rightward on its own after an outbound `lane_change_left`, so the
@@ -1166,6 +1172,18 @@ def test_all_seven_wire_maneuvers_are_now_reachable():
     `_maneuver`'s route argument (it is always `route`, the lane-0
     centreline, never the blended aim route), so this has nothing to do with
     lane changes and is not a regression to chase here.
+
+    `arrived` is excluded for the same shape of reason as `turn_left`: it is
+    real, reachable protocol (`tests/test_behavior.py::
+    test_an_arrival_point_always_requires_a_stop` proves it directly against
+    the FSM), but only ever emitted at an open route's own end
+    (`map.lanes.arrival_control_point` returns `None` for a closed one).
+    `grid-loop` is a closed loop by construction -- `SyntheticGrid` never
+    builds an open route -- so this scenario can no more reach `arrived` than
+    it can reach `turn_left`, for an equally structural reason.
+
+    The two Cycle 6 maneuvers are excluded for a different reason again: see
+    `HAZARD_ONLY_MANEUVERS`.
     """
     from schema import Maneuver
     from typing import get_args
@@ -1173,7 +1191,7 @@ def test_all_seven_wire_maneuvers_are_now_reachable():
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     seen = set(maneuvers_over(sim, 300.0))
-    missing = set(get_args(Maneuver)) - seen - {"turn_left"}
+    missing = set(get_args(Maneuver)) - seen - {"turn_left", "arrived"} - HAZARD_ONLY_MANEUVERS
     assert not missing, f"still unreachable: {sorted(missing)}"
 
 
