@@ -17,7 +17,7 @@ npm run tauri dev      # native window, with the Python sidecar
 npm run dev            # or just the web app at localhost:1420, against a
                        # backend on ws://127.0.0.1:8765. Add ?mock=1 for the
                        # in-process mock and no backend at all.
-npx vitest run         # 268 unit tests, includes ../contract
+npx vitest run         # 276 unit tests, includes ../contract
 npm run test:e2e       # 21 Playwright tests against the real build
 ```
 
