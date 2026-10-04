@@ -57,7 +57,7 @@ const browser = await chromium.launch({ args: LAUNCH_ARGS });
   await page.screenshot({ path: resolve(OUT_DIR, 'hero.png') });
 
   console.log('searching address...');
-  await page.getByLabel('Load a location').fill('Golden Gate Park, San Francisco');
+  await page.getByLabel('Start address').fill('Golden Gate Park, San Francisco');
   await page.keyboard.press('Enter');
   const pending = page.locator('.location-pending');
   try {

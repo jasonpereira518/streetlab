@@ -90,7 +90,7 @@ trajectory, steering) update live from the real simulation, not the mock.
 
 ## Load any address
 
-The left sidebar's **Load a location** box sends a real `load_location`
+The left sidebar's **Start address** box sends a real `load_location`
 command to the backend — type an address or place name and press Enter to
 build and drive it. Option A's packaged app already runs on real map data, so
 the box works there with no extra flags. Under Option B it only does anything

@@ -113,7 +113,7 @@ test('searching an address loads and drives it', async ({ page }) => {
     // can never observe `toBeHidden()` as a result.
     const pending = page.locator('.location-pending');
 
-    await page.getByLabel('Load a location').fill('Alamo Square, San Francisco');
+    await page.getByLabel('Start address').fill('Alamo Square, San Francisco');
     await page.keyboard.press('Enter');
 
     // Immediate ack -> pending state, before any scene arrives.
@@ -126,7 +126,7 @@ test('searching an address loads and drives it', async ({ page }) => {
     await expect(pending).toBeHidden();
 
     // The box re-enables once the build lands, same as the failure path.
-    await expect(page.getByLabel('Load a location')).toBeEnabled();
+    await expect(page.getByLabel('Start address')).toBeEnabled();
 
     // ...and the ego actually DRIVES the new location. Everything above is
     // satisfied by a scene that merely arrived: a location that builds into
@@ -169,12 +169,12 @@ test('a nonsense address surfaces an event and clears the pending state', async 
     const loadScenarioButton = page.locator('.scenario .play-btn').first();
     await expect(loadScenarioButton).toBeEnabled();
 
-    await page.getByLabel('Load a location').fill('zzzqqq not a real place 99999');
+    await page.getByLabel('Start address').fill('zzzqqq not a real place 99999');
     await page.keyboard.press('Enter');
 
     // Both the search box and the scenario list gate on the same pending
     // flag (Task 6, and Task 6's own follow-up fix for the scenario list).
-    await expect(page.getByLabel('Load a location')).toBeDisabled();
+    await expect(page.getByLabel('Start address')).toBeDisabled();
     await expect(loadScenarioButton).toBeDisabled();
 
     await page.getByRole('tab', { name: /events/i }).click();
@@ -182,7 +182,7 @@ test('a nonsense address surfaces an event and clears the pending state', async 
 
     // The box — and the scenario list — must not stay stuck spinning on a
     // failure.
-    await expect(page.getByLabel('Load a location')).toBeEnabled();
+    await expect(page.getByLabel('Start address')).toBeEnabled();
     await expect(loadScenarioButton).toBeEnabled();
   } finally {
     killBackend(proc);

@@ -435,9 +435,20 @@ export const SimEventSchema = z.object({
   level: z.enum(['info', 'warn', 'critical']),
   code: z.string(),
   message: z.string(),
-  /** How far a `location_progress` event's build has gotten, 0..1. Absent
-   * for every other event code. */
-  progress: z.number().min(0).max(1).optional(),
+  /** How far a `location_progress` event's build has gotten, 0..1.
+   *
+   * `null` for every other event code, NOT absent: schema.py declares
+   * `progress: Unit | None = None`, and pydantic serialises that as an
+   * explicit `"progress": null` on every single event. Declaring this
+   * `.optional()` alone rejected that — and because `events` is an array
+   * inside `state_update`, one rejected element threw away the WHOLE frame:
+   * `parseServerMessage` returned `ok:false` and `wsClient` dropped it.
+   * The visible effect was that no event reached the UI at all. Hazards and
+   * `reset` never appeared in the event log, and a failed address search left
+   * the search box disabled forever, because its `location_failed` never
+   * arrived. `.nullable()` is how every other optional-on-the-wire field here
+   * is spelled (`ttc_s`, `hazard_label`, `precision`, `perception`). */
+  progress: z.number().min(0).max(1).nullable().optional(),
 });
 
 export const StateUpdateSchema = z.object({
