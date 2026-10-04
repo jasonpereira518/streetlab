@@ -34,10 +34,13 @@ BASELINE_FAILS: dict[tuple[str, str], str] = {
     ("ego_jerk", "nobhill"): "p99 6.5, max 286 m/s3; Phase 3",
     ("ego_jerk", "grid"): "p99 7.6, max 169 m/s3; Phase 3",
     ("ego_jerk", "grid_slow"): "p99 6.2, max 355 m/s3; Phase 3",
+    ("lateral_accel", "nobhill"): "p99 2.10, max 11.65 m/s2: the lane-change return, from about t=290 s; Phase 2",
     ("lateral_accel", "grid"): "p99 4.4, max 9.80 m/s2, the lane-change return; Phase 2",
     ("lateral_accel", "grid_slow"): "p99 2.86, max 8.55 m/s2, the lane-change return; Phase 2",
+    ("lateral_jerk", "nobhill"): "p99 4.32 m/s3: the same lane-change return; Phase 2",
     ("lateral_jerk", "grid"): "p99 18.1 m/s3, the lane-change return; Phase 2",
     ("lateral_jerk", "grid_slow"): "p99 8.4 m/s3, the lane-change return; Phase 2",
+    ("lane_change", "nobhill"): "passing 4.20, returning 11.65 m/s2, from about t=290 s; Phase 2",
     ("lane_change", "grid"): "outbound 2.36, passing 4.06, returning 9.80 m/s2; Phase 2",
     ("lane_change", "grid_slow"): "outbound 2.86, passing 2.80, returning 8.55 m/s2; Phase 2",
     ("nose_gap", "nobhill"): "nose 0.78-0.99 m PAST the line at 7 of 8 stops; Phase 3",
@@ -100,7 +103,7 @@ def test_the_ego_lateral_jerk_is_within_budget(request, runs, key):
     assert stats(lateral_jerk(runs[key]))["p99"] <= BUDGET.lateral_jerk_p99
 
 
-@pytest.mark.parametrize("key", ["grid", "grid_slow"])
+@pytest.mark.parametrize("key", RUN_KEYS)
 def test_every_phase_of_a_lane_change_is_within_the_lateral_budget(request, runs, key):
     _expect(request, "lane_change", key)
     by_phase = lateral_accel_by_phase(runs[key])

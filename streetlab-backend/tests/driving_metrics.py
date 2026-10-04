@@ -310,11 +310,13 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
 
 
 def standard_runs(
-    nob_hill_scene, *, nobhill_s: float = 250.0, grid_s: float = 150.0, grid_slow_s: float = 200.0
+    nob_hill_scene, *, nobhill_s: float = 340.0, grid_s: float = 150.0, grid_slow_s: float = 200.0
 ) -> dict[str, Run]:
     """The three hazard-free recordings the budgets and the report are built on.
 
-    Nob Hill at default traffic reaches signals and stop signs within 250 s.
+    Nob Hill at default traffic reaches signals and stop signs within 250 s and
+    starts overtaking from about 290 s (the lane-change return is the worst thing it
+    does), so it runs 340 s.
     `grid-loop` at default traffic changes lane within 150 s; at 0.45 traffic (the
     setting `test_lane_changes.py` uses for the same reason) it follows and
     overtakes, so 200 s covers several episodes and the queue behind them.
