@@ -355,6 +355,8 @@ describe('on real terrain, everything sits on the ground', () => {
       ['crosswalks', 0.054, 0.056],
       // Pavement tops at 0.16; its kerb face runs down to road level.
       ['sidewalks', 0.019, 0.161],
+      // The driven line (protocol 8) rides just over the paint.
+      ['reference-path', 0.061, 0.063],
     ];
     for (const [name, lo, hi] of bands) {
       const off = tris(scene, name).flatMap((t) =>

@@ -891,6 +891,7 @@ export function buildWorld(scene: SceneDescription): World {
   // appears to climb a pavement.
   if (scene.reference_path.length >= 2) {
     const refBuilder = new MeshBuilder();
+    refBuilder.ground = ground;
     polylineBand(
       refBuilder,
       scene.reference_path,
