@@ -17,6 +17,7 @@ committed fixtures through the real ``parseServerMessage`` from schema.ts.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,67 @@ def _dump(payload: dict) -> str:
     return json.dumps(payload, indent=2) + "\n"
 
 
+#: Floats in the fixtures come out of a numerical simulation, and their last
+#: digits are not bit-identical across platforms (libm/NumPy on macOS arm64 vs
+#: Linux x86). Byte-for-byte comparison therefore failed on CI while the
+#: fixtures were perfectly fine. A relative tolerance this tight still fails on
+#: any change that matters to the wire contract: a renamed or missing field, a
+#: changed type or enum, or a value that moved by anything visible.
+FLOAT_REL_TOL = 1e-6
+FLOAT_ABS_TOL = 1e-9
+
+
+def _differences(committed, fresh, path: str = "$") -> list[str]:
+    """Structural diff of two decoded JSON values, float-tolerant.
+
+    Returns human-readable lines (path, committed value, fresh value) so a
+    failure shows *what* moved and by how much, not just that something did.
+    """
+    if isinstance(committed, dict) and isinstance(fresh, dict):
+        out = []
+        for key in sorted(set(committed) | set(fresh)):
+            if key not in committed:
+                out.append(f"{path}.{key}: missing from the committed fixture")
+            elif key not in fresh:
+                out.append(f"{path}.{key}: no longer produced by the simulation")
+            else:
+                out.extend(_differences(committed[key], fresh[key], f"{path}.{key}"))
+        return out
+    if isinstance(committed, list) and isinstance(fresh, list):
+        if len(committed) != len(fresh):
+            return [f"{path}: length {len(committed)} committed vs {len(fresh)} fresh"]
+        out = []
+        for i, (c, f) in enumerate(zip(committed, fresh)):
+            out.extend(_differences(c, f, f"{path}[{i}]"))
+        return out
+    numbers = (int, float)
+    if (
+        isinstance(committed, numbers)
+        and isinstance(fresh, numbers)
+        and not isinstance(committed, bool)
+        and not isinstance(fresh, bool)
+    ):
+        if math.isclose(committed, fresh, rel_tol=FLOAT_REL_TOL, abs_tol=FLOAT_ABS_TOL):
+            return []
+        return [f"{path}: {committed!r} committed vs {fresh!r} fresh"]
+    if type(committed) is not type(fresh) or committed != fresh:
+        return [f"{path}: {committed!r} committed vs {fresh!r} fresh"]
+    return []
+
+
+def test_differences_ignores_float_noise_but_catches_real_changes():
+    base = {"a": 1.0, "b": [0.1, {"c": "x"}], "d": None}
+    noisy = {"a": 1.0 + 1e-12, "b": [0.1 + 1e-13, {"c": "x"}], "d": None}
+    assert _differences(base, noisy) == []
+
+    assert _differences(base, {**base, "a": 1.001}) != []
+    assert _differences(base, {**base, "b": [0.1, {"c": "y"}]}) != []
+    assert _differences(base, {k: v for k, v in base.items() if k != "d"}) != []
+    assert _differences(base, {**base, "e": 1}) != []
+    assert _differences({"a": 1}, {"a": True}) != []
+    assert _differences({"a": [1, 2]}, {"a": [1, 2, 3]}) != []
+
+
 @pytest.fixture(scope="module")
 def generated() -> dict[str, dict]:
     return generate()
@@ -144,8 +206,12 @@ def test_committed_fixtures_match_the_live_simulation(generated, update_fixtures
             continue
         if not path.exists():
             mismatched.append(f"{name}: missing — run with --update-fixtures")
-        elif path.read_text() != fresh:
-            mismatched.append(f"{name}: committed fixture is stale")
+        else:
+            diffs = _differences(json.loads(path.read_text()), json.loads(fresh))
+            if diffs:
+                shown = "\n".join(f"      {d}" for d in diffs[:5])
+                more = f"\n      ... and {len(diffs) - 5} more" if len(diffs) > 5 else ""
+                mismatched.append(f"{name}: committed fixture is stale\n{shown}{more}")
     assert not mismatched, (
         "committed fixtures drifted from the live simulation:\n"
         + "\n".join(mismatched)
