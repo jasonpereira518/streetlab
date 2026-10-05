@@ -14,7 +14,6 @@ from plan.behavior import (
     COMFORT_DECEL_MPS2,
     CREEP_MPS,
     EGO_LENGTH_M,
-    LANE_CHANGE_COMMIT_S,
     LANE_CHANGE_OUTBOUND_MAX_S,
     LANE_CHANGE_PASS_BUFFER_M,
     LANE_CHANGE_PASS_MAX_S,
@@ -1012,7 +1011,7 @@ def test_a_junction_stop_outranks_a_lane_change(road):
 #: How long this module's junction-abort tests allow the abort to stay
 #: labelled, and how long they insist it lasts at minimum.
 #:
-#: Both are LITERALS, deliberately not `LANE_CHANGE_RETURN_MAX_S` (6.0 s in
+#: Both are LITERALS, deliberately not `LANE_CHANGE_RETURN_MAX_S` (8.0 s in
 #: `plan/behavior.py`). A bound imported from the constant it audits moves in
 #: lockstep with it: raise the backstop to 60 s and a test written that way
 #: still passes while the car wears a `lane_change_*` label for a minute --
@@ -1022,10 +1021,12 @@ def test_a_junction_stop_outranks_a_lane_change(road):
 #:
 #: `_ABORT_FLOOR_S` fails a fix that clears the manoeuvre on the interrupt
 #: tick after all (the defect, wearing a label for one frame); `_ABORT_CAP_S`
-#: fails one that never lets go. Measured against the shipped 6.0 s backstop
-#: they bracket it with ~1 s on either side.
-_ABORT_FLOOR_S = 5.0
-_ABORT_CAP_S = 7.0
+#: fails one that never lets go. Measured against the shipped 8.0 s backstop
+#: they bracket it with ~1 s on either side. (They were 5.0 and 7.0 around the
+#: 6.0 s backstop of the step-input return; the explicit-blend return ramps over
+#: up to `LANE_CHANGE_RAMP_S`, so its backstop is ramp + 3.5.)
+_ABORT_FLOOR_S = 7.0
+_ABORT_CAP_S = 9.0
 
 
 def test_a_junction_interrupting_a_change_keeps_it_labelled_and_turns_it_home(road):

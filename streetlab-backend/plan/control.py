@@ -17,9 +17,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-from plan.behavior import LANE_CHANGE_COMMIT_S, BehaviorFSM
+from plan.behavior import BehaviorFSM
 from schema import Detection, Plan, SignalState
-from sim.route import ControlPoint, LaneSet, Route
+from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
 
 # Pure-pursuit lookahead: a floor for low speed, growing with velocity.
@@ -76,11 +76,6 @@ _TURN_THRESHOLD_RAD = 0.45
 #: 1.2 rad/s clears that by ~65 %, comfortably above without re-tuning lane
 #: holding -- this bounds a manoeuvre transient, it does not re-tune it.
 MAX_STEER_RATE_RAD_S = 1.2
-
-#: Fraction of the commitment window spent actually moving across. The rest is
-#: settling time in the new lane, so the manoeuvre ends straight rather than
-#: still crossing.
-_LANE_CHANGE_TRAVERSE = 0.75
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +151,13 @@ class CenterlineFollower:
         self.fsm.reset()
         self.last_steer = 0.0
 
+    def _away_lane(self, context: PlanContext) -> Lane | None:
+        """The lane the aim point is blending toward, while a lane change is active."""
+        lc = self.fsm.lane_change
+        if lc is None or context.lanes is None:
+            return None
+        return context.lanes.by_id(lc.away_lane_id)
+
     def plan(
         self,
         ego: VehicleState,
@@ -178,18 +180,11 @@ class CenterlineFollower:
             limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
         )
 
-        aim_route = route
-        blend = 0.0
-        if decision.target_lane_id is not None and context.lanes is not None:
-            target = context.lanes.by_id(decision.target_lane_id)
-            if target is not None and self.fsm.lane_change is not None:
-                progress = min(
-                    1.0,
-                    self.fsm.lane_change.elapsed_s
-                    / max(LANE_CHANGE_COMMIT_S * _LANE_CHANGE_TRAVERSE, 1e-6),
-                )
-                blend = _smoothstep(progress)
-                aim_route = target.route
+        # The blend is the FSM's, not derived here: going out and coming back it
+        # runs between the HOME lane (`route`) and the other lane of the manoeuvre.
+        away = self._away_lane(context)
+        aim_route = route if away is None else away.route
+        blend = 0.0 if away is None else self.fsm.lane_change.blend
 
         steer = self._pure_pursuit_blended(ego, route, aim_route, s, lookahead, blend)
         steer = _clamp(
@@ -199,6 +194,17 @@ class CenterlineFollower:
         )
         self.last_steer = steer
         curvature = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
+        if away is not None:
+            # The lane being held can be the INSIDE of a corner. A 6 m fillet leaves
+            # ~2.4 m there, below the car's 4.1 m minimum turning radius, and speed
+            # planned from the ego lane alone drives the car at full steering lock
+            # (7.9 m/s^2 at 5.7 m/s, measured) while it drifts off the lane.
+            curvature = max(
+                curvature,
+                away.route.peak_curvature(
+                    away.route.project((ego.x, ego.y)), distance_m=_CURVATURE_PREVIEW_M
+                ),
+            )
         target = self._target_speed(limits, curvature, detections, ego, route, s)
         # The behaviour ceiling folds in exactly like the curvature and
         # lead-vehicle caps: another upper bound, not a separate control path.
@@ -309,11 +315,6 @@ def _maneuver(route: Route, s: float) -> str:
     if turn < -_TURN_THRESHOLD_RAD:
         return "turn_right"
     return "keep_lane"
-
-
-def _smoothstep(t: float) -> float:
-    t = _clamp(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
