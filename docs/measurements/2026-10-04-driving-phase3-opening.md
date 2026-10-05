@@ -95,6 +95,9 @@ with a planner passed to `Simulation`. The baseline column reproduces the commit
 At `a = 1.8 m/s²` the same runs peak at 3.51 (Nob Hill), 3.78 (grid) and 2.79 (grid_slow): the
 headroom between the planned and the budgeted decel is what absorbs the controller's own transient.
 
+**Read §7 before using the Nob Hill column.** That run never met traffic, so its lateral max of 1.55 and its
+missing lane change say nothing about the corner exit or the lane-change return.
+
 ## 4. What sets the peaks that remain
 
 - **Nob Hill, 3.21 (3.51 at `a = 1.8`): a yellow light.** At t≈124.0 s the signal
@@ -136,10 +139,9 @@ Phase 4 had listed.
 
 ## 6. Not established
 
-- A Nob Hill run **with a lane change under the prototype**: none occurred in 340 s, because the
-  trajectories moved. The 4.14 → 1.55 m/s² change in Nob Hill's lateral max is the corner-exit
-  defect Phase 5 was kept for, and it is gone on this run, but this run could not have shown the
-  lane-change return at all. Run 400 s.
+- ~~A Nob Hill run with a lane change under the prototype.~~ Done in §7. The first version of this
+  bullet read the 4.14 to 1.55 m/s² change as the Phase 5 corner-exit defect being gone. That was wrong:
+  the run never met traffic, and when it does the defect is worse (§7).
 - **Emergency braking.** A jerk limit lags a hard stop, and Cycle 6's `aeb` and its stopping table
   (`(v - 0.3)/0.9` below 5 m/s) were measured on the unmodified law. The prototype does not bypass the
   limit and does not test it.
@@ -153,3 +155,45 @@ Phase 4 had listed.
 - **Tuning.** Planning decel was tried at 1.5, 1.6, 1.8 and 2.0, jerk at 2.0, 2.5 and 3.0, and not
   searched. `a = 1.5` was not monotone with `a = 1.8` in the open-loop sweep (2.60 against 2.31 for
   speeds up to 13.4 m/s).
+
+## 7. When Nob Hill meets traffic
+
+The default-traffic Nob Hill column in §3 never met traffic. The scene has **4 agents on an 1173 m loop**
+and the nearest was about 200 m ahead throughout the first minute. Over 600 s the prototype's ego had
+**0 frames with a lead** against 25,346 of 36,000 for the baseline, made **no lane change** (the baseline made six
+starts, at 294-304 s and 518-528 s) and drove **three identical laps** (the same six stops repeating). Its
+numbers describe a car alone on the road.
+
+Run again with traffic at 0.45 speed (the `grid_slow` setting), 400 s, both planners meet traffic (about 16,900
+frames with a lead each):
+
+| Nob Hill, traffic 0.45 | baseline | prototype | prototype + steering-demand cap |
+|---|---|---|---|
+| Ego peak decel (≤ 2.5) | 4.50 | 2.19 | 2.19 |
+| Jerk p99 / max (≤ 3.0 / 6.0) | 4.3 / 135 | 2.5 / 3 | 2.5 / 3 |
+| Lateral accel p99 / max (≤ 2.0 / 2.5) | 1.56 / 3.90 | 1.51 / **6.86** | 1.40 / **2.66** |
+| Lane change, worst phase (≤ 2.0) | 1.41 (returning 0.88) | **4.91** (returning) | 1.28 (returning) |
+| First-in-line nose gaps (0.5-2.0) | -0.77, -0.80, 0.41, -0.99, 2.70, 2.69 | 1.37-1.40 at all 6 | 1.37-1.40 at all 6 |
+| First-in-line stop peak decel | 1.44-4.43 | 0.84-1.80 | 0.84-1.80 |
+| Standstill gap behind a lead (2-4) | 2.80 | 2.74 | 2.74 |
+| Frames overlapping the lead (0) | 0 | 0 | 0 |
+
+- **The prototype's 6.86 and its "returning 4.91" are one event, not a lane-change failure.** Leaving a tight
+  corner near s ≈ 680 at t ≈ 123 s the ego is doing 2.2 m/s with a **39° heading error and 0.8 m of offset**. It then
+  accelerates at the full +2.2 m/s² while still unaligned, and pure pursuit swings it across the centreline (offset
+  +1.7 m to -1.2 m) with lateral accel rising with speed (4.5 at 4.7 m/s, 6.2 at 6.9 m/s). A lane change happened
+  to be in its return phase. This is the Phase 5 defect, acceleration while still yawing, and the baseline has it
+  too (3.90 at 4.0 m/s, t = 127 s, no lane change). The prototype is faster at that spot because its corner
+  profile, a function of position, releases the cap at the corner's end.
+- **A speed cap from the current steering demand removes most of it:** `v <= sqrt(2.0 / kappa_cmd)` with
+  `kappa_cmd = |tan(steer)| / wheelbase` (a 39° error at a 4.5 m lookahead is kappa ≈ 0.28, so about 2.7 m/s until
+  aligned). Lateral max 6.86 to **2.66**, and the return phase 4.91 to 1.28. 2.66 is still 0.16 over the 2.5 max.
+- **The same cap on the other three recordings does no harm:** lateral max 1.52 (default Nob Hill), 1.88 (grid),
+  1.99 (grid_slow); peak decel 2.84 (the yellow stop, was 3.21), 2.13, 2.37; `grid_slow` still shows 171 overlap
+  frames (the merging car of §5).
+- **Consequence for the plan: Phase 3's corner profile and Phase 5's corner-exit control cannot be separated.** A
+  position-based profile without a steering-demand cap makes the corner exit worse than the baseline. Either the cap
+  ships with the profile, which pulls the core of Phase 5 into Phase 3, or Phase 5 goes first.
+
+What this run did not establish: the cap's cost (lap time, how long the car crawls after a corner), whether
+2.66 closes with a lower `a_lat` or a smoother cap, and the live app.

@@ -298,9 +298,17 @@ the stop is not the whole of the decel budget:
 - Prototype results on the three recordings (planning decel 1.5, jerk 2.5): jerk p99/max
   2.5 / 3 everywhere; every first-in-line stop 1.31-1.40 m short; peak decel 2.14 (grid)
   and 2.35 (grid_slow), 3.21 on Nob Hill from the one yellow above. The overlap rows are
-  **not** this phase's (see Phase 4), and the standstill gap was not exercised by any
-  recording, so it needs a staged stop.
-- Not yet shown: a Nob Hill run with a lane change under the new controller, emergency
+  **not** this phase's (see Phase 4). The default-traffic Nob Hill run **never met traffic**
+  (see the measurement's §7), so it shows nothing about lead-following, lane changes or the
+  corner exit; with traffic at 0.45 speed the corner-exit defect returns and is worse than
+  baseline (lateral max 6.86 against 3.90) until speed is also capped from the current steering
+  demand (2.66, still 0.16 over). The standstill gap passed there (2.74 m).
+- **A corner profile needs a steering-demand cap, so Phase 3 and Phase 5 are coupled.** The
+  position-based profile releases the cap at the corner's end while the car is still 39° off
+  the route, and the car then accelerates at +2.2 m/s² into an S-weave. Capping speed at
+  `sqrt(a_lat / kappa_cmd)` from the steering command removes most of it. Either the cap ships
+  with the profile or Phase 5 goes first.
+- Not yet shown: emergency
   braking through the jerk limit (Cycle 6's `aeb` and stopping table assume the unmodified
   law), and the full test suite, which this moves through `STOP_MARGIN_M`,
   `COMFORT_DECEL_MPS2` (also the dilemma rule's threshold) and `APPROACH_M`.
@@ -520,3 +528,7 @@ recordings; `docs/measurements/2026-10-04-driving-phase3-opening.md`):
 - Nothing here changes a budget number. A first reading, that the dilemma-zone stop forced a
   budget change, was withdrawn: the cause was a yellow, not a red, and the physical minimum
   there (2.36 m/s²) is inside 2.5.
+- Correction, later the same day: the default-traffic Nob Hill recording never met traffic (4 agents on
+  an 1173 m loop), so the earlier reading that the corner-exit defect had gone (lateral max 4.14 to
+  1.55) was wrong. With traffic at 0.45 speed the defect returns and is worse (6.86 against 3.90).
+  Phase 3's corner profile and Phase 5 are therefore coupled; see the measurement's §7.
