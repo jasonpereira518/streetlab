@@ -823,6 +823,21 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
 ---
 
+## Execution notes (2026-10-04, as built)
+
+Status when execution stopped: Tasks 1-4 done and verified; Task 5 (Vercel deploy) paused; Task 6 partly done; Task 7 partly done. Where reality differed from the plan above:
+
+- **`workflow_dispatch` 404s** for a workflow that is not yet on the default branch, so the plan's `gh workflow run` trials could not work. Each workflow got a temporary feature-branch `push` trigger instead. `release.yml` and `e2e.yml` have had theirs removed; **`ci.yml` still has one (marked `TEMPORARY`) and it must be removed before merging.**
+- **CI's first run found real problems**, fixed in separate commits: (1) `server/cli.py::_bind` bound but never listened, so `STREETLAB_READY` was printed before the socket accepted connections (a genuine race; fixed with `sock.listen()` and a unit test); (2) the contract-fixture test compared byte-for-byte, which cannot pass across platforms (now structural with a 1e-6 relative float tolerance, a failure message naming the differing paths, and a unit test; a manual +1% mutation confirmed it still trips); (3) forcing WebGPU on a GPU-less runner failed 12 of 21 e2e specs (CI now uses SwiftShader WebGL2).
+- **Playwright is not in `ci.yml`.** After the fixes, hosted runs still gave 15-17 of 21 passing with 1-2 failing and 2-3 flaky, all canvas-screenshot specs timing out under software rendering. It moved to its own advisory workflow, `e2e.yml`, so the badge workflow stays a clean signal. Numbers are in `docs/measurements/2026-10-04-e2e-flake-rate.md`. The "run e2e twice more for stability" step was replaced by these two hosted runs.
+- **Contract tests run first** in the backend job (their own step) for a fast signal.
+- **Release workflow verified end to end:** the macOS build took under 5 minutes; the downloaded zip matched its SHA-256, launched, served `/health` with `ok` and one connected client, and quit with no orphaned sidecar.
+- **`.vercel/` is ignored in `streetlab/.gitignore`**, not the repo root (the root file had no frontend rules; `vercel link` runs inside `streetlab/`).
+- **Task 5 not run:** the only Vercel scope available was `tradersatcarolina-2608`; Jason declined it and asked to use a different account, which needs an interactive `vercel login`. The config and local build are committed and verified.
+- **Task 6:** the social preview image and its capture script are committed. The repo description/topics edit was declined for now ("Not now"), so the "Tesla-style Full Self-Driving" description is still live.
+- **Task 7:** done only for what is true today: the CI badge, the Testing paragraph, and the ARCHITECTURE sentence. The live-demo and Releases links were deliberately **not** added because neither exists yet.
+- **Mock address box caveat:** in a `VITE_DEMO` build the address box relabels the location header but the scene stays the synthetic Nob Hill loop.
+
 ## Plan self-review notes
 
 - Spec coverage: refinement 1 (CI Linux) → Task 3; 2 (macOS `.app` build on tags) → Task 4; 3 (live badges) → Task 7; 4 (tagged release with zip + SHA-256 + Gatekeeper note) → Task 4; 5 (hosted mock demo, labelled) → Tasks 2 and 5; 6 (repo metadata, social preview) → Task 6; 7 (re-measure flaky e2e) → Task 1.
