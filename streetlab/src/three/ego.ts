@@ -10,6 +10,7 @@ import * as THREE from 'three/webgpu';
 import { attribute, float, mix } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Pose, Size } from '../schema';
+import { attitudeOn, type HeightFn } from './terrain';
 
 export interface VehicleStyle {
   body: string;
@@ -207,7 +208,10 @@ export class EgoVehicle {
   private readonly geometry: THREE.BufferGeometry;
   private readonly material: THREE.MeshStandardNodeMaterial;
 
+  private readonly size: Size;
+
   constructor(size: Size) {
+    this.size = size;
     this.geometry = buildVehicleGeometry(size, EGO_STYLE);
     this.material = vehicleMaterial();
     this.mesh = new THREE.Mesh(this.geometry, this.material);
@@ -219,9 +223,11 @@ export class EgoVehicle {
   }
 
   /** World pose -> three.js transform. Heading maps straight to rotation.y. */
-  setPose(pose: Pose): void {
-    this.group.position.set(pose.x, 0, -pose.y);
-    this.group.rotation.y = pose.heading;
+  setPose(pose: Pose, ground: HeightFn | null = null): void {
+    const a = attitudeOn(ground, pose.x, pose.y, pose.heading, this.size.length, this.size.width);
+    this.group.position.set(pose.x, a.y, -pose.y);
+    this.group.rotation.order = 'YZX';
+    this.group.rotation.set(a.roll, pose.heading, a.pitch);
   }
 
   /** Subtle body roll and pitch, driven by steering and acceleration. */

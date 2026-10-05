@@ -72,26 +72,28 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 8
+    assert dumped["protocol"] == PROTOCOL_VERSION == 9
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_8():
-    """Bumped from 7 when `SceneDescription.reference_path` was added.
+def test_protocol_is_9():
+    """Bumped from 8 when `SceneDescription.terrain` was added (8 added
+    `reference_path`).
 
     `wsClient.ts` rejects a backend whose `protocol` differs from its own, so
     this and `PROTOCOL_VERSION` in `schema.ts` must move together -- which is
     exactly what an exact-match assertion is here to force.
     """
-    assert PROTOCOL_VERSION == 8
+    assert PROTOCOL_VERSION == 9
 
 
-def test_the_fixtures_carry_the_protocol_7_and_8_fields():
+def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
     scene = SceneDescription.model_validate(load_fixture("scene_description"))
     assert scene.hazards, "the hazard menu is empty"
-    # Protocol 8's only addition.
     assert len(scene.reference_path) > 20, "the driven line is empty"
+    # Protocol 9: the synthetic grid is flat by construction.
+    assert scene.terrain is None
     frame = StateUpdate.model_validate(load_fixture("state_update_hazard"))
     assert frame.detections and all(d.emergency is False for d in frame.detections)
     assert frame.plan.reaction_source_id is None
@@ -103,13 +105,16 @@ def test_the_fixtures_carry_the_protocol_7_and_8_fields():
     "fixture_name,path",
     [
         ("scene_description", ("hazards",)),
+        ("scene_description", ("reference_path",)),
+        ("scene_description", ("terrain",)),
         ("state_update_hazard", ("plan", "reaction_source_id")),
         ("state_update_hazard", ("detections", 0, "emergency")),
         ("state_update_hazard", ("telemetry", "trajectory", "threat")),
     ],
 )
-def test_protocol_7_fields_are_required_not_defaulted(fixture_name, path):
-    """A missing key must fail here exactly as zod fails it."""
+def test_required_fields_are_required_not_defaulted(fixture_name, path):
+    """A missing key must fail here exactly as zod fails it -- `terrain` is
+    nullable, but still required."""
     raw = load_fixture(fixture_name)
     parent = raw
     for key in path[:-1]:
@@ -332,7 +337,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 8
+    assert PROTOCOL_VERSION == 9
 
     raw = {
         "id": "f1",

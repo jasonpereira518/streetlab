@@ -19,6 +19,7 @@
 import * as THREE from 'three/webgpu';
 import { float, min, smoothstep, uniform, uv } from 'three/tsl';
 import type { Detection } from '../schema';
+import type { HeightFn } from './terrain';
 
 /** Distinct from the hazard overlay's orange and the plan ribbon's blue. */
 const OUTLINE_COLOR = '#8B5CF6';
@@ -60,7 +61,7 @@ export function createShadowBoxes(scene: THREE.Scene) {
     return box;
   }
 
-  function update(detections: Detection[] | null): void {
+  function update(detections: Detection[] | null, ground: HeightFn | null = null): void {
     const list = detections ?? [];
 
     list.forEach((det, i) => {
@@ -69,7 +70,7 @@ export function createShadowBoxes(scene: THREE.Scene) {
       const z = -det.pose.y;
 
       box.visible = true;
-      box.position.set(x, det.size.height / 2, z);
+      box.position.set(x, (ground ? ground(det.pose.x, det.pose.y) : 0) + det.size.height / 2, z);
       box.rotation.y = det.pose.heading;
       box.scale.set(
         det.size.length + PAD * 2,

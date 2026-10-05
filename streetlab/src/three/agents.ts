@@ -14,6 +14,7 @@ import {
   buildVehicleGeometry,
   vehicleMaterial,
 } from './ego';
+import { attitudeOn, type HeightFn } from './terrain';
 
 /** Canonical body sizes per class; the frame's own size scales these. */
 const REFERENCE_SIZE: Record<string, { length: number; width: number; height: number }> = {
@@ -58,7 +59,7 @@ export class TrafficFleet {
     return geo;
   }
 
-  update(detections: Detection[], dt: number): void {
+  update(detections: Detection[], dt: number, ground: HeightFn | null = null): void {
     for (const slot of this.slots.values()) slot.seen = false;
 
     for (const d of detections) {
@@ -101,8 +102,10 @@ export class TrafficFleet {
       slot.x += (d.pose.x - slot.x) * k;
       slot.z += (-d.pose.y - slot.z) * k;
       slot.heading = dampAngle(slot.heading, d.pose.heading, 0.0001, dt);
-      slot.group.position.set(slot.x, 0, slot.z);
-      slot.group.rotation.y = slot.heading;
+      const a = attitudeOn(ground, slot.x, -slot.z, slot.heading, d.size.length, d.size.width);
+      slot.group.position.set(slot.x, a.y, slot.z);
+      slot.group.rotation.order = 'YZX';
+      slot.group.rotation.set(a.roll, slot.heading, a.pitch);
       slot.seen = true;
     }
 

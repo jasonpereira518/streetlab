@@ -28,6 +28,10 @@ ProgressCallback = Callable[[str, float], None] | None
 from shapely.geometry import Point, Polygon
 
 from map.cache import BundledExtracts, DiskCache, default_cache_dir
+from map.elevation import ElevationClient, HttpxTileFetcher
+from map.terrain import TERRAIN_CELL_M, grade
+from map.terrain import to_wire as terrain_to_wire
+from map.clearance import KeepOut, clear_trees, fit_road_widths
 from map.features import (
     build_buildings,
     build_crosswalks,
@@ -46,6 +50,7 @@ from map.lanes import (
     NoRouteFound,
     RouteGraph,
     arrival_control_point,
+    drivable_ways,
     build_roads,
     build_route_graph,
     derive_lanes,
@@ -58,6 +63,7 @@ from map.lanes import (
 )
 from map.overpass import BBox, HttpxFetcher, OverpassClient, OverpassError
 from map.projection import LatLon, to_local
+from map.tags import passes_under
 from map.placement import faces_the_route
 from map.scene_build import (
     REFERENCE_STEP_M,
@@ -323,6 +329,10 @@ def default_source() -> OsmSceneSource:
             HttpxFetcher(),
             DiskCache(default_cache_dir(), fallback=BundledExtracts(_bundled_dir())),
         ),
+        elevation=ElevationClient(
+            HttpxTileFetcher(),
+            DiskCache(default_cache_dir(), fallback=BundledExtracts(_bundled_dir())),
+        ),
     )
 
 
@@ -332,9 +342,13 @@ class OsmSceneSource:
         geocoder: Geocoder,
         overpass: OverpassClient,
         locations: tuple[LocationSpec, ...] = BUNDLED,
+        elevation: ElevationClient | None = None,
     ) -> None:
         self.geocoder = geocoder
         self.overpass = overpass
+        # None builds flat ground, which is what every test that predates
+        # terrain expects and what a scene without elevation data falls back to.
+        self.elevation = elevation
         # `build_location` (Task 4) mutates this from the executor thread
         # while `scenarios()`/`_find()` read it from the sim thread -- every
         # access goes through `_lock` so a reader never observes a state
@@ -483,11 +497,16 @@ class OsmSceneSource:
         assert graph is not None and roads is not None and rg is not None and ego_route is not None
 
         _report(on_progress, "Placing signals, buildings, and trees", 0.6)
-        lights = build_traffic_lights(graph, origin)
         buildings = build_buildings(graph, origin)
+        # Roads first give way to the footprints beside them; everything placed
+        # after that is refereed against the roads as they will be drawn.
+        under = frozenset(f"osm_w{w.id}" for w in drivable_ways(graph) if passes_under(w.tags))
+        roads = fit_road_widths(roads, buildings, under)
         crosswalks = build_crosswalks(graph, origin)
-        stop_signs = build_stop_signs(graph, origin)
-        trees = build_trees(graph, origin, buildings)
+        keep_out = KeepOut(roads, crosswalks, buildings)
+        lights = build_traffic_lights(graph, origin, keep_out)
+        stop_signs = build_stop_signs(graph, origin, keep_out)
+        trees = clear_trees(build_trees(graph, origin, buildings), keep_out)
 
         build_notes: list[tuple[str, str]] = []
         buildings, buildings_dropped = _cap_by_route_proximity(
@@ -513,6 +532,14 @@ class OsmSceneSource:
                 "the ego's spawn point overlaps a building footprint from this OSM extract",
             ))
 
+        bounds = self._bounds(roads, ego_route, buildings, trees, crosswalks, stop_signs, lights)
+        terrain = None
+        if self.elevation is not None:
+            field = self.elevation.heightfield(
+                origin, (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y), TERRAIN_CELL_M
+            )
+            terrain = terrain_to_wire(grade(field, roads, under))
+
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
             scene_id=f"osm:{spec.id}",
@@ -521,7 +548,7 @@ class OsmSceneSource:
             location=place.display_name,
             attribution=ATTRIBUTION,
             origin=Origin(lat=place.lat, lon=place.lon),
-            bounds=self._bounds(roads, ego_route, buildings, trees, crosswalks, stop_signs, lights),
+            bounds=bounds,
             roads=roads,
             buildings=buildings,
             crosswalks=crosswalks,
@@ -533,6 +560,7 @@ class OsmSceneSource:
             # is the line the car actually drives rather than the raw OSM
             # centreline it came from.
             reference_path=ego_route.resample(REFERENCE_STEP_M),
+            terrain=terrain,
             # Filled in by `build`; see the note there on why it cannot be done
             # inline without the builder re-entering itself.
             catalog=[],

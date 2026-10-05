@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -178,6 +178,25 @@ export const HazardSummarySchema = z.object({
   ml_limitation: z.string().nullable(),
 });
 
+/**
+ * Ground height over the scene, as a regular grid in local metres. Sample
+ * `(r, c)` sits at `origin + (c, r) * cell_m`: row 0 is the SOUTH edge, column
+ * 0 the WEST. Heights are `base_m + q * step_m`, `q` being the row-major
+ * little-endian uint16 sequence in `heights_b64`; bilinear between samples
+ * (see `three/terrain.ts`, which must match `map/elevation.Heightfield`).
+ * Relative to the ground at world (0, 0), and already graded so roads run
+ * level across their width.
+ */
+export const TerrainSchema = z.object({
+  origin: Vec2Schema,
+  cell_m: z.number().positive(),
+  cols: z.number().int().min(2),
+  rows: z.number().int().min(2),
+  base_m: z.number(),
+  step_m: z.number().positive(),
+  heights_b64: z.string(),
+});
+
 export const SceneDescriptionSchema = z.object({
   type: z.literal('scene_description'),
   protocol: z.number().int(),
@@ -210,6 +229,8 @@ export const SceneDescriptionSchema = z.object({
    * last, so it draws as an open polyline either way.
    */
   reference_path: z.array(Vec2Schema),
+  /** Null where the ground is flat: the synthetic grid, or no elevation data. */
+  terrain: TerrainSchema.nullable(),
   /** Scenarios the server can load; drives the left sidebar. */
   catalog: z.array(ScenarioSummarySchema),
   /** Hazards `inject_hazard` can stage; drives the hazard menu. */
@@ -610,6 +631,7 @@ export type Tree = z.infer<typeof TreeSchema>;
 export type StreetSign = z.infer<typeof StreetSignSchema>;
 export type ScenarioSummary = z.infer<typeof ScenarioSummarySchema>;
 export type HazardSummary = z.infer<typeof HazardSummarySchema>;
+export type Terrain = z.infer<typeof TerrainSchema>;
 export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
 
 export type DetectionClass = z.infer<typeof DetectionClassSchema>;

@@ -88,15 +88,23 @@ def test_an_agent_does_not_drive_through_a_slower_leader(scene):
     traffic = make(scene)
     ordered = sorted(traffic.agents, key=lambda a: a.s)
     follower, lead = ordered[0], ordered[-1]
-    lead.target_speed_mps = 1.0
+    # Slowed all the way to a stop: a rolling leader pads the gap with
+    # headway, and it is the standstill gap that exposed the follower's own
+    # front half going unaccounted.
+    lead.target_speed_mps = 0.0
     route = follower.route
     follower.s = (lead.s - 25.0) % route.length_m
 
+    # Bumper to bumper, not centre to centre: `s` is a vehicle's CENTRE, and
+    # a 2 m centre gap between two 4.6 m cars is 2.6 m of overlapping bodywork.
+    half_lengths = (lead.size.length + follower.size.length) / 2
     closest = float("inf")
     for _ in range(60 * 60):
         traffic.step(DT, world(scene, ego_s=route.length_m / 2))
-        closest = min(closest, (lead.s - follower.s) % route.length_m)
-    assert closest > 2.0, f"closed to {closest:.2f} m -- it drove through the leader"
+        closest = min(closest, (lead.s - follower.s) % route.length_m - half_lengths)
+    assert closest > 1.0, (
+        f"bumpers closed to {closest:.2f} m -- it drove into the leader"
+    )
 
 
 def test_an_agent_settles_at_a_gap_rather_than_stopping_dead(scene):

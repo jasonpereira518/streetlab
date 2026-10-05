@@ -139,8 +139,12 @@ def test_two_signal_nodes_on_one_crossroads_share_a_split():
     groups = signal_groups(lights)
     assert set(groups.values()) == {"ns", "ew"}
     # The stretch of the north-south street between the two nodes is inside
-    # the junction, not an approach: four approaches, not six.
-    assert len(lights) == 4
+    # the junction, not an approach: four approaches, not six. Counted on the
+    # cluster, not on the drawn heads: this fixture's two 14.4 m carriageways
+    # sit 12 m apart and overlap, so one pole has no clear kerb to stand on and
+    # is not drawn (see `build_traffic_lights`).
+    assert len(clusters[0].legs) == 4
+    assert len(lights) == 3
 
 
 def test_a_mid_block_signal_holds_traffic_only_briefly():

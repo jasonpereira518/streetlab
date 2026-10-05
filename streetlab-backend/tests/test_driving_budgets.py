@@ -45,7 +45,11 @@ BASELINE_FAILS: dict[tuple[str, str], str] = {
     ("stop_decel", "nobhill"): "peak 4.26-4.50 m/s2 at every stop; Phase 3",
     ("stop_decel", "grid"): "peak 4.07 m/s2; Phase 3",
     ("stop_decel", "grid_slow"): "peak 2.63 m/s2; Phase 3",
-    ("overlap", "grid_slow"): "100 frames overlapping, min gap -1.16 m; cause not isolated",
+    ("standstill_gap", "grid_slow"): (
+        "nothing to measure since PR #10: in 200 s the ego stops only at lines, never "
+        "queued behind a stopped lead (0 of 71 rest samples); Phase 3 re-homes it "
+        "onto a staged stop"
+    ),
     ("agent_heading", "nobhill"): "11.3 deg per tick at each fillet vertex, because Route.heading_at is piecewise constant; Phase 4",
     ("agent_heading", "grid"): "27.1 deg per tick at the start of a lane-change slide; Phase 4",
     ("agent_heading", "grid_slow"): "36.4 deg per tick at the start of a lane-change slide; Phase 4",

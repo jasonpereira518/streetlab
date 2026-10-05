@@ -12,6 +12,7 @@ import { float, min, smoothstep, time, uniform, uv } from 'three/tsl';
 import type { Detection } from '../schema';
 import { clamp } from '../units';
 import { hazardLabelTexture } from './labels';
+import type { HeightFn } from './terrain';
 
 const MAX_HAZARDS = 12;
 /** Label height as a fraction of viewport height, before `labelScale`. */
@@ -137,7 +138,7 @@ export class HazardOverlay {
    * Point the overlay at the current frame's hazards. `camera` is needed to
    * keep label size constant on screen.
    */
-  update(detections: Detection[], camera: THREE.PerspectiveCamera): void {
+  update(detections: Detection[], camera: THREE.PerspectiveCamera, ground: HeightFn | null = null): void {
     const hazards = detections.filter((d) => d.hazard).slice(0, MAX_HAZARDS);
 
     // Vertical half-extent of the view frustum at unit distance.
@@ -147,12 +148,13 @@ export class HazardOverlay {
       const slot = this.slotAt(i);
       const x = d.pose.x;
       const z = -d.pose.y;
+      const g = ground ? ground(d.pose.x, d.pose.y) : 0;
 
       // Boxes are padded slightly so they read as an annotation around the
       // vehicle rather than coplanar with its bodywork.
       const pad = 0.18;
       slot.box.visible = true;
-      slot.box.position.set(x, d.size.height / 2, z);
+      slot.box.position.set(x, g + d.size.height / 2, z);
       slot.box.rotation.y = d.pose.heading;
       slot.box.scale.set(
         d.size.length + pad * 2,
@@ -175,7 +177,7 @@ export class HazardOverlay {
         slot.aspect = aspect;
       }
 
-      const labelY = d.size.height + 1.05;
+      const labelY = g + d.size.height + 1.05;
       slot.sprite.position.set(x, labelY, z);
       const dist = camera.position.distanceTo(slot.sprite.position);
       const worldH = clamp(

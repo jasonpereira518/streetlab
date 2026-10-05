@@ -606,6 +606,7 @@ export function buildScene(scenarioId: string): SceneDescription {
       const r = makeEgoRoute();
       return r.polyline(0, r.length, 2);
     })(),
+    terrain: null,
     catalog: SCENARIOS,
     hazards: HAZARDS,
   };

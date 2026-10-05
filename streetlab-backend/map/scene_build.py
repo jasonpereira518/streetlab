@@ -334,6 +334,9 @@ class SyntheticGrid:
             trees=self._trees(rng),
             street_signs=self._street_signs(),
             reference_path=ego_route.resample(REFERENCE_STEP_M),
+            # The grid is flat by construction, and its frozen detector
+            # benchmarks were captured on flat ground.
+            terrain=None,
             catalog=self.scenarios(),
             hazards=[],
         )

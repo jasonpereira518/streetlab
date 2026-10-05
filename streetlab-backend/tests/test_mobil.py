@@ -293,3 +293,100 @@ def test_an_agent_does_not_change_into_the_lane_the_ego_is_overtaking_in(scene):
         gap = abs(route.signed_gap(route.project((mover.state.x, mover.state.y)), at))
         assert gap > 5.0, f"moved into the kerbside lane {gap:.1f} m from the ego"
     assert changed, "never changed at all, so this measured nothing"
+
+
+def _clearance(route, behind, ahead):
+    """Bumper-to-bumper gap along `route` from `behind` to `ahead`."""
+    s_behind = route.project((behind.state.x, behind.state.y))
+    s_ahead = route.project((ahead.state.x, ahead.state.y))
+    return route.signed_gap(s_behind, s_ahead) - (
+        behind.size.length + ahead.size.length
+    ) / 2
+
+
+def test_an_agent_mid_change_still_blocks_the_lane_it_is_leaving(scene):
+    """A change switches `route` at its first tick and slides for three
+    seconds after. Matching leaders by route identity made the mover vanish
+    from the lane it was still physically half inside, and the car behind it
+    there drove straight into its tail.
+    """
+    kerb = scene.lanes.neighbour(-1)
+    traffic = make(scene)
+    mover, chaser = traffic.agents[0], traffic.agents[1]
+    for other in traffic.agents[2:]:
+        place(traffic, other, OUTSIDE_S)
+    for agent, at, speed in ((mover, 40.0, 2.0), (chaser, 28.0, 9.0)):
+        agent.lane_id, agent.route = kerb.id, kerb.route
+        place(traffic, agent, kerb.route.project(scene.ego_route.point_at(at)), speed=speed)
+    mover.target_speed_mps = 2.0
+    chaser.lane_change_cooldown_s = 60.0
+    traffic._move(mover, scene.lanes.ego)
+    assert mover.lateral_m, "the staging did not start a traverse"
+
+    while mover.lateral_m:
+        traffic.step(DT, world(scene))
+        if chaser.lane_id != kerb.id:
+            break
+        gap = _clearance(kerb.route, chaser, mover)
+        assert gap > 0.5, f"closed to {gap:+.2f} m on a car still half in its lane"
+
+
+def test_an_agent_mid_change_is_seen_in_the_lane_it_is_entering(scene):
+    """The mirror case: a follower in the target lane whose leader is a car
+    sliding in from the side, still well off that lane's centreline."""
+    kerb = scene.lanes.neighbour(-1)
+    traffic = make(scene)
+    mover, chaser = traffic.agents[0], traffic.agents[1]
+    for other in traffic.agents[2:]:
+        place(traffic, other, OUTSIDE_S)
+    place(traffic, chaser, 28.0, speed=9.0)
+    chaser.lane_change_cooldown_s = 60.0
+    mover.lane_id, mover.route = kerb.id, kerb.route
+    place(traffic, mover, kerb.route.project(scene.ego_route.point_at(40.0)), speed=2.0)
+    mover.target_speed_mps = 2.0
+    traffic._move(mover, scene.lanes.ego)
+    for _ in range(3):  # the slide is under way
+        traffic.step(DT, world(scene))
+    assert mover.lateral_m
+
+    while mover.lateral_m:
+        traffic.step(DT, world(scene))
+        gap = _clearance(scene.ego_route, chaser, mover)
+        assert gap > 0.5, f"closed to {gap:+.2f} m on a car merging into its lane"
+
+
+def test_a_forced_return_waits_for_a_gap_instead_of_merging_into_the_ego(scene):
+    """The kerbside lane ends at s = 75 m, and leaving it was 'mandatory,
+    immediate, and not subject to' anything -- including the ego stopped
+    alongside. Measured on grid-night: an agent merged 3 m in front of the
+    stationary ego's centre, 1.0 m of bodywork overlapping. It must stop
+    short of the lane's end and wait instead.
+    """
+    kerb = scene.lanes.neighbour(-1)
+    traffic = make(scene)
+    mover = traffic.agents[0]
+    for other in traffic.agents[1:]:
+        place(traffic, other, OUTSIDE_S)
+    mover.lane_id, mover.route = kerb.id, kerb.route
+    place(traffic, mover, kerb.route.project(scene.ego_route.point_at(40.0)), speed=9.0)
+
+    route = scene.ego_route
+    ego_at = 73.0
+    x, y = route.point_at(ego_at)
+    parked = TrafficWorld(
+        ego=VehicleState(x=x, y=y, heading=route.heading_at(ego_at), speed_mps=0.0),
+        ego_route=route,
+        t=0.0,
+    )
+    ego_half = 4.7 / 2
+    for _ in range(60 * 20):
+        traffic.step(DT, parked)
+        here = route.project((mover.state.x, mover.state.y))
+        if mover.lane_id == EGO_LANE_ID:
+            clear = abs(route.signed_gap(here, ego_at)) - ego_half - mover.size.length / 2
+            assert clear > 0.5, f"merged {clear:+.2f} m from the stopped ego"
+        else:
+            front = here + mover.size.length / 2
+            assert -1 in scene.lanes.legal_at(here) and front < 75.0 + 1.0, (
+                f"ran past the end of the kerbside lane to s={front:.1f} m"
+            )

@@ -29,7 +29,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 from schema import HazardSummary, Size
-from sim.agents import MOBIL_COOLDOWN_S, Agent, TrafficModel, lateral_unit
+from sim.agents import (
+    _SAME_LANE_M,
+    MOBIL_COOLDOWN_S,
+    Agent,
+    TrafficModel,
+    lateral_unit,
+)
 from sim.route import EGO_LANE_ID, Route
 from sim.vehicle import BicycleModel, VehicleState
 
@@ -150,6 +156,11 @@ RUNNER_PAST_LINE_M = 6.0
 #: change and the runner crosses an empty junction.
 RUNNER_GREEN_MARGIN_S = 2.0
 RUNNER_RUN_OFF_M = 30.0
+#: Clear road a staged vehicle keeps from anything already in its lane, and the
+#: furthest it may be pushed down the road to find it. A hazard staged inside
+#: a parked car is not a hazard, it is two cars drawn through each other.
+SPAWN_CLEARANCE_M = 1.0
+SPAWN_SEARCH_M = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +267,37 @@ class Declined:
     carries, so it is written for the person who pressed the button."""
 
     reason: str
+def _clear_of_traffic(
+    sim: "Simulation", route: Route, s: float, length: float, *, moving: Agent | None = None
+) -> float:
+    """`s`, or the first station past it where a `length` vehicle on `route`
+    lands clear of every vehicle already in that lane -- the ego included.
+
+    Pushed FORWARD, never back toward the ego: every staging here is "ahead of
+    you", and pulling one closer than asked would sharpen the hazard it
+    stages. Falls back to `s` when the lane is solid for `SPAWN_SEARCH_M`.
+    """
+    ego = sim.world.ego
+    ego_s = route.project((ego.x, ego.y))
+    occupants = [(ego_s, BicycleModel().length_m)] if abs(
+        route.lateral_offset((ego.x, ego.y), ego_s)
+    ) <= _SAME_LANE_M else []
+    for other in _traffic(sim).agents:
+        if other is moving or other.cls == "pedestrian":
+            continue
+        if other.route is route:
+            occupants.append((other.s, other.size.length))
+        elif other.from_route is route and other.lateral_m:
+            occupants.append((route.project((other.state.x, other.state.y)), other.size.length))
+    step = 0.5
+    for i in range(int(SPAWN_SEARCH_M / step) + 1):
+        at = s + i * step
+        if all(
+            abs(route.signed_gap(o_s, at)) - (length + o_len) / 2 >= SPAWN_CLEARANCE_M
+            for o_s, o_len in occupants
+        ):
+            return at
+    return s
 
 
 def _place(
@@ -279,6 +321,7 @@ def _place(
     instead would put the car somewhere the very next frame moves it away from.
     """
     agent.route = route
+    agent.from_route = None
     agent.s = s % route.length_m
     agent.lateral_m = lateral_m
     x, y = route.point_at(agent.s)
@@ -360,10 +403,12 @@ def _cut_in(sim: "Simulation") -> str | Declined:
         return Declined("no vehicle to cut in")
     ego_speed = sim.world.ego.speed_mps
     gap = CUT_IN_HEADWAY_S * max(ego_speed, CUT_IN_FLOOR_MPS)
+    at = _clear_of_traffic(sim, route, _ego_s(sim) + gap, agent.size.length, moving=agent)
+    gap = route.signed_gap(_ego_s(sim), at)
     _place(
         agent,
         route,
-        _ego_s(sim) + gap,
+        at,
         lateral_m=-_lane_width(sim),
         speed_mps=ego_speed * CUT_IN_SPEED_FRACTION,
     )
@@ -438,6 +483,7 @@ def _obstacle(sim: "Simulation") -> str | Declined:
         speed_mps=0.0,
         lifetime_s=OBSTACLE_LIFE_S,
     )
+    at = _clear_of_traffic(sim, route, at, agent.size.length, moving=agent)
     _place(agent, route, at)
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
     return f"{agent.id} stopped in the lane {OBSTACLE_AHEAD_M:.0f} m ahead"
@@ -483,7 +529,10 @@ def _stalled_vehicle(sim: "Simulation") -> str | Declined:
         speed_mps=0.0,
         lifetime_s=STALLED_LIFE_S,
     )
-    _place(agent, route, _ego_s(sim) + STALLED_AHEAD_M)
+    at = _clear_of_traffic(
+        sim, route, _ego_s(sim) + STALLED_AHEAD_M, agent.size.length, moving=agent
+    )
+    _place(agent, route, at)
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
     return f"{agent.id} stalled in the lane {STALLED_AHEAD_M:.0f} m ahead"
 
