@@ -173,6 +173,9 @@ LANE_CHANGE_LOOKAHEAD_M = 45.0
 #: Gaps required in the target lane, measured bumper to bumper along the route.
 MIN_FRONT_GAP_M = 18.0
 MIN_REAR_GAP_M = 14.0
+#: A car whose centreline is within this of the target lane's is in it for the purposes of the
+#: gap check: half the two widths plus a margin, as `plan/control.py::_PATH_HALF_WIDTH_M`.
+_TARGET_CORRIDOR_M = 2.4
 
 #: How long the aim point takes to cross one lane, in seconds: the time base of
 #: the explicit blend (`LaneChange.blend`) that `plan/control.py` steers by. It
@@ -737,7 +740,9 @@ class BehaviorFSM:
         target = lanes.neighbour(direction)
         if target is None:
             return None
-        if not self._gap_is_acceptable(route, ego_s, detections, direction):
+        if not self._gap_is_acceptable(
+            route, ego_s, detections, direction, ego.speed_mps, target.offset_m
+        ):
             return None
 
         self.lane_change = LaneChange(current.id, target.id, direction, lead_id=lead.id)
@@ -1052,11 +1057,35 @@ class BehaviorFSM:
         return best
 
     @staticmethod
-    def _gap_is_acceptable(route, ego_s, detections, direction: int) -> bool:
+    def _gap_is_acceptable(
+        route,
+        ego_s,
+        detections,
+        direction: int,
+        ego_speed_mps: float | None = None,
+        target_offset_m: float | None = None,
+    ) -> bool:
+        """Room in the target lane, now and for as long as the change takes.
+
+        The flat gaps alone approve a car 14 m behind doing 7 m/s against an ego doing 2.2: it
+        closes at 4.8 m/s and arrives inside the 4.5 s ramp (grid-merge seed 11, -2.0 m). With
+        `ego_speed_mps` the required gap also grows by the distance the pair closes over the
+        ramp, behind (a faster car) and ahead (a slower one) alike.
+        """
         for d in detections:
-            if d.lane_offset != direction:
+            if target_offset_m is None:
+                if d.lane_offset != direction:
+                    continue
+            elif abs(route.lateral_offset((d.pose.x, d.pose.y)) - target_offset_m) > _TARGET_CORRIDOR_M:
+                # Where the car IS, not which lane it rounds to: one sliding into the target lane
+                # rounds to the ego's own lane and was invisible to this check (grid-merge seed 11:
+                # veh_03, 24 m back at 6.8 m/s and mid-slide, cut off by an outbound ego).
                 continue
             gap = route.signed_gap(ego_s, route.project((d.pose.x, d.pose.y)))
-            if -MIN_REAR_GAP_M < gap < MIN_FRONT_GAP_M:
+            rear, front = MIN_REAR_GAP_M, MIN_FRONT_GAP_M
+            if ego_speed_mps is not None:
+                rear += max(0.0, d.speed_mps - ego_speed_mps) * LANE_CHANGE_RAMP_S
+                front += max(0.0, ego_speed_mps - d.speed_mps) * LANE_CHANGE_RAMP_S
+            if -rear < gap < front:
                 return False
         return True

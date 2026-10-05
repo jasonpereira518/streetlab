@@ -61,6 +61,14 @@ _GAP_GAIN = 0.7
 _IGNORE_LEAD_FACTOR = 3.0
 
 # The plan ribbon the frontend draws.
+#: A car this far from its home lane's line, and not mid-overtake, is on its way back to it.
+#: Cars in the home lane then count as leads: the ego's lead search is otherwise relative to
+#: the lane it is in, so it converges on an occupied home lane unseen (five clearance runs, the
+#: ego 1.3-2.7 m off `lane_ego` and closing on a car in it).
+_OFF_LANE_M = 0.8
+#: Half a lane: inside it a detection is in the home lane.
+_HOME_LANE_HALF_M = 1.8
+
 _PLAN_LENGTH_M = 45.0
 _PLAN_STEP_M = 3.0
 
@@ -205,7 +213,21 @@ class CenterlineFollower:
                     away.route.project((ego.x, ego.y)), distance_m=_CURVATURE_PREVIEW_M
                 ),
             )
-        target = self._target_speed(limits, curvature, detections, ego, route, s)
+        lc = self.fsm.lane_change
+        returning_home = (lc is None or lc.returning) and (
+            abs(route.lateral_offset((ego.x, ego.y))) > _OFF_LANE_M
+        )
+        target = self._target_speed(
+            limits, curvature, detections, ego, route, s, home_lane=returning_home
+        )
+        # The route's curvature AHEAD says "straight" the moment the look-ahead window clears a
+        # corner, while the car is still yawing out of it: it then accelerates at full authority
+        # through the exit (2.3 m/s^2 lateral at 3.1 m/s on grid, 6.9 on Nob Hill with traffic).
+        # What the car is being asked to do RIGHT NOW is the steering command, so cap speed from
+        # that: v <= sqrt(a_lat / kappa_cmd).
+        kappa_cmd = abs(math.tan(steer)) / self.wheelbase_m
+        if kappa_cmd > 1e-3:
+            target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / kappa_cmd))
         # The behaviour ceiling folds in exactly like the curvature and
         # lead-vehicle caps: another upper bound, not a separate control path.
         target = min(target, decision.speed_ceiling_mps)
@@ -259,19 +281,21 @@ class CenterlineFollower:
         ego: VehicleState,
         route: Route,
         s: float,
+        *,
+        home_lane: bool = False,
     ) -> float:
         target = min(limits.speed_limit_mps, limits.speed_cap_mps)
         if curvature > 1e-6:
             target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / curvature))
 
-        lead, gap = _closest_lead(detections, route, s)
+        lead, gap = _closest_lead(detections, route, s, home_lane=home_lane)
         if lead is not None:
             target = min(target, _following_speed(lead, gap, ego, limits))
         return target
 
 
 def _closest_lead(
-    detections: Sequence[Detection], route: Route, ego_s: float
+    detections: Sequence[Detection], route: Route, ego_s: float, *, home_lane: bool = False
 ) -> tuple[Detection | None, float]:
     """Nearest in-lane vehicle ahead, by along-route distance.
 
@@ -281,7 +305,9 @@ def _closest_lead(
     """
     best, best_gap = None, math.inf
     for d in detections:
-        if d.lane_offset != 0:
+        if d.lane_offset != 0 and not (
+            home_lane and abs(route.lateral_offset((d.pose.x, d.pose.y))) <= _HOME_LANE_HALF_M
+        ):
             continue
         gap = route.signed_gap(ego_s, route.project((d.pose.x, d.pose.y)))
         if 0 < gap < best_gap:

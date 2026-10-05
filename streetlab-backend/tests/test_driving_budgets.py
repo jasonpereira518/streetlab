@@ -34,7 +34,6 @@ BASELINE_FAILS: dict[tuple[str, str], str] = {
     ("ego_jerk", "nobhill"): "p99 6.5, max 286 m/s3; Phase 3",
     ("ego_jerk", "grid"): "p99 7.6, max 169 m/s3; Phase 3",
     ("ego_jerk", "grid_slow"): "p99 6.2, max 355 m/s3; Phase 3",
-    ("lateral_accel", "nobhill"): "max 4.14 m/s2 at 4.2 m/s, leaving the tight corner near s=681 at +2.2 m/s2 while still yawing. Suspected cause: the speed cap is released when the curvature AHEAD clears. Not yet reproduced without a lane change (on unpatched code the same corner is taken at 1.56 m/s2); Phase 5",
     ("nose_gap", "nobhill"): "nose 0.78-0.99 m PAST the line at 7 of 8 stops; Phase 3",
     ("nose_gap", "grid"): "nose 0.35 m short, needs 0.5-2.0; Phase 3",
     ("nose_gap", "grid_slow"): "nose 0.36 m short, needs 0.5-2.0. One first-in-line stop, so it moves with every trajectory change (it was 1.31 m before Phase 2); Phase 3",
