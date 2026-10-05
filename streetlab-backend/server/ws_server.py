@@ -18,6 +18,7 @@ import base64
 import binascii
 import json
 import logging
+import os
 import resource
 import sys
 import time
@@ -63,6 +64,16 @@ def _rss_mb() -> float:
     return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
 
 
+def _allowed_origins() -> list[str] | None:
+    """Browser origins permitted to connect, from ``STREETLAB_ALLOWED_ORIGINS``
+    (comma-separated). Unset means no restriction -- the local/Tauri default.
+    Set it on a hosted deployment: CORS does not apply to WebSockets, so the
+    ``Origin`` check in `_serve` is what keeps other sites from driving the sim.
+    """
+    raw = os.environ.get("STREETLAB_ALLOWED_ORIGINS", "").strip()
+    return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()] or None
+
+
 def create_app(
     loop: SimLoop, *, tick_hz: float = DEFAULT_TICK_HZ, geocoder: Geocoder | None = None
 ) -> FastAPI:
@@ -82,7 +93,7 @@ def create_app(
     # traffic (the actual data) isn't subject to CORS at all.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_allowed_origins() or ["*"],
         allow_methods=["GET"],
         allow_headers=["*"],
     )
@@ -428,6 +439,13 @@ async def _serve(
     clients: dict[str, int],
     geocoder: Geocoder | None = None,
 ) -> None:
+    allowed = _allowed_origins()
+    if allowed is not None:
+        origin = (ws.headers.get("origin") or "").rstrip("/")
+        if origin not in allowed:
+            log.warning("rejecting websocket from origin %r", origin)
+            await ws.close(code=1008)
+            return
     await ws.accept()
     clients["count"] += 1
     try:
