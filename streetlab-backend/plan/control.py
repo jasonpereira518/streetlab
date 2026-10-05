@@ -17,9 +17,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-from plan.behavior import LANE_CHANGE_COMMIT_S, BehaviorFSM
+from plan.behavior import BehaviorFSM
 from schema import Detection, Plan, SignalState
-from sim.route import ControlPoint, LaneSet, Route
+from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
 
 # Pure-pursuit lookahead: a floor for low speed, growing with velocity.
@@ -61,6 +61,14 @@ _GAP_GAIN = 0.7
 _IGNORE_LEAD_FACTOR = 3.0
 
 # The plan ribbon the frontend draws.
+#: A car this far from its home lane's line, and not mid-overtake, is on its way back to it.
+#: Cars in the home lane then count as leads: the ego's lead search is otherwise relative to
+#: the lane it is in, so it converges on an occupied home lane unseen (five clearance runs, the
+#: ego 1.3-2.7 m off `lane_ego` and closing on a car in it).
+_OFF_LANE_M = 0.8
+#: Half a lane: inside it a detection is in the home lane.
+_HOME_LANE_HALF_M = 1.8
+
 _PLAN_LENGTH_M = 45.0
 _PLAN_STEP_M = 3.0
 
@@ -76,11 +84,6 @@ _TURN_THRESHOLD_RAD = 0.45
 #: 1.2 rad/s clears that by ~65 %, comfortably above without re-tuning lane
 #: holding -- this bounds a manoeuvre transient, it does not re-tune it.
 MAX_STEER_RATE_RAD_S = 1.2
-
-#: Fraction of the commitment window spent actually moving across. The rest is
-#: settling time in the new lane, so the manoeuvre ends straight rather than
-#: still crossing.
-_LANE_CHANGE_TRAVERSE = 0.75
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +159,13 @@ class CenterlineFollower:
         self.fsm.reset()
         self.last_steer = 0.0
 
+    def _away_lane(self, context: PlanContext) -> Lane | None:
+        """The lane the aim point is blending toward, while a lane change is active."""
+        lc = self.fsm.lane_change
+        if lc is None or context.lanes is None:
+            return None
+        return context.lanes.by_id(lc.away_lane_id)
+
     def plan(
         self,
         ego: VehicleState,
@@ -178,18 +188,11 @@ class CenterlineFollower:
             limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
         )
 
-        aim_route = route
-        blend = 0.0
-        if decision.target_lane_id is not None and context.lanes is not None:
-            target = context.lanes.by_id(decision.target_lane_id)
-            if target is not None and self.fsm.lane_change is not None:
-                progress = min(
-                    1.0,
-                    self.fsm.lane_change.elapsed_s
-                    / max(LANE_CHANGE_COMMIT_S * _LANE_CHANGE_TRAVERSE, 1e-6),
-                )
-                blend = _smoothstep(progress)
-                aim_route = target.route
+        # The blend is the FSM's, not derived here: going out and coming back it
+        # runs between the HOME lane (`route`) and the other lane of the manoeuvre.
+        away = self._away_lane(context)
+        aim_route = route if away is None else away.route
+        blend = 0.0 if away is None else self.fsm.lane_change.blend
 
         steer = self._pure_pursuit_blended(ego, route, aim_route, s, lookahead, blend)
         steer = _clamp(
@@ -199,7 +202,32 @@ class CenterlineFollower:
         )
         self.last_steer = steer
         curvature = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
-        target = self._target_speed(limits, curvature, detections, ego, route, s)
+        if away is not None:
+            # The lane being held can be the INSIDE of a corner. A 6 m fillet leaves
+            # ~2.4 m there, below the car's 4.1 m minimum turning radius, and speed
+            # planned from the ego lane alone drives the car at full steering lock
+            # (7.9 m/s^2 at 5.7 m/s, measured) while it drifts off the lane.
+            curvature = max(
+                curvature,
+                away.route.peak_curvature(
+                    away.route.project((ego.x, ego.y)), distance_m=_CURVATURE_PREVIEW_M
+                ),
+            )
+        lc = self.fsm.lane_change
+        returning_home = (lc is None or lc.returning) and (
+            abs(route.lateral_offset((ego.x, ego.y))) > _OFF_LANE_M
+        )
+        target = self._target_speed(
+            limits, curvature, detections, ego, route, s, home_lane=returning_home
+        )
+        # The route's curvature AHEAD says "straight" the moment the look-ahead window clears a
+        # corner, while the car is still yawing out of it: it then accelerates at full authority
+        # through the exit (2.3 m/s^2 lateral at 3.1 m/s on grid, 6.9 on Nob Hill with traffic).
+        # What the car is being asked to do RIGHT NOW is the steering command, so cap speed from
+        # that: v <= sqrt(a_lat / kappa_cmd).
+        kappa_cmd = abs(math.tan(steer)) / self.wheelbase_m
+        if kappa_cmd > 1e-3:
+            target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / kappa_cmd))
         # The behaviour ceiling folds in exactly like the curvature and
         # lead-vehicle caps: another upper bound, not a separate control path.
         target = min(target, decision.speed_ceiling_mps)
@@ -253,19 +281,21 @@ class CenterlineFollower:
         ego: VehicleState,
         route: Route,
         s: float,
+        *,
+        home_lane: bool = False,
     ) -> float:
         target = min(limits.speed_limit_mps, limits.speed_cap_mps)
         if curvature > 1e-6:
             target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / curvature))
 
-        lead, gap = _closest_lead(detections, route, s)
+        lead, gap = _closest_lead(detections, route, s, home_lane=home_lane)
         if lead is not None:
             target = min(target, _following_speed(lead, gap, ego, limits))
         return target
 
 
 def _closest_lead(
-    detections: Sequence[Detection], route: Route, ego_s: float
+    detections: Sequence[Detection], route: Route, ego_s: float, *, home_lane: bool = False
 ) -> tuple[Detection | None, float]:
     """Nearest in-lane vehicle ahead, by along-route distance.
 
@@ -275,7 +305,9 @@ def _closest_lead(
     """
     best, best_gap = None, math.inf
     for d in detections:
-        if d.lane_offset != 0:
+        if d.lane_offset != 0 and not (
+            home_lane and abs(route.lateral_offset((d.pose.x, d.pose.y))) <= _HOME_LANE_HALF_M
+        ):
             continue
         gap = route.signed_gap(ego_s, route.project((d.pose.x, d.pose.y)))
         if 0 < gap < best_gap:
@@ -309,11 +341,6 @@ def _maneuver(route: Route, s: float) -> str:
     if turn < -_TURN_THRESHOLD_RAD:
         return "turn_right"
     return "keep_lane"
-
-
-def _smoothstep(t: float) -> float:
-    t = _clamp(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:

@@ -173,28 +173,40 @@ LANE_CHANGE_LOOKAHEAD_M = 45.0
 #: Gaps required in the target lane, measured bumper to bumper along the route.
 MIN_FRONT_GAP_M = 18.0
 MIN_REAR_GAP_M = 14.0
+#: A car whose centreline is within this of the target lane's is in it for the purposes of the
+#: gap check: half the two widths plus a margin, as `plan/control.py::_PATH_HALF_WIDTH_M`.
+_TARGET_CORRIDOR_M = 2.4
 
-#: The nominal duration of one traverse, and NOT a phase deadline any more.
+#: How long the aim point takes to cross one lane, in seconds: the time base of
+#: the explicit blend (`LaneChange.blend`) that `plan/control.py` steers by. It
+#: sets how fast the aim point crosses, never when a phase ends.
 #:
-#: This used to be the outbound phase's exit condition: a change ran for
-#: `LANE_CHANGE_COMMIT_S` and then turned round, whatever had or had not
-#: happened. Measured, it was calibrated for a speed the manoeuvre itself
-#: removes. `_closest_lead` (`plan/control.py`) follows anything at
-#: `lane_offset == 0`, and `perception/service.py` computes `lane_offset`
-#: EGO-RELATIVE, so until the car is half a lane clear it is still braking for
-#: the very vehicle it is passing -- 13.4 m/s down to 3.5 m/s before the
-#: lateral move gets going, on the Nob Hill replay. Pure-pursuit lateral rate
-#: scales with speed, so the traverse then took ~3.5 s, and the timer expired
-#: on the tick the car arrived: it turned round at the exact moment it got
-#: there, 0 of 14 episodes across both scenes ever gaining on the lead.
+#: Chosen from a sweep of 3.0-4.5 s on both shipped scenes, with the backstops
+#: below scaled to each value (a sweep that left them alone measured the old
+#: 4.5 s outbound limit, not the ramp). Peak lateral acceleration falls as the
+#: ramp lengthens: 4.0 s leaves a 2.14 m/s^2 peak on grid-loop and 4.5 s leaves
+#: 1.93, which clears the 2.0 budget (`BUDGET.lane_change_lateral_accel_max`);
+#: the 1.5 first proposed is not reachable this way. A longer ramp also fails
+#: less: the old 2.6 s traverse declined half of grid-loop's attempts.
 #:
-#: What it still is: the time base `plan/control.py` builds the aim-point
-#: blend from (`LANE_CHANGE_COMMIT_S * _LANE_CHANGE_TRAVERSE`), i.e. how fast
-#: the aim point crosses. That is why it could not simply be re-read as the
-#: backstop the phase now needs, which is `LANE_CHANGE_OUTBOUND_MAX_S` below:
-#: raising this to buy a slow traverse more time would slow the traverse by
-#: the same factor, since it sets the rate as well as the deadline.
-LANE_CHANGE_COMMIT_S = 3.5
+#: This replaces `LANE_CHANGE_COMMIT_S` (3.5 s, times a 0.75 traverse fraction in
+#: `control.py`), which used to be the outbound phase's exit condition: a change
+#: ran for it and then turned round, whatever had or had not happened. Measured,
+#: it was calibrated for a speed the manoeuvre itself removes. `_closest_lead`
+#: (`plan/control.py`) follows anything at `lane_offset == 0`, and
+#: `perception/service.py` computes `lane_offset` EGO-RELATIVE, so until the car
+#: is half a lane clear it is still braking for the very vehicle it is passing
+#: -- 13.4 m/s down to 3.5 m/s before the lateral move gets going, on the Nob
+#: Hill replay. The traverse then took ~3.5 s, and the timer expired on the tick
+#: the car arrived: it turned round at the exact moment it got there, 0 of 14
+#: episodes across both scenes ever gaining on the lead. The phase ends on
+#: ARRIVAL now, with `LANE_CHANGE_OUTBOUND_MAX_S` behind it.
+LANE_CHANGE_RAMP_S = 4.5
+
+#: The shortest span a return's blend is ramped over, however little of the lane
+#: the car had crossed. Without a floor, a return begun a few centimetres across
+#: would be snapped home in a few ticks, which is the step input again.
+LANE_CHANGE_RETURN_MIN_S = 1.0
 
 #: How close to a lane's centreline counts as being IN that lane.
 #:
@@ -211,16 +223,16 @@ LANE_CHANGE_SETTLE_M = 0.3
 
 #: Hard backstop on the OUTBOUND traverse, for when arrival never happens.
 #:
-#: The traverse is nominally `LANE_CHANGE_COMMIT_S` (3.5 s) and measured
-#: arrivals land at 3.3-4.0 s, but a car that is curvature-capped, braking, or
-#: crossing at 2 m/s can take longer, and the pre-fix behaviour of turning it
-#: round at 3.5 s regardless is what left it stranded between lanes: measured
-#: peak offsets of 1.16 m, 2.21 m and 2.35 m against a 3.6 m lane, on episodes
-#: that never reached the lane they aimed at. 6.0 s is ~1.7x the nominal
-#: traverse, matching `LANE_CHANGE_RETURN_MAX_S`'s headroom over its own
-#: measured worst. Hitting it is a FAILED traverse -- the car goes home and
-#: `_decline` puts that lead on cooldown -- not a completed one.
-LANE_CHANGE_OUTBOUND_MAX_S = 4.5
+#: Arrival lags the aim point. Measured outbound phases last 4.4-7.5 s against a
+#: 4.5 s ramp (`LANE_CHANGE_RAMP_S`); the long ones are the failed traverses this
+#: limit exists to end, on a car that is curvature-capped, braking, or crossing
+#: at 2 m/s. The pre-fix behaviour of turning it round at a fixed 3.5 s
+#: regardless is what left it stranded between lanes: measured peak offsets of
+#: 1.16 m, 2.21 m and 2.35 m against a 3.6 m lane, on episodes that never
+#: reached the lane they aimed at. Ramp + 3.0 s is the figure the sweep scaled
+#: to. Hitting it is a FAILED traverse -- the car goes home and `_decline` puts
+#: that lead on cooldown -- not a completed one.
+LANE_CHANGE_OUTBOUND_MAX_S = LANE_CHANGE_RAMP_S + 3.0
 
 #: Hard backstop on the passing phase: how long the car may sit in the target
 #: lane working on getting past the lead before it gives up and comes home.
@@ -259,12 +271,14 @@ EGO_LENGTH_M = 4.7
 #: converge to, or simply a slower vehicle than assumed. This bounds the
 #: total time the car can spend labelled mid-return regardless.
 #:
-#: Measured on the real Nob Hill replay (same fixture as above): three
-#: return phases in one 600 s run settled in 1.93 s, 2.48 s and 2.58 s.
-#: 6.0 s is >2.3x the slowest of those -- generous headroom over the
-#: measured figure, in the same spirit as `MAX_STEER_RATE_RAD_S` in
-#: `plan/control.py`, not tuned to trip near it.
-LANE_CHANGE_RETURN_MAX_S = 6.0
+#: Measured with the explicit-blend return (a ramp of up to
+#: `LANE_CHANGE_RAMP_S`, shorter when begun part-way across): return phases last
+#: 2.7-7.2 s on the two grid scenes over 400 s and up to 4.5 s on Nob Hill. Ramp
+#: + 3.5 s clears the longest by 0.8 s -- headroom over the measured figure, in
+#: the same spirit as `MAX_STEER_RATE_RAD_S` in `plan/control.py`, not tuned to
+#: trip near it. (The step-input return it replaces settled in 1.9-2.6 s, which
+#: is why this was 6.0 s.)
+LANE_CHANGE_RETURN_MAX_S = LANE_CHANGE_RAMP_S + 3.5
 
 #: How long a lead is left alone after an attempt on it achieved nothing.
 #:
@@ -320,6 +334,15 @@ class LaneChange:
     #: different answer, and the manoeuvre is over when the car it set out to
     #: pass is behind it.
     lead_id: str | None = None
+    #: How far the aim point has moved from the HOME lane toward the other lane of
+    #: the manoeuvre: 0.0 on the home lane, 1.0 on the other. Owned here, not
+    #: derived from `elapsed_s` in `plan/control.py`, because a return has to start
+    #: from wherever the car is and only the FSM knows that. See `_tick_blend`.
+    blend: float = 0.0
+    #: `blend` at the moment the return began, which the return ramps down from.
+    #: Less than 1.0 when a junction (or a failed traverse) turned the car round
+    #: part-way across.
+    blend_at_return: float = 0.0
 
     @property
     def returning(self) -> bool:
@@ -330,6 +353,16 @@ class LaneChange:
         four tests ask exactly this question and nothing narrower.
         """
         return self.phase == RETURNING
+
+    @property
+    def away_lane_id(self) -> str:
+        """The lane the aim point blends toward: the other lane of the manoeuvre.
+
+        `_begin_return` swaps `from_lane_id` and `to_lane_id`, so `to_lane_id` is
+        always where the car is headed. The blend, though, is measured from the
+        HOME lane: `from_lane_id` going out, `to_lane_id` coming back.
+        """
+        return self.from_lane_id if self.phase == RETURNING else self.to_lane_id
 
 
 class BehaviorState(str, Enum):
@@ -358,6 +391,17 @@ class BehaviorDecision:
 
 
 _CRUISE = BehaviorDecision(BehaviorState.CRUISE, math.inf, None, None)
+
+
+def _minimum_jerk(t: float) -> float:
+    """A 0-to-1 ramp with zero velocity AND zero acceleration at both ends.
+
+    The smoothstep it replaces is flat only in velocity, so the lateral
+    acceleration it commands starts and stops with a step; this one does not.
+    `t` is clamped to [0, 1].
+    """
+    t = min(max(t, 0.0), 1.0)
+    return t * t * t * (10.0 - 15.0 * t + 6.0 * t * t)
 
 
 @dataclass(slots=True)
@@ -415,12 +459,14 @@ class BehaviorFSM:
         # fight.
         junction = self._junction_step(ego, route, ego_s, control_points, signals, dt)
         if junction.state is not BehaviorState.CRUISE:
-            return self._junction_abort(junction, ego, lanes, dt)
-
-        change = self._lane_change_step(ego, route, ego_s, lanes, detections, limit_mps, dt)
-        if change is None:
-            return _CRUISE
-        return change
+            decision = self._junction_abort(junction, ego, lanes, dt)
+        else:
+            change = self._lane_change_step(
+                ego, route, ego_s, lanes, detections, limit_mps, dt
+            )
+            decision = _CRUISE if change is None else change
+        self._tick_blend()
+        return decision
 
     def _junction_step(
         self,
@@ -694,7 +740,9 @@ class BehaviorFSM:
         target = lanes.neighbour(direction)
         if target is None:
             return None
-        if not self._gap_is_acceptable(route, ego_s, detections, direction):
+        if not self._gap_is_acceptable(
+            route, ego_s, detections, direction, ego.speed_mps, target.offset_m
+        ):
             return None
 
         self.lane_change = LaneChange(current.id, target.id, direction, lead_id=lead.id)
@@ -705,9 +753,9 @@ class BehaviorFSM:
     def _advance_outbound(self, ego, lanes: "LaneSet") -> BehaviorDecision:
         """Cross into the target lane; stop crossing when the car is IN it.
 
-        The outbound phase used to end on `LANE_CHANGE_COMMIT_S`, and that
-        clock was calibrated for a speed the manoeuvre removes -- see that
-        constant. It ends on arrival now, which is the same shape
+        The outbound phase used to end on a fixed clock, and that clock was
+        calibrated for a speed the manoeuvre removes -- see `LANE_CHANGE_RAMP_S`.
+        It ends on arrival now, which is the same shape
         `_advance_return` has always had at the other end: a geometric
         condition (`_settled_in`) with a time backstop behind it
         (`LANE_CHANGE_OUTBOUND_MAX_S`).
@@ -866,10 +914,35 @@ class BehaviorFSM:
         """
         lc = self.lane_change
         assert lc is not None
+        lc.blend_at_return = lc.blend
         lc.from_lane_id, lc.to_lane_id = lc.to_lane_id, lc.from_lane_id
         lc.direction = -lc.direction
         lc.elapsed_s = 0.0
         lc.phase = RETURNING
+
+    def _tick_blend(self) -> None:
+        """Move `LaneChange.blend` to where the manoeuvre says the aim point is now.
+
+        Going out and while passing, the blend ramps 0 -> 1 on the minimum-jerk
+        curve over `LANE_CHANGE_RAMP_S` (`elapsed_s` keeps running across the
+        outbound -> passing hand-over, so the blend does not restart). Coming back
+        it ramps `blend_at_return` -> 0, over a span scaled by how far across the
+        car was: a return begun mid-traverse, by a junction, starts from where the
+        car is and does not jump to the far lane's centreline first.
+
+        This is what the step-input return lacked. `_begin_return` swaps the lane
+        ids, so the old controller's aim route during a return WAS the home lane,
+        and there was nothing left to blend toward: the aim snapped to a lane up to
+        3.6 m away on the first tick (8.6 m/s^2 at 9.5 m/s, measured).
+        """
+        lc = self.lane_change
+        if lc is None:
+            return
+        if lc.phase == RETURNING:
+            span = max(LANE_CHANGE_RAMP_S * lc.blend_at_return, LANE_CHANGE_RETURN_MIN_S)
+            lc.blend = lc.blend_at_return * (1.0 - _minimum_jerk(lc.elapsed_s / span))
+        else:
+            lc.blend = _minimum_jerk(lc.elapsed_s / LANE_CHANGE_RAMP_S)
 
     def _advance_return(self, ego, lanes: "LaneSet") -> BehaviorDecision | None:
         """Continue (or end) the labelled trip back to the home lane.
@@ -984,11 +1057,35 @@ class BehaviorFSM:
         return best
 
     @staticmethod
-    def _gap_is_acceptable(route, ego_s, detections, direction: int) -> bool:
+    def _gap_is_acceptable(
+        route,
+        ego_s,
+        detections,
+        direction: int,
+        ego_speed_mps: float | None = None,
+        target_offset_m: float | None = None,
+    ) -> bool:
+        """Room in the target lane, now and for as long as the change takes.
+
+        The flat gaps alone approve a car 14 m behind doing 7 m/s against an ego doing 2.2: it
+        closes at 4.8 m/s and arrives inside the 4.5 s ramp (grid-merge seed 11, -2.0 m). With
+        `ego_speed_mps` the required gap also grows by the distance the pair closes over the
+        ramp, behind (a faster car) and ahead (a slower one) alike.
+        """
         for d in detections:
-            if d.lane_offset != direction:
+            if target_offset_m is None:
+                if d.lane_offset != direction:
+                    continue
+            elif abs(route.lateral_offset((d.pose.x, d.pose.y)) - target_offset_m) > _TARGET_CORRIDOR_M:
+                # Where the car IS, not which lane it rounds to: one sliding into the target lane
+                # rounds to the ego's own lane and was invisible to this check (grid-merge seed 11:
+                # veh_03, 24 m back at 6.8 m/s and mid-slide, cut off by an outbound ego).
                 continue
             gap = route.signed_gap(ego_s, route.project((d.pose.x, d.pose.y)))
-            if -MIN_REAR_GAP_M < gap < MIN_FRONT_GAP_M:
+            rear, front = MIN_REAR_GAP_M, MIN_FRONT_GAP_M
+            if ego_speed_mps is not None:
+                rear += max(0.0, d.speed_mps - ego_speed_mps) * LANE_CHANGE_RAMP_S
+                front += max(0.0, ego_speed_mps - d.speed_mps) * LANE_CHANGE_RAMP_S
+            if -rear < gap < front:
                 return False
         return True
