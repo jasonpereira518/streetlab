@@ -7,11 +7,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-    # TEMPORARY: the feature branch is listed so the build can be trialled before
-    # this workflow exists on main (workflow_dispatch needs it on the default
-    # branch). The release step below is tag-only, so a branch push publishes
-    # nothing. Remove this `branches` entry before merging.
-    branches: [claude/portfolio-credibility-plan-cbca8d]
   workflow_dispatch:
 
 permissions:

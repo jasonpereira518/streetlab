@@ -12,9 +12,7 @@ name: E2E (advisory)
 
 on:
   push:
-    # TEMPORARY: the feature branch is listed so this workflow can be trialled
-    # before it exists on main. Remove the second entry before merging.
-    branches: [main, claude/portfolio-credibility-plan-cbca8d]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

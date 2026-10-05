@@ -6,6 +6,7 @@ reactive traffic model, and a real computer-vision detector running in the
 loop. **A portfolio/learning project, not a production AV system** — nothing
 here is a safety claim.
 
+[![CI](https://github.com/jasonpereira518/streetlab/actions/workflows/ci.yml/badge.svg)](https://github.com/jasonpereira518/streetlab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![Status: Cycles 1–5 built, Cycle 6 in progress](https://img.shields.io/badge/status-Cycles%201–5%20built%2C%20Cycle%206%20in%20progress-brightgreen.svg)](docs/ARCHITECTURE.md#roadmap)
@@ -77,7 +78,7 @@ cd streetlab && npx vitest run                    # 276 tests in 17 files, inclu
 cd streetlab && npm run test:e2e                  # 21 Playwright tests in 5 specs
 ```
 
-Counts measured 2026-10-04.
+CI runs typecheck, vitest, pytest and the contract tests on every push ([Actions](https://github.com/jasonpereira518/streetlab/actions)). Playwright runs there as an advisory job: on GPU-less hosted runners a few canvas-screenshot specs time out ([measurements](docs/measurements/2026-10-04-e2e-flake-rate.md)), and the suite passes on a developer machine. Counts measured 2026-10-04.
 
 ## More
 

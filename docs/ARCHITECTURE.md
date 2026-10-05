@@ -30,8 +30,8 @@
 Two independently-tested packages, wired together over a WebSocket, plus a
 shared **contract** package (`contract/`) that generates fixtures from the
 real simulation and validates them against both the TypeScript and Python
-schemas — so a breaking field rename or type change fails the contract tests
-on both sides, not just one.
+schemas — so a breaking field rename or type change fails CI and the local
+contract tests on both sides, not just one.
 
 ## Roadmap
 
