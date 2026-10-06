@@ -257,6 +257,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--tick-hz", type=float, default=60.0)
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
     serve.add_argument(
+        "--no-stdin-watchdog",
+        action="store_true",
+        help="do not exit when stdin closes. The Tauri sidecar relies on that "
+        "exit; a container or service manager has no parent pipe, so "
+        "stdin is already at EOF and the watchdog would stop the server "
+        "right after it starts.",
+    )
+    serve.add_argument(
         "--perception",
         choices=("ground-truth", "ml"),
         default="ground-truth",
@@ -505,7 +513,8 @@ def _serve(args) -> int:
     )
     print(f"Point the frontend at:  ?backend=ws://{args.host}:{real_port}", file=sys.stderr)
 
-    _start_stdin_watchdog(sink)
+    if not args.no_stdin_watchdog:
+        _start_stdin_watchdog(sink)
 
     ready = {
         "ws": f"ws://{args.host}:{real_port}",

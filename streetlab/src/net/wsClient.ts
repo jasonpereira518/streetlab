@@ -14,7 +14,13 @@ import { createMockTransport } from './mockServer';
 
 /** The CLI's own default port — used so `npm run dev` + `streetlab serve`
  * works with no arguments on either side. */
-const BROWSER_DEV_DEFAULT_URL = 'ws://127.0.0.1:8765';
+const LOCAL_DEFAULT_URL = 'ws://127.0.0.1:8765';
+
+/** A hosted build (e.g. Vercel) sets `VITE_BACKEND_WS_URL` at build time to the
+ * externally hosted simulator; unset, the local CLI default applies. */
+const BROWSER_DEV_DEFAULT_URL =
+  (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+    ?.VITE_BACKEND_WS_URL || LOCAL_DEFAULT_URL;
 
 interface BackendHandshake {
   ws: string;
@@ -178,7 +184,8 @@ export function createWebSocketTransport(
  *   ?backend=ws://…     explicit override, for dev against a hand-started
  *                       server.
  *   Tauri IPC present   `backend_url()` from the sidecar handshake.
- *   otherwise           the CLI's own default (`ws://127.0.0.1:8765`), so
+ *   otherwise           `VITE_BACKEND_WS_URL` if set at build time, else the
+ *                       CLI's own default (`ws://127.0.0.1:8765`), so
  *                       `npm run dev` + `streetlab serve` works with no
  *                       arguments on either side.
  *
