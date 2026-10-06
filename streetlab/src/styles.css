@@ -511,6 +511,35 @@ canvas {
   border-left: 1px solid var(--c-border, #e4e9f0);
 }
 
+.mode-chip--stop {
+  border-left-color: var(--c-warn, #ff7a1a);
+  background: linear-gradient(90deg, var(--c-warn-soft, #fff0e4), transparent);
+}
+
+.mode-chip--stop .mode-chip-title,
+.mode-chip--stop .mode-chip-sub {
+  color: var(--c-warn, #ff7a1a);
+}
+
+.mode-chip--yield {
+  border-left-color: #e8b84a;
+  background: linear-gradient(90deg, rgba(232, 184, 74, 0.16), transparent);
+}
+
+.mode-chip--yield .mode-chip-title {
+  color: #b8860b;
+}
+
+.mode-chip--hazard {
+  border-left-color: var(--c-danger, #e5484d);
+  background: linear-gradient(90deg, var(--c-danger-soft, #fdecec), transparent);
+}
+
+.mode-chip--hazard .mode-chip-title,
+.mode-chip--hazard .mode-chip-sub {
+  color: var(--c-danger, #e5484d);
+}
+
 .mode-chip-title {
   font-size: 11.5px;
   font-weight: 700;
@@ -520,6 +549,10 @@ canvas {
 .mode-chip-sub {
   font-size: 10px;
   color: var(--c-text-faint, #9aa7b6);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .link-chip {
@@ -796,7 +829,6 @@ canvas {
   background: var(--c-accent, #0fb5c9);
   /* Only meaningful for a determinate bar -- the indeterminate one below
      drives its own position via `transform`, not `width`. */
-  transition: width 220ms ease;
 }
 
 /* No checkpoint has arrived yet (the ack-to-first-report gap) -- a sliding
@@ -1240,7 +1272,7 @@ canvas {
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 2px rgba(20, 29, 40, 0.25);
-  transition: transform 150ms cubic-bezier(0.34, 1.4, 0.64, 1);
+  transition: transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .switch.is-on .switch-knob { transform: translateX(16px); }

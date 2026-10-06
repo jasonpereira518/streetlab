@@ -35,6 +35,7 @@ from perception.capture import CaptureSink
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
+from perception.driver_view import visible_to_driver
 from perception.road_rules import RoadRulesObserver
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
@@ -481,14 +482,21 @@ class Simulation:
         answer whenever no ML source exists.
         """
         ego, agents, route = self.world.ego, self._traffic.agents, self.scene.ego_route
+        # Full ground truth stays available as the measurement reference /
+        # shadow. The driving feed is what the cabin can resolve: FOV plus
+        # building occlusion, with a short rear mirror cone so lane-change
+        # still sees approaching traffic behind.
         ground_truth = self._perception.observe(ego, agents, route)
+        driving = visible_to_driver(
+            ego, ground_truth, self.scene.description.buildings
+        )
         if self._ml_perception is None:
-            return ground_truth, None
+            return driving, None
         ml = self._ml_perception.observe(ego, agents, route)
         self._score_ml(ml)
         if self.perception_mode == "ml":
             return ml, ground_truth
-        return ground_truth, ml
+        return driving, ml
 
     def _score_ml(self, ml_detections: Sequence[Detection]) -> None:
         """Score the ML source's latest published frame against the truth
