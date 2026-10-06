@@ -123,6 +123,18 @@ assert STOP_ZONE_M >= STOP_MARGIN_M, (
 #: How long a stop sign is honoured at rest.
 STOP_DWELL_S = 1.0
 
+#: Radius around a stop line inside which other road users count as still
+#: occupying the junction. Tuned to cover a typical urban crossing without
+#: waiting for cars a block away.
+JUNCTION_CLEAR_M = 14.0
+
+#: Heading difference (radians) above which another vehicle is treated as
+#: crossing or opposing rather than same-direction traffic ahead of us.
+CROSS_TRAFFIC_HEADING_RAD = 0.7
+
+#: Speed above which a near vehicle is still "moving through" the junction.
+MOVING_MPS = 0.5
+
 #: Speed while edging across a junction.
 #:
 #: WARNING for whoever next retunes this, `CLEARED_M` below,
@@ -457,7 +469,9 @@ class BehaviorFSM:
         # Junction constraints outrank everything: a car about to stop at a
         # red has no business changing lane, and the two ceilings would
         # fight.
-        junction = self._junction_step(ego, route, ego_s, control_points, signals, dt)
+        junction = self._junction_step(
+            ego, route, ego_s, control_points, signals, dt, detections=detections
+        )
         if junction.state is not BehaviorState.CRUISE:
             decision = self._junction_abort(junction, ego, lanes, dt)
         else:
@@ -476,6 +490,8 @@ class BehaviorFSM:
         control_points: Sequence[ControlPoint],
         signals: Mapping[str, SignalState],
         dt: float,
+        *,
+        detections: Sequence[Detection] = (),
     ) -> BehaviorDecision:
         self._expire(route, ego_s)
         target = self._next_point(route, ego_s, control_points)
@@ -489,14 +505,23 @@ class BehaviorFSM:
 
         distance = route.signed_gap(ego_s, target.s)
 
-        # Already committed and moving through: nothing re-opens the decision.
+        # Already committed and moving through: re-check clearance so a late
+        # crosser can put us back to a hold, the way a human driver would.
         if self.state is BehaviorState.CREEP:
+            if not self._intersection_clear(ego, target, detections):
+                self.state = BehaviorState.STOP
+                # Do not zero dwell: we already fulfilled the stop obligation
+                # for this line. Recovery is clearance-only — requiring a
+                # fresh observed green after abort traps the car mid-box when
+                # the lamp has left the windscreen FOV behind.
+                maneuver = "arrived" if target.kind == "arrival" else "stop"
+                return BehaviorDecision(BehaviorState.STOP, 0.0, maneuver, target)
             return BehaviorDecision(BehaviorState.CREEP, CREEP_MPS, "yield", target)
 
         if distance <= STOP_ZONE_M and ego.speed_mps <= STOPPED_MPS:
             self.state = BehaviorState.STOP
             self.dwell_s += dt
-            if self._may_proceed(target, signals):
+            if self._may_proceed(target, signals, ego, detections, distance=distance):
                 self.state = BehaviorState.CREEP
                 return BehaviorDecision(BehaviorState.CREEP, CREEP_MPS, "yield", target)
             maneuver = "arrived" if target.kind == "arrival" else "stop"
@@ -631,6 +656,13 @@ class BehaviorFSM:
         if target.kind in ("stop_sign", "arrival"):
             return True
         phase = self._phase(target, signals)
+        if phase is None:
+            # No observed phase: the ego has not resolved this light by sight.
+            # Unknown defaults to stop — the unsafe direction is proceeding on
+            # an unverified green. (PlanContext used to treat missing as "off"
+            # so a map bug could not park the car forever; perception absence
+            # is a different claim and must not inherit that leniency.)
+            return True
         if phase == "red":
             return True
         if phase == "yellow":
@@ -652,7 +684,7 @@ class BehaviorFSM:
             if not self._committed(distance, ego):
                 return True
             return not self._can_clear(target, signals, distance, ego)
-        # green, flashing_yellow, off, or a signal with no phase at all.
+        # green, flashing_yellow, or off.
         return False
 
     def _can_clear(
@@ -684,13 +716,54 @@ class BehaviorFSM:
         return distance / ego.speed_mps <= left
 
     def _may_proceed(
-        self, target: ControlPoint, signals: Mapping[str, SignalState]
+        self,
+        target: ControlPoint,
+        signals: Mapping[str, SignalState],
+        ego: VehicleState,
+        detections: Sequence[Detection],
+        *,
+        distance: float = 0.0,
     ) -> bool:
         if target.kind == "arrival":
             return False  # the trip's own end: holds forever, by design
         if target.kind == "stop_sign":
-            return self.dwell_s >= STOP_DWELL_S
-        return self._phase(target, signals) not in ("red", "yellow")
+            if self.dwell_s < STOP_DWELL_S:
+                return False
+            return self._intersection_clear(ego, target, detections)
+        phase = self._phase(target, signals)
+        # Past the stop line: we already released into the box once. An
+        # unresolved phase (lamp behind us) must not re-trap the car —
+        # clearance alone decides recovery.
+        if distance < 0.0:
+            return self._intersection_clear(ego, target, detections)
+        if phase in (None, "red", "yellow"):
+            return False
+        # Green (or flashing / off): still yield to anyone already in the box.
+        return self._intersection_clear(ego, target, detections)
+
+    def _intersection_clear(
+        self,
+        ego: VehicleState,
+        target: ControlPoint,
+        detections: Sequence[Detection],
+    ) -> bool:
+        """True when no observed cross/opposing traffic occupies the junction.
+
+        Same-direction leads are handled by the tracker's car-following, not
+        here — this is the all-way-stop / unprotected-green question: is anyone
+        already moving through the crossing we are about to enter?
+        """
+        tx, ty = target.position
+        for d in detections:
+            dist = math.hypot(d.pose.x - tx, d.pose.y - ty)
+            if dist > JUNCTION_CLEAR_M:
+                continue
+            heading_diff = abs(math.remainder(d.pose.heading - ego.heading, math.tau))
+            if heading_diff < CROSS_TRAFFIC_HEADING_RAD:
+                continue  # co-directional: not cross traffic
+            if d.speed_mps >= MOVING_MPS or dist < JUNCTION_CLEAR_M * 0.45:
+                return False
+        return True
 
     @staticmethod
     def _committed(distance: float, ego: VehicleState) -> bool:

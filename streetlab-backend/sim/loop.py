@@ -35,6 +35,7 @@ from perception.capture import CaptureSink
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
+from perception.road_rules import RoadRulesObserver
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
@@ -223,6 +224,7 @@ class Simulation:
         self._perception = perception or GroundTruthPerception()
         self._planner = planner or CenterlineFollower()
         self._model = BicycleModel()
+        self._road_rules = RoadRulesObserver()
         self.world = WorldState()
         self.perception_pipeline = perception_pipeline
         # Built here, from the pipeline, so that every caller who asks for a
@@ -309,6 +311,7 @@ class Simulation:
         # genuinely new one.
         self.pose_history.clear()
         self._trip_complete_emitted = False
+        self._road_rules.reset()
         # Seeded at t = 0.0 right after the clear, because `state_update()` is
         # legitimately callable before any `step()` -- and because `world.t`
         # restarts at 0.0 above on every reset and scene swap, not just at
@@ -531,10 +534,12 @@ class Simulation:
 
         The single place a plan is produced. `state_update()` reads the cache
         rather than recomputing, so the ribbon the frontend draws is the plan
-        the integrator actually consumed. Signals are cached for the same
-        reason `posted_limit_mps` is passed rather than recomputed in
-        `state_update()`: the phase the car obeyed and the phase the HUD shows
-        must not be two separate computations that can drift.
+        the integrator actually consumed.
+
+        Ground-truth signal phases are cached on `world.signals` so the HUD and
+        the 3D lamps show the real world. The planner receives a *separate*
+        observed map from `RoadRulesObserver` — only devices the ego can see —
+        so the car's stop/go decisions are driven by vision, not the sim clock.
 
         `dt` defaults to `self.dt` -- `state_update()` calls this with no
         argument when it needs to plan before any `step()` has run. `step()`
@@ -545,10 +550,20 @@ class Simulation:
         dt = self.dt if dt is None else dt
         detections, detections_shadow = self._observe()
         signals = self._signals.state(self.world.t)
+        truth = {s.id: s for s in signals}
+        desc = self.scene.description
+        observed = self._road_rules.observe(
+            self.world.ego,
+            self.world.t,
+            truth,
+            desc.traffic_lights,
+            desc.stop_signs,
+            desc.buildings,
+        )
         context = PlanContext(
             t=self.world.t,
             dt=dt,
-            signals={s.id: s for s in signals},
+            signals=observed,
             control_points=self.scene.control_points,
             # Wired at the same moment `CenterlineFollower` gains the
             # execution behind a lane-change decision (Task 5, Cycle 3

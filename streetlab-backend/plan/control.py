@@ -106,9 +106,10 @@ class PlanContext:
     `_limits()` is rebuilt from `world.params` every frame and has no `t`.
 
     `signals` is keyed by `TrafficLight.id`, matching `ControlPoint.id` for
-    `kind == "signal"`. A control point whose id is absent has no phase and is
-    treated as off rather than as red -- a missing signal must not stop the car
-    forever.
+    `kind == "signal"`. These are the phases the *ego has observed* (see
+    `perception/road_rules.py`), not the sim clock. A control point whose id
+    is absent has no resolved phase — `BehaviorFSM` treats that as unknown and
+    stops, rather than as green.
     """
 
     t: float
@@ -235,6 +236,18 @@ class CenterlineFollower:
             _SPEED_GAIN * (target - ego.speed_mps), -_MAX_DECEL_MPS2, _MAX_ACCEL_MPS2
         )
 
+        lead, _gap = _closest_lead(detections, route, s)
+        reaction = None
+        if decision.target is not None:
+            reaction = decision.target.id
+        elif self.fsm.lane_change is not None and self.fsm.lane_change.lead_id:
+            reaction = self.fsm.lane_change.lead_id
+        elif decision.maneuver in ("stop", "yield", "arrived", "emergency_brake"):
+            # Only attribute a reaction source when the manoeuvre is a rules
+            # response — ordinary car-following should not fill the chip.
+            if lead is not None:
+                reaction = lead.id
+
         return PlanResult(
             plan=Plan(
                 polyline=route.polyline_ahead(
@@ -243,7 +256,7 @@ class CenterlineFollower:
                 target_speed_mps=max(0.0, target),
                 maneuver=decision.maneuver or _maneuver(route, s),
                 confidence=1.0 if limits.assist_enabled else 0.35,
-                reaction_source_id=None,
+                reaction_source_id=reaction,
             ),
             steer_rad=steer,
             accel_mps2=accel,

@@ -123,10 +123,16 @@ def test_a_stop_sign_always_requires_a_stop(road):
     assert d.maneuver == "stop"
 
 
-def test_a_signal_with_no_phase_is_treated_as_off_not_as_red(road):
-    """A missing id must not stop the car forever."""
+def test_a_signal_with_no_phase_is_treated_as_unknown_and_stopped_for(road):
+    """A missing observed phase is cautious: stop, do not assume green/off.
+
+    Pre-perception this was treated as off so a map bug could not park the
+    car forever. Once `PlanContext.signals` means "what ego has seen", absence
+    is an unresolved light and the safe default is to stop.
+    """
     d = BehaviorFSM().step(ego_at(0.0, 10.0), road, 0.0, light_at(20.0), {}, DT)
-    assert d.state is BehaviorState.CRUISE
+    assert d.state is BehaviorState.APPROACH
+    assert d.maneuver == "stop"
 
 
 def test_a_yellow_that_can_still_be_stopped_for_is_stopped_for(road):

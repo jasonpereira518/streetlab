@@ -748,12 +748,18 @@ def test_the_planner_receives_a_context_carrying_this_ticks_time():
     assert all(c.dt == pytest.approx(DT) for c in planner.contexts)
 
 
-def test_the_context_carries_a_phase_for_every_signal_in_the_scene():
+def test_the_planner_receives_only_observed_signal_phases():
+    """Ego plans on what it can see, not the full scene signal map.
+
+    The wire and NPC traffic still use the god-mode controller; the planner
+    context is a (possibly empty) subset produced by `RoadRulesObserver`.
+    """
     planner = _RecordingPlanner()
     sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
     sim.step()
     context = planner.contexts[-1]
-    assert set(context.signals) == set(sim.scene.signal_groups)
+    truth_ids = set(sim.scene.signal_groups)
+    assert set(context.signals) <= truth_ids
     assert all(s.phase for s in context.signals.values())
 
 
@@ -764,19 +770,20 @@ def test_the_context_carries_the_scenes_control_points():
     assert list(planner.contexts[-1].control_points) == list(sim.scene.control_points)
 
 
-def test_the_wire_reports_the_same_signal_phases_the_planner_was_given():
-    """The argument `sim/loop.py:329-333` already makes for `posted_limit_mps`:
-    a phase the HUD shows and a phase the car obeyed must not be two separate
-    computations that can drift.
+def test_observed_phases_agree_with_the_wire_when_both_report_a_light():
+    """When ego resolves a lamp by sight, that phase must match the truth the
+    HUD/renderer show for the same id — perception copies the controller, it
+    does not invent a second clock. Unobserved lights stay on the wire only.
     """
     planner = _RecordingPlanner()
     sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
     sim.step()
     frame = sim.state_update()
     given = planner.contexts[-1].signals
-    assert {s.id: s.phase for s in frame.signals} == {
-        k: v.phase for k, v in given.items()
-    }
+    wire = {s.id: s.phase for s in frame.signals}
+    assert set(wire) == set(sim.scene.signal_groups)
+    for light_id, state in given.items():
+        assert wire[light_id] == state.phase
 
 
 def test_the_plan_is_computed_once_per_tick():

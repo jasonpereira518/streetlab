@@ -1,14 +1,18 @@
 /**
- * Translucent blue ribbon laid over the road along `plan.polyline`.
+ * Translucent ribbon laid over the road along `plan.polyline`.
  *
  * Geometry is allocated once for a maximum point count and rewritten in place
  * every frame — no per-frame allocation, no buffer reupload beyond the vertices
  * actually in use. A TSL material adds a flow pulse travelling down the ribbon
  * and soft edges, so it reads as a projected plan rather than a flat decal.
+ *
+ * Colour tracks the planner manoeuvre: blue for cruise, amber for stop /
+ * approach, soft hold for yield — so rules-of-the-road compliance is visible
+ * in the scene, not only in the toolbar chip.
  */
 import * as THREE from 'three/webgpu';
-import { color, float, mix, smoothstep, time, uniform, uv } from 'three/tsl';
-import type { Vec2 } from '../schema';
+import { float, mix, smoothstep, time, uniform, uv } from 'three/tsl';
+import type { Maneuver, Vec2 } from '../schema';
 import { color as tokens } from '../ui/theme';
 import type { HeightFn } from './terrain';
 
@@ -30,6 +34,19 @@ const MAX_POINTS = 192;
 const RIDE_HEIGHT = 0.24;
 const HALF_WIDTH = 1.05;
 
+const INTENT_COLORS: Record<string, string> = {
+  keep_lane: tokens.plan,
+  turn_left: tokens.plan,
+  turn_right: tokens.plan,
+  lane_change_left: '#5B9CF5',
+  lane_change_right: '#5B9CF5',
+  stop: tokens.warn,
+  arrived: tokens.warn,
+  yield: '#E8B84A',
+  emergency_brake: tokens.danger,
+  pull_over: tokens.danger,
+};
+
 export class PathRibbon {
   readonly mesh: THREE.Mesh;
   private readonly geometry: THREE.BufferGeometry;
@@ -37,6 +54,8 @@ export class PathRibbon {
   private readonly positions: Float32Array;
   private readonly uvs: Float32Array;
   private readonly opacity = uniform(0.55);
+  private readonly baseColor = uniform(new THREE.Color(tokens.plan));
+  private readonly pulseColor = uniform(new THREE.Color('#8FC2FF'));
   private lastCount = 0;
 
   constructor() {
@@ -87,11 +106,7 @@ export class PathRibbon {
       smoothstep(float(1), float(0.55), flow),
     );
 
-    this.material.colorNode = mix(
-      color(tokens.plan),
-      color('#8FC2FF'),
-      pulse.mul(0.85),
-    );
+    this.material.colorNode = mix(this.baseColor, this.pulseColor, pulse.mul(0.85));
     this.material.opacityNode = edge
       .mul(tail)
       .mul(this.opacity)
@@ -106,6 +121,16 @@ export class PathRibbon {
 
   setOpacity(value: number): void {
     this.opacity.value = value;
+  }
+
+  /** Tint the ribbon to match the live manoeuvre (stop / yield / cruise…). */
+  setIntent(maneuver: Maneuver | string | null | undefined): void {
+    const hex = INTENT_COLORS[maneuver ?? 'keep_lane'] ?? tokens.plan;
+    this.baseColor.value.set(hex);
+    // A lighter pulse sibling so the flow still reads against the base.
+    this.pulseColor.value.set(hex).lerp(new THREE.Color('#FFFFFF'), 0.45);
+    const stopping = maneuver === 'stop' || maneuver === 'arrived' || maneuver === 'yield';
+    this.opacity.value = stopping ? 0.72 : 0.55;
   }
 
   /**
@@ -152,7 +177,7 @@ export class PathRibbon {
       if (i > 0) {
         travelled += Math.hypot(p[0] - polyline[i - 1][0], p[1] - polyline[i - 1][1]);
       }
-      const u = travelled / total;
+      const uCoord = travelled / total;
 
       const lx = p[0] + nx * HALF_WIDTH;
       const ly = p[1] + ny * HALF_WIDTH;
@@ -168,9 +193,9 @@ export class PathRibbon {
       this.positions[a + 5] = -ry;
 
       const b = i * 4;
-      this.uvs[b] = u;
+      this.uvs[b] = uCoord;
       this.uvs[b + 1] = 0;
-      this.uvs[b + 2] = u;
+      this.uvs[b + 2] = uCoord;
       this.uvs[b + 3] = 1;
     }
 

@@ -91,8 +91,17 @@ export function TopToolbar() {
   );
   const cruise = useFrameValue((f) => f.ego.cruise.mode, 4);
   const maneuver = useFrameValue((f) => f.plan.maneuver, 4);
+  const reaction = useFrameValue((f) => f.plan.reaction_source_id, 4);
 
   const ttcCritical = ttc != null && ttc < 2.5;
+  const ruleIntent =
+    maneuver === 'stop' || maneuver === 'arrived'
+      ? 'stop'
+      : maneuver === 'yield'
+        ? 'yield'
+        : maneuver === 'emergency_brake' || maneuver === 'pull_over'
+          ? 'hazard'
+          : 'cruise';
 
   return (
     <header className="toolbar">
@@ -163,12 +172,20 @@ export function TopToolbar() {
           <span className="readout-unit">TTC</span>
         </div>
 
-        <div className="mode-chip" title={MANEUVER_LABELS[maneuver ?? 'keep_lane']}>
+        <div
+          className={`mode-chip mode-chip--${ruleIntent}`}
+          title={
+            reaction
+              ? `${MANEUVER_LABELS[maneuver ?? 'keep_lane']} · reacting to ${reaction}`
+              : MANEUVER_LABELS[maneuver ?? 'keep_lane']
+          }
+        >
           <span className="mode-chip-title">
             {CRUISE_LABELS[cruise ?? 'off'] ?? 'Manual'}
           </span>
           <span className="mode-chip-sub">
             {MANEUVER_LABELS[maneuver ?? 'keep_lane']}
+            {reaction ? ` · ${reaction}` : ''}
           </span>
         </div>
       </div>

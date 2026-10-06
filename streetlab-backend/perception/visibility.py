@@ -109,3 +109,19 @@ def visible_fraction(
 def is_visible(fraction: float) -> bool:
     """Whether `fraction` clears `MIN_VISIBLE_FRACTION`."""
     return fraction >= MIN_VISIBLE_FRACTION
+
+
+def line_of_sight_clear(
+    camera: CameraParams,
+    x: float,
+    y: float,
+    z: float,
+    buildings: Sequence[Building],
+) -> bool:
+    """True when no building blocks the ray from `camera` to `(x, y, z)`.
+
+    Used by the ego's traffic-control observer for a single lamp/sign sample,
+    rather than the 9-point vehicle fraction above. Empty `buildings` means
+    clear — same contract as `visible_fraction`.
+    """
+    return not any(_blocked_at(camera, x, y, z, b) for b in buildings)

@@ -533,6 +533,7 @@ function mount(
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
     fleet.update(frame.detections, dt, ground_);
     ribbon.update(sample.plan, ground_);
+    ribbon.setIntent(frame.plan.maneuver);
     hazards.update(frame.detections, cam.camera, ground_);
     shadowBoxes.update(frame.detections_shadow, ground_);
     world?.updateSignals(frame.signals, frame.t);
