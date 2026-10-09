@@ -1,29 +1,29 @@
 {
   "type": "state_update",
   "protocol": 10,
-  "seq": 338,
-  "t": 5.633333333333319,
+  "seq": 366,
+  "t": 6.099999999999984,
   "sim_rate_hz": 60.0,
   "paused": false,
   "assist_active": true,
   "scenario_id": "grid-merge",
   "ego": {
     "pose": {
-      "x": 1.6676812946950292,
-      "y": 16.921512753940124,
-      "heading": 1.5348421848831295
+      "x": 1.6858543933974564,
+      "y": 17.436895543887246,
+      "heading": 1.5372793487448224
     },
-    "speed_mps": 6.996041823057208,
-    "accel_mps2": -1.524597674517981,
-    "steering_angle": 0.013292079270711465,
-    "yaw_rate": 0.03206807567804707,
-    "throttle": 0.0,
-    "brake": 0.338799483226218,
+    "speed_mps": 7.203804923932423,
+    "accel_mps2": 2.1583333333333337,
+    "steering_angle": 0.01398351143312212,
+    "yaw_rate": 0.03473829477795294,
+    "throttle": 0.9810606060606061,
+    "brake": 0.0,
     "gear": "D",
     "speed_limit_mps": 11.176,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 5.327454368168085
+      "set_speed_mps": 6.878106688008983
     },
     "size": {
       "length": 4.7,
@@ -36,9 +36,9 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 3.479999999999997,
-        "y": 66.31453289742134,
-        "heading": 1.9110525872482593
+        "x": 2.9199999999999964,
+        "y": 67.92731240950225,
+        "heading": 1.9045830487379263
       },
       "size": {
         "length": 4.6,
@@ -46,24 +46,24 @@
         "height": 1.45
       },
       "velocity": [
-        -1.1312030100249406,
-        3.1952609947670156
+        -1.1337702034174622,
+        3.2695977236444644
       ],
-      "speed_mps": 3.3895889241276715,
+      "speed_mps": 3.4605930342382556,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
-      "ttc_s": null,
-      "lane_offset": -1,
+      "ttc_s": 13.651777661174666,
+      "lane_offset": 0,
       "emergency": false
     },
     {
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
-        "x": 5.38,
-        "y": 27.396048159220967,
-        "heading": 1.8982324553685546
+        "x": 5.3,
+        "y": 27.672865406934307,
+        "heading": 1.7278759594743864
       },
       "size": {
         "length": 2.1,
@@ -71,10 +71,10 @@
         "height": 1.3
       },
       "velocity": [
-        -1.1362440454878784,
-        3.345212884248534
+        -0.5665670834787948,
+        3.5771637814792583
       ],
-      "speed_mps": 3.53291660980684,
+      "speed_mps": 3.621753577979686,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
@@ -88,22 +88,22 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 3.479999999999997,
-        "y": 66.31453289742134,
-        "heading": 1.9110525872482593
+        "x": 2.9199999999999964,
+        "y": 67.92731240950225,
+        "heading": 1.9045830487379263
       },
       "size": {
         "length": 4.6,
         "width": 1.9,
         "height": 1.45
       },
-      "speed_mps": 3.3895889241276715
+      "speed_mps": 3.4605930342382556
     },
     {
       "id": "veh_01",
       "cls": "car",
       "pose": {
-        "x": 48.69565364121007,
+        "x": 43.48775468931754,
         "y": 78.2,
         "heading": 0.0
       },
@@ -112,13 +112,13 @@
         "width": 1.95,
         "height": 1.5
       },
-      "speed_mps": 4.961499140243289
+      "speed_mps": 6.121664360689989
     },
     {
       "id": "veh_02",
       "cls": "truck",
       "pose": {
-        "x": 65.51767575252585,
+        "x": 66.01146847136896,
         "y": 78.2,
         "heading": 0.0
       },
@@ -127,14 +127,14 @@
         "width": 2.4,
         "height": 3.1
       },
-      "speed_mps": 1.234309537300415
+      "speed_mps": 0.9013083982698172
     },
     {
       "id": "veh_03",
       "cls": "car",
       "pose": {
         "x": 78.2,
-        "y": 11.317761374660776,
+        "y": 10.900707718374278,
         "heading": -1.5707963267948966
       },
       "size": {
@@ -142,37 +142,37 @@
         "width": 1.82,
         "height": 1.42
       },
-      "speed_mps": 3.499630367472568
+      "speed_mps": 3.4581994052849963
     },
     {
       "id": "veh_04",
       "cls": "bus",
       "pose": {
-        "x": 59.321817863409414,
+        "x": 60.744202944934834,
         "y": 1.799999999999999,
-        "heading": 3.141592653589793
+        "heading": -3.1415926535897927
       },
       "size": {
         "length": 11.5,
         "width": 2.55,
         "height": 3.3
       },
-      "speed_mps": 6.171145974237207
+      "speed_mps": 6.023160275456639
     },
     {
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
-        "x": 5.38,
-        "y": 27.396048159220967,
-        "heading": 1.8982324553685546
+        "x": 5.3,
+        "y": 27.672865406934307,
+        "heading": 1.7278759594743864
       },
       "size": {
         "length": 2.1,
         "width": 0.8,
         "height": 1.3
       },
-      "speed_mps": 3.53291660980684
+      "speed_mps": 3.621753577979686
     }
   ],
   "detections_shadow": null,
@@ -180,70 +180,70 @@
     "polyline": [
       [
         1.7999999999999996,
-        16.80498853927543
+        17.316900732488154
       ],
       [
         1.7999999999999996,
-        19.80498853927543
+        20.316900732488154
       ],
       [
         1.7999999999999996,
-        22.80498853927543
+        23.316900732488154
       ],
       [
         1.7999999999999996,
-        25.804988539275428
+        26.31690073248815
       ],
       [
         1.7999999999999996,
-        28.804988539275428
-      ],
-      [
-        1.7999999999999996,
-        31.804988539275428
+        29.31690073248815
       ],
       [
         1.7999999999999994,
-        34.80498853927543
+        32.31690073248815
       ],
       [
         1.7999999999999994,
-        37.80498853927543
+        35.31690073248815
       ],
       [
         1.7999999999999994,
-        40.80498853927543
+        38.31690073248815
       ],
       [
         1.7999999999999994,
-        43.80498853927543
+        41.31690073248815
       ],
       [
         1.7999999999999994,
-        46.80498853927543
+        44.31690073248815
+      ],
+      [
+        1.7999999999999994,
+        47.31690073248815
       ],
       [
         1.7999999999999992,
-        49.80498853927543
+        50.31690073248815
       ],
       [
         1.7999999999999992,
-        52.80498853927543
+        53.31690073248815
       ],
       [
         1.7999999999999992,
-        55.80498853927543
+        56.31690073248815
       ],
       [
         1.7999999999999992,
-        58.80498853927543
+        59.31690073248815
       ],
       [
         1.7999999999999992,
-        61.80498853927543
+        62.31690073248815
       ]
     ],
-    "target_speed_mps": 5.327454368168085,
+    "target_speed_mps": 6.878106688008983,
     "maneuver": "yield",
     "confidence": 1.0,
     "reaction_source_id": "veh_05"
@@ -252,18 +252,18 @@
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": -0.0007,
-        "range_m": 49.43,
-        "range_rate_mps": -3.61,
-        "rcs_db": 8.05,
+        "azimuth": 0.0091,
+        "range_m": 50.51,
+        "range_rate_mps": -3.74,
+        "rcs_db": 7.96,
         "tracked": true
       },
       {
         "id": "veh_05",
-        "azimuth": -0.3046,
-        "range_m": 11.11,
-        "range_rate_mps": -3.46,
-        "rcs_db": 11.11,
+        "azimuth": -0.3059,
+        "range_m": 10.86,
+        "range_rate_mps": -3.58,
+        "rcs_db": 11.13,
         "tracked": true
       },
       {
@@ -319,34 +319,34 @@
       "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
-      "offset_m": 0.13231870530497036,
-      "heading_error": -0.035954141911767046,
+      "offset_m": 0.11414560660254325,
+      "heading_error": -0.03351697805007414,
       "left_marking": "double_yellow",
       "right_marking": "dashed_white",
       "neighbors": [
         {
           "id": "veh_00",
           "cls": "car",
-          "lane_offset": -1,
-          "longitudinal_m": 49.39,
-          "lateral_m": -3.6,
-          "speed_mps": 3.3895889241276715,
+          "lane_offset": 0,
+          "longitudinal_m": 50.49,
+          "lateral_m": 0.0,
+          "speed_mps": 3.4605930342382556,
           "hazard": false
         },
         {
           "id": "veh_05",
           "cls": "motorcycle",
           "lane_offset": -1,
-          "longitudinal_m": 10.47,
+          "longitudinal_m": 10.24,
           "lateral_m": -3.6,
-          "speed_mps": 3.53291660980684,
+          "speed_mps": 3.621753577979686,
           "hazard": false
         }
       ]
     },
-    "ttc_s": null,
+    "ttc_s": 13.652,
     "vehicle": {
-      "battery_pct": 91.89,
+      "battery_pct": 91.88,
       "range_km": 404.3,
       "motor_temp_c": 38.1,
       "tire_pressure_kpa": [
@@ -388,211 +388,211 @@
       "planned": [
         {
           "t": -2.0,
-          "lateral_m": 0.094
+          "lateral_m": 0.125
         },
         {
           "t": -1.983,
-          "lateral_m": 0.102
+          "lateral_m": 0.132
         },
         {
           "t": -1.967,
-          "lateral_m": 0.109
+          "lateral_m": 0.138
         },
         {
           "t": -1.95,
-          "lateral_m": 0.116
+          "lateral_m": 0.144
         },
         {
           "t": -1.933,
-          "lateral_m": 0.123
+          "lateral_m": 0.149
         },
         {
           "t": -1.917,
-          "lateral_m": 0.129
+          "lateral_m": 0.154
         },
         {
           "t": -1.9,
-          "lateral_m": 0.136
+          "lateral_m": 0.159
         },
         {
           "t": -1.883,
-          "lateral_m": 0.141
+          "lateral_m": 0.164
         },
         {
           "t": -1.867,
-          "lateral_m": 0.147
+          "lateral_m": 0.168
         },
         {
           "t": -1.85,
-          "lateral_m": 0.152
+          "lateral_m": 0.172
         },
         {
           "t": -1.833,
-          "lateral_m": 0.157
+          "lateral_m": 0.18
         },
         {
           "t": -1.817,
-          "lateral_m": 0.162
+          "lateral_m": 0.189
         },
         {
           "t": -1.8,
-          "lateral_m": 0.167
+          "lateral_m": 0.198
         },
         {
           "t": -1.783,
-          "lateral_m": 0.171
+          "lateral_m": 0.207
         },
         {
           "t": -1.767,
-          "lateral_m": 0.175
+          "lateral_m": 0.215
         },
         {
           "t": -1.75,
-          "lateral_m": 0.185
+          "lateral_m": 0.223
         },
         {
           "t": -1.733,
-          "lateral_m": 0.194
+          "lateral_m": 0.231
         },
         {
           "t": -1.717,
-          "lateral_m": 0.203
+          "lateral_m": 0.239
         },
         {
           "t": -1.7,
-          "lateral_m": 0.211
+          "lateral_m": 0.246
         },
         {
           "t": -1.683,
-          "lateral_m": 0.219
+          "lateral_m": 0.254
         },
         {
           "t": -1.667,
-          "lateral_m": 0.228
+          "lateral_m": 0.26
         },
         {
           "t": -1.65,
-          "lateral_m": 0.235
+          "lateral_m": 0.267
         },
         {
           "t": -1.633,
-          "lateral_m": 0.243
+          "lateral_m": 0.274
         },
         {
           "t": -1.617,
-          "lateral_m": 0.25
+          "lateral_m": 0.28
         },
         {
           "t": -1.6,
-          "lateral_m": 0.257
+          "lateral_m": 0.286
         },
         {
           "t": -1.583,
-          "lateral_m": 0.264
+          "lateral_m": 0.291
         },
         {
           "t": -1.567,
-          "lateral_m": 0.271
+          "lateral_m": 0.297
         },
         {
           "t": -1.55,
-          "lateral_m": 0.277
+          "lateral_m": 0.302
         },
         {
           "t": -1.533,
-          "lateral_m": 0.283
+          "lateral_m": 0.307
         },
         {
           "t": -1.517,
-          "lateral_m": 0.289
+          "lateral_m": 0.312
         },
         {
           "t": -1.5,
-          "lateral_m": 0.294
+          "lateral_m": 0.316
         },
         {
           "t": -1.483,
-          "lateral_m": 0.3
+          "lateral_m": 0.32
         },
         {
           "t": -1.467,
-          "lateral_m": 0.305
+          "lateral_m": 0.324
         },
         {
           "t": -1.45,
-          "lateral_m": 0.31
+          "lateral_m": 0.328
         },
         {
           "t": -1.433,
-          "lateral_m": 0.314
+          "lateral_m": 0.332
         },
         {
           "t": -1.417,
-          "lateral_m": 0.318
+          "lateral_m": 0.335
         },
         {
           "t": -1.4,
-          "lateral_m": 0.323
+          "lateral_m": 0.338
         },
         {
           "t": -1.383,
-          "lateral_m": 0.326
+          "lateral_m": 0.341
         },
         {
           "t": -1.367,
-          "lateral_m": 0.33
+          "lateral_m": 0.343
         },
         {
           "t": -1.35,
-          "lateral_m": 0.334
+          "lateral_m": 0.346
         },
         {
           "t": -1.333,
-          "lateral_m": 0.337
+          "lateral_m": 0.348
         },
         {
           "t": -1.317,
-          "lateral_m": 0.34
+          "lateral_m": 0.35
         },
         {
           "t": -1.3,
-          "lateral_m": 0.342
+          "lateral_m": 0.352
         },
         {
           "t": -1.283,
-          "lateral_m": 0.345
-        },
-        {
-          "t": -1.267,
-          "lateral_m": 0.347
-        },
-        {
-          "t": -1.25,
-          "lateral_m": 0.349
-        },
-        {
-          "t": -1.233,
-          "lateral_m": 0.351
-        },
-        {
-          "t": -1.217,
           "lateral_m": 0.353
         },
         {
-          "t": -1.2,
-          "lateral_m": 0.354
-        },
-        {
-          "t": -1.183,
+          "t": -1.267,
           "lateral_m": 0.355
         },
         {
-          "t": -1.167,
+          "t": -1.25,
           "lateral_m": 0.356
         },
         {
-          "t": -1.15,
+          "t": -1.233,
           "lateral_m": 0.357
+        },
+        {
+          "t": -1.217,
+          "lateral_m": 0.357
+        },
+        {
+          "t": -1.2,
+          "lateral_m": 0.358
+        },
+        {
+          "t": -1.183,
+          "lateral_m": 0.358
+        },
+        {
+          "t": -1.167,
+          "lateral_m": 0.358
+        },
+        {
+          "t": -1.15,
+          "lateral_m": 0.358
         },
         {
           "t": -1.133,
@@ -604,405 +604,405 @@
         },
         {
           "t": -1.1,
-          "lateral_m": 0.358
+          "lateral_m": 0.357
         },
         {
           "t": -1.083,
-          "lateral_m": 0.358
-        },
-        {
-          "t": -1.067,
-          "lateral_m": 0.358
-        },
-        {
-          "t": -1.05,
-          "lateral_m": 0.358
-        },
-        {
-          "t": -1.033,
-          "lateral_m": 0.357
-        },
-        {
-          "t": -1.017,
-          "lateral_m": 0.357
-        },
-        {
-          "t": -1.0,
           "lateral_m": 0.356
         },
         {
-          "t": -0.983,
+          "t": -1.067,
           "lateral_m": 0.355
         },
         {
-          "t": -0.967,
+          "t": -1.05,
           "lateral_m": 0.354
         },
         {
-          "t": -0.95,
-          "lateral_m": 0.352
+          "t": -1.033,
+          "lateral_m": 0.353
         },
         {
-          "t": -0.933,
+          "t": -1.017,
           "lateral_m": 0.351
         },
         {
+          "t": -1.0,
+          "lateral_m": 0.35
+        },
+        {
+          "t": -0.983,
+          "lateral_m": 0.348
+        },
+        {
+          "t": -0.967,
+          "lateral_m": 0.346
+        },
+        {
+          "t": -0.95,
+          "lateral_m": 0.344
+        },
+        {
+          "t": -0.933,
+          "lateral_m": 0.342
+        },
+        {
           "t": -0.917,
-          "lateral_m": 0.349
+          "lateral_m": 0.339
         },
         {
           "t": -0.9,
-          "lateral_m": 0.347
+          "lateral_m": 0.337
         },
         {
           "t": -0.883,
-          "lateral_m": 0.345
+          "lateral_m": 0.334
         },
         {
           "t": -0.867,
-          "lateral_m": 0.343
+          "lateral_m": 0.332
         },
         {
           "t": -0.85,
-          "lateral_m": 0.341
+          "lateral_m": 0.329
         },
         {
           "t": -0.833,
-          "lateral_m": 0.338
+          "lateral_m": 0.326
         },
         {
           "t": -0.817,
-          "lateral_m": 0.336
+          "lateral_m": 0.323
         },
         {
           "t": -0.8,
-          "lateral_m": 0.333
+          "lateral_m": 0.319
         },
         {
           "t": -0.783,
-          "lateral_m": 0.33
+          "lateral_m": 0.316
         },
         {
           "t": -0.767,
-          "lateral_m": 0.327
+          "lateral_m": 0.313
         },
         {
           "t": -0.75,
-          "lateral_m": 0.324
+          "lateral_m": 0.309
         },
         {
           "t": -0.733,
-          "lateral_m": 0.321
+          "lateral_m": 0.306
         },
         {
           "t": -0.717,
-          "lateral_m": 0.318
+          "lateral_m": 0.302
         },
         {
           "t": -0.7,
-          "lateral_m": 0.314
+          "lateral_m": 0.298
         },
         {
           "t": -0.683,
-          "lateral_m": 0.311
+          "lateral_m": 0.294
         },
         {
           "t": -0.667,
-          "lateral_m": 0.307
+          "lateral_m": 0.29
         },
         {
           "t": -0.65,
-          "lateral_m": 0.304
+          "lateral_m": 0.286
         },
         {
           "t": -0.633,
-          "lateral_m": 0.3
+          "lateral_m": 0.282
         },
         {
           "t": -0.617,
-          "lateral_m": 0.296
+          "lateral_m": 0.278
         },
         {
           "t": -0.6,
-          "lateral_m": 0.292
+          "lateral_m": 0.274
         },
         {
           "t": -0.583,
-          "lateral_m": 0.288
+          "lateral_m": 0.27
         },
         {
           "t": -0.567,
-          "lateral_m": 0.284
+          "lateral_m": 0.265
         },
         {
           "t": -0.55,
-          "lateral_m": 0.28
+          "lateral_m": 0.261
         },
         {
           "t": -0.533,
-          "lateral_m": 0.276
+          "lateral_m": 0.257
         },
         {
           "t": -0.517,
-          "lateral_m": 0.272
+          "lateral_m": 0.252
         },
         {
           "t": -0.5,
-          "lateral_m": 0.267
+          "lateral_m": 0.248
         },
         {
           "t": -0.483,
-          "lateral_m": 0.263
+          "lateral_m": 0.243
         },
         {
           "t": -0.467,
-          "lateral_m": 0.259
+          "lateral_m": 0.239
         },
         {
           "t": -0.45,
-          "lateral_m": 0.254
+          "lateral_m": 0.234
         },
         {
           "t": -0.433,
-          "lateral_m": 0.25
+          "lateral_m": 0.23
         },
         {
           "t": -0.417,
-          "lateral_m": 0.245
+          "lateral_m": 0.225
         },
         {
           "t": -0.4,
-          "lateral_m": 0.241
+          "lateral_m": 0.221
         },
         {
           "t": -0.383,
-          "lateral_m": 0.236
+          "lateral_m": 0.216
         },
         {
           "t": -0.367,
-          "lateral_m": 0.232
+          "lateral_m": 0.211
         },
         {
           "t": -0.35,
-          "lateral_m": 0.227
+          "lateral_m": 0.207
         },
         {
           "t": -0.333,
-          "lateral_m": 0.222
+          "lateral_m": 0.202
         },
         {
           "t": -0.317,
-          "lateral_m": 0.218
+          "lateral_m": 0.198
         },
         {
           "t": -0.3,
-          "lateral_m": 0.213
+          "lateral_m": 0.193
         },
         {
           "t": -0.283,
-          "lateral_m": 0.209
+          "lateral_m": 0.188
         },
         {
           "t": -0.267,
-          "lateral_m": 0.204
+          "lateral_m": 0.184
         },
         {
           "t": -0.25,
-          "lateral_m": 0.199
+          "lateral_m": 0.179
         },
         {
           "t": -0.233,
-          "lateral_m": 0.195
+          "lateral_m": 0.175
         },
         {
           "t": -0.217,
-          "lateral_m": 0.19
+          "lateral_m": 0.17
         },
         {
           "t": -0.2,
-          "lateral_m": 0.186
+          "lateral_m": 0.166
         },
         {
           "t": -0.183,
-          "lateral_m": 0.181
+          "lateral_m": 0.161
         },
         {
           "t": -0.167,
-          "lateral_m": 0.176
+          "lateral_m": 0.157
         },
         {
           "t": -0.15,
-          "lateral_m": 0.172
+          "lateral_m": 0.152
         },
         {
           "t": -0.133,
-          "lateral_m": 0.167
+          "lateral_m": 0.148
         },
         {
           "t": -0.117,
-          "lateral_m": 0.163
+          "lateral_m": 0.144
         },
         {
           "t": -0.1,
-          "lateral_m": 0.158
+          "lateral_m": 0.139
         },
         {
           "t": -0.083,
-          "lateral_m": 0.154
+          "lateral_m": 0.135
         },
         {
           "t": -0.067,
-          "lateral_m": 0.15
+          "lateral_m": 0.131
         },
         {
           "t": -0.05,
-          "lateral_m": 0.145
+          "lateral_m": 0.126
         },
         {
           "t": -0.033,
-          "lateral_m": 0.141
+          "lateral_m": 0.122
         },
         {
           "t": -0.017,
-          "lateral_m": 0.137
+          "lateral_m": 0.118
         },
         {
           "t": 0.0,
-          "lateral_m": 0.132
+          "lateral_m": 0.114
         },
         {
           "t": 0.25,
-          "lateral_m": 0.107
+          "lateral_m": 0.093
         },
         {
           "t": 0.5,
-          "lateral_m": 0.087
+          "lateral_m": 0.075
         },
         {
           "t": 0.75,
-          "lateral_m": 0.071
+          "lateral_m": 0.061
         },
         {
           "t": 1.0,
-          "lateral_m": 0.058
+          "lateral_m": 0.05
         },
         {
           "t": 1.25,
-          "lateral_m": 0.047
+          "lateral_m": 0.04
         },
         {
           "t": 1.5,
-          "lateral_m": 0.038
+          "lateral_m": 0.033
         },
         {
           "t": 1.75,
-          "lateral_m": 0.031
+          "lateral_m": 0.027
         },
         {
           "t": 2.0,
-          "lateral_m": 0.025
+          "lateral_m": 0.022
         },
         {
           "t": 2.25,
-          "lateral_m": 0.02
+          "lateral_m": 0.018
         },
         {
           "t": 2.5,
-          "lateral_m": 0.016
+          "lateral_m": 0.014
         },
         {
           "t": 2.75,
-          "lateral_m": 0.013
+          "lateral_m": 0.012
         },
         {
           "t": 3.0,
-          "lateral_m": 0.011
-        },
-        {
-          "t": 3.25,
           "lateral_m": 0.009
         },
         {
-          "t": 3.5,
-          "lateral_m": 0.007
+          "t": 3.25,
+          "lateral_m": 0.008
         },
         {
-          "t": 3.75,
+          "t": 3.5,
           "lateral_m": 0.006
         },
         {
-          "t": 4.0,
+          "t": 3.75,
           "lateral_m": 0.005
+        },
+        {
+          "t": 4.0,
+          "lateral_m": 0.004
         }
       ],
       "threat": [
         {
           "t": 0.0,
-          "lateral_m": -3.717
+          "lateral_m": -3.618
         },
         {
           "t": 0.25,
-          "lateral_m": -3.432
+          "lateral_m": -3.477
         },
         {
           "t": 0.5,
-          "lateral_m": -3.148
+          "lateral_m": -3.335
         },
         {
           "t": 0.75,
-          "lateral_m": -2.864
+          "lateral_m": -3.193
         },
         {
           "t": 1.0,
-          "lateral_m": -2.58
+          "lateral_m": -3.052
         },
         {
           "t": 1.25,
-          "lateral_m": -2.296
+          "lateral_m": -2.91
         },
         {
           "t": 1.5,
-          "lateral_m": -2.012
+          "lateral_m": -2.768
         },
         {
           "t": 1.75,
-          "lateral_m": -1.728
+          "lateral_m": -2.627
         },
         {
           "t": 2.0,
-          "lateral_m": -1.444
+          "lateral_m": -2.485
         },
         {
           "t": 2.25,
-          "lateral_m": -1.16
+          "lateral_m": -2.343
         },
         {
           "t": 2.5,
-          "lateral_m": -0.876
+          "lateral_m": -2.202
         },
         {
           "t": 2.75,
-          "lateral_m": -0.592
+          "lateral_m": -2.06
         },
         {
           "t": 3.0,
-          "lateral_m": -0.308
+          "lateral_m": -1.919
         },
         {
           "t": 3.25,
-          "lateral_m": -0.024
+          "lateral_m": -1.777
         },
         {
           "t": 3.5,
-          "lateral_m": 0.26
+          "lateral_m": -1.635
         },
         {
           "t": 3.75,
-          "lateral_m": 0.544
+          "lateral_m": -1.494
         },
         {
           "t": 4.0,
-          "lateral_m": 0.828
+          "lateral_m": -1.352
         }
       ],
       "threat_label": "Yielding for motorcycle"
@@ -1012,102 +1012,102 @@
     {
       "id": "tl_-80_0_n",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_-80_0_s",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_-80_0_e",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_-80_0_w",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_0_-80_n",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_0_-80_s",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_0_-80_e",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_0_-80_w",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_0_0_n",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_0_0_s",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_0_0_e",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_0_0_w",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_0_80_n",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_0_80_s",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_0_80_e",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_0_80_w",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_80_0_n",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_80_0_s",
       "phase": "green",
-      "time_to_change_s": 6.38
+      "time_to_change_s": 5.92
     },
     {
       "id": "tl_80_0_e",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     },
     {
       "id": "tl_80_0_w",
       "phase": "red",
-      "time_to_change_s": 10.38
+      "time_to_change_s": 9.92
     }
   ],
   "events": [],

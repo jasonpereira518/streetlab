@@ -1,29 +1,29 @@
 {
   "type": "state_update",
   "protocol": 10,
-  "seq": 337,
-  "t": 5.616666666666652,
+  "seq": 361,
+  "t": 6.016666666666651,
   "sim_rate_hz": 60.0,
   "paused": false,
   "assist_active": true,
   "scenario_id": "grid-merge",
   "ego": {
     "pose": {
-      "x": 1.6634587805260883,
-      "y": 16.80498853927543,
-      "heading": 1.534307716955162
+      "x": 1.6650989320321852,
+      "y": 16.843006051448068,
+      "heading": 1.5344689371341809
     },
-    "speed_mps": 7.021451784299175,
+    "speed_mps": 7.0211660350435325,
     "accel_mps2": 2.2,
-    "steering_angle": 0.01308240973673426,
-    "yaw_rate": 0.031676810345379905,
+    "steering_angle": 0.013198426336666064,
+    "yaw_rate": 0.03195645654486744,
     "throttle": 1.0,
     "brake": 0.0,
     "gear": "D",
     "speed_limit_mps": 11.176,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 11.176
+      "set_speed_mps": 11.007000450826661
     },
     "size": {
       "length": 4.7,
@@ -36,9 +36,9 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 3.499999999999997,
-        "y": 66.25803974868589,
-        "heading": 1.9113140676097506
+        "x": 3.0199999999999965,
+        "y": 67.63920310667538,
+        "heading": 1.9053647548825619
       },
       "size": {
         "length": 4.6,
@@ -46,15 +46,15 @@
         "height": 1.45
       },
       "velocity": [
-        -1.1310982551623094,
-        3.192311520944192
+        -1.133462531060822,
+        3.26047430751649
       ],
-      "speed_mps": 3.386773702151391,
+      "speed_mps": 3.4518734071941197,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
-      "ttc_s": null,
-      "lane_offset": -1,
+      "ttc_s": 14.41226405107175,
+      "lane_offset": 0,
       "emergency": false
     }
   ],
@@ -63,22 +63,22 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 3.499999999999997,
-        "y": 66.25803974868589,
-        "heading": 1.9113140676097506
+        "x": 3.0199999999999965,
+        "y": 67.63920310667538,
+        "heading": 1.9053647548825619
       },
       "size": {
         "length": 4.6,
         "width": 1.9,
         "height": 1.45
       },
-      "speed_mps": 3.386773702151391
+      "speed_mps": 3.4518734071941197
     },
     {
       "id": "veh_01",
       "cls": "car",
       "pose": {
-        "x": 48.612961988872684,
+        "x": 42.97487486273252,
         "y": 78.2,
         "heading": 0.0
       },
@@ -87,13 +87,13 @@
         "width": 1.95,
         "height": 1.5
       },
-      "speed_mps": 4.984378093136145
+      "speed_mps": 6.203230415164874
     },
     {
       "id": "veh_02",
       "cls": "truck",
       "pose": {
-        "x": 65.49710392690416,
+        "x": 65.93450371931094,
         "y": 78.2,
         "heading": 0.0
       },
@@ -102,14 +102,14 @@
         "width": 2.4,
         "height": 3.1
       },
-      "speed_mps": 1.2469579428847217
+      "speed_mps": 0.957320316912951
     },
     {
       "id": "veh_03",
       "cls": "car",
       "pose": {
         "x": 78.2,
-        "y": 11.376088547452,
+        "y": 11.188857423178504,
         "heading": -1.5707963267948966
       },
       "size": {
@@ -117,29 +117,29 @@
         "width": 1.82,
         "height": 1.42
       },
-      "speed_mps": 3.499824811593273
+      "speed_mps": 3.4570078646256963
     },
     {
       "id": "veh_04",
       "cls": "bus",
       "pose": {
-        "x": 59.42467029631336,
+        "x": 61.24431028208351,
         "y": 1.799999999999999,
-        "heading": 3.141592653589793
+        "heading": -3.1415926535897927
       },
       "size": {
         "length": 11.5,
         "width": 2.55,
         "height": 3.3
       },
-      "speed_mps": 6.161737642875065
+      "speed_mps": 5.967986471266445
     },
     {
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
         "x": 5.3999999999999995,
-        "y": 27.33716621572419,
+        "y": 27.374755104013367,
         "heading": 1.5707963267948966
       },
       "size": {
@@ -147,7 +147,7 @@
         "width": 0.8,
         "height": 1.3
       },
-      "speed_mps": 3.5107258921495874
+      "speed_mps": 3.5105830175217663
     }
   ],
   "detections_shadow": null,
@@ -155,70 +155,70 @@
     "polyline": [
       [
         1.7999999999999996,
-        16.688043370688245
+        16.72606496043851
       ],
       [
         1.7999999999999996,
-        19.688043370688245
+        19.72606496043851
       ],
       [
         1.7999999999999996,
-        22.688043370688245
+        22.72606496043851
       ],
       [
         1.7999999999999996,
-        25.68804337068824
+        25.726064960438507
       ],
       [
         1.7999999999999996,
-        28.688043370688245
+        28.726064960438507
       ],
       [
         1.7999999999999996,
-        31.68804337068824
+        31.726064960438507
       ],
       [
         1.7999999999999994,
-        34.68804337068824
+        34.72606496043851
       ],
       [
         1.7999999999999994,
-        37.68804337068824
+        37.72606496043851
       ],
       [
         1.7999999999999994,
-        40.68804337068824
+        40.72606496043851
       ],
       [
         1.7999999999999994,
-        43.68804337068824
+        43.72606496043851
       ],
       [
         1.7999999999999994,
-        46.68804337068824
+        46.72606496043851
       ],
       [
         1.7999999999999992,
-        49.68804337068824
+        49.72606496043851
       ],
       [
         1.7999999999999992,
-        52.68804337068824
+        52.72606496043851
       ],
       [
         1.7999999999999992,
-        55.68804337068824
+        55.72606496043851
       ],
       [
         1.7999999999999992,
-        58.68804337068824
+        58.72606496043851
       ],
       [
         1.7999999999999992,
-        61.68804337068824
+        61.72606496043851
       ]
     ],
-    "target_speed_mps": 11.176,
+    "target_speed_mps": 11.007000450826661,
     "maneuver": "keep_lane",
     "confidence": 1.0,
     "reaction_source_id": null
@@ -227,10 +227,10 @@
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": -0.0006,
-        "range_m": 49.49,
-        "range_rate_mps": -3.63,
-        "rcs_db": 8.04,
+        "azimuth": 0.0097,
+        "range_m": 50.81,
+        "range_rate_mps": -3.57,
+        "rcs_db": 7.93,
         "tracked": true
       },
       {
@@ -286,25 +286,25 @@
       "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
-      "offset_m": 0.1365412194739113,
-      "heading_error": -0.036488609839734565,
+      "offset_m": 0.13490106796781443,
+      "heading_error": -0.03632738966071569,
       "left_marking": "double_yellow",
       "right_marking": "dashed_white",
       "neighbors": [
         {
           "id": "veh_00",
           "cls": "car",
-          "lane_offset": -1,
-          "longitudinal_m": 49.45,
-          "lateral_m": -3.6,
-          "speed_mps": 3.386773702151391,
+          "lane_offset": 0,
+          "longitudinal_m": 50.8,
+          "lateral_m": 0.0,
+          "speed_mps": 3.4518734071941197,
           "hazard": false
         }
       ]
     },
-    "ttc_s": null,
+    "ttc_s": 14.412,
     "vehicle": {
-      "battery_pct": 91.89,
+      "battery_pct": 91.88,
       "range_km": 404.3,
       "motor_temp_c": 38.1,
       "tire_pressure_kpa": [
@@ -346,195 +346,195 @@
       "planned": [
         {
           "t": -2.0,
-          "lateral_m": 0.086
+          "lateral_m": 0.089
         },
         {
           "t": -1.983,
-          "lateral_m": 0.094
+          "lateral_m": 0.097
         },
         {
           "t": -1.967,
-          "lateral_m": 0.102
+          "lateral_m": 0.105
         },
         {
           "t": -1.95,
-          "lateral_m": 0.109
+          "lateral_m": 0.112
         },
         {
           "t": -1.933,
-          "lateral_m": 0.116
+          "lateral_m": 0.119
         },
         {
           "t": -1.917,
-          "lateral_m": 0.123
+          "lateral_m": 0.125
         },
         {
           "t": -1.9,
-          "lateral_m": 0.129
+          "lateral_m": 0.132
         },
         {
           "t": -1.883,
-          "lateral_m": 0.136
+          "lateral_m": 0.138
         },
         {
           "t": -1.867,
-          "lateral_m": 0.141
+          "lateral_m": 0.144
         },
         {
           "t": -1.85,
-          "lateral_m": 0.147
+          "lateral_m": 0.149
         },
         {
           "t": -1.833,
-          "lateral_m": 0.152
+          "lateral_m": 0.154
         },
         {
           "t": -1.817,
-          "lateral_m": 0.157
+          "lateral_m": 0.159
         },
         {
           "t": -1.8,
-          "lateral_m": 0.162
+          "lateral_m": 0.164
         },
         {
           "t": -1.783,
-          "lateral_m": 0.167
+          "lateral_m": 0.168
         },
         {
           "t": -1.767,
-          "lateral_m": 0.171
+          "lateral_m": 0.172
         },
         {
           "t": -1.75,
-          "lateral_m": 0.175
+          "lateral_m": 0.18
         },
         {
           "t": -1.733,
-          "lateral_m": 0.185
+          "lateral_m": 0.189
         },
         {
           "t": -1.717,
-          "lateral_m": 0.194
+          "lateral_m": 0.198
         },
         {
           "t": -1.7,
-          "lateral_m": 0.203
+          "lateral_m": 0.207
         },
         {
           "t": -1.683,
-          "lateral_m": 0.211
+          "lateral_m": 0.215
         },
         {
           "t": -1.667,
-          "lateral_m": 0.219
+          "lateral_m": 0.223
         },
         {
           "t": -1.65,
-          "lateral_m": 0.228
+          "lateral_m": 0.231
         },
         {
           "t": -1.633,
-          "lateral_m": 0.235
+          "lateral_m": 0.239
         },
         {
           "t": -1.617,
-          "lateral_m": 0.243
+          "lateral_m": 0.246
         },
         {
           "t": -1.6,
-          "lateral_m": 0.25
+          "lateral_m": 0.254
         },
         {
           "t": -1.583,
-          "lateral_m": 0.257
+          "lateral_m": 0.26
         },
         {
           "t": -1.567,
-          "lateral_m": 0.264
+          "lateral_m": 0.267
         },
         {
           "t": -1.55,
-          "lateral_m": 0.271
+          "lateral_m": 0.274
         },
         {
           "t": -1.533,
-          "lateral_m": 0.277
+          "lateral_m": 0.28
         },
         {
           "t": -1.517,
-          "lateral_m": 0.283
+          "lateral_m": 0.286
         },
         {
           "t": -1.5,
-          "lateral_m": 0.289
+          "lateral_m": 0.291
         },
         {
           "t": -1.483,
-          "lateral_m": 0.294
+          "lateral_m": 0.297
         },
         {
           "t": -1.467,
-          "lateral_m": 0.3
+          "lateral_m": 0.302
         },
         {
           "t": -1.45,
-          "lateral_m": 0.305
+          "lateral_m": 0.307
         },
         {
           "t": -1.433,
-          "lateral_m": 0.31
+          "lateral_m": 0.312
         },
         {
           "t": -1.417,
-          "lateral_m": 0.314
+          "lateral_m": 0.316
         },
         {
           "t": -1.4,
-          "lateral_m": 0.318
+          "lateral_m": 0.32
         },
         {
           "t": -1.383,
-          "lateral_m": 0.323
+          "lateral_m": 0.324
         },
         {
           "t": -1.367,
-          "lateral_m": 0.326
+          "lateral_m": 0.328
         },
         {
           "t": -1.35,
-          "lateral_m": 0.33
+          "lateral_m": 0.332
         },
         {
           "t": -1.333,
-          "lateral_m": 0.334
+          "lateral_m": 0.335
         },
         {
           "t": -1.317,
-          "lateral_m": 0.337
+          "lateral_m": 0.338
         },
         {
           "t": -1.3,
-          "lateral_m": 0.34
+          "lateral_m": 0.341
         },
         {
           "t": -1.283,
-          "lateral_m": 0.342
+          "lateral_m": 0.343
         },
         {
           "t": -1.267,
-          "lateral_m": 0.345
+          "lateral_m": 0.346
         },
         {
           "t": -1.25,
-          "lateral_m": 0.347
+          "lateral_m": 0.348
         },
         {
           "t": -1.233,
-          "lateral_m": 0.349
+          "lateral_m": 0.35
         },
         {
           "t": -1.217,
-          "lateral_m": 0.351
+          "lateral_m": 0.352
         },
         {
           "t": -1.2,
@@ -542,15 +542,15 @@
         },
         {
           "t": -1.183,
-          "lateral_m": 0.354
-        },
-        {
-          "t": -1.167,
           "lateral_m": 0.355
         },
         {
-          "t": -1.15,
+          "t": -1.167,
           "lateral_m": 0.356
+        },
+        {
+          "t": -1.15,
+          "lateral_m": 0.357
         },
         {
           "t": -1.133,
@@ -586,259 +586,259 @@
         },
         {
           "t": -1.0,
-          "lateral_m": 0.357
-        },
-        {
-          "t": -0.983,
           "lateral_m": 0.356
         },
         {
-          "t": -0.967,
+          "t": -0.983,
           "lateral_m": 0.355
         },
         {
-          "t": -0.95,
+          "t": -0.967,
           "lateral_m": 0.354
         },
         {
-          "t": -0.933,
-          "lateral_m": 0.352
+          "t": -0.95,
+          "lateral_m": 0.353
         },
         {
-          "t": -0.917,
+          "t": -0.933,
           "lateral_m": 0.351
         },
         {
+          "t": -0.917,
+          "lateral_m": 0.35
+        },
+        {
           "t": -0.9,
-          "lateral_m": 0.349
+          "lateral_m": 0.348
         },
         {
           "t": -0.883,
-          "lateral_m": 0.347
+          "lateral_m": 0.346
         },
         {
           "t": -0.867,
-          "lateral_m": 0.345
+          "lateral_m": 0.344
         },
         {
           "t": -0.85,
-          "lateral_m": 0.343
+          "lateral_m": 0.342
         },
         {
           "t": -0.833,
-          "lateral_m": 0.341
+          "lateral_m": 0.339
         },
         {
           "t": -0.817,
-          "lateral_m": 0.338
+          "lateral_m": 0.337
         },
         {
           "t": -0.8,
-          "lateral_m": 0.336
+          "lateral_m": 0.334
         },
         {
           "t": -0.783,
-          "lateral_m": 0.333
+          "lateral_m": 0.332
         },
         {
           "t": -0.767,
-          "lateral_m": 0.33
+          "lateral_m": 0.329
         },
         {
           "t": -0.75,
-          "lateral_m": 0.327
+          "lateral_m": 0.326
         },
         {
           "t": -0.733,
-          "lateral_m": 0.324
+          "lateral_m": 0.323
         },
         {
           "t": -0.717,
-          "lateral_m": 0.321
+          "lateral_m": 0.319
         },
         {
           "t": -0.7,
-          "lateral_m": 0.318
+          "lateral_m": 0.316
         },
         {
           "t": -0.683,
-          "lateral_m": 0.314
+          "lateral_m": 0.313
         },
         {
           "t": -0.667,
-          "lateral_m": 0.311
+          "lateral_m": 0.309
         },
         {
           "t": -0.65,
-          "lateral_m": 0.307
+          "lateral_m": 0.306
         },
         {
           "t": -0.633,
-          "lateral_m": 0.304
+          "lateral_m": 0.302
         },
         {
           "t": -0.617,
-          "lateral_m": 0.3
+          "lateral_m": 0.298
         },
         {
           "t": -0.6,
-          "lateral_m": 0.296
+          "lateral_m": 0.294
         },
         {
           "t": -0.583,
-          "lateral_m": 0.292
+          "lateral_m": 0.29
         },
         {
           "t": -0.567,
-          "lateral_m": 0.288
+          "lateral_m": 0.286
         },
         {
           "t": -0.55,
-          "lateral_m": 0.284
+          "lateral_m": 0.282
         },
         {
           "t": -0.533,
-          "lateral_m": 0.28
+          "lateral_m": 0.278
         },
         {
           "t": -0.517,
-          "lateral_m": 0.276
+          "lateral_m": 0.274
         },
         {
           "t": -0.5,
-          "lateral_m": 0.272
+          "lateral_m": 0.27
         },
         {
           "t": -0.483,
-          "lateral_m": 0.267
+          "lateral_m": 0.265
         },
         {
           "t": -0.467,
-          "lateral_m": 0.263
+          "lateral_m": 0.261
         },
         {
           "t": -0.45,
-          "lateral_m": 0.259
+          "lateral_m": 0.257
         },
         {
           "t": -0.433,
-          "lateral_m": 0.254
+          "lateral_m": 0.252
         },
         {
           "t": -0.417,
-          "lateral_m": 0.25
+          "lateral_m": 0.248
         },
         {
           "t": -0.4,
-          "lateral_m": 0.245
+          "lateral_m": 0.243
         },
         {
           "t": -0.383,
-          "lateral_m": 0.241
+          "lateral_m": 0.239
         },
         {
           "t": -0.367,
-          "lateral_m": 0.236
+          "lateral_m": 0.234
         },
         {
           "t": -0.35,
-          "lateral_m": 0.232
+          "lateral_m": 0.23
         },
         {
           "t": -0.333,
-          "lateral_m": 0.227
+          "lateral_m": 0.225
         },
         {
           "t": -0.317,
-          "lateral_m": 0.222
+          "lateral_m": 0.221
         },
         {
           "t": -0.3,
-          "lateral_m": 0.218
+          "lateral_m": 0.216
         },
         {
           "t": -0.283,
-          "lateral_m": 0.213
+          "lateral_m": 0.211
         },
         {
           "t": -0.267,
-          "lateral_m": 0.209
+          "lateral_m": 0.207
         },
         {
           "t": -0.25,
-          "lateral_m": 0.204
+          "lateral_m": 0.202
         },
         {
           "t": -0.233,
-          "lateral_m": 0.199
+          "lateral_m": 0.198
         },
         {
           "t": -0.217,
-          "lateral_m": 0.195
+          "lateral_m": 0.193
         },
         {
           "t": -0.2,
-          "lateral_m": 0.19
+          "lateral_m": 0.188
         },
         {
           "t": -0.183,
-          "lateral_m": 0.186
+          "lateral_m": 0.184
         },
         {
           "t": -0.167,
-          "lateral_m": 0.181
+          "lateral_m": 0.179
         },
         {
           "t": -0.15,
-          "lateral_m": 0.176
+          "lateral_m": 0.175
         },
         {
           "t": -0.133,
-          "lateral_m": 0.172
+          "lateral_m": 0.17
         },
         {
           "t": -0.117,
-          "lateral_m": 0.167
+          "lateral_m": 0.166
         },
         {
           "t": -0.1,
-          "lateral_m": 0.163
+          "lateral_m": 0.161
         },
         {
           "t": -0.083,
-          "lateral_m": 0.158
+          "lateral_m": 0.157
         },
         {
           "t": -0.067,
-          "lateral_m": 0.154
+          "lateral_m": 0.152
         },
         {
           "t": -0.05,
-          "lateral_m": 0.15
+          "lateral_m": 0.148
         },
         {
           "t": -0.033,
-          "lateral_m": 0.145
+          "lateral_m": 0.144
         },
         {
           "t": -0.017,
-          "lateral_m": 0.141
+          "lateral_m": 0.139
         },
         {
           "t": 0.0,
-          "lateral_m": 0.137
+          "lateral_m": 0.135
         },
         {
           "t": 0.25,
-          "lateral_m": 0.111
+          "lateral_m": 0.11
         },
         {
           "t": 0.5,
-          "lateral_m": 0.09
+          "lateral_m": 0.089
         },
         {
           "t": 0.75,
-          "lateral_m": 0.073
+          "lateral_m": 0.072
         },
         {
           "t": 1.0,
@@ -854,11 +854,11 @@
         },
         {
           "t": 1.75,
-          "lateral_m": 0.032
+          "lateral_m": 0.031
         },
         {
           "t": 2.0,
-          "lateral_m": 0.026
+          "lateral_m": 0.025
         },
         {
           "t": 2.25,
@@ -901,107 +901,107 @@
     {
       "id": "tl_-80_0_n",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_-80_0_s",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_-80_0_e",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_-80_0_w",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_0_-80_n",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_0_-80_s",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_0_-80_e",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_0_-80_w",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_0_0_n",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_0_0_s",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_0_0_e",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_0_0_w",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_0_80_n",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_0_80_s",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_0_80_e",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_0_80_w",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_80_0_n",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_80_0_s",
       "phase": "green",
-      "time_to_change_s": 6.4
+      "time_to_change_s": 6.0
     },
     {
       "id": "tl_80_0_e",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     },
     {
       "id": "tl_80_0_w",
       "phase": "red",
-      "time_to_change_s": 10.4
+      "time_to_change_s": 10.0
     }
   ],
   "events": [
     {
-      "t": 5.617,
+      "t": 6.017,
       "level": "warn",
       "code": "cut_in",
       "message": "cut_in: veh_05 cutting in 11 m ahead",

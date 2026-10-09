@@ -459,8 +459,10 @@ def _offsets_outside_their_own_lane(records):
 
 
 def test_the_reported_offset_never_wraps_across_a_lane_on_grid_loop():
-    """120 s of the overtake scenario the tests above drive, judged frame by
-    frame: 7200 frames, of which 761 re-base (measured).
+    """180 s of the overtake scenario the tests above drive, judged frame by
+    frame (it was 120 s: 7200 frames, of which 761 re-based, the first at t=46.5 s).
+    Since the Phase 3 speed law the ego meets its first slow lead at t=136.7 s, so
+    120 s never reaches the re-basing branch (0 frames); 180 s does.
 
     Nothing in the suite bounded `offset_m` before this. Worst here was
     2.446 m -- a car 1.154 m off its route on Hyde St reported as two thirds of
@@ -469,15 +471,14 @@ def test_the_reported_offset_never_wraps_across_a_lane_on_grid_loop():
     against the lane it names. `LanePosition.tsx:37` draws the ego icon at this
     number, so the wire has to mean what the renderer reads.
 
-    The 120 s window is the shortest measured one that reaches the re-basing
-    branch at all (first at t=46.5 s) with room to spare; the sibling tests'
-    180 s adds 3 s of suite time and no new re-based frames.
+    The window is the sibling tests' 180 s, the shortest that reaches the re-basing
+    branch at all with room to spare.
     """
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     route = sim.scene.ego_route
     records = []
-    for _ in range(int(120.0 / DT)):
+    for _ in range(int(180.0 / DT)):
         sim.step()
         frame = sim.state_update()
         records.append(
@@ -1076,11 +1077,15 @@ def test_a_traverse_that_reaches_the_lane_holds_it(
         # best case of the whole behaviour, and excluded from the only test that judges it.
         # `closest < 0` is the independent evidence that the ego was ahead.
         passed = closest is not None and closest < 0
-        if not passed and _lead_gained(route, frames[turned], lead_id, gap0):
+        held = (turned - reached) * DT
+        # An episode that held the lane for `_HELD_MIN_S` or more has shown what this test asks
+        # whatever ended it, the lead driving away included. Only a SHORT hold needs the lead
+        # exclusion: a car turned round at once because its lead left says nothing about holding.
+        if held < _HELD_MIN_S and not passed and _lead_gained(route, frames[turned], lead_id, gap0):
             continue
-        judged.append((a, (turned - reached) * DT))
-        if (turned - reached) * DT < _HELD_MIN_S:
-            hasty.append((round(a * DT, 1), round((turned - reached) * DT, 3)))
+        judged.append((a, held))
+        if held < _HELD_MIN_S:
+            hasty.append((round(a * DT, 1), round(held, 3)))
     assert judged, (
         f"none of {len(runs)} episodes both reached the lane, turned round of "
         "their own accord, and still had a lead worth passing; there is nothing "

@@ -111,7 +111,8 @@ KNOWN_OVERLAPS = {
     ("grid-merge", 7): (
         "an 11.5 m bus takes lane_right's ~3.1 m-radius corner as a rigid box, "
         "sweeping ~5.3 m off its path into lane_ego, and clips a motorcycle there "
-        "(-0.46 m at t=22.0 s). The fillet is SyntheticGrid geometry the frozen "
+        "(-0.46 m at t=22.0 s; -0.82 m since traffic spawns at corner speed and the ego "
+        "drives the braking profile, same pair, same instant, ego not involved). The fillet is SyntheticGrid geometry the frozen "
         "benchmarks pin; the pair only meet since traffic obeys signals (#12). "
         "Needs traffic to give way to a long vehicle turning across its lane."
     ),

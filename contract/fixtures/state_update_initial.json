@@ -23,7 +23,7 @@
     "speed_limit_mps": 11.176,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 3.3689758816059947
+      "set_speed_mps": 4.317164255891927
     },
     "size": {
       "length": 4.7,
@@ -112,7 +112,7 @@
         "width": 1.95,
         "height": 1.5
       },
-      "speed_mps": 9.55061419910662
+      "speed_mps": 3.774946739452228
     },
     {
       "id": "veh_02",
@@ -157,7 +157,7 @@
         "width": 2.55,
         "height": 3.3
       },
-      "speed_mps": 7.796610009476339
+      "speed_mps": 3.535350349355194
     },
     {
       "id": "veh_05",
@@ -243,7 +243,7 @@
         43.39035452836218
       ]
     ],
-    "target_speed_mps": 3.3689758816059947,
+    "target_speed_mps": 4.317164255891927,
     "maneuver": "turn_right",
     "confidence": 1.0,
     "reaction_source_id": null

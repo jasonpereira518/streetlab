@@ -125,6 +125,20 @@ def test_a_stop_reports_where_the_nose_rests_against_the_line():
     assert stop.queued is False
 
 
+def test_a_stop_is_queued_if_a_lead_was_close_during_the_approach_even_if_it_left_before_rest():
+    speed = [5.0] * 60 + [0.0] * 120
+    lead = [4.0] * 30 + [np.nan] * 30 + [np.nan] * 120
+    run = make_run(
+        speed,
+        state=["approach"] * len(speed),
+        target_kind=["signal"] * len(speed),
+        line_gap=[9.0] * len(speed),
+        lead_gap=lead,
+    )
+    (stop,) = stop_episodes(run)
+    assert stop.queued is True
+
+
 def test_a_stop_behind_a_lead_is_marked_queued():
     speed = [5.0] * 60 + [0.0] * 120
     run = make_run(
@@ -185,6 +199,22 @@ def test_recording_a_real_run_fills_every_column_consistently():
     assert run.speed.max() > 1.0  # the ego is actually driving
     assert len(run.agent_heading_step) == len(run.agent_accel) > 0
     assert set(run.phase) <= {"none", "outbound", "passing", "returning"}
+
+
+def test_emergency_frames_are_exempt_from_the_ego_decel_and_jerk_budgets():
+    import dataclasses
+
+    from evaluation.driving_metrics import ego_jerk, ego_peak_decel
+
+    accel = [0.0, -0.5, -4.0, -4.0, -1.0, -0.5]
+    run = make_run([5.0] * 6, accel=accel)
+    assert ego_peak_decel(run) == 4.0
+    flagged = dataclasses.replace(run, emergency=np.array([False, False, True, True, False, False]))
+    assert ego_peak_decel(flagged) == 0.5
+    # The run-down after the label drops (EMERGENCY_TAIL_S) is exempt too, so here only the
+    # one calm pair before the event is judged.
+    assert len(ego_jerk(flagged)) == 1
+    assert np.abs(ego_jerk(flagged)).max() == pytest.approx(0.5 / DT)
 
 
 def test_peak_decel_is_zero_not_negative_when_the_ego_never_brakes():

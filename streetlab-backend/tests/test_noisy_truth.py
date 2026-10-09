@@ -89,14 +89,14 @@ def test_ground_truth_and_ml_agree_on_the_clearance_to_the_same_lead(built, gap)
 
     gt_clear = lead_clearance(gt_det, route.signed_gap(S0, route.project((gt_det.pose.x, gt_det.pose.y))))
     ml_clear = lead_clearance(ml_det, route.signed_gap(S0, route.project((ml_det.pose.x, ml_det.pose.y))))
-    assert gt_clear == pytest.approx(gap - 2.3)
-    # A near-face pose would be short by 2.3 m; centred, the residual is range error only.
+    assert gt_clear == pytest.approx(gap - 2.3 - 2.35)
+    # A near-face pose would be short by 2.3 m (body-to-body clearance); centred, the residual is range error only.
     assert abs(ml_clear - gt_clear) < 1.0, (gt_clear, ml_clear)
 
 
-def test_the_clearance_is_measured_from_the_ego_centre_to_the_leads_rear_face():
+def test_the_clearance_is_body_to_body():
     lead = SimpleNamespace(size=Size(length=4.6, width=1.9, height=1.5))
-    assert lead_clearance(lead, 20.0) == pytest.approx(20.0 - 2.3)
+    assert lead_clearance(lead, 20.0) == pytest.approx(20.0 - 2.3 - 2.35)
 
 
 def test_nothing_is_published_before_the_observation_latency_has_elapsed(built):

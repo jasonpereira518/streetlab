@@ -50,12 +50,12 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "streetlab-backend"))
 sys.path.insert(0, str(REPO / "scripts"))
 
-KEYS = ("nobhill", "grid", "grid_slow")
+KEYS = ("nobhill", "grid", "nobhill_slow", "grid_slow")
 SEEDS = (1, 2, 3, 4, 5)
 VARIANTS = ("gt", "noisy", "stress")
 HAZARD_RUN_S = 120.0
 STAGE_FROM_S, STAGE_UNTIL_S = 15.0, 105.0
-STANDARD_S = {"nobhill": 340.0, "grid": 150.0, "grid_slow": 200.0}
+STANDARD_S = {"nobhill": 340.0, "nobhill_slow": 340.0, "grid": 150.0, "grid_slow": 200.0}
 GAP_SLACK_S = 0.3
 REACT_FRACTION = 0.80
 DEGRADED_MAX = 0.05
@@ -123,7 +123,7 @@ def cmd_run(args) -> None:
     # The binding variants first (stress is only ever checked for collisions), and
     # longest first within each so the pool does not end on a lone Nob Hill run.
     cells.sort(key=lambda c: (c[3] == "stress",
-                              -(STANDARD_S[c[0]] if c[2] is None else HAZARD_RUN_S) * (3 if c[0] == "nobhill" else 1)))
+                              -(STANDARD_S[c[0]] if c[2] is None else HAZARD_RUN_S) * (3 if c[0].startswith("nobhill") else 1)))
     print(f"{len(cells)} cells to run, {len(done)} done", flush=True)
     with ProcessPoolExecutor(args.jobs) as pool, out.open("a") as fh:
         futures = {pool.submit(run_cell, c): c for c in cells}
