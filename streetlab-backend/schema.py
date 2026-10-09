@@ -451,8 +451,8 @@ class Plan(Wire):
     target_speed_mps: NonNeg
     maneuver: Maneuver
     confidence: Unit
-    # The detection the planner's current reaction is to, or null. Always
-    # null until Cycle 6 Phase 2's `plan/hazard.py` exists.
+    # The detection the planner's current reaction is to (`plan/hazard.py`:
+    # emergency braking or yielding), or null when it is not reacting.
     reaction_source_id: str | None
 
 

@@ -26,7 +26,12 @@ from schema import (
 )
 from tests.conftest import load_fixture
 
-STATE_FIXTURES = ["state_update_initial", "state_update_moving", "state_update_hazard"]
+STATE_FIXTURES = [
+    "state_update_initial",
+    "state_update_moving",
+    "state_update_hazard",
+    "state_update_reaction",
+]
 ACK_FIXTURES = ["ack_ok", "ack_error"]
 
 
@@ -56,8 +61,9 @@ def test_hazard_fixture_actually_exercises_non_null_optionals():
     raw = load_fixture("state_update_hazard")
     state = StateUpdate.model_validate(raw)
     assert any(d.hazard and d.hazard_label is not None for d in state.detections)
-    assert state.telemetry.trajectory.threat
-    assert state.telemetry.trajectory.threat_label is not None
+    reacting = StateUpdate.model_validate(load_fixture("state_update_reaction"))
+    assert reacting.telemetry.trajectory.threat
+    assert reacting.telemetry.trajectory.threat_label is not None
 
 
 def test_nullable_fields_keep_their_key_when_none():
@@ -96,9 +102,10 @@ def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
     assert scene.terrain is None
     frame = StateUpdate.model_validate(load_fixture("state_update_hazard"))
     assert frame.detections and all(d.emergency is False for d in frame.detections)
-    assert frame.plan.reaction_source_id is None
-    assert frame.telemetry.trajectory.threat
-    assert frame.telemetry.trajectory.threat_label is not None
+    reacting = StateUpdate.model_validate(load_fixture("state_update_reaction"))
+    assert reacting.plan.reaction_source_id is not None
+    assert reacting.telemetry.trajectory.threat
+    assert reacting.telemetry.trajectory.threat_label is not None
 
 
 @pytest.mark.parametrize(
@@ -109,7 +116,8 @@ def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
         ("scene_description", ("terrain",)),
         ("state_update_hazard", ("plan", "reaction_source_id")),
         ("state_update_hazard", ("detections", 0, "emergency")),
-        ("state_update_hazard", ("telemetry", "trajectory", "threat")),
+        ("state_update_reaction", ("plan", "reaction_source_id")),
+        ("state_update_reaction", ("telemetry", "trajectory", "threat")),
     ],
 )
 def test_required_fields_are_required_not_defaulted(fixture_name, path):
