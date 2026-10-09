@@ -257,3 +257,12 @@ def test_the_reference_path_is_the_line_the_car_actually_drives(built):
     route = built.ego_route
     for point in built.description.reference_path:
         assert math.dist(point, route.point_at(route.project(point))) < 0.05
+
+
+def test_catalog_descriptions_state_the_corner_controls_the_route_really_has():
+    """Text used to claim two signalised corners for a loop with three."""
+    by_id = {s.id: s.description for s in SyntheticGrid().scenarios()}
+    assert "3 signalised corners, 1 all-way stop; 25-35 mph." in by_id["grid-loop"]
+    assert "4 all-way stops; 25 mph." in by_id["grid-arterial"]
+    assert "3 signalised corners, 1 all-way stop" in by_id["grid-signals"]
+    assert "cut in without warning" not in by_id["grid-merge"]

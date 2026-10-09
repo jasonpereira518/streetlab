@@ -88,14 +88,12 @@ interface Agent {
 }
 
 interface Params {
-  cutin_period_s: number;
   traffic_speed_scale: number;
   assist_enabled: boolean;
   ego_speed_cap_mph: number;
 }
 
 const DEFAULT_PARAMS: Params = {
-  cutin_period_s: DEFAULT_CUTIN_PERIOD,
   traffic_speed_scale: 1,
   assist_enabled: true,
   ego_speed_cap_mph: 45,
@@ -382,7 +380,7 @@ export class MockSim {
         this.cutinTimer += dt;
         if (this.cutinTimer > 4.5) {
           this.cutinPhase = 'idle';
-          this.nextCutinAt = this.t + this.params.cutin_period_s;
+          this.nextCutinAt = this.t + DEFAULT_CUTIN_PERIOD;
           cutin.targetLateral = kerb;
           this.pushEvent('info', 'CUTIN_CLEARED', 'Cut-in vehicle settled');
         }
