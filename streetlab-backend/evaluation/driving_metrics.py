@@ -81,6 +81,9 @@ REACTION_WINDOW_S = 8.0
 #: infinite headway to everything).
 TIME_GAP_MIN_SPEED_MPS = MOVING_MPS
 
+#: Ego speed below which a staged hazard waits (see `record`'s `stage`).
+STAGE_MIN_EGO_MPS = 4.0
+
 #: Only agents this close can touch the ego; everything else skips the overlap test.
 COLLISION_PREFILTER_M = 8.0
 
@@ -313,16 +316,20 @@ def boxes_overlap(a, b) -> bool:
     return True
 
 
-def collisions(run: Run) -> int:
-    """How many times the ego's box came to overlap an agent's.
+def collision_events(run: Run) -> list[dict]:
+    """Each (agent, contiguous overlap) of the ego's box with an agent's, with who/where.
 
-    Counted per (agent, contiguous overlap): a car that stays inside the ego for
-    a second is one collision, not sixty. Zero when the run recorded no poses.
+    `bearing_deg` is the agent's direction from the ego, relative to the ego's
+    heading (0 ahead, +left, 180 behind), at first contact and one second
+    earlier -- what lets a failure be attributed to a blind spot beside the
+    ego (the driving feed sees 75 deg ahead, 40 deg behind) rather than to the
+    stack under test.
     """
     if not len(run.ego_x) or not run.agent_boxes:
-        return 0
+        return []
+    out: list[dict] = []
     touching: set[str] = set()
-    count = 0
+    back = max(1, round(1.0 / run.dt))
     for k, boxes in enumerate(run.agent_boxes):
         ego = (run.ego_x[k], run.ego_y[k], run.ego_heading[k], EGO_LENGTH_M, EGO_WIDTH_M)
         now: set[str] = set()
@@ -331,9 +338,42 @@ def collisions(run: Run) -> int:
                 continue
             if boxes_overlap(ego, (b.x, b.y, b.heading, b.length, b.width)):
                 now.add(b.id)
-        count += len(now - touching)
+        for agent_id in now - touching:
+            j = max(0, k - back)
+            before = next((b for b in run.agent_boxes[j] if b.id == agent_id), None)
+            at = next(b for b in boxes if b.id == agent_id)
+
+            def rel(box, frame):
+                return math.degrees(
+                    math.remainder(
+                        math.atan2(box.y - run.ego_y[frame], box.x - run.ego_x[frame]) - run.ego_heading[frame],
+                        math.tau,
+                    )
+                )
+
+            out.append(
+                {
+                    "t": float(run.t[k]),
+                    "agent": agent_id,
+                    "ego_speed_mps": float(run.speed[k]),
+                    "bearing_deg": rel(at, k),
+                    "bearing_1s_before_deg": None if before is None else rel(before, j),
+                    "dist_1s_before_m": None if before is None else math.hypot(
+                        before.x - run.ego_x[j], before.y - run.ego_y[j]
+                    ),
+                }
+            )
         touching = now
-    return count
+    return out
+
+
+def collisions(run: Run) -> int:
+    """How many times the ego's box came to overlap an agent's.
+
+    Counted per (agent, contiguous overlap): a car that stays inside the ego for
+    a second is one collision, not sixty. Zero when the run recorded no poses.
+    """
+    return len(collision_events(run))
 
 
 def time_gaps(run: Run) -> np.ndarray:
@@ -412,6 +452,7 @@ def record(
     label: str,
     *,
     inject: Sequence[tuple[float, str]] = (),
+    stage: tuple[str, float, float] | None = None,
 ) -> Run:
     """Step `sim` for `seconds` and record what the ego and the traffic did.
 
@@ -420,6 +461,13 @@ def record(
     The budgets are defined on hazard-free runs and nothing here filters hazard
     frames, so `inject` is for the closed-loop scorecard only: each `(t, kind)`
     fires `inject_hazard` on the first step at or after `t`.
+
+    `stage=(kind, from_s, until_s)` is the hazard audit's protocol instead: from
+    `from_s`, and only while the ego is doing at least `STAGE_MIN_EGO_MPS` (a
+    hazard sprung on a car standing at a red light tests nothing), ask for the
+    hazard every step until it is accepted or `until_s` passes. A staging the
+    scene declines ("no lane beside the ego here") is therefore retried, as a
+    person pressing the button would.
     """
     route = sim.scene.ego_route
     kinds = {cp.id: cp.kind for cp in sim.scene.control_points}
@@ -447,12 +495,19 @@ def record(
     boxes: list[tuple[AgentBox, ...]] = []
     pending = sorted(inject)
     injected: list[tuple[float, str]] = []
+    staging = stage
 
     for i in range(n):
         while pending and sim.world.t >= pending[0][0]:
             _, kind = pending.pop(0)
             if sim.apply_dict({"id": f"h{i}", "cmd": "inject_hazard", "kind": kind}).ok:
                 injected.append((sim.world.t, kind))
+        if staging is not None and staging[1] <= sim.world.t <= staging[2] and (
+            sim.world.ego.speed_mps >= STAGE_MIN_EGO_MPS
+        ):
+            if sim.apply_dict({"id": f"s{i}", "cmd": "inject_hazard", "kind": staging[0]}).ok:
+                injected.append((sim.world.t, staging[0]))
+                staging = None
         sim.step()
         ego = sim.world.ego
         fsm = sim._planner.fsm
@@ -568,12 +623,76 @@ def make_sim(key: str, nob_hill_scene, *, seed: int | None = None, **sim_kwargs)
     return sim
 
 
+def budget_failures(run: Run, key: str) -> dict[str, str | None]:
+    """Each driving budget against one run: None if met, else why not.
+
+    The assertions of `tests/test_driving_budgets.py`, as functions, so Gate S
+    criterion 4 ("every budget assertion the ground-truth run passes, the paired
+    noisy run passes") applies the very same checks the suite does. A budget with
+    nothing to measure (no lane change happened, the ego never stopped at a line)
+    FAILS, as it does in the suite.
+    """
+    out: dict[str, str | None] = {}
+
+    out["ego_decel"] = (
+        None if -run.accel.min() <= BUDGET.ego_decel_mps2
+        else f"peak decel {-run.accel.min():.2f} m/s2"
+    )
+    s = stats(longitudinal_jerk(run))
+    out["ego_jerk"] = (
+        None if s["p99"] <= BUDGET.ego_jerk_p99 and s["max"] <= BUDGET.ego_jerk_max
+        else f"jerk p99 {s['p99']:.1f}, max {s['max']:.0f} m/s3"
+    )
+    s = stats(lateral_accel(run))
+    out["lateral_accel"] = (
+        None if s["p99"] <= BUDGET.lateral_accel_p99 and s["max"] <= BUDGET.lateral_accel_max
+        else f"lateral accel p99 {s['p99']:.2f}, max {s['max']:.2f} m/s2"
+    )
+    lj = stats(lateral_jerk(run))["p99"]
+    out["lateral_jerk"] = None if lj <= BUDGET.lateral_jerk_p99 else f"lateral jerk p99 {lj:.1f}"
+
+    changing = {p: st for p, st in lateral_accel_by_phase(run).items() if p != "none"}
+    if not changing:
+        out["lane_change"] = "no lane change happened, nothing measured"
+    else:
+        bad = [p for p, st in changing.items() if st["max"] > BUDGET.lane_change_lateral_accel_max]
+        out["lane_change"] = None if not bad else f"lateral accel over budget in {bad}"
+
+    first = [st for st in stop_episodes(run) if not st.queued]
+    lo, hi = BUDGET.nose_gap_m
+    if not first:
+        out["nose_gap"] = out["stop_decel"] = "the ego never came to rest at a line"
+    else:
+        bad = [st for st in first if not lo <= st.nose_gap_m <= hi]
+        out["nose_gap"] = None if not bad else f"{len(bad)}/{len(first)} stops outside {lo}-{hi} m"
+        hard = [st for st in first if st.peak_decel_mps2 > BUDGET.ego_decel_mps2]
+        out["stop_decel"] = None if not hard else f"{len(hard)}/{len(first)} stops braked over budget"
+
+    out["overlap"] = (
+        None if lead_summary(run)["overlap_frames"] == 0
+        else f"{lead_summary(run)['overlap_frames']} overlap frames"
+    )
+    if key == "grid_slow":
+        gap = lead_summary(run)["standstill_gap_m"]
+        slo, shi = BUDGET.standstill_gap_m
+        out["standstill_gap"] = (
+            "the ego never stood behind a lead, nothing measured" if gap is None
+            else None if slo <= gap <= shi else f"standstill gap {gap:.2f} m"
+        )
+    step = agent_heading_step_deg(run).max()
+    out["agent_heading"] = None if step <= BUDGET.agent_heading_step_deg else f"{step:.1f} deg/tick"
+    p99 = float(np.percentile(np.maximum(-run.agent_accel, 0.0), 99))
+    out["agent_decel"] = None if p99 <= BUDGET.agent_decel_p99 else f"traffic decel p99 {p99:.2f}"
+    return out
+
+
 def closed_loop_summary(run: Run) -> dict:
     """The M0 scorecard metrics for one run, as plain JSON-able values."""
     return {
         "label": run.label,
         "seconds": float(run.t[-1]),
         "collisions": collisions(run),
+        "collision_events": collision_events(run),
         "min_time_gap_s": min_time_gap(run),
         "time_gap_p5_s": (
             float(np.percentile(time_gaps(run), 5)) if time_gaps(run).size else None

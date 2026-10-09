@@ -184,9 +184,23 @@ def perception_pipeline_for(args) -> PerceptionPipeline | None:
     own: Phase 1 shipped a resource leak precisely because a fix landed on
     one of those two paths and not the other.
     """
+    if args.perception == "noisy-truth":
+        # Closed-loop evaluation only: ground truth through a seeded noisy sensor,
+        # driving (spec 5a). Never reachable from the packaged app's command line.
+        from perception.noisy_truth import NOMINAL, NoisyTruthPerception
+
+        npt = NoisyTruthPerception(NOMINAL, getattr(args, "seed", 0))
+        npt.pipeline.source = npt
+        return npt.pipeline  # type: ignore[return-value]
     if args.perception != "ml":
         return None
     return PerceptionPipeline(build_detector(args.detector_model))
+
+
+def _drive_on_noisy_truth(sim, pipeline) -> None:
+    """`--perception noisy-truth` drives on the noisy sensor from the first step."""
+    if pipeline is not None and getattr(pipeline, "source", None) is not None:
+        sim.perception_mode = "ml"
 
 
 def capture_sink_for(args) -> CaptureSink | None:
@@ -266,10 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--perception",
-        choices=("ground-truth", "ml"),
+        choices=("ground-truth", "ml", "noisy-truth"),
         default="ground-truth",
         help="ground-truth drives on perfect sensing; ml additionally runs the "
-        "detector pipeline and reports it (shadow mode)",
+        "detector pipeline and reports it (shadow mode); noisy-truth DRIVES on "
+        "ground truth seen through a seeded noisy sensor (evaluation only)",
     )
     serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
     serve.add_argument(
@@ -301,10 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_.add_argument(
         "--perception",
-        choices=("ground-truth", "ml"),
+        choices=("ground-truth", "ml", "noisy-truth"),
         default="ground-truth",
         help="ground-truth drives on perfect sensing; ml additionally runs the "
-        "detector pipeline and reports it (shadow mode)",
+        "detector pipeline and reports it (shadow mode); noisy-truth DRIVES on "
+        "ground truth seen through a seeded noisy sensor (evaluation only)",
     )
     run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
 
@@ -483,8 +499,10 @@ def _serve(args) -> int:
             seed=args.seed,
             dt=1 / args.sim_hz,
             perception_pipeline=pipeline,
+            ml_perception=getattr(pipeline, "source", None),
             capture=sink is not None,
         )
+        _drive_on_noisy_truth(sim, pipeline)
     except _SOURCE_ERRORS as exc:
         # The pipeline's worker thread already exists by this point -- if
         # construction fails there is no later `finally` to reach, so it is
@@ -583,7 +601,9 @@ def _run(args) -> int:
             seed=args.seed,
             dt=1 / args.hz,
             perception_pipeline=pipeline,
+            ml_perception=getattr(pipeline, "source", None),
         )
+        _drive_on_noisy_truth(sim, pipeline)
     except _SOURCE_ERRORS as exc:
         # Same leak as `_serve`'s: the pipeline's worker thread already
         # exists, and this early return skips the `finally` below entirely.

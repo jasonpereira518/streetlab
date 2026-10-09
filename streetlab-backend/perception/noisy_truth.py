@@ -115,6 +115,8 @@ class _Sensor:
         self._next_capture = 0.0
         self._seq = 0
         self.failures = 0
+        #: The `NoisyTruthPerception` this sensor belongs to (set by the CLI).
+        self.source: object | None = None
         self.buildings: Sequence[Building] = ()
         self.ground: GroundFn | None = None
 
@@ -122,6 +124,10 @@ class _Sensor:
 
     def latest(self) -> PipelineResult | None:
         return self._latest
+
+    def submit_frame(self, frame) -> bool:
+        """Frames from a browser are not this sensor's input: it senses the world directly."""
+        return False
 
     def stats(self, mode: PerceptionMode, quality: ScoreResult | None = None) -> PerceptionStats:
         r = self._latest

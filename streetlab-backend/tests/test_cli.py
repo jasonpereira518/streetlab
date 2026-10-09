@@ -117,6 +117,35 @@ def test_ground_truth_builds_no_pipeline():
     assert perception_pipeline_for(args) is None
 
 
+def test_noisy_truth_builds_a_sensor_the_run_drives_on():
+    """`--perception noisy-truth` is evaluation-only: ground truth through a seeded noisy
+    sensor, DRIVING from the first step (unlike `ml`, which starts in shadow)."""
+    from map.scene_build import SyntheticGrid
+    from server.cli import _drive_on_noisy_truth, build_parser, perception_pipeline_for
+    from sim.loop import Simulation
+
+    args = build_parser().parse_args(["run", "--perception", "noisy-truth", "--seed", "3"])
+    pipeline = perception_pipeline_for(args)
+    assert pipeline.source is not None
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=3, perception_pipeline=pipeline,
+                     ml_perception=pipeline.source)
+    assert sim.perception_mode == "ground-truth"
+    _drive_on_noisy_truth(sim, pipeline)
+    assert sim.perception_mode == "ml"
+
+
+def test_run_completes_on_noisy_truth(capsys):
+    code, out = run(capsys, "run", "--duration", "6", "--seed", "3", "--perception", "noisy-truth")
+    assert code == 0 and "distance" in out.lower()
+
+
+def test_ground_truth_and_ml_runs_do_not_drive_on_a_noisy_sensor():
+    from server.cli import build_parser, perception_pipeline_for
+
+    args = build_parser().parse_args(["run"])
+    assert getattr(perception_pipeline_for(args), "source", None) is None
+
+
 def test_a_local_model_path_is_used_directly_without_the_cache(tmp_path, monkeypatch):
     """`--detector-model` is the development path: no download, no hashing,
     no cache directory touched at all."""
