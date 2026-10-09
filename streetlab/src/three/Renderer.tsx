@@ -369,7 +369,8 @@ function mount(
   // The merged building mesh (see world.ts), reused as the chase camera's
   // occlusion geometry so it never has to build its own spatial structure.
   // Captured once per scene build rather than looked up every frame.
-  let buildings: THREE.Object3D | null = null;
+  // Trees ride along: a canopy between the camera and the car hides it too.
+  let blockers: THREE.Object3D[] = [];
 
   /* ---- store wiring (imperative, no React re-render) ---- */
 
@@ -434,7 +435,9 @@ function mount(
     // A new world means the previous frames describe a different place;
     // nothing in them is worth interpolating from.
     timeline.reset();
-    buildings = world.root.getObjectByName('buildings') ?? null;
+    blockers = ['buildings', 'trees']
+      .map((n) => world!.root.getObjectByName(n))
+      .filter((o): o is THREE.Object3D => !!o);
     applyLayers(state.layers);
     cameraReset = true;
   };
@@ -557,7 +560,7 @@ function mount(
     const sample = timeline.sample();
     if (frame && sample) {
       if (cameraReset) {
-        cam.reset(sample.pose, buildings);
+        cam.reset(sample.pose, blockers);
         cameraReset = false;
       }
       // Re-run scene-graph updates every display frame even if the simulator
@@ -567,7 +570,7 @@ function mount(
       // The camera follows the pose that is actually on screen. Chasing the
       // raw wire pose instead would put the two on different clocks again,
       // which is the whole defect this exists to avoid.
-      cam.update(sample.pose, sample.speed_mps, cameraView, dt, buildings);
+      cam.update(sample.pose, sample.speed_mps, cameraView, dt, blockers);
       lastSeq = frame.seq;
     }
 
