@@ -576,40 +576,75 @@ describe('ChaseCamera', () => {
       );
     });
 
-    it('known limitation: does not clamp when the car itself starts inside a blocker', () => {
-      // Pins current behaviour rather than asserting a fix — see task-8
-      // review round 1, "Important 2". clampTrailDistance always casts
-      // outward from the car; that is correct for entering a wall from
-      // outside (the normal case, and the only one covered by the tests
-      // above), but if the car's own position is already inside a blocker's
-      // volume — e.g. an OSM building footprint overlapping the drivable
-      // lane — the ray would need to register an *exiting* hit against an
-      // interior-facing triangle. `world.ts`'s `buildingMaterial()` sets no
-      // `side`, so it defaults to `THREE.FrontSide`, and a FrontSide
-      // raycast from inside a solid mesh cannot see faces whose front
-      // (outward) normal points the same way as the ray — they're
-      // back-facing from the ray's perspective and get culled. Deliberately
-      // not fixed with a second ray: see task-8-report.md's fix-report
-      // section for the reachability assessment and cost tradeoff.
+    it('clamps when the car itself is inside a blocker, instead of trailing out through the far wall', () => {
+      // An OSM footprint can overlap the drivable lane, putting the car inside
+      // a solid. `buildingMaterial()` is single-sided, so a ray leaving the
+      // volume sees only back faces and used to return the trail unclamped,
+      // parking the camera on the far side of the wall (the old "known
+      // limitation" test pinned that). The exit face is now a hit, so the
+      // camera stays inside the volume with the car.
       const cam = new ChaseCamera(16 / 9);
       cam.reset(p);
-
-      // A solid, FrontSide box that *encloses the car itself* — the
-      // rest-pose ray origin (vx, height, vz) = (0, ~3.1, 0) sits well
-      // inside it — with an exit face at z=3, comfortably inside the ~8.4 m
-      // desired trail distance.
-      const enclosing = new THREE.Mesh(new THREE.BoxGeometry(40, 20, 6), new THREE.MeshBasicMaterial());
+      const enclosing = new THREE.Mesh(
+        new THREE.BoxGeometry(40, 20, 6),
+        new THREE.MeshBasicMaterial(), // FrontSide, like the real buildings
+      );
       enclosing.position.set(0, 10, 0);
       enclosing.updateMatrixWorld(true);
 
       for (let i = 0; i < 30; i++) cam.update(p, 0, 'chase', 1 / 60, enclosing);
 
-      // If this ever starts failing because the distance came back clamped,
-      // that's good news — it means the limitation above got fixed, and
-      // this test should be deleted (or flipped into a real regression
-      // test) rather than "fixed" to keep passing.
+      // Exit face at z=3: the rest trail is 8.4 m, so unclamped is > 8.
       const d = Math.hypot(cam.camera.position.x, cam.camera.position.z);
-      expect(d).toBeGreaterThan(8);
+      expect(d).toBeLessThan(4);
+      // The material the renderer draws with is left exactly as it was.
+      expect(enclosing.material.side).toBe(THREE.FrontSide);
+    });
+
+    it('is blocked by a low wall that the camera-height ray would pass over', () => {
+      // The ray used to run level at camera height (3.1 m). A 2.5 m wall 2 m
+      // behind the car is under that, yet it hides a car whose eye-line runs
+      // from 1 m up to the camera.
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      const low = new THREE.Mesh(new THREE.BoxGeometry(40, 2.5, 1), new THREE.MeshBasicMaterial());
+      low.position.set(0, 1.25, 3);
+      low.updateMatrixWorld(true);
+      for (let i = 0; i < 60; i++) cam.update(p, 0, 'chase', 1 / 60, low);
+      expect(Math.hypot(cam.camera.position.x, cam.camera.position.z)).toBeLessThan(3);
+    });
+
+    it('casts the occlusion ray at most 30 times a second, however fast frames come', () => {
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      const wall = wallAt(200);
+      let casts = 0;
+      const raycast = wall.raycast.bind(wall);
+      wall.raycast = (rc, hits) => {
+        casts++;
+        raycast(rc, hits);
+      };
+      for (let i = 0; i < 240; i++) cam.update(p, 12, 'chase', 1 / 240, wall); // 1 s at 240 fps
+      expect(casts).toBeGreaterThan(25);
+      expect(casts).toBeLessThanOrEqual(31);
+    });
+
+    it('pulls in for a tree canopy between the camera and the car, given as one of several blockers', () => {
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      const canopy = new THREE.Mesh(new THREE.SphereGeometry(2.5, 12, 8), new THREE.MeshBasicMaterial());
+      canopy.position.set(0, 3, 6); // behind the car, level with the camera line
+      canopy.updateMatrixWorld(true);
+      const farWall = new THREE.Mesh(new THREE.BoxGeometry(40, 20, 1), new THREE.MeshBasicMaterial());
+      farWall.position.set(0, 10, 200);
+      farWall.updateMatrixWorld(true);
+      for (let i = 0; i < 60; i++) cam.update(p, 0, 'chase', 1 / 60, [farWall, canopy]);
+      expect(Math.hypot(cam.camera.position.x, cam.camera.position.z)).toBeLessThan(4.5);
+
+      // Switch the layer off and the camera opens back up.
+      canopy.visible = false;
+      for (let i = 0; i < 400; i++) cam.update(p, 0, 'chase', 1 / 60, [farWall, canopy]);
+      expect(Math.hypot(cam.camera.position.x, cam.camera.position.z)).toBeGreaterThan(8);
     });
   });
 });
@@ -792,4 +827,73 @@ describe('ChaseCamera on the real Nob Hill route', () => {
     const { blocked, frames } = drive(1 / 30, 2);
     expect({ blocked, frames }).toEqual({ blocked: 0, frames });
   });
+});
+
+describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
+  /**
+   * Drives the shipped Nob Hill reference path at 24 mph (the cruise speed
+   * where the trail is long enough to reach roadside canopies) and counts the
+   * frames where the camera-to-car sight line crosses a tree. Measured when
+   * written: 53 of 3273 frames with the buildings alone as blockers, 21 with
+   * the trees too. Not zero -- the camera is damped behind the target -- so
+   * the bound is "at least halved", not "none".
+   */
+  it('hides the car behind a canopy far less often when trees are blockers', () => {
+    const scene = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'tests/fixtures/nobHillScene.json'), 'utf8'),
+    );
+    // Sign/lamp textures need a DOM canvas; neither matters to occlusion.
+    const world = buildWorld({ ...scene, stop_signs: [], traffic_lights: [], street_signs: [] });
+    world.root.updateMatrixWorld(true);
+    const bld = world.root.getObjectByName('buildings')!;
+    const trees = world.root.getObjectByName('trees')!;
+
+    const pts: [number, number][] = scene.reference_path;
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) {
+      cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    }
+    const at = (s: number): [number, number] => {
+      let i = 1;
+      while (i < cum.length - 1 && cum[i] < s) i++;
+      const f = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+      return [
+        pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f,
+        pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f,
+      ];
+    };
+    const speed = 24 * 0.44704;
+    const dt = 1 / 30;
+
+    const blockedFrames = (blockers: THREE.Object3D[]) => {
+      const cam = new ChaseCamera(16 / 9);
+      cam.setGround(world.heightAt);
+      const ray = new THREE.Raycaster();
+      const dir = new THREE.Vector3();
+      let blocked = 0;
+      let first = true;
+      for (let s = 0; s < cum[cum.length - 1] - 2; s += speed * dt) {
+        const [x, y] = at(s);
+        const [x2, y2] = at(s + 1.5);
+        const pose = { x, y, heading: Math.atan2(y2 - y, x2 - x) };
+        if (first) cam.reset(pose, blockers);
+        first = false;
+        cam.update(pose, speed, 'chase', dt, blockers);
+        const ego = new THREE.Vector3(x, world.heightAt(x, y) + 1.0, -y);
+        dir.copy(ego).sub(cam.camera.position);
+        const len = dir.length();
+        ray.set(cam.camera.position, dir.normalize());
+        ray.near = 0;
+        ray.far = len;
+        if (ray.intersectObject(trees, true).length) blocked++;
+      }
+      return blocked;
+    };
+
+    const without = blockedFrames([bld]);
+    const withTrees = blockedFrames([bld, trees]);
+    world.dispose();
+    expect(without).toBeGreaterThan(20); // the problem is real on this route
+    expect(withTrees).toBeLessThanOrEqual(without / 2);
+  }, 60_000);
 });

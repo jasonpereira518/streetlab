@@ -438,101 +438,73 @@ function buildTrees(): Tree[] {
 /* Scenario catalog                                                  */
 /* ---------------------------------------------------------------- */
 
-/** Thumbnail geometry lives in a 0..100 box; the minimap canvas scales it. */
-function previewGrid(xs: number[], ys: number[]): Vec2[][] {
-  const paths: Vec2[][] = [];
-  for (const x of xs) paths.push([[x, 2], [x, 98]]);
-  for (const y of ys) paths.push([[2, y], [98, y]]);
-  return paths;
-}
-
-function previewRect(x0: number, y0: number, x1: number, y1: number): Vec2[] {
-  return [
-    [x0, y0],
-    [x0, y1],
-    [x1, y1],
-    [x1, y0],
-    [x0, y0],
-  ];
-}
-
+/**
+ * The backend's synthetic catalog, entry for entry (`SyntheticGrid` in
+ * `streetlab-backend/map/scene_build.py`, as frozen in
+ * `contract/fixtures/scene_description.json`): ids, names, previews and all.
+ * `tests/mockParity.test.ts` holds the two together. Thumbnail geometry lives
+ * in a 0..100 box; the minimap canvas scales it.
+ */
 export const SCENARIOS: ScenarioSummary[] = [
   {
-    id: 'nob-hill-loop',
+    id: 'grid-loop',
     index: 1,
     name: 'Nob Hill Loop',
-    location: 'Nob Hill',
-    description: 'Signalised grid circuit with a scripted cut-in',
-    duration_s: 180,
+    location: 'Synthetic Grid',
+    description: 'A single block circuit with two signalised corners. The gentlest way in.',
+    duration_s: 180.0,
     bookmarked: true,
-    difficulty: 'moderate',
-    preview_paths: previewGrid([22, 55, 84], [20, 52, 82]),
-    preview_route: previewRect(28, 26, 78, 76),
+    difficulty: 'easy',
+    preview_paths: [[[19.231,0.0],[19.231,100.0]],[[50.0,0.0],[50.0,100.0]],[[80.769,0.0],[80.769,100.0]],[[0.0,19.231],[100.0,19.231]],[[0.0,50.0],[100.0,50.0]],[[0.0,80.769],[100.0,80.769]]],
+    preview_route: [[53.0,50.692],[51.032,51.809],[50.692,54.112],[50.692,56.478],[50.692,58.844],[50.692,61.209],[50.692,63.575],[50.692,65.941],[50.692,68.306],[50.692,70.672],[50.692,73.038],[50.692,75.404],[50.692,77.769],[51.809,79.737],[54.112,80.077],[56.478,80.077],[58.844,80.077],[61.209,80.077],[63.575,80.077],[65.941,80.077],[68.306,80.077],[70.672,80.077],[73.038,80.077],[75.404,80.077],[77.769,80.077],[79.737,78.96],[80.077,76.657],[80.077,74.291],[80.077,71.926],[80.077,69.56],[80.077,67.194],[80.077,64.828],[80.077,62.463],[80.077,60.097],[80.077,57.731],[80.077,55.366],[80.077,53.0],[78.96,51.032],[76.657,50.692],[74.291,50.692],[71.926,50.692],[69.56,50.692],[67.194,50.692],[64.828,50.692],[62.463,50.692],[60.097,50.692],[57.731,50.692],[55.366,50.692],[53.0,50.692]],
   },
   {
-    id: 'california-arterial',
+    id: 'grid-arterial',
     index: 2,
     name: 'California Arterial',
-    location: 'Nob Hill',
-    description: 'Four-lane straight with dense cross traffic',
-    duration_s: 240,
-    bookmarked: false,
-    difficulty: 'easy',
-    preview_paths: previewGrid([18, 44, 70, 92], [50]),
-    preview_route: [
-      [6, 44],
-      [94, 44],
-    ],
-  },
-  {
-    id: 'hyde-descent',
-    index: 3,
-    name: 'Hyde St Descent',
-    location: 'Russian Hill',
-    description: 'Steep grade, blind crest, parked-car occlusion',
-    duration_s: 150,
-    bookmarked: false,
-    difficulty: 'hard',
-    preview_paths: previewGrid([30, 68], [16, 44, 72]),
-    preview_route: [
-      [30, 92],
-      [30, 52],
-      [68, 52],
-      [68, 10],
-    ],
-  },
-  {
-    id: 'union-square-merge',
-    index: 4,
-    name: 'Union Square Merge',
-    location: 'Union Square',
-    description: 'Unprotected left across two lanes of oncoming traffic',
-    duration_s: 120,
-    bookmarked: true,
-    difficulty: 'hard',
-    preview_paths: previewGrid([26, 60], [30, 66]),
-    preview_route: [
-      [8, 30],
-      [60, 30],
-      [60, 92],
-    ],
-  },
-  {
-    id: 'embarcadero-night',
-    index: 5,
-    name: 'Embarcadero Night',
-    location: 'Embarcadero',
-    description: 'Low-light run with pedestrians and a stalled vehicle',
-    duration_s: 200,
+    location: 'Synthetic Grid',
+    description: 'The long way round on the two arterials, at 35 mph with cross traffic.',
+    duration_s: 300.0,
     bookmarked: false,
     difficulty: 'moderate',
-    preview_paths: previewGrid([40, 74], [24, 58, 88]),
-    preview_route: [
-      [10, 88],
-      [40, 88],
-      [40, 24],
-      [92, 24],
-    ],
+    preview_paths: [[[19.231,0.0],[19.231,100.0]],[[50.0,0.0],[50.0,100.0]],[[80.769,0.0],[80.769,100.0]],[[0.0,19.231],[100.0,19.231]],[[0.0,50.0],[100.0,50.0]],[[0.0,80.769],[100.0,80.769]]],
+    preview_route: [[22.231,19.923],[19.923,23.541],[19.923,28.471],[19.923,33.401],[19.923,38.331],[19.923,43.261],[19.923,48.19],[19.923,53.12],[19.923,58.05],[19.923,62.98],[19.923,67.91],[19.923,72.839],[19.923,77.769],[23.541,80.077],[28.471,80.077],[33.401,80.077],[38.331,80.077],[43.261,80.077],[48.19,80.077],[53.12,80.077],[58.05,80.077],[62.98,80.077],[67.91,80.077],[72.839,80.077],[77.769,80.077],[80.077,76.459],[80.077,71.529],[80.077,66.599],[80.077,61.669],[80.077,56.739],[80.077,51.81],[80.077,46.88],[80.077,41.95],[80.077,37.02],[80.077,32.09],[80.077,27.161],[80.077,22.231],[76.459,19.923],[71.529,19.923],[66.599,19.923],[61.669,19.923],[56.739,19.923],[51.81,19.923],[46.88,19.923],[41.95,19.923],[37.02,19.923],[32.09,19.923],[27.161,19.923],[22.231,19.923]],
+  },
+  {
+    id: 'grid-signals',
+    index: 3,
+    name: 'Signal Ladder',
+    location: 'Synthetic Grid',
+    description: 'North-west block: every corner is signalised, so the light cycle drives.',
+    duration_s: 240.0,
+    bookmarked: false,
+    difficulty: 'moderate',
+    preview_paths: [[[19.231,0.0],[19.231,100.0]],[[50.0,0.0],[50.0,100.0]],[[80.769,0.0],[80.769,100.0]],[[0.0,19.231],[100.0,19.231]],[[0.0,50.0],[100.0,50.0]],[[0.0,80.769],[100.0,80.769]]],
+    preview_route: [[22.231,50.692],[20.263,51.809],[19.923,54.112],[19.923,56.478],[19.923,58.844],[19.923,61.209],[19.923,63.575],[19.923,65.941],[19.923,68.306],[19.923,70.672],[19.923,73.038],[19.923,75.404],[19.923,77.769],[21.04,79.737],[23.343,80.077],[25.709,80.077],[28.074,80.077],[30.44,80.077],[32.806,80.077],[35.172,80.077],[37.537,80.077],[39.903,80.077],[42.269,80.077],[44.634,80.077],[47.0,80.077],[48.968,78.96],[49.308,76.657],[49.308,74.291],[49.308,71.926],[49.308,69.56],[49.308,67.194],[49.308,64.828],[49.308,62.463],[49.308,60.097],[49.308,57.731],[49.308,55.366],[49.308,53.0],[48.191,51.032],[45.888,50.692],[43.522,50.692],[41.156,50.692],[38.791,50.692],[36.425,50.692],[34.059,50.692],[31.694,50.692],[29.328,50.692],[26.962,50.692],[24.596,50.692],[22.231,50.692]],
+  },
+  {
+    id: 'grid-merge',
+    index: 4,
+    name: 'Hyde Street Merge',
+    location: 'Synthetic Grid',
+    description: 'The tight block with heavy traffic \u2014 lead vehicles cut in without warning.',
+    duration_s: 210.0,
+    bookmarked: true,
+    difficulty: 'hard',
+    preview_paths: [[[19.231,0.0],[19.231,100.0]],[[50.0,0.0],[50.0,100.0]],[[80.769,0.0],[80.769,100.0]],[[0.0,19.231],[100.0,19.231]],[[0.0,50.0],[100.0,50.0]],[[0.0,80.769],[100.0,80.769]]],
+    preview_route: [[53.0,50.692],[51.032,51.809],[50.692,54.112],[50.692,56.478],[50.692,58.844],[50.692,61.209],[50.692,63.575],[50.692,65.941],[50.692,68.306],[50.692,70.672],[50.692,73.038],[50.692,75.404],[50.692,77.769],[51.809,79.737],[54.112,80.077],[56.478,80.077],[58.844,80.077],[61.209,80.077],[63.575,80.077],[65.941,80.077],[68.306,80.077],[70.672,80.077],[73.038,80.077],[75.404,80.077],[77.769,80.077],[79.737,78.96],[80.077,76.657],[80.077,74.291],[80.077,71.926],[80.077,69.56],[80.077,67.194],[80.077,64.828],[80.077,62.463],[80.077,60.097],[80.077,57.731],[80.077,55.366],[80.077,53.0],[78.96,51.032],[76.657,50.692],[74.291,50.692],[71.926,50.692],[69.56,50.692],[67.194,50.692],[64.828,50.692],[62.463,50.692],[60.097,50.692],[57.731,50.692],[55.366,50.692],[53.0,50.692]],
+  },
+  {
+    id: 'grid-night',
+    index: 5,
+    name: 'Outer Circuit',
+    location: 'Synthetic Grid',
+    description: 'The full perimeter. Long straights, four-way stops at the quiet corners.',
+    duration_s: 360.0,
+    bookmarked: false,
+    difficulty: 'moderate',
+    preview_paths: [[[19.231,0.0],[19.231,100.0]],[[50.0,0.0],[50.0,100.0]],[[80.769,0.0],[80.769,100.0]],[[0.0,19.231],[100.0,19.231]],[[0.0,50.0],[100.0,50.0]],[[0.0,80.769],[100.0,80.769]]],
+    preview_route: [[22.231,19.923],[19.923,23.541],[19.923,28.471],[19.923,33.401],[19.923,38.331],[19.923,43.261],[19.923,48.19],[19.923,53.12],[19.923,58.05],[19.923,62.98],[19.923,67.91],[19.923,72.839],[19.923,77.769],[23.541,80.077],[28.471,80.077],[33.401,80.077],[38.331,80.077],[43.261,80.077],[48.19,80.077],[53.12,80.077],[58.05,80.077],[62.98,80.077],[67.91,80.077],[72.839,80.077],[77.769,80.077],[80.077,76.459],[80.077,71.529],[80.077,66.599],[80.077,61.669],[80.077,56.739],[80.077,51.81],[80.077,46.88],[80.077,41.95],[80.077,37.02],[80.077,32.09],[80.077,27.161],[80.077,22.231],[76.459,19.923],[71.529,19.923],[66.599,19.923],[61.669,19.923],[56.739,19.923],[51.81,19.923],[46.88,19.923],[41.95,19.923],[37.02,19.923],[32.09,19.923],[27.161,19.923],[22.231,19.923]],
   },
 ];
 
@@ -583,7 +555,7 @@ export function buildScene(scenarioId: string): SceneDescription {
   return {
     type: 'scene_description',
     protocol: PROTOCOL_VERSION,
-    scene_id: `scene_${scenario.id}`,
+    scene_id: `synthetic-grid:${scenario.id}`,
     scenario_id: scenario.id,
     name: scenario.name,
     location: scenario.location,
