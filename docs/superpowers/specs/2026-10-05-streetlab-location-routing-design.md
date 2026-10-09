@@ -167,3 +167,36 @@ connected component; `radius_m` and query length ceilings beyond one cheap bound
 - Reloading a previously loaded non-bundled address succeeds with networking disabled.
 - Typing in the address box never delays a pause or hazard command.
 - A truncated Overpass response is never written to the cache.
+
+## 8. Amendments (2026-10-09, implementation of phases 1-3)
+
+Re-validated against `claude/p0-green-baseline` (a descendant of `main` 84aa7c8). Nothing in
+section 1 contradicted the code; the 2026-10-09 measurements are in
+`docs/measurements/2026-10-09-location-routing.md`. Where this spec and the work diverge:
+
+1. **Mirror fallback is now in scope** (was "No mirror fallback" in 3.C and section 5). The
+   implementation brief for this work asked for it. `OverpassClient(mirrors=...)` tries each
+   endpoint once before any wait; a 429's `Retry-After` binds only the host that sent it.
+   A live 504 from the primary was observed during the manual check and recovered through retry.
+2. **Nominatim's policy forbids as-you-type use** (checked live on 2026-10-09 at
+   operations.osmfoundation.org/policies/nominatim: "you must not implement such a service on
+   the client side"). The code on main did exactly that. Suggestions now come from Photon;
+   Nominatim serves only submitted lookups. Photon's page asks for fair use and lists typeahead
+   as a feature but states no hard limit, so the call is rate-limited to 1/s on its own lane,
+   debounced by the UI (250 ms, 3+ characters), and a superseded call returns without a request.
+   If Photon's terms are ever read as forbidding this, the fallback named in 3.C (suggestions
+   on an explicit Search action) is a UI-only change.
+3. **Loop winding (3.A) measured, not assumed.** `Route.offset(-inset)` is relative to heading;
+   either winding gives a right-hand lane and nothing reads the winding. Clockwise is kept as a
+   preference (it preserves the shipped Nob Hill loop): `_find_legal_loop` searches the graph
+   and its transpose and prefers a clockwise result. No unconditional reversal remains.
+4. **Out-and-back fallback** also had to become direction-aware (it drives each stem back);
+   it now only uses legs that are two-way. `select_ego_route` tries the 8 nearest junctions
+   that can exit before giving up, since the nearest can sit in a one-way pocket.
+5. **Nodes with no outgoing edge** (the far end of a one-way) stay in the graph so a trip can
+   end there; `nearest_junction(must_exit=True)` is used for starts.
+6. **Max query length** (200 chars) applies to `load_location` query/destination and
+   `suggest_address`, mirrored in zod.
+7. **Not done** (section 3.D and the `duration_s` item): failed-load text preservation, the
+   superseded-build guard, and a computed `duration_s`. They were outside the brief for these
+   phases and are listed as residuals in the PR.

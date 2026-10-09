@@ -268,6 +268,12 @@ export const DEFAULT_RELOAD_PAGE = (): void => {
  * runtime surprise (`setRightTab('events')` compiling while the panel has
  * nothing registered for it, or vice versa).
  */
+/** Coordinates of a suggestion the user picked, per address field. */
+export interface LocationPicks {
+  start?: { lat: number; lon: number } | null;
+  destination?: { lat: number; lon: number } | null;
+}
+
 export type RightTab = 'parameters' | 'run' | 'map' | 'layers' | 'events';
 
 /** Scorecards kept per preset (newest first) — what the Run tab compares. */
@@ -392,7 +398,7 @@ export interface SimStoreState {
   send(command: CommandInput): string;
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
-  loadLocation(query: string, destination?: string): void;
+  loadLocation(query: string, destination?: string, picks?: LocationPicks): void;
   /** Run a preset: no seed follows its policy; a seed replays that run. */
   loadPreset(presetId: string, seed?: number): void;
   /** Fire off a `suggest_address` request and return its command id, so the
@@ -553,7 +559,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
   },
 
-  loadLocation(query, destination) {
+  loadLocation(query, destination, picks) {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) return;
     const trimmedDest = destination?.trim() || undefined;
@@ -568,6 +574,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       cmd: 'load_location',
       query: trimmedQuery,
       ...(trimmedDest ? { destination: trimmedDest } : {}),
+      ...(picks?.start ? { lat: picks.start.lat, lon: picks.start.lon } : {}),
+      ...(trimmedDest && picks?.destination
+        ? { destination_lat: picks.destination.lat, destination_lon: picks.destination.lon }
+        : {}),
     });
   },
 
