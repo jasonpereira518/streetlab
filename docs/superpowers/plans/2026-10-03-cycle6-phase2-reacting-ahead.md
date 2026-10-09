@@ -200,3 +200,16 @@ Tasks 0–10 are done. Gates at the end: backend **1246 passed / 1 skipped** bef
 **Left for later phases:** `IdmTraffic._leader` overlap (traffic cars overlapping the ego, seen at −1.7 m in `grid-merge`) is Phase 3's; evasion of `obstacle`/`stalled_vehicle` and the oncoming-lane pass are Phase 4's; ML-mode reactions are Phase 5's.
 
 **Reproduce the numbers:** `uv run python ../scripts/stopping_table.py` (from `streetlab-backend/`) for the table; the closed-loop file for the rest. Neither depends on wall-clock time, so the results travel between machines.
+
+
+---
+
+## Landing on main's driving (2026-10-09)
+
+The branch was rebased onto the driving-realism work (rules-of-the-road observer, lane changes, `driver_view` feed). The planner is fed `driver_view`'s output, so "react only to what it can see" holds by construction (`test_the_planner_only_reacts_to_what_the_driver_view_lets_through`). What changed, measured in `docs/measurements/2026-10-09-hazard-reactions.md`:
+
+- Stagings that were inert, hidden from the ego, or timed at pace 1.0 were fixed in `sim/events.py` (the spec's Task 2: fix geometry in `events.py`, not the cap).
+- `plan/hazard.py` judges fast cross traffic where its path crosses the route (gated; see the measurement doc for why each gate exists).
+- `tests/test_hazard_reactions.py` runs all ten hazards on three scenes; four cells are strict xfails with reasons, one of them the `driver_view` blind spot beside the ego.
+- Two closed-loop expectations were re-pinned with notes rather than loosened: `cyclist_drift` (rule fires in 2 of 15 matrix runs, 0 of 6 in the sweep) and one slow resume.
+- The contract generator injects `cut_in` at 7 m/s and `sudden_brake` on a second simulation; `state_update_hazard` now comes from the latter.

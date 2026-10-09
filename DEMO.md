@@ -150,20 +150,22 @@ graph's threat curve instead of the overlay.
 
 The menu offers every scenario in `streetlab-backend/sim/events.py`, grouped
 Ahead, Crossing and Behind. A hazard the scene cannot host right now acks
-false and says why — no signal ahead, a one-way street:
+false and says why — no signal ahead, a one-way street, no lane beside the
+ego for a cut-in to come from, buildings that would hide a red-light runner
+until it is on top of the ego:
 
 | `kind` | What it stages |
 |---|---|
-| `cut_in` | A neighbour merges into the ego's lane, close and slower |
-| `sudden_brake` | The vehicle leading the ego's lane stops dead for 8 s |
-| `jaywalker` | A pedestrian crosses the ego's path 30 m ahead, then leaves |
+| `cut_in` | A neighbour merges into the ego's lane from a lane beside it that exists and may be crossed, close and slower |
+| `sudden_brake` | The vehicle leading the ego's lane stops dead for 8 s (a lead is staged, at least the ego's stopping distance ahead, when none is within 60 m) |
+| `jaywalker` | A pedestrian crosses the ego's path (up to 60 m ahead, and before the next signal or stop sign), timed to reach the lane as the ego does, then leaves |
 | `obstacle` | Something stationary and unclassifiable sits in the lane 40 m ahead |
 | `emergency_vehicle` | The nearest vehicle behind runs lights and siren, wanting 1.6× the limit, and queues behind the ego |
 | `stalled_vehicle` | A broken-down car sits in the ego's lane 40 m ahead until it is towed |
 | `cyclist_drift` | A cyclist 25 m ahead drifts slowly in from the kerb |
 | `tailgater` | A car pulls up close behind the ego and holds that gap for up to 30 s (it keeps its own target speed, so a fast ego can leave it behind sooner) |
-| `oncoming_drift` | An oncoming car drifts 0.8 m over the centre line as it reaches the ego |
-| `red_light_runner` | A car runs the red across the ego's green, timed to arrive when the ego does |
+| `oncoming_drift` | An oncoming car drifts 0.6 m over the centre line as it reaches the ego |
+| `red_light_runner` | A car runs the red across the ego's green, timed to arrive when the ego does; only staged when the ego is far enough from the signal to stop and could see the car coming |
 
 An unknown `kind` acks false rather than raising, so a newer client cannot
 break an older backend.
@@ -184,11 +186,17 @@ show it.
 | `cyclist_drift` | Brakes or yields as the cyclist drifts into the lane; passes where it can |
 | `red_light_runner` | Emergency-brakes if it is moving; a car already stopped at the red has nothing to do |
 | `obstacle`, `stalled_vehicle` | Changes lane around it where that is legal; emergency-brakes if it cannot; otherwise stops short and waits |
-| `emergency_vehicle`, `tailgater`, `oncoming_drift` | **No reaction yet** — Cycle 6 Phase 3 |
+| `oncoming_drift` | Emergency-brakes or yields as it crosses the line (measured on every scene); the nudge to the right is Cycle 6 Phase 3 |
+| `emergency_vehicle`, `tailgater` | **No reaction yet** — Cycle 6 Phase 3 |
 
-Measured on `grid-loop` and Nob Hill across seeded runs with randomised
-injection times, the ego's outline never touched a hazard's. That is a
-measurement of these runs, not a safety claim.
+Measured on `grid-loop`, `grid-loop` at 0.45x traffic speed and Nob Hill across
+five seeds each (`docs/measurements/2026-10-09-hazard-reactions.md`), the ego
+reacted to and cleared `sudden_brake`, `jaywalker`, `obstacle`, `stalled_vehicle`,
+`cyclist_drift` and `oncoming_drift` on every scene, and `cut_in` and
+`red_light_runner` on the scenes that can host them. It still ends in contact
+with a car beside it that the driving feed cannot see (`cut_in` and
+`tailgater` on `grid-loop`) and with an emergency vehicle that swings past it.
+That is a measurement of these runs, not a safety claim.
 
 ## See it survive a dropped connection
 
