@@ -334,7 +334,7 @@ function PerceptionMenu({
   }, [open]);
 
   return (
-    <div className="menu" ref={ref} title={disabled ? title : undefined}>
+    <div className="menu" ref={ref}>
       <button
         type="button"
         className={`menu-trigger${open ? ' is-open' : ''}`}

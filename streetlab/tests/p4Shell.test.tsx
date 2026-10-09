@@ -7,7 +7,7 @@ import { LeftScenarioSidebar } from '../src/ui/LeftScenarioSidebar';
 import { RightPanel } from '../src/ui/RightPanel';
 import { TelemetryRow } from '../src/ui/TelemetryRow';
 import { TopToolbar } from '../src/ui/TopToolbar';
-import { PARAM_DEFS, useSimStore } from '../src/store/simStore';
+import { useSimStore } from '../src/store/simStore';
 import { createHarness, resetStore } from './harness';
 import type { Harness } from './harness';
 import { canvasText, flushFrames } from './setup';
@@ -35,10 +35,6 @@ function Keys() {
 }
 
 describe('no control that does nothing', () => {
-  it('has no cut-in interval slider (the backend has no autonomous cut-ins)', () => {
-    expect(PARAM_DEFS.map((d) => d.key)).not.toContain('cutin_period_s');
-  });
-
   it('has no disabled stub buttons in the toolbar or sidebar', () => {
     harness = createHarness();
     const { container } = render(
@@ -119,28 +115,16 @@ describe('hazard menu', () => {
 });
 
 describe('speedometer', () => {
-  it('labels the planner target as a target and shows the posted limit', () => {
+  it('labels the planner target SET and shows the posted limit', () => {
     harness = createHarness();
     const { container } = render(<TelemetryRow />);
     harness.emitScene();
     harness.emitFrame(10);
     act(() => flushFrames(3, 120));
     const text = canvasText(container.querySelector('canvas') as HTMLCanvasElement);
-    expect(text).toContain('TARGET');
+    expect(text).toContain('SET');
     expect(text).toContain('LIMIT');
     expect(text).not.toContain('MAX');
-  });
-});
-
-describe('perception menu', () => {
-  it('says why it is disabled on the wrapper too, where webviews still show tooltips', () => {
-    harness = createHarness();
-    render(<TopToolbar />);
-    harness.emitScene();
-    harness.emitFrame(1);
-    const trigger = screen.getByRole('button', { name: /ground truth/i });
-    expect((trigger as HTMLButtonElement).disabled).toBe(true);
-    expect(trigger.parentElement?.getAttribute('title')).toMatch(/--perception/);
   });
 });
 

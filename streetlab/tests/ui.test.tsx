@@ -251,7 +251,6 @@ describe('TopToolbar', () => {
     harness.emitScene();
     harness.emitFrame(1);
 
-<<<<<<< HEAD
     const trigger = screen.getByTitle('Perception source');
     expect(trigger.hasAttribute('disabled')).toBe(false);
     fireEvent.click(trigger);
@@ -265,12 +264,6 @@ describe('TopToolbar', () => {
     );
     expect(useSimStore.getState().perceptionMode).toBe('noisy-truth');
     expect(screen.getByTitle('Perception source').textContent).toContain('Noisy truth');
-=======
-    // The reason sits on the wrapper: a disabled button swallows hover in
-    // some webviews, the wrapper does not.
-    const wrapper = screen.getByTitle(/no perception pipeline running/i);
-    expect(wrapper.querySelector('button')?.hasAttribute('disabled')).toBe(true);
->>>>>>> 8da1700 (UI shell: drop stub buttons, persist bookmarks, honest copy, help and shortcuts)
   });
 
   it('labels the ML perception mode experimental in the control itself', () => {
@@ -1153,11 +1146,7 @@ describe('Telemetry row', () => {
     const mph = String(Math.round(toMph(frame.ego.speed_mps)));
     expect(canvasText(speed)).toContain(mph);
     expect(canvasText(speed)).toContain(
-<<<<<<< HEAD
       `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} SET`,
-=======
-      `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} TARGET`,
->>>>>>> 8da1700 (UI shell: drop stub buttons, persist bookmarks, honest copy, help and shortcuts)
     );
     expect(canvasText(speed)).toContain(`LIMIT ${Math.round(toMph(frame.ego.speed_limit_mps))}`);
 
