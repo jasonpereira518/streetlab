@@ -849,7 +849,7 @@ def test_a_red_light_runner_the_ego_could_never_see_is_declined(monkeypatch):
 def test_a_red_light_runner_is_timed_and_kept_alive_at_the_pace_it_will_drive(scale):
     """It used to assume a pace of 1.0: at the slider's 0.45 it arrived 2.2x
     late, and (since its lifetime was worked out at max(1, scale)) would have
-    been removed 55% of the way along its route."""
+    been removed 45% of the way along its route."""
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=1)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": scale})
     for _ in range(300):
