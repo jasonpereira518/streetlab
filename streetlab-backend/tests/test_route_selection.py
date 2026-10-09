@@ -510,7 +510,11 @@ def test_a_neighbour_lane_route_can_also_be_repaired():
     # Not (0, 0): until the route lost its cusps, the default loop's left offset
     # self-crossed, and this test leaned on that. It no longer does; this origin
     # (a different closed loop on the same extract) still needs the repair.
-    ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (13.91, 144.75))
+    # Re-pinned 2026-10-09 from (13.91, 144.75): with one-way-aware routing the
+    # loop from there is a different, 982 m one (was 1174 m, which drove a
+    # one-way backwards) whose neighbour offset no longer self-crosses.
+    # (180, 0) is a 1185 m simple loop whose neighbour offset measurably does.
+    ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (180.0, 0.0))
     assert LinearRing(ego_route.points).is_simple  # the premise this test isolates
 
     neighbour_raw = Route(ego_route.points, closed=True).offset(LANE_W)

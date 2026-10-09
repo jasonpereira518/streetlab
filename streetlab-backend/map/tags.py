@@ -69,6 +69,52 @@ def oneway_direction(tags: dict[str, str]) -> int:
     return -1 if value == "-1" else 0
 
 
+def route_direction(tags: dict[str, str]) -> int:
+    """Which way a ROUTER may drive a way: +1 along it, -1 against, 0 both.
+
+    `oneway_direction` plus the implicit cases OSM leaves untagged: roundabouts
+    and motorways run forward unless `oneway=no`. Reversible/alternating
+    one-ways are two-way here (neither direction is reliably closed). Kept apart
+    from `is_oneway`, which lane counts and carriageway widths depend on.
+    """
+    value = tags.get("oneway", "")
+    if value in ("no", "false", "0", "reversible", "alternating"):
+        return 0
+    explicit = oneway_direction(tags)
+    if explicit:
+        return explicit
+    if tags.get("junction") in ("roundabout", "circular") or tags.get("highway") in (
+        "motorway",
+        "motorway_link",
+    ):
+        return 1
+    return 0
+
+
+_BLOCKED_ACCESS = ("no", "private")
+
+
+def is_routable(tags: dict[str, str]) -> bool:
+    """False for a way a car may not enter (`access`/`motor_vehicle` no|private).
+
+    The most specific tag wins, so `access=no` + `motor_vehicle=yes` stays open.
+    """
+    for key in ("motor_vehicle", "access"):
+        if key in tags:
+            return tags[key] not in _BLOCKED_ACCESS
+    return True
+
+
+#: Driveways and the like stay routable (a destination on one must not become
+#: unreachable) but cost this many times their length, so through-traffic avoids them.
+MINOR_SERVICE_COST = 5.0
+_MINOR_SERVICE = ("driveway", "parking_aisle", "drive-through")
+
+
+def route_cost_factor(tags: dict[str, str]) -> float:
+    return MINOR_SERVICE_COST if tags.get("service") in _MINOR_SERVICE else 1.0
+
+
 def _positive_int(raw: str | None) -> int | None:
     if raw is None:
         return None
