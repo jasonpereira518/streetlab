@@ -1066,11 +1066,17 @@ def test_a_traverse_that_reaches_the_lane_holds_it(
     runs = _runs(frames)
     assert runs, "the replay drove no lane change at all -- this proves nothing"
     judged, hasty = [], []
-    for a, b, lead_id, gap0, _ in _episodes(scene, frames):
+    for a, b, lead_id, gap0, closest in _episodes(scene, frames):
         reached, turned = _reached_and_turned(scene, frames, a, b)
         if reached is None or turned is None or frames[turned].fsm_state != "cruise":
             continue
-        if _lead_gained(route, frames[turned], lead_id, gap0):
+        # An episode that got past its lead has no lead in the detections when it turns round
+        # (it is behind and often out of the mirror cone, or hidden by a building), which
+        # `_lead_gained` reads as "drove away". Nob Hill t=392.5 s: veh_00 passed by 34.6 m, the
+        # best case of the whole behaviour, and excluded from the only test that judges it.
+        # `closest < 0` is the independent evidence that the ego was ahead.
+        passed = closest is not None and closest < 0
+        if not passed and _lead_gained(route, frames[turned], lead_id, gap0):
             continue
         judged.append((a, (turned - reached) * DT))
         if (turned - reached) * DT < _HELD_MIN_S:
