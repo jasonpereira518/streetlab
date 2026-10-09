@@ -339,6 +339,11 @@ def windows(
 AEB_TRIGGER_MPS2 = 3.0
 AEB_RELEASE_MPS2 = 1.0
 AEB_RELEASE_S = 0.5
+#: Below this ego speed `aeb` has nothing to brake: it cannot help a car that is already
+#: stopped (or creeping to one), and a perceived closing speed of half a metre per second
+#: toward a car standing 5 m away is estimator noise, not an emergency. Seen in noisy-truth
+#: driving as repeated emergency brakes at 0.0 m/s behind a stopped car.
+AEB_MIN_EGO_MPS = 0.5
 #: Clearance `aeb` tries to keep when it stops, bumper to bumper.
 AEB_MARGIN_M = 2.0
 
@@ -433,6 +438,8 @@ class AebRule:
     def step(self, inp: RuleInput) -> Reaction | None:
         demands = {}
         for w in inp.windows:
+            if inp.ego.speed_mps < AEB_MIN_EGO_MPS:
+                break
             if conflict_time(w) is not None:
                 demands[w.detection_id] = (required_decel(w, inp.ego.speed_mps), w)
 

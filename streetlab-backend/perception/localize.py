@@ -218,6 +218,11 @@ def locate(
             extent, extent_sigma = found
     d += extent / 2.0
     sigma_r = math.hypot(sigma_r, extent_sigma / 2.0)
+    if cropped_side:
+        # A body straddling the frame edge (the hand-off between two cameras) shows only part
+        # of itself, so its depth extent is a guess: say so, or the tracker's tight gate
+        # rejects the next frame's estimate from the other camera and the object gets a new id.
+        sigma_r = math.hypot(sigma_r, 0.5 * extent)
 
     sigma_t = max(d * sigma_px / f_px / math.sqrt(2.0), 0.05)
     if cropped_side:

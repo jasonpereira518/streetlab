@@ -221,3 +221,22 @@ def test_a_two_frame_ghost_is_not_a_lead_to_brake_for():
     es = route.project((0.0, 0.0))
     assert _closest_lead([ghost], route, es)[0] is None
     assert _closest_lead([ghost, real], route, es)[0] is real
+
+
+def test_a_stopped_ego_has_nothing_for_aeb_to_brake():
+    """Perceived closing speed toward a car standing a few metres off is noise at standstill."""
+    from perception.ml_source import MATURE_HITS, _detection
+    from perception.tracker import Track
+    from plan.hazard import ThreatAssessor
+    from sim.route import Route
+
+    route = Route([(-50.0, 0.0), (100.0, 0.0)], closed=False)
+
+    def kind(speed):
+        ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=speed)
+        t = Track("t", "car", 6.0, 0.0, -0.5, 0.0, 9, 0, 0.9, total_hits=MATURE_HITS)
+        d = _detection(t, EgoFrame.of(ego, route), ego)
+        return ThreatAssessor().assess([d], ego, route, route.project((0.0, 0.0)), 1 / 60).kind
+
+    assert kind(0.0) == "none"
+    assert kind(6.0) == "aeb", "a moving ego closing on a car 6 m ahead still brakes"

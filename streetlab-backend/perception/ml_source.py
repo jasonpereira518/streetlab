@@ -35,8 +35,8 @@ from sim.route import Route
 from sim.vehicle import VehicleState
 
 #: Matched frames at which a track's confidence is no longer discounted. A track born on
-#: 2 hits reports half its detector confidence; at 4 (0.3-0.4 s of evidence) all of it.
-MATURE_HITS = 4
+#: 2 hits reports half its detector confidence; at 6 (0.5 s of evidence) all of it.
+MATURE_HITS = 6
 
 # Under this speed a track's velocity vector is mostly estimator noise, and
 # the direction of a near-zero vector is essentially random. Heading falls

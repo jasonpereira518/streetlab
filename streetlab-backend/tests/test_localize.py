@@ -106,3 +106,10 @@ def test_a_car_mislabelled_as_a_bus_is_not_centred_six_metres_too_far():
     as_bus = Box2D(car.x0, car.y0, car.x1, car.y1, "bus", 0.9)
     got = locate(as_bus, CAM, W, H)
     assert got is not None and math.hypot(got.x - 20.0, got.y) < 3.0
+
+
+def test_a_box_cropped_at_the_side_is_less_certain_in_range_too():
+    box = box_of(8.0, 3.0, 0.0)
+    whole = locate(box, CAM, W, H)
+    cropped = locate(Box2D(0.0, box.y0, box.x1, box.y1, box.cls, box.confidence), CAM, W, H)
+    assert cropped.sigma_r > whole.sigma_r + 0.5 and cropped.sigma_t > whole.sigma_t
