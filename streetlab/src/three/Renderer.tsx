@@ -149,6 +149,8 @@ interface GroundRig {
   mesh: THREE.Mesh;
   nearColor: THREE.Color;
   farColor: THREE.Color;
+  /** World XZ the colour fade is measured from; kept on the camera. */
+  centre: THREE.Vector2;
   dispose(): void;
 }
 
@@ -164,7 +166,10 @@ function createGround(): GroundRig {
 
   // Blend the block colour out to the horizon tint so the plane's edge never
   // reads as a hard line against the sky.
-  const dist = positionWorld.xz.length();
+  // Measured from the camera (`centre`), not the world origin: the plane
+  // follows the camera, and a scene can reach ~1 km from the origin.
+  const centre = new THREE.Vector2();
+  const dist = positionWorld.xz.sub(uniform(centre)).length();
   mat.colorNode = mix(
     uniform(nearColor),
     uniform(farColor),
@@ -179,6 +184,7 @@ function createGround(): GroundRig {
     mesh,
     nearColor,
     farColor,
+    centre,
     dispose() {
       geo.dispose();
       mat.dispose();
@@ -571,6 +577,16 @@ function mount(
       // raw wire pose instead would put the two on different clocks again,
       // which is the whole defect this exists to avoid.
       cam.update(sample.pose, sample.speed_mps, cameraView, dt, blockers);
+      // Sky and ground ride with the camera. Both were fixed at the origin
+      // with a 900 m dome and a 3 km plane, but Nob Hill's roads reach 987 m
+      // out and a trip can span 4 km: past the dome's edge the camera sat
+      // outside the sky, and the ground's horizon fade was measured from the
+      // wrong place.
+      const cp = cam.camera.position;
+      sky.mesh.position.copy(cp);
+      ground.mesh.position.x = cp.x;
+      ground.mesh.position.z = cp.z;
+      ground.centre.set(cp.x, cp.z);
       lastSeq = frame.seq;
     }
 
