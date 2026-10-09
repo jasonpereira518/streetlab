@@ -357,6 +357,8 @@ export interface SimStoreState {
   /** Purely local chrome state — collapsing a panel sends no command. */
   collapsed: Record<PanelId, boolean>;
   perfOverlayVisible: boolean;
+  /** The help / shortcut dialog. */
+  helpOpen: boolean;
   /** A `refreshAll` is in flight; the button that starts one is disabled. */
   refreshPending: boolean;
   /** See `DEFAULT_RELOAD_PAGE` — swapped by tests, never at runtime. */
@@ -388,6 +390,7 @@ export interface SimStoreState {
   setRightTab(tab: RightTab): void;
   togglePanel(panel: PanelId): void;
   togglePerfOverlay(): void;
+  setHelpOpen(open: boolean): void;
   resetSim(): void;
   refreshAll(): Promise<void>;
   injectHazard(kind: string): void;
@@ -433,6 +436,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   rightTab: 'parameters',
   collapsed: { scenarios: false, inspector: false, telemetry: false },
   perfOverlayVisible: false,
+  helpOpen: false,
   refreshPending: false,
   reloadPage: DEFAULT_RELOAD_PAGE,
 
@@ -596,6 +600,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
 
   togglePerfOverlay() {
     set((s) => ({ perfOverlayVisible: !s.perfOverlayVisible }));
+  },
+
+  setHelpOpen(open) {
+    set({ helpOpen: open });
   },
 
   resetSim() {
