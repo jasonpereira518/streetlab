@@ -28,6 +28,8 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
+from perception.driver_view import can_see
+from plan.hazard import stopping_distance
 from schema import HazardSummary, Size
 from sim.agents import (
     _SAME_LANE_M,
@@ -61,6 +63,8 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle, `sim.loop` imports this
 CUT_IN_HEADWAY_S = 1.5
 CUT_IN_SPEED_FRACTION = 0.5
 CUT_IN_FLOOR_MPS = 4.0
+#: The neighbouring lane must keep existing this far past the merge point.
+CUT_IN_LANE_RUN_M = 10.0
 
 #: Where a jaywalker starts and how far past the far kerb the route runs.
 #: The run-off exists so the walker never reaches the end of its route: arc
@@ -80,6 +84,13 @@ JAYWALK_MIN_AHEAD_M = 12.0
 #: rather than a hazard.
 JAYWALK_MARGIN_M = 6.0
 
+#: The farthest ahead a crossing is placed, and the least a walker starts from
+#: the lane's centre (the lane's half-width plus a metre of pavement).
+JAYWALK_MAX_AHEAD_M = 60.0
+JAYWALK_KERB_M = 2.8
+#: Road kept clear between a crossing and the next signal or stop line.
+JAYWALK_CONTROL_CLEAR_M = 10.0
+
 #: Where an obstacle lands, and how long before it is cleared away.
 #:
 #: It expires for the same reason `ScriptedTraffic.slow` is time-boxed: a
@@ -98,6 +109,14 @@ EMERGENCY_HOLD_S = 45.0
 #: How long a `sudden_brake` holds its victim. This is `sim/loop.py`'s old
 #: `HAZARD_HOLD_S`, moved here with the behaviour it governs.
 BRAKE_HOLD_S = 8.0
+#: A lead farther than this is not one the ego is following. With none inside
+#: it, `sudden_brake` stages its own, this many seconds of the ego's travel ahead.
+SUDDEN_BRAKE_MAX_GAP_M = 60.0
+SUDDEN_BRAKE_HEADWAY_S = 2.0
+#: ...and never closer, bumper to bumper, than the ego's stopping distance (from
+#: a speed it may reach by the time the lead stops) plus this.
+SUDDEN_BRAKE_MARGIN_M = 3.0
+SUDDEN_BRAKE_SPEED_MARGIN_MPS = 2.0
 
 #: What every id `_spawn` hands out starts with, and so how a staging tells a
 #: participant a hazard added from one the scene put there (`_recruitable`).
@@ -120,7 +139,7 @@ TAILGATE_HOLD_S = 30.0
 #: An oncoming car `ONCOMING_AHEAD_M` ahead whose near edge crosses the centre
 #: line by `ONCOMING_OVER_LINE_M` by the time it reaches the ego.
 ONCOMING_AHEAD_M = 60.0
-ONCOMING_OVER_LINE_M = 0.8
+ONCOMING_OVER_LINE_M = 0.6
 #: The route it drives: the ego route from `ONCOMING_ROUTE_BEHIND_M` behind the
 #: ego to `ONCOMING_ROUTE_PAST_M` past the spawn point, offset and reversed.
 #: Local, not the whole loop reversed: the Nob Hill route runs close to itself,
@@ -156,11 +175,26 @@ RUNNER_PAST_LINE_M = 6.0
 #: change and the runner crosses an empty junction.
 RUNNER_GREEN_MARGIN_S = 2.0
 RUNNER_RUN_OFF_M = 30.0
+#: Road the ego must have to the stop line, beyond its stopping distance, for a
+#: runner to be staged at all.
+RUNNER_STOP_MARGIN_M = 2.0
 #: Clear road a staged vehicle keeps from anything already in its lane, and the
 #: furthest it may be pushed down the road to find it. A hazard staged inside
 #: a parked car is not a hazard, it is two cars drawn through each other.
 SPAWN_CLEARANCE_M = 1.0
 SPAWN_SEARCH_M = 60.0
+
+#: The ego's speed law with nothing in its way, restated from `plan/control.py`
+#: (`_SPEED_GAIN`, `_MAX_ACCEL_MPS2`, `_MAX_DECEL_MPS2`, `_MAX_LATERAL_MPS2`,
+#: `_CURVATURE_PREVIEW_M`): `a = gain * (target - v)`, capped. Stagings that must arrive WHEN the ego does need to know where it will
+#: be, and "where it is now at its current speed" is wrong whenever it is still
+#: accelerating. Restated for the reason `plan/hazard.py` restates its own: an
+#: import back into `plan.control` would be a cycle.
+EGO_SPEED_GAIN = 0.9
+EGO_ACCEL_MPS2 = 2.2
+EGO_BRAKE_MPS2 = 4.5
+EGO_LATERAL_MPS2 = 2.0
+EGO_PREVIEW_M = 22.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +223,51 @@ class Scenario:
 
 def _traffic(sim: "Simulation") -> TrafficModel:
     return sim._traffic
+
+
+def _pace(sim: "Simulation") -> float:
+    """What `traffic_speed_scale` multiplies a spawned agent's speed by.
+
+    Every agent the traffic model drives runs at `target_speed_mps * scale`
+    (`sim/agents.py`), a staged one included, so a staging that works out where a
+    walker or a car will BE has to use the pace it will actually keep. Stagings
+    used to assume 1.0: at the slider's 0.45 a red-light runner arrived 2.2x late
+    and a jaywalker was removed halfway across the road. Floored so a scale of 0
+    (a paused world) still gives a finite lifetime.
+    """
+    return max(float(sim.world.params["traffic_speed_scale"]), 0.05)
+
+
+def _ego_path(
+    sim: "Simulation",
+    step_s: float = 0.1,
+    horizon_s: float = 30.0,
+    hold_speed: bool = False,
+):
+    """`(t, distance_m, speed_mps)` of the ego from now, one tuple per `step_s`.
+
+    The ego's own speed law integrated forward: toward the posted limit, or the
+    corner speed `sqrt(a_lat / curvature)` of the next `EGO_PREVIEW_M` of route
+    when that is lower -- the planner slows for every junction turn, which on the
+    grid is every 80 m, and a forecast that does not is wrong by seconds.
+    With `hold_speed` it simply holds the speed it has.
+    """
+    route = sim.scene.ego_route
+    s0 = _ego_s(sim)
+    v, d, t = sim.world.ego.speed_mps, 0.0, 0.0
+    limit, hold = sim.posted_limit(), v
+    while t <= horizon_s:
+        yield t, d, v
+        target = hold
+        if not hold_speed:
+            target = limit
+            kappa = route.peak_curvature(s0 + d, distance_m=EGO_PREVIEW_M)
+            if kappa > 1e-6:
+                target = min(target, math.sqrt(EGO_LATERAL_MPS2 / kappa))
+        a = max(-EGO_BRAKE_MPS2, min(EGO_ACCEL_MPS2, EGO_SPEED_GAIN * (target - v)))
+        v = max(v + a * step_s, 0.0)
+        d += v * step_s
+        t += step_s
 
 
 def _ego_s(sim: "Simulation") -> float:
@@ -369,6 +448,16 @@ def _spawn(
     return agent
 
 
+def _start_at_pace(agent: Agent, speed_mps: float) -> None:
+    """Start `agent` at the speed it will keep. `_spawn` gives the same figure to
+    its target and to its state, but the traffic model drives toward
+    `target * traffic_speed_scale`: at 0.45x a runner spawned at the limit spent
+    its first 3 s braking to 5 m/s, arriving later than it was timed to."""
+    agent.state = VehicleState(
+        x=agent.state.x, y=agent.state.y, heading=agent.state.heading, speed_mps=speed_mps
+    )
+
+
 # --------------------------------------------------------------------------- #
 # The stagings                                                                 #
 # --------------------------------------------------------------------------- #
@@ -379,10 +468,47 @@ def _sudden_brake(sim: "Simulation") -> str | Declined:
     dead for `BRAKE_HOLD_S`. It is still the most direct test of the ego's
     following law, and the frontend's own button used to send it under five
     different names.
+
+    When the ego has no lead within `SUDDEN_BRAKE_MAX_GAP_M` there is nothing to
+    brake that the ego could see: the old fallback braked "the nearest agent" --
+    112 m away, on another street, on every Nob Hill run measured (the hazard
+    was never in the driving feed and never touched the ego). A car is staged
+    `SUDDEN_BRAKE_HEADWAY_S` of the ego's own travel ahead instead, cruising at
+    the ego's speed, and braked.
     """
-    victim = _lead_agent(sim) or _nearest_agent(sim)
+    route = sim.scene.ego_route
+    victim = _lead_agent(sim)
+    if victim is not None and (victim.s - _ego_s(sim)) % route.length_m > SUDDEN_BRAKE_MAX_GAP_M:
+        victim = None
     if victim is None:
-        return Declined("no vehicle to brake")
+        ego_speed = sim.world.ego.speed_mps
+        victim = _spawn(
+            sim,
+            kind="sudden_brake",
+            cls="car",
+            size=CAR_SIZE,
+            route=route,
+            speed_mps=sim.posted_limit(),
+            lifetime_s=BRAKE_HOLD_S + 20.0,
+        )
+        # Far enough ahead that the tracker can stop behind it: its speed law
+        # tapers (`plan.hazard.stopping_distance`: 4.1 m from 4 m/s, not the
+        # textbook 1.8), so a fixed 2 s headway left 3.4 m of bumper gap at
+        # 4 m/s and the ego crept into the stopped car -- measured, -0.09 m.
+        stop_m = stopping_distance(min(ego_speed + SUDDEN_BRAKE_SPEED_MARGIN_MPS, sim.posted_limit()))
+        bumper_m = max(
+            SUDDEN_BRAKE_HEADWAY_S * max(ego_speed, CUT_IN_FLOOR_MPS) - (EGO_LENGTH_M + victim.size.length) / 2,
+            stop_m + SUDDEN_BRAKE_MARGIN_M,
+        )
+        at = _clear_of_traffic(
+            sim,
+            route,
+            _ego_s(sim) + bumper_m + (EGO_LENGTH_M + victim.size.length) / 2,
+            victim.size.length,
+            moving=victim,
+        )
+        _place(victim, route, at, speed_mps=ego_speed)
+        victim.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
     _traffic(sim).hold(victim, at_mps=0.0, for_s=BRAKE_HOLD_S)
     return f"{victim.id} braking hard ahead"
 
@@ -405,11 +531,14 @@ def _cut_in(sim: "Simulation") -> str | Declined:
     gap = CUT_IN_HEADWAY_S * max(ego_speed, CUT_IN_FLOOR_MPS)
     at = _clear_of_traffic(sim, route, _ego_s(sim) + gap, agent.size.length, moving=agent)
     gap = route.signed_gap(_ego_s(sim), at)
+    side = _cut_in_side(sim, gap)
+    if side is None:
+        return Declined("no lane beside the ego here for a car to cut in from")
     _place(
         agent,
         route,
         at,
-        lateral_m=-_lane_width(sim),
+        lateral_m=side * _lane_width(sim, side),
         speed_mps=ego_speed * CUT_IN_SPEED_FRACTION,
     )
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
@@ -427,29 +556,44 @@ def _jaywalker(sim: "Simulation") -> str | Declined:
     that shared the ego route could only ever walk along it.
     """
     route = sim.scene.ego_route
-    # Where the crossing goes has to depend on how fast the ego is closing on
-    # it. A fixed distance ahead does not: the walker needs
-    # `JAYWALK_HALF_SPAN_M / JAYWALK_SPEED_MPS` seconds to reach the lane, and
-    # a car doing 10 m/s covers 57 m in that time, so a crossing pinned 30 m
-    # ahead was one the car had already passed -- the walker stepped out 12-19 m
-    # BEHIND it, and the only `critical` hazard in the set never produced a
-    # conflict. Lead the ego by its own stopping-distance-worth of travel
-    # instead, so the walker is still `JAYWALK_MARGIN_M` ahead on arrival.
-    # Lead by the scene limit rather than by the ego's CURRENT speed: the car
-    # is usually still accelerating while the walker crosses, so current speed
-    # under-predicts its travel (measured: it arrived 1.6 m short). The limit
-    # is the speed the ego is accelerating towards, so it bounds the distance
-    # covered over `lead_time_s` from above and the walker gets there first
-    # whatever the car does in between. `MAX_RANGE_M` is 90 m, so even at the
-    # fastest scene limit the crossing is spawned inside sensor range.
-    lead_time_s = JAYWALK_HALF_SPAN_M / JAYWALK_SPEED_MPS
-    closing_mps = max(sim.ego.speed_mps, sim.scene.speed_limit_mps)
-    ahead = max(JAYWALK_MIN_AHEAD_M, closing_mps * lead_time_s + JAYWALK_MARGIN_M)
-    at = _ego_s(sim) + ahead
+    # Where the crossing goes depends on where the ego will BE when the walker
+    # reaches the lane. A fixed distance ahead does not work: a car doing 10 m/s
+    # covers 57 m while a walker crosses 8 m, so a crossing pinned 30 m ahead was
+    # one the car had already passed and the walker stepped out BEHIND it. Leading
+    # by the scene limit (an upper bound on the ego's travel) fixed that for a fast
+    # ego and broke it for a slow one: measured over 15 runs (3 scenes x 5 seeds)
+    # the ego's speed never differed from the same run without the walker in 9.
+    # So integrate the ego's own speed law for the walker's time to the lane and
+    # stop `JAYWALK_MARGIN_M` short of where that puts it. The walker's pace is
+    # `JAYWALK_SPEED_MPS * traffic_speed_scale`, like every agent's.
+    walk_mps = JAYWALK_SPEED_MPS * _pace(sim)
+    # The crossing is never farther than `JAYWALK_MAX_AHEAD_M`, nor beyond the next
+    # signal or stop sign: the ego halts there, and the walker has long finished
+    # by the time it moves on -- measured, the ego stood 48 m short of the crossing
+    # for 8 s at a stop sign while the walker crossed. A slow walker (the slider's
+    # 0.45 is 0.63 m/s: 12.7 s to cross 8 m) would otherwise put it 140 m away,
+    # past the sensor's 90 m; measured, the ego never met it in 5 runs of 5. When
+    # the ego reaches the limit before the walker can reach the lane, the walker
+    # starts closer instead, at the kerb edge, and arrives sooner.
+    ego_s = _ego_s(sim)
+    next_control = min(
+        (g for cp in sim.scene.control_points if (g := route.signed_gap(ego_s, cp.s)) > 0),
+        default=math.inf,
+    )
+    room = min(JAYWALK_MAX_AHEAD_M, next_control - JAYWALK_CONTROL_CLEAR_M)
+    if room < JAYWALK_MIN_AHEAD_M:
+        return Declined("the ego is about to stop at a junction ahead, with no road to cross first")
+    t_ego = next((t for t, d, _v in _ego_path(sim) if d >= room - JAYWALK_MARGIN_M), math.inf)
+    lead_time_s = min(JAYWALK_HALF_SPAN_M / walk_mps, t_ego)
+    start_m = max(JAYWALK_KERB_M, lead_time_s * walk_mps)
+    lead_time_s = start_m / walk_mps
+    travelled = next(d for t, d, _v in _ego_path(sim) if t >= lead_time_s)
+    ahead = min(max(JAYWALK_MIN_AHEAD_M, travelled + JAYWALK_MARGIN_M), room)
+    at = ego_s + ahead
     cx, cy = route.point_at(at)
     heading = route.heading_at(at)
     nx, ny = -math.sin(heading), math.cos(heading)
-    near = (cx - nx * JAYWALK_HALF_SPAN_M, cy - ny * JAYWALK_HALF_SPAN_M)
+    near = (cx - nx * start_m, cy - ny * start_m)
     far_off = JAYWALK_HALF_SPAN_M + JAYWALK_RUN_OFF_M
     crossing = Route(
         [near, (cx + nx * far_off, cy + ny * far_off)], closed=False
@@ -463,8 +607,9 @@ def _jaywalker(sim: "Simulation") -> str | Declined:
         speed_mps=JAYWALK_SPEED_MPS,
         # Long enough to clear the carriageway, short enough that the walker
         # never reaches the end of its route and wraps.
-        lifetime_s=2 * JAYWALK_HALF_SPAN_M / JAYWALK_SPEED_MPS + 2.0,
+        lifetime_s=(start_m + JAYWALK_HALF_SPAN_M) / walk_mps + 2.0,
     )
+    _start_at_pace(agent, walk_mps)
     return f"{agent.id} crossing {ahead:.0f} m ahead"
 
 
@@ -635,10 +780,42 @@ def _oncoming_drift(sim: "Simulation") -> str | Declined:
     _place(agent, lane, s0, lateral_m=-(lane_left - car_left))
     # Gone before it reaches the end of its open route, where arc length wraps
     # (`ScriptedTraffic._advance`) and it would jump back to the start.
-    scale = max(1.0, float(sim.world.params["traffic_speed_scale"]))
-    agent.lifetime_s = (lane.length_m - s0 - ONCOMING_ROUTE_STEP_M) / (speed * scale)
+    agent.lifetime_s = (lane.length_m - s0 - ONCOMING_ROUTE_STEP_M) / (speed * _pace(sim))
     agent.lane_change_cooldown_s = agent.lifetime_s
     return f"{agent.id} drifting over the centre line {ONCOMING_AHEAD_M:.0f} m ahead"
+
+
+def _runner_hidden(
+    sim: "Simulation", crossing: Route, speed: float, eta: float
+) -> str | None:
+    """Why the ego could never see this runner coming, or `None` if it can.
+
+    A staging nobody could see is not a test of the ego. Walks the ego along its
+    route, on its own speed law, until it reaches the crossing (`eta`), with the
+    runner along its own, and asks `can_see` -- the driving feed's own test,
+    buildings included -- whether the runner is resolvable at any step. Measured
+    before this check: on Nob Hill the runner came out from behind a corner and
+    entered the ego's feed only after their outlines already overlapped, in 5
+    runs of 5. On the grid it is visible about 0.9 s before the crossing, which
+    is late and is not refused: the ego does brake for it there. Whether a
+    sighting is EARLY ENOUGH is left to the closed-loop sweep (`hazard_matrix`),
+    because a forecast cannot say: asked "can the ego stop?" with a constant
+    speed or with free acceleration, it called the grid's runner unavoidable
+    when the ego demonstrably avoids it.
+    """
+    route = sim.scene.ego_route
+    ego_s = _ego_s(sim)
+    buildings = sim.scene.description.buildings
+    ego = sim.world.ego
+    for t, d, _v in _ego_path(sim, horizon_s=eta, hold_speed=True):
+        ex, ey = route.point_at(ego_s + d)
+        rx, ry = crossing.point_at(speed * t)
+        pose = VehicleState(
+            x=ex, y=ey, heading=route.heading_at(ego_s + d), speed_mps=ego.speed_mps
+        )
+        if can_see(pose, rx, ry, crossing.heading_at(speed * t), CAR_SIZE, buildings):
+            return None
+    return "buildings hide the crossing road from the ego until the car is on it"
 
 
 def _red_light_runner(sim: "Simulation") -> str | Declined:
@@ -667,11 +844,23 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
     signal = next((sig for sig in sim.world.signals if sig.id == cp.id), None)
     if signal is None or signal.phase != "green":
         return Declined("the signal ahead is not green for the ego")
-    eta = (gap + RUNNER_PAST_LINE_M) / ego_speed
+    # The ego has to be able to stop before the junction at all. Measured with no
+    # such floor: a runner staged with the ego 0-6 m from the line left 0.01 m of
+    # clearance in 5 runs of 5 on Nob Hill and an overlap on grid-loop at 0.45x.
+    if gap < stopping_distance(ego_speed) + RUNNER_STOP_MARGIN_M:
+        return Declined("the ego is too close to the signal to stop for a car at it")
+
+    # Distance from the ego's centre to the crossing point, and when the ego gets
+    # there: along its own speed law, which slows for the junction's turn.
+    to_cross = gap + RUNNER_PAST_LINE_M
+    eta = next((t for t, d, _v in _ego_path(sim, hold_speed=True) if d >= to_cross), None)
+    if eta is None:
+        return Declined("the ego would not reach the junction within 30 s")
     if signal.time_to_change_s is not None and signal.time_to_change_s < eta + RUNNER_GREEN_MARGIN_S:
         return Declined("the signal ahead changes before the ego would reach it")
 
-    speed = sim.scene.speed_limit_mps
+    pace = _pace(sim)
+    speed = sim.scene.speed_limit_mps * pace
     at = cp.s + RUNNER_PAST_LINE_M
     cx, cy = route.point_at(at)
     heading = route.heading_at(at)
@@ -684,26 +873,56 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
         ],
         closed=False,
     )
-    scale = max(1.0, float(sim.world.params["traffic_speed_scale"]))
+    hidden = _runner_hidden(sim, crossing, speed, eta)
+    if hidden is not None:
+        return Declined(hidden)
+
     agent = _spawn(
         sim,
         kind="red_light_runner",
         cls="car",
         size=CAR_SIZE,
         route=crossing,
-        speed_mps=speed,
+        # Its target is the limit; the traffic model scales it by `pace`, so it
+        # keeps the pace `approach` was worked out with.
+        speed_mps=sim.scene.speed_limit_mps,
         # Gone before the end of its open route, where arc length wraps.
-        lifetime_s=(crossing.length_m - 1.0) / (speed * scale),
+        lifetime_s=(crossing.length_m - 1.0) / speed,
     )
+    _start_at_pace(agent, speed)
     return f"{agent.id} running the red {gap:.0f} m ahead"
 
 
-def _lane_width(sim: "Simulation") -> float:
+def _lane_width(sim: "Simulation", side: int = -1) -> float:
+    """Width of a lane on `side` (+1 left, -1 right) of the ego's, 3.6 m if unknown."""
     lanes = sim.scene.lanes
     if lanes is None:
         return 3.6
-    neighbour = lanes.neighbour(-1)
+    neighbour = lanes.neighbour(side)
     return abs(neighbour.offset_m) if neighbour is not None else 3.6
+
+
+def _cut_in_side(sim: "Simulation", ahead_m: float) -> int | None:
+    """The side (-1 right, +1 left) a car can legally come from to cut in
+    `ahead_m` in front of the ego, or `None` when there is no such lane.
+
+    A cut-in is a lane change INTO the ego's lane, so it needs a lane running
+    the ego's way on that side, existing from the ego to the merge point and
+    legal to change across (`LaneSet.legal_for`). The right is preferred. Without
+    this the car was always dropped a lane to the right of the route, which on
+    most of Nob Hill (one forward lane) is the kerb or the parking lane: a car
+    cutting in from where no lane exists. A scene with no lane model at all
+    keeps the old right-hand side.
+    """
+    lanes = sim.scene.lanes
+    if lanes is None:
+        return -1
+    ego_s = _ego_s(sim)
+    run = ahead_m + CUT_IN_LANE_RUN_M
+    for side in (-1, 1):
+        if lanes.neighbour(side) is not None and lanes.legal_for(ego_s, side, run) >= run:
+            return side
+    return None
 
 
 SCENARIOS: dict[str, Scenario] = {
