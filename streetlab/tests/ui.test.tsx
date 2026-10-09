@@ -727,6 +727,55 @@ describe('Address suggestions', () => {
     expect(screen.queryByRole('option')).toBeNull();
   });
 
+  function pickSuggestion(box: HTMLInputElement) {
+    fireEvent.change(box, { target: { value: 'nob' } });
+    fireEvent.focus(box);
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    const cmd = harness!.sent.find((c) => c.cmd === 'suggest_address');
+    act(() => {
+      harness!.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id: cmd!.id,
+        query: 'nob',
+        suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+      });
+    });
+    fireEvent.mouseDown(screen.getByRole('option', { name: 'Nob Hill, San Francisco, CA' }));
+  }
+
+  it('sends the picked suggestion coordinates with load_location', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    pickSuggestion(box);
+    fireEvent.submit(box.closest('form')!);
+    expect(harness.sent.find((c) => c.cmd === 'load_location')).toMatchObject({
+      query: 'Nob Hill, San Francisco, CA',
+      lat: 37.79,
+      lon: -122.42,
+    });
+  });
+
+  it('discards the pick as soon as the text is edited', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    pickSuggestion(box);
+    fireEvent.change(box, { target: { value: 'Nob Hill, San Francisco, CA 94108' } });
+    fireEvent.submit(box.closest('form')!);
+    const sent = harness.sent.find((c) => c.cmd === 'load_location') as Record<string, unknown>;
+    expect(sent.query).toBe('Nob Hill, San Francisco, CA 94108');
+    expect('lat' in sent).toBe(false);
+    expect('lon' in sent).toBe(false);
+  });
+
   it('never shows a stale reply that no longer matches the box, even if it arrives late', () => {
     vi.useFakeTimers();
     harness = createHarness();
