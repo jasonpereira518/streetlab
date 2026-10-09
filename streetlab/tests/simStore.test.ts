@@ -88,6 +88,7 @@ describe('perception change-gate', () => {
         recall: null,
         mean_pos_err_m: null,
         health: 'ok',
+        camera_set: 'front',
       },
     });
 

@@ -260,6 +260,7 @@ describe('TopToolbar', () => {
         recall: null,
         mean_pos_err_m: null,
         health: 'ok',
+        camera_set: 'front',
       },
     });
 
@@ -286,6 +287,7 @@ describe('TopToolbar', () => {
         recall: null,
         mean_pos_err_m: null,
         health: 'ok',
+        camera_set: 'front',
       },
     });
 
@@ -1038,6 +1040,7 @@ describe('RightPanel', () => {
         recall: null,
         mean_pos_err_m: null,
         health: 'ok',
+        camera_set: 'front',
       },
     };
     harness.emit(frame);

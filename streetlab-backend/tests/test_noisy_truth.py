@@ -147,12 +147,14 @@ def test_an_agents_noise_does_not_depend_on_which_other_agents_exist(built):
     assert alone and all(b in with_other for b in alone)
 
 
-def test_false_positives_rarely_survive_the_birth_rule(built):
-    """Birth needs 2 hits in 3 frames. At the nominal 0.2 false positives per frame an empty
-    road still shows a ghost on some frames (measured 3 % of frames over 120 s; 11.8 % at the
-    stress 0.4), but a clear majority of frames are clean."""
+@pytest.mark.parametrize("cameras,bound", [("front", 0.10), ("front+sides100", 0.25)])
+def test_false_positives_rarely_survive_the_birth_rule(built, cameras, bound):
+    """Birth needs 2 hits in 3 frames. At the nominal 0.2 false positives per frame PER CAMERA an
+    empty road still shows a ghost on some frames: measured 3.9 % of frames over 120 s with the
+    front camera, 14.3 % with three (each camera is its own detector run, so the false-positive
+    rate triples); stress doubles the per-frame rate. A clear majority of frames stay clean."""
     route = built.ego_route
-    src = NoisyTruthPerception(NOMINAL, seed=5)
+    src = NoisyTruthPerception(NOMINAL, seed=5, cameras=cameras)
     frames = ghosts = 0
     t = 0.0
     for i in range(60 * 120):
@@ -162,7 +164,7 @@ def test_false_positives_rarely_survive_the_birth_rule(built):
             frames += 1
             ghosts += bool(out)
         t += DT
-    assert ghosts / frames < 0.10
+    assert ghosts / frames < bound
 
 
 # -- audit fix: ML mode can never read its own overlay ---------------------- #

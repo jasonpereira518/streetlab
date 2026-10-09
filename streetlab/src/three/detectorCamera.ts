@@ -94,16 +94,18 @@ export function cameraParamsFromThree(
   position: { x: number; y: number; z: number },
   headingRad: number,
   pitchRad: number,
+  spec: DetectorCameraSpec = FRONT_SPEC,
 ): CameraParams {
   return {
     x: position.x,
     y: -position.z,
     z: position.y,
-    yaw: headingRad,
+    // The camera's own yaw: the ego heading plus where this camera is turned.
+    yaw: headingRad + spec.yawRad,
     pitch: pitchRad,
     roll: 0,
-    fov_y_deg: DETECTOR_FRAME.fovYDeg,
-    aspect: DETECTOR_FRAME.width / DETECTOR_FRAME.height,
+    fov_y_deg: spec.fovYDeg,
+    aspect: spec.width / spec.height,
   };
 }
 
@@ -137,6 +139,43 @@ export function encodeBase64(bytes: Uint8Array): string {
   }
   return btoa(binary);
 }
+
+/** One detector camera: where it points relative to the ego heading and what it resolves. */
+export interface DetectorCameraSpec {
+  name: string;
+  /** Radians from the ego heading, + = left. */
+  yawRad: number;
+  fovYDeg: number;
+  width: number;
+  height: number;
+}
+
+const FRONT_SPEC: DetectorCameraSpec = {
+  name: 'front',
+  yawRad: 0,
+  fovYDeg: DETECTOR_FRAME.fovYDeg,
+  width: DETECTOR_FRAME.width,
+  height: DETECTOR_FRAME.height,
+};
+
+const SIDE_YAW_RAD = (80 * Math.PI) / 180;
+
+/**
+ * The layouts `PerceptionStats.camera_set` names. Pinned to `contract/detector_cameras.json`
+ * (tests/detectorCameras.test.ts) and mirrored by the backend's `perception.noisy_truth.CAMERA_SETS`.
+ * The side cameras exist because the front one sees only +-38 deg while the car must react to
+ * traffic out to ~+-110 deg; each camera is one detector inference per frame time.
+ */
+export const DETECTOR_CAMERA_SETS = {
+  front: [FRONT_SPEC],
+  'front+sides100': [
+    FRONT_SPEC,
+    { name: 'left', yawRad: SIDE_YAW_RAD, fovYDeg: 100, width: 640, height: 640 },
+    { name: 'right', yawRad: -SIDE_YAW_RAD, fovYDeg: 100, width: 640, height: 640 },
+  ],
+} as const satisfies Record<string, readonly DetectorCameraSpec[]>;
+
+export type CameraSet = keyof typeof DETECTOR_CAMERA_SETS;
 
 /**
  * Whether a readback from `backend` needs `flipRowsInPlace` to end up
@@ -197,6 +236,7 @@ function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof
 }
 
 export interface DetectorCamera {
+  readonly spec: DetectorCameraSpec;
   /**
    * `ground` is the terrain height under the car (0 on flat ground). The
    * camera rides that high above it, but reports its height ABOVE the ground,
@@ -222,8 +262,10 @@ export function createDetectorCamera(
   scene: THREE.Scene,
   renderer: THREE.WebGPURenderer,
   backend: Backend,
+  spec: DetectorCameraSpec = FRONT_SPEC,
 ): DetectorCamera {
-  const { width, height, fovYDeg, quality } = DETECTOR_FRAME;
+  const { quality } = DETECTOR_FRAME;
+  const { width, height, fovYDeg } = spec;
   // Decided once, from the backend that won at renderer creation — it never
   // changes for the renderer's lifetime, so there is nothing to recompute
   // per capture.
@@ -254,11 +296,16 @@ export function createDetectorCamera(
   let hasWarnedTimeout = false;
 
   return {
+    spec,
     update(pose) {
       heading = pose.heading;
       groundY = pose.ground ?? 0;
+      // The mount sits ahead of the ego origin along the EGO heading; only the aim turns
+      // with the camera's own yaw, so every camera shares one position and downtilt.
       const fx = Math.cos(pose.heading);
       const fz = -Math.sin(pose.heading);
+      const ax = Math.cos(pose.heading + spec.yawRad);
+      const az = -Math.sin(pose.heading + spec.yawRad);
       camera.position.set(
         pose.x + fx * MOUNT_FORWARD,
         groundY + MOUNT_HEIGHT,
@@ -269,9 +316,9 @@ export function createDetectorCamera(
       // actually has. Inlining `40` or `1.15` here again would silently
       // reintroduce the drift the derivation exists to prevent.
       camera.lookAt(
-        pose.x + fx * MOUNT_LOOK_DISTANCE,
+        pose.x + ax * MOUNT_LOOK_DISTANCE,
         groundY + MOUNT_HEIGHT - MOUNT_LOOK_DROP,
-        pose.z + fz * MOUNT_LOOK_DISTANCE,
+        pose.z + az * MOUNT_LOOK_DISTANCE,
       );
     },
 
@@ -380,6 +427,7 @@ export function createDetectorCamera(
             { x: camera.position.x, y: camera.position.y - groundY, z: camera.position.z },
             heading,
             MOUNT_PITCH_RAD,
+            spec,
           ),
         };
       } finally {
