@@ -72,20 +72,20 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 9
+    assert dumped["protocol"] == PROTOCOL_VERSION == 10
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_9():
-    """Bumped from 8 when `SceneDescription.terrain` was added (8 added
-    `reference_path`).
+def test_protocol_is_10():
+    """Bumped from 9 when `StateUpdate.world_agents` and `PerceptionStats.health`
+    were added (9 added `SceneDescription.terrain`, 8 `reference_path`).
 
     `wsClient.ts` rejects a backend whose `protocol` differs from its own, so
     this and `PROTOCOL_VERSION` in `schema.ts` must move together -- which is
     exactly what an exact-match assertion is here to force.
     """
-    assert PROTOCOL_VERSION == 9
+    assert PROTOCOL_VERSION == 10
 
 
 def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
@@ -250,6 +250,35 @@ def test_detections_shadow_round_trips_none_and_a_populated_list():
     assert dumped2["detections_shadow"] == raw["detections"]
 
 
+def test_state_update_requires_world_agents_and_never_accepts_null():
+    """Protocol 10: `world_agents` is required and not nullable -- a missing key
+    or a null would be dropped by zod (whole frame), so pydantic must refuse both."""
+    raw = load_fixture("state_update_moving")
+    assert isinstance(raw["world_agents"], list) and raw["world_agents"]
+    missing = dict(raw)
+    del missing["world_agents"]
+    with pytest.raises(ValueError):
+        StateUpdate.model_validate(missing)
+    with pytest.raises(ValueError):
+        StateUpdate.model_validate({**raw, "world_agents": None})
+
+
+def test_perception_health_is_required_and_never_null():
+    from schema import PerceptionStats
+
+    base = dict(
+        mode="ml", detector_ms=None, server_e2e_ms=None, frames_received=0,
+        frames_dropped=0, precision=None, recall=None, mean_pos_err_m=None,
+    )
+    with pytest.raises(ValueError):
+        PerceptionStats(**base)
+    with pytest.raises(ValueError):
+        PerceptionStats(**base, health=None)
+    with pytest.raises(ValueError):
+        PerceptionStats(**base, health="meh")
+    assert PerceptionStats(**base, health="degraded").health == "degraded"
+
+
 COMMANDS = [
     {"id": "c1", "cmd": "set_paused", "paused": True},
     {"id": "c2", "cmd": "step", "frames": 4},
@@ -337,7 +366,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 9
+    assert PROTOCOL_VERSION == 10
 
     raw = {
         "id": "f1",
@@ -396,6 +425,7 @@ def test_state_update_perception_defaults_to_null_and_survives_serialisation():
         precision=None,
         recall=None,
         mean_pos_err_m=None,
+        health="ok",
     )
     dumped = stats.model_dump(mode="json")
     # `.nullable()` means present-and-null, never absent.
