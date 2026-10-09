@@ -137,7 +137,7 @@ def main() -> None:
         sys.exit(f"{path.relative_to(REPO)} already exists; pick another --label rather than overwrite it")
 
     runs = standard_runs(
-        _nob_hill_scene(), nobhill_s=args.seconds, grid_s=args.seconds, grid_slow_s=args.seconds
+        _nob_hill_scene(), nobhill_s=args.seconds, nobhill_slow_s=args.seconds, grid_s=args.seconds, grid_slow_s=args.seconds
     )
     sha = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True, check=False

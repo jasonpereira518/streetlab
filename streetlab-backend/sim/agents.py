@@ -344,6 +344,12 @@ class ScriptedTraffic:
         if lateral_rate and speed > 0.1:
             # The body points where the car is going, not where the lane does.
             heading = _wrap(heading + math.atan2(lateral_rate, speed))
+        # A body turns at a bounded rate. Both inputs above step: the route's heading by a whole
+        # vertex (11 degrees on an 8-segment fillet) and the crab from 0 to atan(1.2 / v) the
+        # tick a lane change starts (27 degrees at 2.5 m/s). Followed through, as a real
+        # chassis would, they cost a few ticks of lag instead of a visible snap.
+        before = agent.state.heading
+        heading = _wrap(before + max(-_MAX_YAW_STEP_RAD, min(_MAX_YAW_STEP_RAD, _wrap(heading - before))))
 
         agent.s = s
         agent.state = VehicleState(
@@ -376,6 +382,16 @@ _IDM_DELTA = 4.0
 #: `_IDM_COMFORT_DECEL` stays at 2.0 and is what car-following actually uses --
 #: this is the emergency floor, not the working rate.
 _IDM_MAX_BRAKE = 4.5
+
+#: The floor while there is still room to brake: 3.4 m/s^2, under the 3.5 p99 traffic budget
+#: (`tests/driving_metrics.py`). With only the emergency floor, 2% of pooled agent-frames sat on
+#: 4.5 (measured, grid-loop 150 s: 552 of 27000 -- the first tick of every agent spawned at
+#: speed with a wall in 70 m, lanes ending 16 m ahead at 5.6 m/s, slower leads closed on at
+#: 8 m/s). Gaps under `_IDM_MIN_GAP_M` plus `_EMERGENCY_HEADWAY_S` of travel, and a free term
+#: that has gone to -inf (`traffic_speed_scale=0`), still get the emergency floor.
+_IDM_ROOM_BRAKE = 3.4
+_EMERGENCY_HEADWAY_S = 0.5
+
 
 #: Beyond this there is no leader worth modelling. Bounding the search is not
 #: a performance dodge -- it is what stops an agent on a short closed loop from
@@ -427,6 +443,11 @@ MOBIL_COOLDOWN_S = 4.0
 #: Half the span of the centred difference the lateral normal is taken from.
 #: See `lateral_unit`.
 _NORMAL_SPAN_M = 1.0
+
+#: The most an agent's body may turn in one tick, radians: 1.8 degrees, under the 2.0 budget
+#: (`tests/driving_metrics.py`). 1.88 rad/s at 60 Hz; the tightest corner traffic takes
+#: (3.1 m radius, at 2.6 m/s) needs 0.84.
+_MAX_YAW_STEP_RAD = math.radians(1.8)
 
 #: The clear space, beyond both vehicles' half-lengths, a change needs in the
 #: target lane. A gap a car is already occupying is not a gap, and "it fits
@@ -535,6 +556,7 @@ class IdmTraffic(ScriptedTraffic):
                     gap,
                     lead_speed,
                     headway_s=_IDM_HEADWAY_S if agent.headway_s is None else agent.headway_s,
+                    routine=True,
                 )
                 speed = max(0.0, speed + accel * dt)
 
@@ -1112,8 +1134,12 @@ def _idm_accel(
     lead_speed: float,
     *,
     headway_s: float = _IDM_HEADWAY_S,
+    routine: bool = False,
 ) -> float:
     """The IDM acceleration law.
+
+    `routine` is the agent's own driving: it may use the lower `_IDM_ROOM_BRAKE` floor while there
+    is room. MOBIL's what-ifs leave it off, because they ask what braking a follower would NEED.
 
     `a = a_max * (1 - (v/v0)^delta - (s_star/s)^2)` with
     `s_star = s0 + v*T + v*dv / (2*sqrt(a_max*b))`.
@@ -1144,7 +1170,8 @@ def _idm_accel(
     # A gap that has closed to nothing would divide by zero; the floor makes
     # the interaction term merely enormous, which is the same command.
     interaction = (s_star / max(gap, 0.1)) ** 2
-    return max(_IDM_MAX_ACCEL * (free - interaction), -_IDM_MAX_BRAKE)
+    room = routine and gap > _IDM_MIN_GAP_M + _EMERGENCY_HEADWAY_S * speed and desired > 0
+    return max(_IDM_MAX_ACCEL * (free - interaction), -(_IDM_ROOM_BRAKE if room else _IDM_MAX_BRAKE))
 
 
 def _approach(value: float, target: float, max_delta: float) -> float:

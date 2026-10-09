@@ -66,7 +66,7 @@ BUDGET = SimpleNamespace(
     standstill_gap_m=(2.0, 4.0),
 )
 
-RUN_KEYS = ("nobhill", "grid", "grid_slow")
+RUN_KEYS = ("nobhill", "nobhill_slow", "grid", "grid_slow")
 
 
 @dataclass(frozen=True)
@@ -198,7 +198,12 @@ def stop_episodes(run: Run) -> list[Stop]:
         if math.isnan(run.line_gap[k]) or run.state[k] not in ("approach", "stop"):
             continue
         lo = max(0, k - window)
-        gap = run.lead_gap[k]
+        # Queued if a lead was close at ANY point of the final approach, not only at the instant
+        # of rest: grid_slow t=64 s stopped behind a car waiting at the line, which pulled away
+        # while the ego was still at 0.3 m/s, and was read as a free stop 1.1 m too short.
+        window_gaps = run.lead_gap[lo : k + 1]
+        window_gaps = window_gaps[np.isfinite(window_gaps)]
+        gap = window_gaps.min() if window_gaps.size else math.nan
         out.append(
             Stop(
                 t=float(run.t[k]),
@@ -310,9 +315,20 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
 
 
 def standard_runs(
-    nob_hill_scene, *, nobhill_s: float = 340.0, grid_s: float = 150.0, grid_slow_s: float = 200.0
+    nob_hill_scene,
+    *,
+    nobhill_s: float = 340.0,
+    nobhill_slow_s: float = 340.0,
+    grid_s: float = 150.0,
+    grid_slow_s: float = 200.0,
 ) -> dict[str, Run]:
-    """The three hazard-free recordings the budgets and the report are built on.
+    """The four hazard-free recordings the budgets and the report are built on.
+
+    `nobhill` is Nob Hill at default traffic and `nobhill_slow` the same at 0.4x, the setting
+    `test_lane_changes.py` replays it at. Since the Phase 3 speed law the default-traffic ego
+    stays ahead of the traffic for 620 s and never meets a lead, so it never changes lane or
+    follows (measured: 0 frames with a lead, no lane change); the slow recording is the one
+    that does both, first lane change at 112 s.
 
     Nob Hill at default traffic reaches signals and stop signs within 250 s and
     starts overtaking from about 290 s (the lane-change return is the worst thing it
@@ -324,6 +340,10 @@ def standard_runs(
     nob = Simulation(SyntheticGrid(), "grid-loop", seed=1)
     nob.adopt_scene(nob_hill_scene)
 
+    nob_slow = Simulation(SyntheticGrid(), "grid-loop", seed=1)
+    nob_slow.adopt_scene(nob_hill_scene)
+    nob_slow.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
+
     grid = Simulation(SyntheticGrid(), "grid-loop", seed=7)
 
     slow = Simulation(SyntheticGrid(), "grid-loop", seed=7)
@@ -331,6 +351,7 @@ def standard_runs(
 
     return {
         "nobhill": record(nob, nobhill_s, "nobhill"),
+        "nobhill_slow": record(nob_slow, nobhill_slow_s, "nobhill_slow"),
         "grid": record(grid, grid_s, "grid"),
         "grid_slow": record(slow, grid_slow_s, "grid_slow"),
     }

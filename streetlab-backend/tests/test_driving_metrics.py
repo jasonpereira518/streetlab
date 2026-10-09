@@ -125,6 +125,20 @@ def test_a_stop_reports_where_the_nose_rests_against_the_line():
     assert stop.queued is False
 
 
+def test_a_stop_is_queued_if_a_lead_was_close_during_the_approach_even_if_it_left_before_rest():
+    speed = [5.0] * 60 + [0.0] * 120
+    lead = [4.0] * 30 + [np.nan] * 30 + [np.nan] * 120
+    run = make_run(
+        speed,
+        state=["approach"] * len(speed),
+        target_kind=["signal"] * len(speed),
+        line_gap=[9.0] * len(speed),
+        lead_gap=lead,
+    )
+    (stop,) = stop_episodes(run)
+    assert stop.queued is True
+
+
 def test_a_stop_behind_a_lead_is_marked_queued():
     speed = [5.0] * 60 + [0.0] * 120
     run = make_run(
