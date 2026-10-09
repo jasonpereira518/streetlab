@@ -32,6 +32,10 @@ from sim.agents import Agent
 from sim.route import Route
 from sim.vehicle import VehicleState
 
+#: Matched frames at which a track's confidence is no longer discounted. A track born on
+#: 2 hits reports half its detector confidence; at 4 (0.3-0.4 s of evidence) all of it.
+MATURE_HITS = 4
+
 # Under this speed a track's velocity vector is mostly estimator noise, and
 # the direction of a near-zero vector is essentially random. Heading falls
 # back to ego's rather than pointing a parked car down a bearing invented by
@@ -241,7 +245,7 @@ def _detection(track: Track, frame: EgoFrame, ego: VehicleState) -> Detection:
         # Clamped rather than trusted: `Detection.confidence` is bounded on
         # the wire, and a detector that returns 1.0000001 must degrade
         # perception, not raise on the sim thread.
-        confidence=min(1.0, max(0.0, track.confidence)),
+        confidence=min(1.0, max(0.0, track.confidence)) * min(1.0, track.total_hits / MATURE_HITS),
         hazard=threat.hazard,
         hazard_label=threat.label,
         ttc_s=threat.ttc_s,

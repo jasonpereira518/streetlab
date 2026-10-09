@@ -115,6 +115,7 @@ class _Sensor:
         self._next_capture = 0.0
         self._seq = 0
         self.failures = 0
+        self.last_sources: list[str] = []
         #: The `NoisyTruthPerception` this sensor belongs to (set by the CLI).
         self.source: object | None = None
         self.buildings: Sequence[Building] = ()
@@ -169,6 +170,7 @@ class _Sensor:
         cam = camera_for(ego)
         g0 = self.ground(cam.x, cam.y) if self.ground else 0.0
         boxes: list[Box2D] = []
+        sources: list[str] = []
         for a in agents:
             dist = math.hypot(a.state.x - ego.x, a.state.y - ego.y)
             if dist > MAX_RANGE_M:
@@ -201,11 +203,15 @@ class _Sensor:
             box = _jitter((x0, y0, x1, y1), jitter)
             if box is not None:
                 boxes.append(Box2D(*box, cls=cls, confidence=0.9))
+                sources.append(a.id)
         fp_rng = random.Random(f"{self._seed}/{self._seq}/fp")
         if fp_rng.random() < p.fp_per_frame:
             fp = self._false_positive(cam, fp_rng)
             if fp is not None:
                 boxes.append(fp)
+                sources.append("false-positive")
+        #: Which agent (or "false-positive") each box of the newest frame came from; diagnostics only.
+        self.last_sources = sources
         return PipelineResult(
             boxes=boxes,
             frame_seq=self._seq,

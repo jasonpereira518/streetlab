@@ -346,6 +346,12 @@ AEB_MARGIN_M = 2.0
 #: noisy tick at the edge of the window cannot release and re-fire it.
 YIELD_RELEASE_S = 0.3
 
+#: A detection below this confidence cannot trigger a threat reaction. A perception source
+#: lowers a track's confidence until it has been seen enough times to trust
+#: (`perception/ml_source.py`): a two-frame ghost 9 m ahead is a reason to ease off, through
+#: the car-following law, not to brake at the cap. Ground truth reports 1.0.
+REACTION_MIN_CONFIDENCE = 0.5
+
 #: Speed ceiling meaning "no reaction".
 _NO_CEILING = math.inf
 
@@ -543,8 +549,9 @@ class ThreatAssessor:
         dt: float,
         centre_m: float = 0.0,
     ) -> Reaction:
+        trusted = [d for d in detections if d.confidence >= REACTION_MIN_CONFIDENCE]
         inp = RuleInput(
-            windows(detections, ego, route, ego_s, centre_m), ego, route, ego_s, dt
+            windows(trusted, ego, route, ego_s, centre_m), ego, route, ego_s, dt
         )
         # Every rule steps every tick, fired or not: a rule's dwell timers and
         # latches must keep running while another rule is the one reported.

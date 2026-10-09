@@ -176,3 +176,36 @@ def test_a_car_in_the_adjacent_lane_is_not_in_my_lane_wherever_i_sit(route):
     left of centre (2 m apart) read as 'left lane' -- in-lane traffic missing from the lead search."""
     frame, o = frame_for(route, -1.0)
     assert frame.lane_offset(*left_of(o, 1.0)) == 0
+
+
+# -- evidence-weighted reactions (the AEB-on-a-ghost fix) ----------------------- #
+
+
+def test_a_track_reports_its_whole_history_not_just_its_streak():
+    from perception.tracker import Observation, Tracker
+
+    tr = Tracker()
+    out = []
+    for i in range(5):
+        out = tr.update([Observation("car", 20.0, 0.0, 0.9, 0.0, 0.5, 0.5)] if i != 2 else [], i * 0.1)
+    assert out[0].total_hits == 4 and out[0].hits == 2
+
+
+def test_a_young_track_is_discounted_and_cannot_trigger_a_threat_reaction():
+    from perception.ml_source import MATURE_HITS, _detection
+    from perception.tracker import Track
+    from plan.hazard import REACTION_MIN_CONFIDENCE, ThreatAssessor
+    from sim.route import Route
+
+    def det(total):
+        t = Track("t", "truck", 15.0, 0.0, 0.0, 0.0, 2, 0, 0.9, total_hits=total)
+        ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=11.0)
+        route = Route([(-50.0, 0.0), (100.0, 0.0)], closed=False)
+        return _detection(t, EgoFrame.of(ego, route), ego), ego, route
+
+    young, ego, route = det(2)
+    old, _, _ = det(MATURE_HITS)
+    assert young.confidence < REACTION_MIN_CONFIDENCE <= old.confidence
+    kinds = lambda d: ThreatAssessor().assess([d], ego, route, route.project((0.0, 0.0)), 1 / 60).kind  # noqa: E731
+    assert kinds(old) == "aeb", "an established obstacle 15 m ahead at 11 m/s is an emergency"
+    assert kinds(young) == "none", "a two-frame ghost is not"

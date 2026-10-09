@@ -87,6 +87,9 @@ class Track:
     hits: int
     misses: int
     confidence: float
+    #: Frames this track has been matched in over its whole life (not a streak).
+    #: Defaults to "mature" so a hand-built Track is not discounted.
+    total_hits: int = 1_000_000
     #: No box matched on the latest frame: the state is a prediction.
     coasting: bool = False
     #: Seconds from the last matched box to the time this track is reported for.
@@ -106,6 +109,7 @@ class _TrackState:
     last_hit_t: float
     history: deque = field(default_factory=lambda: deque(maxlen=3))
     hit_streak: int = 0
+    total_hits: int = 1
     misses: int = 0
     published: bool = False
 
@@ -208,6 +212,7 @@ class Tracker:
             tr.last_hit_t = t
             tr.history.append(True)
             tr.hit_streak += 1
+            tr.total_hits += 1
             tr.misses = 0
             if sum(tr.history) >= self.birth_hits:
                 tr.published = True
@@ -272,6 +277,7 @@ class Tracker:
                     vx=float(tr.x[2]),
                     vy=float(tr.x[3]),
                     hits=tr.hit_streak,
+                    total_hits=tr.total_hits,
                     misses=tr.misses,
                     confidence=tr.confidence,
                     coasting=tr.misses > 0,
