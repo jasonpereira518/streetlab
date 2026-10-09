@@ -33,13 +33,13 @@ from typing import Literal, Protocol
 
 import numpy as np
 
+from map.useragent import USER_AGENT
 from map.cache import DiskCache
 from map.projection import EARTH_R, LatLon
 
 log = logging.getLogger("streetlab.map")
 
 TERRARIUM_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-USER_AGENT = "StreetLab/0.2 (driving simulator; https://github.com/streetlab)"
 TILE_PX = 256
 DEFAULT_ZOOM = 15
 CACHE_VERSION = "terrarium:v1"

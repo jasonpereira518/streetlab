@@ -27,7 +27,7 @@ Three transcription hazards are handled deliberately; see the tests that pin the
 
 from typing import Annotated, Any, Generic, Literal, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
@@ -556,6 +556,10 @@ CameraView = Literal["chase", "overhead", "cockpit", "free"]
 ParamValue = Union[bool, int, float, str]
 
 
+#: Longest address text a command may carry (mirrored in the zod schema).
+MAX_QUERY_LEN = 200
+
+
 class _Cmd(Wire):
     """Every command carries a client-generated id so an Ack can be correlated."""
 
@@ -583,13 +587,28 @@ class LoadScenario(_Cmd):
 
 class LoadLocation(_Cmd):
     cmd: Literal["load_location"] = "load_location"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
     # A second address to route TO. Absent (the common case) means "drive an
     # auto-discovered loop near `query`", exactly as before this existed.
-    destination: Annotated[str, Field(min_length=1)] | None = None
+    destination: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)] | None = None
+    # The coordinates of a suggestion the user picked, so the backend does not
+    # geocode its label a second time. Each pair is both-or-neither. Commands
+    # only travel client -> server, so `None` here never reaches a zod schema.
+    lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    destination_lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    destination_lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+
+    @model_validator(mode="after")
+    def _pairs_are_both_or_neither(self) -> "LoadLocation":
+        if (self.lat is None) != (self.lon is None):
+            raise ValueError("lat and lon must be given together")
+        if (self.destination_lat is None) != (self.destination_lon is None):
+            raise ValueError("destination_lat and destination_lon must be given together")
+        return self
 
 
 class SuggestAddress(_Cmd):
@@ -599,7 +618,7 @@ class SuggestAddress(_Cmd):
     bypasses it: a network geocode call must not stall the physics step."""
 
     cmd: Literal["suggest_address"] = "suggest_address"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
 
 
 class SetParam(_Cmd):

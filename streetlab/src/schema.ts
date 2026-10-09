@@ -536,11 +536,17 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('load_scenario'), scenario_id: z.string() }),
   cmd({
     cmd: z.literal('load_location'),
-    query: z.string().min(1),
+    query: z.string().min(1).max(200),
     radius_m: z.number().positive().optional(),
     /** A second address to route TO. Absent means "drive an auto-discovered
      * loop near `query`", exactly as before this existed. */
-    destination: z.string().min(1).optional(),
+    destination: z.string().min(1).max(200).optional(),
+    /** The coordinates of a suggestion the user picked, so the backend does
+     * not geocode the label a second time. Each pair is both-or-neither. */
+    lat: z.number().min(-90).max(90).optional(),
+    lon: z.number().min(-180).max(180).optional(),
+    destination_lat: z.number().min(-90).max(90).optional(),
+    destination_lon: z.number().min(-180).max(180).optional(),
   }),
   cmd({
     cmd: z.literal('set_param'),
@@ -557,7 +563,7 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('set_perception'), mode: PerceptionModeSchema }),
   /** Answered directly by the server's connection handler, not routed
    * through the sim command queue — see `SuggestAddress` in schema.py. */
-  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1) }),
+  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1).max(200) }),
   cmd({
     cmd: z.literal('camera_frame'),
     /** Monotonic per connection; the backend drops anything out of order. */

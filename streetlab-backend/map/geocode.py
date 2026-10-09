@@ -15,13 +15,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
+
+from map.useragent import USER_AGENT
 
 log = logging.getLogger("streetlab.map")
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-USER_AGENT = "StreetLab/0.2 (driving simulator; https://github.com/streetlab)"
+PHOTON_URL = "https://photon.komoot.io/api/"
 
 
 class GeocodeError(RuntimeError):
@@ -113,61 +116,186 @@ def parse_nominatim_suggestions(payload: object) -> list[Place]:
     return [p for entry in payload if (p := _parse_entry(entry)) is not None]
 
 
+class RateLimiter:
+    """At most one call per `min_interval_s`, without holding a lock while asleep.
+
+    The old throttle slept inside its lock, so every waiter queued behind the
+    sleeper and a typing burst of suggestions could delay a submitted lookup.
+    Here the lock only guards the "is the slot free" check; waiting happens
+    outside it, and `cancelled` lets a waiter give up (a superseded suggestion).
+    Each service gets its own limiter, so Photon traffic never delays Nominatim.
+    """
+
+    def __init__(
+        self,
+        min_interval_s: float = 1.0,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.min_interval_s = min_interval_s
+        self._clock = clock
+        self._sleep = sleep
+        self._lock = threading.Lock()
+        self._next = float("-inf")
+
+    def wait(self, cancelled: Callable[[], bool] = lambda: False) -> bool:
+        """Block until a slot is free and take it. False if `cancelled` fired first."""
+        while True:
+            with self._lock:
+                now = self._clock()
+                delay = self._next - now
+                if delay <= 0:
+                    self._next = now + self.min_interval_s
+                    return True
+            if cancelled():
+                return False
+            self._sleep(min(delay, 0.05))
+
+
+def _get_json(url: str, params: dict, timeout: float = 15.0):
+    import httpx
+
+    try:
+        response = httpx.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:  # httpx errors, JSON errors, all equivalent here
+        raise GeocodeUnavailable(str(exc)) from exc
+
+
 class NominatimGeocoder:
-    def __init__(self, url: str = NOMINATIM_URL, min_interval_s: float = 1.0) -> None:
+    """Submitted-address lookups. Nominatim's policy forbids client-side
+    as-you-type autocomplete, so in the app `suggest` is served by Photon (see
+    `CompositeGeocoder`); `suggest` here exists for the CLI and for callers that
+    wire a bare Nominatim."""
+
+    def __init__(self, url: str = NOMINATIM_URL, min_interval_s: float = 1.0, limiter: RateLimiter | None = None) -> None:
         self.url = url
         self.min_interval_s = min_interval_s
-        self._lock = threading.Lock()
-        self._last_call = 0.0
+        self.limiter = limiter or RateLimiter(min_interval_s)
 
     def _throttle(self) -> None:
-        # The lock is held across the sleep, not just around the read/write
-        # of `_last_call`. That is deliberate: Nominatim's one-request-per-
-        # second cap must hold across concurrent callers, not just for one
-        # caller looping sequentially. If the lock were released before
-        # sleeping, two threads racing here could both read the same
-        # `_last_call`, each compute a near-zero wait, and both fire at once
-        # — the cap would only ever be enforced per-thread, not globally.
-        with self._lock:
-            wait = self.min_interval_s - (time.monotonic() - self._last_call)
-            if wait > 0:
-                time.sleep(wait)
-            self._last_call = time.monotonic()
+        self.limiter.wait()
 
     def raw(self, query: str, limit: int = 1) -> list:
-        import httpx
-
         self._throttle()
-        try:
-            response = httpx.get(
-                self.url,
-                params={"q": query, "format": "json", "limit": limit},
-                headers={"User-Agent": USER_AGENT},
-                timeout=15.0,
-            )
-            response.raise_for_status()
-            return response.json()
-        except Exception as exc:  # httpx errors, JSON errors, all equivalent here
-            raise GeocodeUnavailable(str(exc)) from exc
+        return _get_json(self.url, {"q": query, "format": "json", "limit": limit})
 
     def lookup(self, query: str) -> Place:
         return parse_nominatim(self.raw(query))
 
     def suggest(self, query: str, limit: int = 5) -> list[Place]:
-        """Candidates for an as-you-type address field.
-
-        Deliberately does not raise `GeocodeUnavailable` on a transport
-        failure: a dropped keystroke-driven request should just show no
-        dropdown, not surface an error banner over what the user hasn't
-        even submitted yet. `lookup()` keeps the stricter behaviour because
-        a submitted `load_location` is a real request that deserves a real
-        failure message.
-        """
+        """Deliberately does not raise on a transport failure: a dropped
+        keystroke-driven request should show no dropdown, not an error banner."""
         try:
             return parse_nominatim_suggestions(self.raw(query, limit=limit))
         except GeocodeUnavailable:
             log.warning("suggest() couldn't reach Nominatim for %r", query)
             return []
+
+
+def parse_photon(payload: object) -> list[Place]:
+    """Photon GeoJSON -> `Place`s, relevance-ordered. Anything malformed is skipped."""
+    features = payload.get("features") if isinstance(payload, dict) else None
+    if not isinstance(features, list):
+        return []
+    places: list[Place] = []
+    for f in features:
+        try:
+            lon, lat = (float(v) for v in f["geometry"]["coordinates"][:2])
+            props = f.get("properties") or {}
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+            continue
+        street = " ".join(str(props[k]) for k in ("housenumber", "street") if props.get(k))
+        parts = [props.get("name"), street, props.get("city") or props.get("district"), props.get("state"), props.get("country")]
+        label = ", ".join(dict.fromkeys(str(x) for x in parts if x))
+        places.append(Place(lat=lat, lon=lon, display_name=label or f"{lat}, {lon}"))
+    return places
+
+
+class PhotonGeocoder:
+    """As-you-type suggestions from Photon (komoot), on its own rate lane.
+
+    Photon asks only for fair use. A suggestion call that is superseded by a
+    newer one while it waits for its slot returns `[]` without touching the
+    network (latest wins).
+    """
+
+    def __init__(self, url: str = PHOTON_URL, min_interval_s: float = 1.0, limiter: RateLimiter | None = None) -> None:
+        self.url = url
+        self.limiter = limiter or RateLimiter(min_interval_s)
+        self._gen_lock = threading.Lock()
+        self._gen = 0
+
+    def suggest(self, query: str, limit: int = 5) -> list[Place]:
+        with self._gen_lock:
+            self._gen += 1
+            mine = self._gen
+        if not self.limiter.wait(cancelled=lambda: self._gen != mine):
+            return []
+        try:
+            return parse_photon(_get_json(self.url, {"q": query, "limit": limit}))[:limit]
+        except GeocodeUnavailable:
+            log.warning("suggest() couldn't reach Photon for %r", query)
+            return []
+
+    def lookup(self, query: str) -> Place:
+        raise GeocodeError("PhotonGeocoder only suggests; compose it with a resolver")
+
+
+class CompositeGeocoder:
+    """`suggest` from one service, `lookup` from another."""
+
+    def __init__(self, suggester: Geocoder, resolver: Geocoder) -> None:
+        self.suggester = suggester
+        self.resolver = resolver
+
+    def lookup(self, query: str) -> Place:
+        return self.resolver.lookup(query)
+
+    def suggest(self, query: str, limit: int = 5) -> list[Place]:
+        return self.suggester.suggest(query, limit)
+
+
+#: Nominatim asks that results be cached. Addresses move rarely; 30 days.
+GEOCODE_TTL_S = 30 * 24 * 3600.0
+
+
+def _normalise(query: str) -> str:
+    return " ".join(query.lower().split())
+
+
+class CachedGeocoder:
+    """Disk-caches successful `lookup`s (keyed by the normalised query, with a TTL).
+
+    Not-found and transport failures are never cached; suggestions pass through
+    uncached. A warm entry makes reloading an address work with no network.
+    """
+
+    def __init__(self, inner: Geocoder, cache, *, ttl_s: float = GEOCODE_TTL_S, clock: Callable[[], float] = time.time) -> None:
+        self.inner = inner
+        self.cache = cache
+        self.ttl_s = ttl_s
+        self._clock = clock
+
+    def lookup(self, query: str) -> Place:
+        key = f"geocode:v1:{_normalise(query)}"
+        hit = self.cache.get(key)
+        if isinstance(hit, dict):
+            try:
+                if self._clock() - float(hit["ts"]) < self.ttl_s:
+                    return Place(lat=float(hit["lat"]), lon=float(hit["lon"]), display_name=str(hit["display_name"]))
+            except (KeyError, TypeError, ValueError):
+                pass  # corrupt entry: fall through and refetch
+        place = self.inner.lookup(query)
+        self.cache.put(key, {"lat": place.lat, "lon": place.lon, "display_name": place.display_name, "ts": self._clock()})
+        return place
+
+    def suggest(self, query: str, limit: int = 5) -> list[Place]:
+        return self.inner.suggest(query, limit)
 
 
 class StubGeocoder:

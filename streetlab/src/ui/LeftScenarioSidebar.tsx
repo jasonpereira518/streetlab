@@ -11,7 +11,7 @@ import { alpha, color } from './theme';
 
 /** Debounce before an as-you-type address fires a `suggest_address` request.
  * Short enough to feel responsive, long enough that a fast typist doesn't
- * spend one Nominatim round trip per keystroke. */
+ * spend one geocoder round trip per keystroke. */
 const SUGGEST_DEBOUNCE_MS = 250;
 /** Below this length a query is either empty or too short to narrow down
  * real candidates — Nominatim's own results get noisy well before this. */
@@ -37,7 +37,7 @@ function AddressField({
 }: {
   value: string;
   onChange: (value: string) => void;
-  onSelect: (label: string) => void;
+  onSelect: (suggestion: AddressSuggestion) => void;
   placeholder: string;
   ariaLabel: string;
   disabled: boolean;
@@ -68,8 +68,8 @@ function AddressField({
     reply && reply.query === value.trim() ? reply.items : [];
   const showDropdown = open && suggestions.length > 0;
 
-  const select = (label: string) => {
-    onSelect(label);
+  const select = (suggestion: AddressSuggestion) => {
+    onSelect(suggestion);
     setRequestId(null);
     setOpen(false);
   };
@@ -101,7 +101,7 @@ function AddressField({
             setHighlight((h) => (h <= 0 ? suggestions.length - 1 : h - 1));
           } else if (e.key === 'Enter' && highlight >= 0) {
             e.preventDefault();
-            select(suggestions[highlight].label);
+            select(suggestions[highlight]);
           } else if (e.key === 'Escape') {
             setOpen(false);
           }
@@ -126,7 +126,7 @@ function AddressField({
                 // a click that was already in flight.
                 e.preventDefault();
                 if (blurTimer.current) clearTimeout(blurTimer.current);
-                select(s.label);
+                select(s);
               }}
             >
               {s.label}
@@ -152,6 +152,10 @@ export function LeftScenarioSidebar() {
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
   const [destQuery, setDestQuery] = useState('');
+  // The suggestion picked for each field. Editing the text discards the pick,
+  // so coordinates are only ever sent for the exact label the user chose.
+  const [startPick, setStartPick] = useState<AddressSuggestion | null>(null);
+  const [destPick, setDestPick] = useState<AddressSuggestion | null>(null);
 
   const isBookmarked = (s: ScenarioSummary) => bookmarks[s.id] ?? s.bookmarked;
 
@@ -182,23 +186,37 @@ export function LeftScenarioSidebar() {
         className="location-search"
         onSubmit={(e) => {
           e.preventDefault();
-          loadLocation(query, destQuery);
+          loadLocation(query, destQuery, { start: startPick, destination: destPick });
           setQuery('');
           setDestQuery('');
+          setStartPick(null);
+          setDestPick(null);
         }}
       >
         <AddressField
           value={query}
-          onChange={setQuery}
-          onSelect={setQuery}
+          onChange={(v) => {
+            setQuery(v);
+            setStartPick(null);
+          }}
+          onSelect={(p) => {
+            setQuery(p.label);
+            setStartPick(p);
+          }}
           placeholder="Address or place…"
           ariaLabel="Start address"
           disabled={locationPending !== null}
         />
         <AddressField
           value={destQuery}
-          onChange={setDestQuery}
-          onSelect={setDestQuery}
+          onChange={(v) => {
+            setDestQuery(v);
+            setDestPick(null);
+          }}
+          onSelect={(p) => {
+            setDestQuery(p.label);
+            setDestPick(p);
+          }}
           placeholder="Destination (optional)…"
           ariaLabel="Destination address"
           disabled={locationPending !== null}
