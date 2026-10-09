@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 10,
+  "protocol": 11,
   "seq": 438,
   "t": 7.299999999999979,
   "sim_rate_hz": 60.0,

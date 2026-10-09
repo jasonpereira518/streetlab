@@ -142,6 +142,9 @@ CAMERA_SETS: dict[str, tuple[CameraSpec, ...]] = {
 }
 
 
+_WIRE_SETS = ("front", "front+sides100")
+
+
 def camera_for(ego: VehicleState, spec: CameraSpec = FRONT) -> CameraParams:
     """A detector camera for an ego pose, as the frontend would report it."""
     return CameraParams(
@@ -168,6 +171,8 @@ class _Sensor:
         self.params = params
         self._seed = seed
         self.cameras = tuple(cameras)
+        #: The wire's name for this layout (`PerceptionStats.camera_set`).
+        self.camera_set = next((n for n, c in CAMERA_SETS.items() if c == self.cameras and n in _WIRE_SETS), "front")
         self._pending: deque[tuple[float, tuple[PipelineResult, ...]]] = deque()
         self._latest: tuple[PipelineResult, ...] | None = None
         self._next_capture = 0.0
@@ -205,6 +210,7 @@ class _Sensor:
             recall=None if quality is None else quality.recall,
             mean_pos_err_m=None if quality is None else quality.mean_pos_err_m,
             health="ok",
+            camera_set=self.camera_set,
         )
 
     def reset(self) -> None:
@@ -347,7 +353,7 @@ class NoisyTruthPerception:
         params: NoiseParams = NOMINAL,
         seed: int = 0,
         tracker: Tracker | None = None,
-        cameras: Sequence[CameraSpec] | str = (FRONT,),
+        cameras: Sequence[CameraSpec] | str = "front+sides100",
     ) -> None:
         self.params = params
         self.pipeline = _Sensor(params, seed, CAMERA_SETS[cameras] if isinstance(cameras, str) else cameras)

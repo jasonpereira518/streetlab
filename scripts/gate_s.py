@@ -414,7 +414,7 @@ def main() -> None:
     r.add_argument("--seeds", nargs="+", type=int, default=list(SEEDS))
     r.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=VARIANTS)
     r.add_argument("--free-only", action="store_true", help="hazard-free cells only (diagnosis)")
-    r.add_argument("--cameras", default="front", help="camera set for the noisy variants (noisy_truth.CAMERA_SETS)")
+    r.add_argument("--cameras", default="front+sides100", help="camera set for the noisy variants (noisy_truth.CAMERA_SETS)")
     r.add_argument("--fov", action="store_true", help="only the FOV-study cells (FOV_CELLS)")
     r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report")

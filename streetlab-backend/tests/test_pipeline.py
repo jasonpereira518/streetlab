@@ -107,7 +107,7 @@ def test_a_frame_offered_while_the_detector_runs_is_processed():
 
 
 def test_the_worker_does_not_exit_while_a_frame_is_pending():
-    """The window this guards: `take()` returns None, and a frame arrives
+    """The window this guards: `take_group()` returns nothing, and a frame arrives
     before the worker decides to stop. Without the re-check under the lock,
     `submit_frame` sees an unfinished future, queues no replacement worker,
     and that frame is stranded until some later submit happens to start one.
@@ -123,10 +123,10 @@ def test_the_worker_does_not_exit_while_a_frame_is_pending():
         def __getattr__(self, name):
             return getattr(real, name)
 
-        def take(self):
+        def take_group(self):
             nonlocal planted
-            taken = real.take()
-            if taken is None and not planted:
+            taken = real.take_group()
+            if not taken and not planted:
                 planted = True
                 real.offer(frame(1))
             return taken
@@ -154,5 +154,28 @@ def test_a_detector_that_raises_does_not_kill_the_pipeline():
         # The failure is swallowed and counted, not propagated into the sim.
         assert pipeline.latest() is None
         assert pipeline.failures == 1
+    finally:
+        pipeline.shutdown()
+
+
+def test_a_three_camera_pipeline_publishes_the_whole_set_or_nothing():
+    from perception.frames import CameraFrame
+    from schema import CameraParams
+
+    def cf(seq, yaw, w=640, h=384):
+        cam = CameraParams(x=0, y=0, z=1.33, yaw=yaw, pitch=0, roll=0, fov_y_deg=50, aspect=w / h)
+        return CameraFrame(seq=seq, t=2.0, width=w, height=h, jpeg=b"x", camera=cam, received_ms=0.0)
+
+    pipeline = PerceptionPipeline(StubDetector(), camera_set="front+sides100")
+    try:
+        pipeline.submit_frame(cf(0, 0.0))
+        pipeline.submit_frame(cf(1, 1.4, 640, 640))
+        pipeline.drain()
+        assert pipeline.latest_set() is None, "two of three cameras is not a frame"
+        pipeline.submit_frame(cf(2, -1.4, 640, 640))
+        pipeline.drain()
+        got = pipeline.latest_set()
+        assert got is not None and [r.frame_seq for r in got] == [0, 1, 2]
+        assert pipeline.stats("ml").camera_set == "front+sides100"
     finally:
         pipeline.shutdown()

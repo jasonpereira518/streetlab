@@ -37,6 +37,11 @@ class Box2D:
     confidence: float
 
 
+def camera_count(camera_set: str) -> int:
+    """How many frames make one frame time for a `PerceptionStats.camera_set`."""
+    return {"front": 1, "front+sides100": 3}[camera_set]
+
+
 @runtime_checkable
 class Detector(Protocol):
     """Turns one frame into image-space boxes. The only place a model appears."""
@@ -80,14 +85,15 @@ class PipelineResult:
 class PerceptionPipeline:
     """Owns the frame slot, the worker, and the newest result."""
 
-    def __init__(self, detector: Detector) -> None:
+    def __init__(self, detector: Detector, camera_set: str = "front") -> None:
         self._detector = detector
-        self._frames = FrameSlot()
+        self.camera_set = camera_set
+        self._frames = FrameSlot(expected=camera_count(camera_set))
         # One worker: a second would let an older frame finish after a newer
         # one and overwrite it with a staler answer.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="perception")
         self._lock = threading.Lock()
-        self._latest: PipelineResult | None = None
+        self._latest: tuple[PipelineResult, ...] | None = None
         self._inflight: Future | None = None
         self.failures = 0
         # Failures since the last success: what "degraded" means on the wire.
@@ -104,8 +110,8 @@ class PerceptionPipeline:
 
     def _work(self) -> None:
         while True:
-            frame = self._frames.take()
-            if frame is None:
+            group = self._frames.take_group()
+            if not group:
                 # Give up only under the same lock `submit_frame` uses, after
                 # re-checking. Without this, a frame offered between the `take`
                 # above and here is stranded: the worker exits, and the offer
@@ -115,29 +121,36 @@ class PerceptionPipeline:
                         continue
                     self._inflight = None
                     return
-            start = time.perf_counter()
-            try:
-                boxes = self._detector.detect(frame)
-            except Exception:
-                # A model failure must degrade perception, not stop the car.
-                log.exception("detector failed on frame %d", frame.seq)
-                with self._lock:
-                    self.failures += 1
-                    self._failing = True
-                continue
-            now = time.perf_counter()
-            result = PipelineResult(
-                boxes=boxes,
-                frame_seq=frame.seq,
-                frame_t=frame.t,
-                detector_ms=(now - start) * 1000.0,
-                server_e2e_ms=now * 1000.0 - frame.received_ms,
-                camera=frame.camera,
-                frame_w=frame.width,
-                frame_h=frame.height,
-            )
+            results = []
+            for frame in group:
+                start = time.perf_counter()
+                try:
+                    boxes = self._detector.detect(frame)
+                except Exception:
+                    # A model failure must degrade perception, not stop the car.
+                    log.exception("detector failed on frame %d", frame.seq)
+                    with self._lock:
+                        self.failures += 1
+                        self._failing = True
+                    results = []
+                    break
+                now = time.perf_counter()
+                results.append(
+                    PipelineResult(
+                        boxes=boxes,
+                        frame_seq=frame.seq,
+                        frame_t=frame.t,
+                        detector_ms=(now - start) * 1000.0,
+                        server_e2e_ms=now * 1000.0 - frame.received_ms,
+                        camera=frame.camera,
+                        frame_w=frame.width,
+                        frame_h=frame.height,
+                    )
+                )
+            if not results:
+                continue  # a camera of the group failed: the set is incomplete, publish none of it
             with self._lock:
-                self._latest = result
+                self._latest = tuple(results)
                 self._failing = False
 
     def drain(self, timeout_s: float = 5.0) -> None:
@@ -148,6 +161,12 @@ class PerceptionPipeline:
             inflight.result(timeout=timeout_s)
 
     def latest(self) -> PipelineResult | None:
+        """The primary (first) camera's newest result."""
+        with self._lock:
+            return None if self._latest is None else self._latest[0]
+
+    def latest_set(self) -> tuple[PipelineResult, ...] | None:
+        """Every camera's result for the newest complete frame time; one object until the next."""
         with self._lock:
             return self._latest
 
@@ -155,7 +174,7 @@ class PerceptionPipeline:
         self, mode: PerceptionMode, quality: ScoreResult | None = None
     ) -> PerceptionStats:
         with self._lock:
-            latest = self._latest
+            latest = None if self._latest is None else self._latest[0]
             failing = self._failing
         return PerceptionStats(
             mode=mode,
@@ -174,6 +193,7 @@ class PerceptionPipeline:
             # A stub detector never looks at the pixels; a failing one has no
             # current answer. Either way the planner must not trust the feed.
             health="degraded" if failing or isinstance(self._detector, StubDetector) else "ok",
+            camera_set=self.camera_set,  # type: ignore[arg-type]
         )
 
     def reset(self) -> None:

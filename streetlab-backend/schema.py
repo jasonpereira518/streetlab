@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 10
+PROTOCOL_VERSION = 11
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -341,6 +341,9 @@ class CameraParams(Wire):
     aspect: Pos
 
 
+CameraSet = Literal["front", "front+sides100"]
+
+
 class PerceptionStats(Wire):
     mode: PerceptionMode
     # Null until Phase 2 lands a model.
@@ -365,6 +368,12 @@ class PerceptionStats(Wire):
     # Required, never null: "degraded" while the detector is a stub or its most
     # recent frame failed. The planner's degraded mode (M1) keys off this.
     health: Literal["ok", "degraded"]
+    # Required, never null (protocol 11): which detector cameras the client must render and
+    # send, one `camera_frame` each per frame time. "front" is the shipped single camera;
+    # "front+sides100" adds a left and a right 640x640 camera at +-80 deg, 100 deg wide.
+    # Mirrored by `contract/detector_cameras.json`, `DETECTOR_CAMERA_SETS` in detectorCamera.ts
+    # and `perception.noisy_truth.CAMERA_SETS`.
+    camera_set: CameraSet
 
 
 class RadarPoint(Wire):

@@ -189,12 +189,12 @@ def perception_pipeline_for(args) -> PerceptionPipeline | None:
         # driving (spec 5a). Never reachable from the packaged app's command line.
         from perception.noisy_truth import NOMINAL, NoisyTruthPerception
 
-        npt = NoisyTruthPerception(NOMINAL, getattr(args, "seed", 0))
+        npt = NoisyTruthPerception(NOMINAL, getattr(args, "seed", 0), cameras=getattr(args, "cameras", "front+sides100"))
         npt.pipeline.source = npt
         return npt.pipeline  # type: ignore[return-value]
     if args.perception != "ml":
         return None
-    return PerceptionPipeline(build_detector(args.detector_model))
+    return PerceptionPipeline(build_detector(args.detector_model), getattr(args, "cameras", "front+sides100"))
 
 
 def _drive_on_noisy_truth(sim, pipeline) -> None:
@@ -288,6 +288,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
     serve.add_argument(
+        "--cameras",
+        choices=("front", "front+sides100"),
+        default="front+sides100",
+        help="detector cameras: front is the single 76 deg camera; front+sides100 adds a left and "
+        "a right 100 deg camera (3 inferences per frame, sees +-130 deg; the ground-truth feed "
+        "sees +-75 deg plus a shoulder check, and the front camera alone left collisions there)",
+    )
+    serve.add_argument(
         "--capture",
         default=None,
         metavar="DIR",
@@ -323,6 +331,14 @@ def build_parser() -> argparse.ArgumentParser:
         "ground truth seen through a seeded noisy sensor (evaluation only)",
     )
     run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
+    run_.add_argument(
+        "--cameras",
+        choices=("front", "front+sides100"),
+        default="front+sides100",
+        help="detector cameras: front is the single 76 deg camera; front+sides100 adds a left and "
+        "a right 100 deg camera (3 inferences per frame, sees +-130 deg; the ground-truth feed "
+        "sees +-75 deg plus a shoulder check, and the front camera alone left collisions there)",
+    )
 
     sub.add_parser("scenarios", help="list the scenario catalog")
 
