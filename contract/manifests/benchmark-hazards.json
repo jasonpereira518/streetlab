@@ -1,0 +1,40 @@
+{
+  "scenario": "grid-loop+grid-arterial",
+  "seed": 61,
+  "command": "CAPTURE_HAZARDS='Jaywalker,Cyclist drift' HAZARD_EVERY_S=18 scripts/run_capture.sh {grid-loop 61, grid-arterial 62} 8 <dir> 120 (EXTRA_SERVE_ARGS='--tick-hz 10')",
+  "note": "D1 renderer. Hazards injected through the UI buttons. Labels do not model tree/pole occlusion.",
+  "commit": "",
+  "frames": 135,
+  "annotations": 423,
+  "visible": 348,
+  "usable": 348,
+  "per_class": {
+    "car": 192,
+    "truck": 65,
+    "pedestrian": 57,
+    "cyclist": 105,
+    "bus": 4
+  },
+  "per_class_visible": {
+    "car": 150,
+    "pedestrian": 41,
+    "truck": 54,
+    "cyclist": 103
+  },
+  "per_class_usable": {
+    "car": 150,
+    "pedestrian": 41,
+    "truck": 54,
+    "cyclist": 103
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "cb0fafe17986a389449a684586a798e6b5536173f133c60bb16684bacffab85c",
+  "frames_sha256": "dc44e5de58d72899694be78e7d0e8432338b62627bf0ac3d21302b04e7407c5a",
+  "selection": {
+    "keep": "people",
+    "dropped_static_ego_frames": 17,
+    "dropped_no_matching_class": 90
+  }
+}
