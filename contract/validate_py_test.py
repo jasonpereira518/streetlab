@@ -58,30 +58,38 @@ def generate() -> dict[str, dict]:
         sim.step()
     out["state_update_moving"] = sim.state_update().model_dump(mode="json")
 
-    # Capture while the ego is still closing on the merging car: once it has
-    # matched speed the closing rate is zero and TTC is legitimately null,
-    # which would make this fixture prove nothing about the nullable fields.
+    # Two injections, because since Cycle 6 Phase 2 the frame that proves the TTC
+    # fields and the frame that proves the planner's reaction cannot be the same.
+    # The planner reacts to a cut-in by braking before the car reaches its lane,
+    # which collapses the closing speed, so TTC (and with it the `hazard` flag) is
+    # undefined exactly while the planner is reacting; and while TTC flags a car,
+    # the following law is handling it and the planner is not "reacting".
     #
-    # `cut_in` rather than `sudden_brake`, and the choice is load-bearing now
-    # that the two are different events. `sim/events.py` defines a cut-in in
-    # TIME -- it lands 1.5 s of the ego's own travel ahead at half its speed --
-    # so it raises a hazard flag by construction, whatever speed the ego is
-    # doing three seconds into grid-merge. `sudden_brake` stops whichever
-    # vehicle happens to lead the ego's lane, and with reactive traffic that
-    # can be 100 m away: measured on this scene, it never produces a frame
-    # inside `plan.ttc.HAZARD_TTC_S` at all, the best TTC in 300 s being 4.03 s
-    # against a 4.0 s threshold. A fixture named for `threat`/`threat_label`
-    # asking for a cut-in is also simply the honest version.
+    # `cut_in` gives `state_update_events` and `state_update_reaction`
+    # (`plan.reaction_source_id` and the `threat` series). `sudden_brake`, on a
+    # second simulation further down, gives `state_update_hazard`: captured while
+    # the ego is still closing on the braking car, as once it has matched speed
+    # the closing rate is zero and TTC is legitimately null, which would make that
+    # fixture prove nothing about the nullable fields. (It used `cut_in` for this
+    # until the cut-in grew a reaction; `sudden_brake` was ruled out then because
+    # it braked "whichever vehicle leads the lane", 100 m away on this scene. It
+    # stages its own lead now when none is near.)
     #
-    # Two fixtures come out of this one injection, because since Cycle 6 Phase 2
-    # they cannot be the same frame. The planner reacts to a cut-in by braking
-    # before the car reaches its lane, which collapses the closing speed, so
-    # TTC (and with it the `hazard` flag) is undefined exactly while the
-    # planner is reacting; and while TTC flags the car, the following law is
-    # handling it and the planner is not "reacting". `state_update_hazard`
-    # proves the TTC/flag fields; `state_update_reaction` proves
-    # `plan.reaction_source_id` and the `threat` series.
-    sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
+    # Wait for the ego to be doing 7 m/s or more. Three seconds in, with main's
+    # driving, it is at ~3 m/s: below the ~4 m/s where a cut-in lands too close
+    # for the following law, so the planner emergency-brakes first and TTC never
+    # drops under 4.0 s (measured: best 5.98 s in 30 s) -- no hazard flag for the
+    # fixture to prove anything with. And a cut-in needs a lane beside the ego to
+    # come from (`sim/events.py` `_cut_in_side`), which this scene does not have
+    # at every moment: ask until it stages, as the event-injection tests do.
+    for _ in range(60 * 60):
+        if sim.world.ego.speed_mps >= 7.0 and sim.apply_dict(
+            {"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"}
+        ).ok:
+            break
+        sim.step()
+    else:
+        raise AssertionError("cut_in never staged at 7 m/s in 60 s on the fixture scene")
     # The frame an event lands on is the ONLY one that carries it:
     # `state_update()` drains `world.events` into the frame it builds. Every
     # other fixture here is therefore captured with an empty `events` array,
@@ -101,11 +109,29 @@ def generate() -> dict[str, dict]:
             and hazard.telemetry.trajectory.threat
         ):
             reaction = hazard
-        if hazard.telemetry.ttc_s is not None and any(d.hazard for d in hazard.detections):
+        if reaction is not None:
             break
     assert reaction is not None, "the planner never reacted to the injected cut-in"
-    out["state_update_hazard"] = hazard.model_dump(mode="json")
     out["state_update_reaction"] = reaction.model_dump(mode="json")
+
+    braking = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    for _ in range(60 * 90):
+        braking.step()
+        if braking.world.ego.speed_mps >= 8.0 and braking.apply_dict(
+            {"id": "sb", "cmd": "inject_hazard", "kind": "sudden_brake"}
+        ).ok:
+            break
+    else:
+        raise AssertionError("sudden_brake never staged at 8 m/s in 90 s on the fixture scene")
+    flagged = None
+    for _ in range(60 * 12):
+        braking.step()
+        frame = braking.state_update()
+        if frame.telemetry.ttc_s is not None and any(d.hazard for d in frame.detections):
+            flagged = frame
+            break
+    assert flagged is not None, "no frame with a TTC and a hazard flag after the sudden brake"
+    out["state_update_hazard"] = flagged.model_dump(mode="json")
 
     outcome = sim.apply_dict({"id": "a1", "cmd": "set_paused", "paused": False})
     out["ack_ok"] = make_ack("a1", "set_paused", outcome, sim.t).model_dump(mode="json")
