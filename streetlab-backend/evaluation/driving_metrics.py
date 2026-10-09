@@ -476,7 +476,9 @@ def record(
             if frame_t is not None:
                 obs_age[i] = sim.world.t - frame_t
         pipeline = sim.perception_pipeline
-        degraded[i] = pipeline is not None and pipeline.stats(sim.perception_mode).health == "degraded"
+        degraded[i] = sim.perception_degraded or (
+            pipeline is not None and pipeline.stats(sim.perception_mode).health == "degraded"
+        )
         boxes.append(
             tuple(
                 AgentBox(a.id, a.state.x, a.state.y, a.state.heading, a.size.length, a.size.width)

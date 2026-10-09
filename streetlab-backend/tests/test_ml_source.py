@@ -206,7 +206,7 @@ def test_a_box_grazing_the_horizon_is_out_of_range_rather_than_kilometres_away(
     kilometres out. Both sources answer for the same volume or Phase 3 scores
     a fantasy.
     """
-    far = Box2D(x0=300.0, y0=150.0, x1=340.0, y1=193.0, cls="car", confidence=0.9)
+    far = Box2D(x0=300.0, y0=187.0, x1=312.0, y1=193.0, cls="car", confidence=0.9)
     projected = project_to_ground(far, CAM, 640, 384)
     assert projected is not None, "this box does reach the ground, just absurdly far"
     assert math.hypot(*projected) > MAX_RANGE_M
@@ -227,6 +227,9 @@ class CannedTracker:
         self._tracks = tracks
 
     def update(self, observations, t):
+        return list(self._tracks)
+
+    def snapshot(self, t=None):
         return list(self._tracks)
 
     def reset(self):

@@ -22,7 +22,8 @@ from __future__ import annotations
 import math
 from typing import Protocol, Sequence
 
-from perception.geometry import CLASS_SIZE, project_to_ground
+from perception.geometry import CLASS_SIZE
+from perception.localize import GroundFn, locate
 from perception.pipeline import PipelineResult
 from perception.service import MAX_RANGE_M, EgoFrame
 from perception.tracker import Observation, Track, Tracker
@@ -71,6 +72,12 @@ class MlPerception:
         self.max_range_m = max_range_m
         self._processed: PipelineResult | None = None
         self._tracks: list[Track] = []
+        #: Sim time the next `observe` publishes for. Set by the loop each step;
+        #: until it is, tracks are published as of their own frame.
+        self._now: float | None = None
+        #: Terrain height under a world point relative to the ground under the
+        #: ego, or None for flat ground. Set by the loop with the scene.
+        self.ground: GroundFn | None = None
 
     def reset(self) -> None:
         """Forget everything. Called on a scene swap, which invalidates it all.
@@ -89,7 +96,21 @@ class MlPerception:
         """
         self._processed = None
         self._tracks = []
+        self._now = None
         self._tracker.reset()
+
+    def bind_scene(self, buildings: Sequence[object], ground: GroundFn | None) -> None:
+        """Give the source the scene's terrain (it has no use for the buildings)."""
+        self.ground = ground
+
+    def advance_to(self, t: float) -> None:
+        """Tell the source what time it is, so tracks are published as of now.
+
+        A frame is 100-200 ms old by the time its tracks reach the planner.
+        Publishing the frame's positions as they were would be publishing the
+        past: the lead would read as that much further away than it is.
+        """
+        self._now = t
 
     @property
     def last_frame_t(self) -> float | None:
@@ -121,9 +142,12 @@ class MlPerception:
         # track takes a miss each call -- kill live tracks within a single
         # frame interval.
         if result is not self._processed:
-            observations = _observations(result, frame, self.max_range_m)
-            self._tracks = self._tracker.update(observations, result.frame_t)
+            observations = _observations(result, frame, self.max_range_m, self.ground)
+            self._tracker.update(observations, result.frame_t)
             self._processed = result
+        self._tracks = self._tracker.snapshot(
+            result.frame_t if self._now is None else max(self._now, result.frame_t)
+        )
 
         # The gate that actually decides what leaves this source, applied to
         # the tracks being published rather than to the observations that fed
@@ -150,7 +174,10 @@ class MlPerception:
 
 
 def _observations(
-    result: PipelineResult, frame: EgoFrame, max_range_m: float
+    result: PipelineResult,
+    frame: EgoFrame,
+    max_range_m: float,
+    ground: GroundFn | None = None,
 ) -> list[Observation]:
     """Ground-plane positions for the boxes of one frame, within range.
 
@@ -172,13 +199,17 @@ def _observations(
     """
     out: list[Observation] = []
     for box in result.boxes:
-        ground = project_to_ground(box, result.camera, result.frame_w, result.frame_h)
-        if ground is None:
+        placed = locate(box, result.camera, result.frame_w, result.frame_h, ground)
+        if placed is None:
             continue  # at or above the horizon: no ground contact to place
-        x, y = ground
-        if frame.range_to(x, y) > max_range_m:
+        if frame.range_to(placed.x, placed.y) > max_range_m:
             continue
-        out.append((box.cls, x, y, box.confidence))
+        out.append(
+            Observation(
+                box.cls, placed.x, placed.y, box.confidence,
+                placed.bearing, placed.sigma_r, placed.sigma_t,
+            )
+        )
     return out
 
 

@@ -322,7 +322,7 @@ class CenterlineFollower:
 
         lead, gap = _closest_lead(detections, route, s, home_lane=home_lane)
         if lead is not None:
-            target = min(target, _following_speed(lead, gap, ego, limits))
+            target = min(target, _following_speed(lead, gap, ego, limits, route))
         return target
 
 
@@ -385,8 +385,40 @@ def _closest_lead(
     return best, best_gap
 
 
+def lead_clearance(lead: Detection, gap: float) -> float:
+    """Distance from the ego's body centre to the lead's near (rear) face.
+
+    `gap` is centre-to-centre along the route, so the lead's rear face is half
+    its length closer. The ego's own half-length is deliberately NOT taken off:
+    `_STANDSTILL_GAP_M` and `follow_distance_s` are defined against this
+    centre-referenced figure, and the 2-4 m bumper-to-bumper standstill budget
+    (`evaluation.driving_metrics.BUDGET.standstill_gap_m`) is what it yields
+    (5.0 - 2.35 = 2.65 m). Changing the reference would silently move every
+    following distance the sim has been tuned against.
+
+    Only correct if `lead.pose` is the lead's body CENTRE. Ground truth's is;
+    an ML source's must be centred before it gets here (`perception/localize.py`),
+    or this subtracts half a length from a pose that already sits half a length
+    short -- the double subtraction the ML audit found (~2.3 m for a 4.6 m car).
+    """
+    return gap - lead.size.length / 2
+
+
+def lead_speed_along_route(lead: Detection, route: Route) -> float:
+    """The lead's velocity projected on the route tangent at its own position.
+
+    `Detection.speed_mps` is a magnitude: a crossing pedestrian or a car turning
+    across the lane has a speed and no progress along the ego's path, and
+    treating the magnitude as the lead's speed hands the following law a lead
+    that is "keeping pace" with a car it is merely passing in front of. Signed:
+    a lead coming toward the ego reads negative and brakes the ego harder.
+    """
+    h = route.heading_at(route.project((lead.pose.x, lead.pose.y)))
+    return lead.velocity[0] * math.cos(h) + lead.velocity[1] * math.sin(h)
+
+
 def _following_speed(
-    lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits
+    lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits, route: Route
 ) -> float:
     """A linear spacing law: hold `desired_gap`, then match the lead's speed.
 
@@ -397,9 +429,8 @@ def _following_speed(
     desired = _STANDSTILL_GAP_M + max(limits.follow_distance_s, 0.6) * ego.speed_mps
     if gap > desired * _IGNORE_LEAD_FACTOR:
         return math.inf
-    # Bumper-to-bumper distance, so a long lead vehicle is accounted for.
-    clear = gap - lead.size.length / 2
-    return max(0.0, lead.speed_mps + _GAP_GAIN * (clear - desired))
+    clear = lead_clearance(lead, gap)
+    return max(0.0, lead_speed_along_route(lead, route) + _GAP_GAIN * (clear - desired))
 
 
 def _maneuver(route: Route, s: float) -> str:
