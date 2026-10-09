@@ -96,6 +96,11 @@ _DEFAULT_MARGIN_MPS = 5.0 * 0.44704
 # ODbL requires crediting OpenStreetMap wherever its data is shown.
 ATTRIBUTION = "© OpenStreetMap contributors"
 
+# The elevation tiles (map/elevation.py) are AWS Terrain Tiles, a Mapzen/Tilezen
+# composite whose published terms ask for this credit wherever the terrain is
+# shown. Added only when real tiles shaped the scene, not for a flat fallback.
+ELEVATION_ATTRIBUTION = "Terrain: Mapzen, AWS Terrain Tiles (SRTM, USGS, GEBCO and others)"
+
 MPH = 0.44704
 
 
@@ -544,11 +549,14 @@ class OsmSceneSource:
 
         bounds = self._bounds(roads, ego_route, buildings, trees, crosswalks, stop_signs, lights)
         terrain = None
+        attribution = ATTRIBUTION
         if self.elevation is not None:
             field = self.elevation.heightfield(
                 origin, (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y), TERRAIN_CELL_M
             )
             terrain = terrain_to_wire(grade(field, roads, under))
+            if field.source == "terrarium":
+                attribution = f"{ATTRIBUTION} · {ELEVATION_ATTRIBUTION}"
 
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
@@ -556,7 +564,7 @@ class OsmSceneSource:
             scenario_id=spec.id,
             name=spec.name,
             location=place.display_name,
-            attribution=ATTRIBUTION,
+            attribution=attribution,
             origin=Origin(lat=place.lat, lon=place.lon),
             bounds=bounds,
             roads=roads,

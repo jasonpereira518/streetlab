@@ -182,3 +182,12 @@ def test_the_bundled_nob_hill_has_its_hills_offline():
         ),
     )
     assert src.build("osm-nob-hill").description.terrain is not None
+
+
+def test_a_scene_shaped_by_elevation_tiles_credits_them_and_osm():
+    """Terrarium tiles carry their own credit terms; a flat fallback owes none."""
+    hilly = _build("overpass_nob_hill.json", NOB_HILL, _Tiles(), "osm-nob-hill")
+    assert "OpenStreetMap" in hilly.attribution
+    assert "Mapzen" in hilly.attribution and "Terrain" in hilly.attribution
+    flat = _build("overpass_nob_hill.json", NOB_HILL, _Offline(), "osm-nob-hill")
+    assert flat.attribution == "© OpenStreetMap contributors"
