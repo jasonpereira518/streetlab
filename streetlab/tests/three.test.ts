@@ -833,7 +833,9 @@ describe('ChaseCamera on the real Nob Hill route', () => {
 
 describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
   /**
-   * Drives the shipped Nob Hill reference path at 24 mph (the cruise speed
+   * Drives Nob Hill's original reference loop (`nobHillTreeRoute.json`: kept
+   * because the longer default loop since shipped never passes under these
+   * canopies, so it measures 0 frames with or without the fix) at 24 mph (the cruise speed
    * where the trail is long enough to reach roadside canopies) and counts the
    * frames where the camera-to-car sight line crosses a tree. Measured when
    * written: 53 of 3273 frames with the buildings alone as blockers, 21 with
@@ -850,7 +852,9 @@ describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
     const bld = world.root.getObjectByName('buildings')!;
     const trees = world.root.getObjectByName('trees')!;
 
-    const pts: [number, number][] = scene.reference_path;
+    const pts: [number, number][] = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'tests/fixtures/nobHillTreeRoute.json'), 'utf8'),
+    );
     const cum = [0];
     for (let i = 1; i < pts.length; i++) {
       cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
@@ -864,10 +868,9 @@ describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
         pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f,
       ];
     };
-    const speed = 24 * 0.44704;
     const dt = 1 / 30;
 
-    const blockedFrames = (blockers: THREE.Object3D[]) => {
+    const blockedFrames = (blockers: THREE.Object3D[], speed = 24 * 0.44704) => {
       const cam = new ChaseCamera(16 / 9);
       cam.setGround(world.heightAt);
       const ray = new THREE.Raycaster();

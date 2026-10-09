@@ -15,31 +15,40 @@ const real = JSON.parse(
   readFileSync(resolve(process.cwd(), '../contract/fixtures/scene_description.json'), 'utf8'),
 );
 
-/** Every key path with its JSON type; arrays contribute their first element. */
+/** Every key path with its JSON type(s); arrays contribute every element, so a key that is null in one preset and a number in another is a number|null, not a mismatch. */
 function shape(v: unknown, path: string, out: Map<string, string>): Map<string, string> {
   if (Array.isArray(v)) {
     out.set(path, 'array');
-    if (v.length) shape(v[0], `${path}[]`, out);
+    for (const x of v) shape(x, `${path}[]`, out);
   } else if (v && typeof v === 'object') {
     out.set(path, 'object');
     for (const [k, x] of Object.entries(v)) shape(x, `${path}.${k}`, out);
   } else {
-    out.set(path, v === null ? 'null' : typeof v);
+    const t = v === null ? 'null' : typeof v;
+    const prev = out.get(path);
+    out.set(path, prev && !prev.split('|').includes(t) ? [...prev.split('|'), t].sort().join('|') : (prev ?? t));
   }
   return out;
 }
+
+/** Same JSON type in at least one observed element, or one side only ever saw null. */
+const overlaps = (a: string, b: string) =>
+  a === 'null' || b === 'null' || a.split('|').some((t) => b.split('|').includes(t));
 
 describe('mock scene_description parity with the backend', () => {
   const mock = buildScene(real.scenario_id);
 
   it('has exactly the backend scene_description shape', () => {
-    const a = shape(mock, 'scene', new Map());
-    const b = shape(real, 'scene', new Map());
+    // A preset's `params` is a sparse override map (only what the preset moves),
+    // so its key set legitimately differs per preset and per implementation.
+    const sparse = ([k]: [string, string]) => !k.startsWith('scene.presets[].params.');
+    const a = new Map([...shape(mock, 'scene', new Map())].filter(sparse));
+    const b = new Map([...shape(real, 'scene', new Map())].filter(sparse));
     const diff = [
       ...[...b].filter(([k]) => !a.has(k)).map(([k, t]) => `missing in mock: ${k} (${t})`),
       ...[...a].filter(([k]) => !b.has(k)).map(([k, t]) => `extra in mock: ${k} (${t})`),
       ...[...a]
-        .filter(([k, t]) => b.has(k) && b.get(k) !== t)
+        .filter(([k, t]) => b.has(k) && !overlaps(t, b.get(k)!))
         .map(([k, t]) => `type differs: ${k} mock=${t} real=${b.get(k)}`),
     ];
     expect(diff).toEqual([]);

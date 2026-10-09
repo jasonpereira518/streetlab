@@ -371,7 +371,7 @@ describe('LeftScenarioSidebar', () => {
     harness.emitScene();
 
     const thumbs = container.querySelectorAll('.scenario-thumb canvas');
-    expect(thumbs).toHaveLength(5);
+    expect(thumbs).toHaveLength(6);
     // Each thumbnail actually drew its road skeleton and route.
     for (const t of thumbs) {
       const calls = canvasCalls(t as HTMLCanvasElement);
