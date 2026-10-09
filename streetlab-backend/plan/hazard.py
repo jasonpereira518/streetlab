@@ -149,6 +149,63 @@ class StripWindow:
     strip_half_m: float
 
 
+#: A mover is judged where its path CROSSES the route, not where it is nearest
+#: to it, once it is moving at least this fast (traffic, not a queue creeping
+#: toward the same corner: at 1 m/s the ego braked from 10 m/s for slow cars
+#: 29-37 m away in two hazard-free replays) and meets the route at least this
+#: squarely (sine of the angle). Something travelling along the route --
+#: a lead, an oncoming car -- is untouched: its nearest point is its station.
+_CROSSING_MIN_MPS = 4.0
+_CROSSING_MIN_SIN = 0.34
+_CROSSING_MAX_ALIGN = 0.5
+#: ...and only if it crosses within the conflict horizon: a slow car that will
+#: meet the route round the next corner in 7 s is not something to yield to now
+#: (measured: the ego braked from 10 m/s for one 36 m away in a hazard-free
+#: `grid-merge` replay).
+_CROSSING_HORIZON_S = HAZARD_TTC_S
+
+
+def _crossing_station(
+    det: Detection, route: Route, ego_s: float, ego_heading: float
+) -> tuple[float, float] | None:
+    """`(station, along)` of where `det`'s straight-line path crosses `route`.
+
+    `station` is the route arc length at the crossing; `along` is how far the
+    detection is now from that station, along the route's tangent there. `None`
+    when it is slow, travelling along the route, or never crosses it in
+    `_CROSSING_HORIZON_S` -- the caller then uses the nearest point.
+
+    Why: the nearest point of a route that TURNS is on the leg the mover will
+    run parallel to. A red-light runner crossing a junction the ego turns through
+    was seen at a constant 3.8 m off a leg it never entered, `t_in` 108 s, while
+    the ego drove into it; judged at the station where their paths really meet
+    it is a 2 s conflict.
+    """
+    vx, vy = det.velocity
+    speed = math.hypot(vx, vy)
+    if speed < _CROSSING_MIN_MPS:
+        return None
+    # Cross traffic only: not travelling the way the ego is facing. A car going
+    # round the same corner extrapolates in a straight line across the curve and
+    # "crosses" the route it is following (measured: 80 aeb ticks in one
+    # hazard-free replay).
+    if abs(math.cos(math.atan2(vy, vx) - ego_heading)) > _CROSSING_MAX_ALIGN:
+        return None
+    px, py = det.pose.x, det.pose.y
+    reach = _CROSSING_HORIZON_S
+    hit = route.first_crossing(
+        (px, py), (px + vx * reach, py + vy * reach), ego_s, MAX_RANGE_M + EGO_LENGTH_M
+    )
+    if hit is None:
+        return None
+    s_c, _u = hit
+    h = route.heading_at(s_c)
+    if abs(-vx * math.sin(h) + vy * math.cos(h)) / speed < _CROSSING_MIN_SIN:
+        return None
+    cx, cy = route.point_at(s_c)
+    return s_c, (px - cx) * math.cos(h) + (py - cy) * math.sin(h)
+
+
 def strip_window(
     det: Detection,
     ego: VehicleState,
@@ -175,7 +232,11 @@ def strip_window(
     `offset_m` on the result is relative to this centre.
     """
     ds = route.project((det.pose.x, det.pose.y))
-    centre_gap = route.signed_gap(ego_s, ds)
+    along_off = 0.0
+    crossing = _crossing_station(det, route, ego_s, ego.heading)
+    if crossing is not None:
+        ds, along_off = crossing
+    centre_gap = route.signed_gap(ego_s, ds) + along_off
     if centre_gap <= 0.0:
         return None
     if math.hypot(det.pose.x - ego.x, det.pose.y - ego.y) > MAX_RANGE_M:
@@ -215,7 +276,7 @@ def strip_window(
         t_arrive=t_arrive,
         t_clear=max(t_clear, 0.0) if math.isfinite(t_clear) else t_clear,
         bumper_gap_m=bumper_gap,
-        near_edge_s=ds - half_along,
+        near_edge_s=ds + along_off - half_along,
         along_speed_mps=along_speed,
         lateral_speed_mps=lateral_speed,
         offset_m=offset,
