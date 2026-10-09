@@ -598,3 +598,42 @@ def test_a_stopped_car_in_the_path_is_a_flat_line_at_the_ego_s_own_line(route):
     series, label = _threat_series(r, _STEPS)
     assert label == "Emergency braking for car"
     assert all(s.lateral_m == 0.0 for s in series)
+
+
+# --- a path that crosses a turn ----------------------------------------------- #
+
+
+def test_a_mover_crossing_a_turning_route_is_judged_where_it_crosses():
+    """Ego heads east then turns north at x=60; a car heads south along x=57,
+    3 m before the corner. Its NEAREST route point is on the northbound leg,
+    which it runs alongside at a constant 3 m and never enters (`t_in` ~ 1e9 s):
+    the old window called it harmless while the ego drove into it. Where its
+    path really crosses the route -- the eastbound leg at (57, 0) -- it is a
+    conflict about a second away (it reaches the line as the ego does)."""
+    turn = Route([(0.0, 0.0), (60.0, 0.0), (60.0, 100.0)], closed=False)
+    ego = VehicleState(x=40.0, y=0.0, heading=0.0, speed_mps=10.0)
+    runner = det(57.0, 14.0, vy=-11.0, heading=-math.pi / 2)
+    w = strip_window(runner, ego, turn, 40.0)
+    assert w is not None
+    assert w.t_in < 1.5, w
+    assert conflict_time(w) is not None
+
+
+def test_a_mover_travelling_along_the_route_is_judged_where_it_is(route):
+    """The crossing logic must not touch cars that merely drift across a lane
+    line: a lead doing 8 m/s and wandering 0.2 m/s sideways is a lead."""
+    lead = det(140.0, 0.5, vx=8.0, vy=-0.2)
+    w = strip_window(lead, ego_at(10.0), route, EGO_S)
+    assert w is not None
+    assert w.near_edge_s == pytest.approx(140.0 - 4.6 / 2)
+
+
+def test_a_car_going_round_the_same_corner_is_not_cross_traffic():
+    """A straight-line extrapolation of a car in the next lane, turning with the
+    ego, leaves the road and 'crosses' the route it is following. Moving the same
+    way as the ego, it is not cross traffic and is judged where it is."""
+    turn = Route([(0.0, 0.0), (60.0, 0.0), (60.0, 100.0)], closed=False)
+    ego = VehicleState(x=40.0, y=0.0, heading=0.0, speed_mps=10.0)
+    beside = det(57.0, 3.5, vx=9.0, vy=-5.0, heading=-0.5)
+    w = strip_window(beside, ego, turn, 40.0)
+    assert w is None or conflict_time(w) is None
