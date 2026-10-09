@@ -169,11 +169,30 @@ break an older backend.
 
 With Option B running, kill the backend process (Ctrl-C in its terminal)
 while the frontend is still open. The toolbar's connection chip goes to
-`reconnecting`, the 3D view and telemetry cards keep rendering their last
-known state rather than crashing, and restarting `uv run streetlab serve`
+`reconnecting`; after a couple of failed attempts a "Can't reach the simulator"
+card appears with a Retry button (it keeps retrying on its own and disappears
+when the backend returns). The 3D view and telemetry cards keep rendering
+their last known state rather than crashing, and restarting `uv run streetlab serve`
 gets you a fresh scene automatically — no page reload needed.
 (`e2e/faultInjection.spec.ts` proves this programmatically against a real
 backend subprocess, not just a mocked socket.)
+
+## Run the hosted build locally
+
+The web build talks to whatever `VITE_BACKEND_WS_URL` named when it was built
+(see `streetlab/.env.example`); `?backend=ws://host:port` in the page URL overrides it
+without rebuilding. To rehearse the hosted setup on your machine:
+
+```bash
+docker build -t streetlab-sim streetlab-backend
+docker run --rm -p 8080:8080 streetlab-sim                 # per-connection sessions, cap 2
+uv run --project streetlab-backend python scripts/smoke_hosted.py --url ws://127.0.0.1:8080
+cd streetlab && npm run dev                                # then open /?backend=ws://127.0.0.1:8080
+```
+
+Open two tabs: each has its own world (pausing in one does nothing to the other). A
+third tab shows "The simulator is busy" with a Retry button; a dead or refusing
+backend shows its own distinct message instead of an empty viewport.
 
 ## Check the performance overlay
 
