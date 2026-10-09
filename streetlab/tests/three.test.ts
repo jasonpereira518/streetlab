@@ -616,6 +616,21 @@ describe('ChaseCamera', () => {
       expect(Math.hypot(cam.camera.position.x, cam.camera.position.z)).toBeLessThan(3);
     });
 
+    it('casts the occlusion ray at most 30 times a second, however fast frames come', () => {
+      const cam = new ChaseCamera(16 / 9);
+      cam.reset(p);
+      const wall = wallAt(200);
+      let casts = 0;
+      const raycast = wall.raycast.bind(wall);
+      wall.raycast = (rc, hits) => {
+        casts++;
+        raycast(rc, hits);
+      };
+      for (let i = 0; i < 240; i++) cam.update(p, 12, 'chase', 1 / 240, wall); // 1 s at 240 fps
+      expect(casts).toBeGreaterThan(25);
+      expect(casts).toBeLessThanOrEqual(31);
+    });
+
     it('pulls in for a tree canopy between the camera and the car, given as one of several blockers', () => {
       const cam = new ChaseCamera(16 / 9);
       cam.reset(p);

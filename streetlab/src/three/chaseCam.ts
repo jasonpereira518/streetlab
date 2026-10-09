@@ -18,6 +18,15 @@ const MIN_CLEARANCE_M = 1.2;
 const EGO_EYE_M = 1.0;
 
 /**
+ * The occlusion ray is re-cast at most this often. It is the one expensive
+ * thing the rig does -- a raycast over the merged building mesh, ~0.7 ms on
+ * 450 buildings and several times that on Nob Hill's 2,224 -- and its answer
+ * only feeds a damped pull-in, so at 100+ fps casting every frame bought
+ * nothing but frame time. 30 Hz is under 0.4 m of travel at 24 mph.
+ */
+const RAY_INTERVAL_S = 1 / 30;
+
+/**
  * What may hide the car: the merged building mesh, and (optionally) the tree
  * group. One object or several; none means an open scene.
  */
@@ -82,6 +91,9 @@ export class ChaseCamera {
    * per-frame cost of this feature.
    */
   private pullback = 0;
+  /** Where `pullback` is heading, as of the last cast, and the time since it. */
+  private targetPullback = 0;
+  private sinceCast = 0;
   private readonly raycaster = new THREE.Raycaster();
   private readonly rayOrigin = new THREE.Vector3();
   private readonly rayDir = new THREE.Vector3();
@@ -144,6 +156,8 @@ export class ChaseCamera {
       blockers,
     );
     this.pullback = CHASE.distNear - dist;
+    this.targetPullback = this.pullback;
+    this.sinceCast = 0;
     this.camPos.set(pose.x - fx * dist, g + CHASE.heightNear, -pose.y - fz * dist);
     this.camPos.y = Math.max(this.camPos.y, this.groundAt(this.camPos.x, this.camPos.z) + MIN_CLEARANCE_M);
     this.lookAt.set(
@@ -268,22 +282,31 @@ export class ChaseCamera {
 
     switch (view) {
       case 'chase': {
-        const targetDist = this.clampTrailDistance(
-          this.vx,
-          this.vz,
-          fx,
-          fz,
-          dist,
-          g + height,
-          g + EGO_EYE_M,
-          blockers,
-        );
+        this.sinceCast += dt;
+        if (!blockers) {
+          this.targetPullback = 0; // nothing to cast against, nothing to wait for
+        } else if (this.sinceCast >= RAY_INTERVAL_S - 1e-9) {
+          this.sinceCast = 0;
+          this.targetPullback =
+            dist -
+            this.clampTrailDistance(
+              this.vx,
+              this.vz,
+              fx,
+              fz,
+              dist,
+              g + height,
+              g + EGO_EYE_M,
+              blockers,
+            );
+        }
         // Ease the *pullback* (how far short of the natural distance we're
         // sitting), not the distance itself — so when nothing is occluded
         // (targetPullback stays 0 every frame) `pullback` never leaves 0 and
         // the trail distance is exactly `dist`, unchanged from before this
-        // feature existed.
-        const targetPullback = dist - targetDist;
+        // feature existed. A held target is clamped to the CURRENT natural
+        // distance, which speed can shrink between casts.
+        const targetPullback = Math.min(this.targetPullback, dist - CHASE.minTrailDist);
         const smoothing =
           targetPullback > this.pullback ? CHASE.occlusionPullIn : CHASE.occlusionEaseOut;
         this.pullback = damp(this.pullback, targetPullback, smoothing, dt);
