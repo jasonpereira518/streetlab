@@ -88,7 +88,7 @@ const sample: StateUpdate = {
   sim_rate_hz: 60,
   paused: false,
   assist_active: true,
-  scenario_id: 'nob-hill-loop',
+  scenario_id: 'grid-loop',
   ego: {
     pose: { x: 5.4, y: 21.3, heading: Math.PI / 2 },
     speed_mps: 14.3,
@@ -260,20 +260,20 @@ describe('StateUpdate', () => {
 
 describe('SceneDescription', () => {
   it('validates the hand-authored mock city', () => {
-    const scene = buildScene('nob-hill-loop');
+    const scene = buildScene('grid-loop');
     expect(() => SceneDescriptionSchema.parse(scene)).not.toThrow();
     expect(parseServerMessage(scene).ok).toBe(true);
   });
 
   it('rejects a building footprint with fewer than three points', () => {
-    const scene = buildScene('nob-hill-loop');
+    const scene = buildScene('grid-loop');
     const bad = structuredClone(scene);
     bad.buildings[0].footprint = [[0, 0], [1, 1]];
     expect(SceneDescriptionSchema.safeParse(bad).success).toBe(false);
   });
 
   it('requires attribution', () => {
-    const scene = buildScene('nob-hill-loop');
+    const scene = buildScene('grid-loop');
     expect(typeof scene.attribution).toBe('string');
     const bad = structuredClone(scene) as Record<string, unknown>;
     delete bad.attribution;
@@ -287,7 +287,7 @@ describe('Command', () => {
       { id: 'c1', cmd: 'set_paused', paused: true },
       { id: 'c2', cmd: 'step', frames: 3 },
       { id: 'c3', cmd: 'reset' },
-      { id: 'c4', cmd: 'load_scenario', scenario_id: 'hyde-descent' },
+      { id: 'c4', cmd: 'load_scenario', scenario_id: 'grid-signals' },
       { id: 'c4b', cmd: 'load_location', query: 'Nob Hill', radius_m: 400 },
       {
         id: 'c4c',

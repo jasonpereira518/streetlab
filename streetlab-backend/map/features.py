@@ -311,7 +311,11 @@ def _approach_candidates(
 
 
 def build_stop_signs(
-    graph: OsmGraph, origin: LatLon, keep_out: KeepOut | None = None
+    graph: OsmGraph,
+    origin: LatLon,
+    keep_out: KeepOut | None = None,
+    *,
+    keep_crowded: bool = False,
 ) -> list[StopSign]:
     """One sign per tagged approach, on that approach's right-hand kerb.
 
@@ -323,6 +327,12 @@ def build_stop_signs(
 
     A node with no drivable way under it is dropped rather than placed blind:
     a sign governing no approach is the artifact this exists to remove.
+
+    A post with no clear corner is dropped too, since a post in the road is
+    worse than none -- unless `keep_crowded`, which returns it anyway at its
+    best position so the caller can still derive the junction's CONTROL from
+    it (the stop line is anchored on the node, not the post) and then filter
+    the drawn set with the same blocker.
     """
     owner = _ways_by_node(graph)
     blocked = _post_blocker(graph, origin, keep_out)
@@ -355,7 +365,8 @@ def build_stop_signs(
             # wall is worse than no post: the stop LINE is anchored on the
             # junction node, not on this, so the ego still stops.
             crowded += 1
-            continue
+            if not keep_crowded:
+                continue
         signs.append(
             StopSign(
                 id=f"osm_ss_{node.id}",
@@ -574,7 +585,11 @@ def _inferred_signal_nodes(graph: OsmGraph, origin: LatLon) -> list[OsmNode]:
 
 
 def build_traffic_lights(
-    graph: OsmGraph, origin: LatLon, keep_out: KeepOut | None = None
+    graph: OsmGraph,
+    origin: LatLon,
+    keep_out: KeepOut | None = None,
+    *,
+    keep_crowded: bool = False,
 ) -> list[TrafficLight]:
     """One mast-arm head per approach into each signalised junction.
 
@@ -588,6 +603,9 @@ def build_traffic_lights(
     left over the lanes coming toward it, which is the American mast-arm
     layout the renderer already draws (`world.ts`: the arm swings out along
     `heading` rotated -90 degrees).
+
+    `keep_crowded` as in `build_stop_signs`: a pole with no clear corner is
+    normally dropped, but its approach still has a signal.
     """
     owner = _ways_by_node(graph)
     blocked = _post_blocker(graph, origin, keep_out)
@@ -617,7 +635,8 @@ def build_traffic_lights(
             )
             if blocked(position):
                 crowded += 1
-                continue
+                if not keep_crowded:
+                    continue
             lights.append(
                 TrafficLight(
                     id=f"{cluster.id}_{i}",
