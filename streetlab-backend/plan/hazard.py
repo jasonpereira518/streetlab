@@ -187,8 +187,8 @@ def _crossing_station(
         return None
     # Cross traffic only: not travelling the way the ego is facing. A car going
     # round the same corner extrapolates in a straight line across the curve and
-    # "crosses" the route it is following (measured: 80 aeb ticks in one
-    # hazard-free replay).
+    # "crosses" the route it is following (measured: 27 aeb activations in one
+    # hazard-free `grid-merge` replay).
     if abs(math.cos(math.atan2(vy, vx) - ego_heading)) > _CROSSING_MAX_ALIGN:
         return None
     px, py = det.pose.x, det.pose.y
