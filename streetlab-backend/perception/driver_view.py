@@ -67,6 +67,33 @@ def visible_to_driver(
     ]
 
 
+def can_see(
+    ego: VehicleState,
+    x: float,
+    y: float,
+    heading: float,
+    size: Size,
+    buildings: Sequence[Building] = (),
+) -> bool:
+    """Whether a body at `(x, y, heading)` is resolvable from `ego`'s cabin.
+
+    The per-pose test `visible_to_driver` applies, for hazard stagings that
+    have a pose and no `Detection` ("can the ego see this from where it will be?").
+    """
+    return _resolvable(
+        ego,
+        _cabin_camera(ego),
+        x,
+        y,
+        heading,
+        size,
+        buildings,
+        forward_half_rad=FORWARD_FOV_HALF_RAD,
+        rear_half_rad=REAR_FOV_HALF_RAD,
+        rear_range_m=REAR_RANGE_M,
+    )
+
+
 def forward_visible(
     ego: VehicleState,
     x: float,
