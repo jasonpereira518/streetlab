@@ -114,15 +114,19 @@ def generate() -> dict[str, dict]:
     assert reaction is not None, "the planner never reacted to the injected cut-in"
     out["state_update_reaction"] = reaction.model_dump(mode="json")
 
+    # A stalled car, not a sudden brake: since the ego follows a braking lead on the braking profile
+    # (docs/measurements/2026-10-09-driving-after-phase-3.md) the lead's TTC never falls under the
+    # hazard threshold in 12 s on any of seeds 1-8, which is the intent; a stationary car is flagged
+    # at t=7.2 s.
     braking = Simulation(SyntheticGrid(), "grid-merge", seed=4)
     for _ in range(60 * 90):
         braking.step()
         if braking.world.ego.speed_mps >= 8.0 and braking.apply_dict(
-            {"id": "sb", "cmd": "inject_hazard", "kind": "sudden_brake"}
+            {"id": "sb", "cmd": "inject_hazard", "kind": "stalled_vehicle"}
         ).ok:
             break
     else:
-        raise AssertionError("sudden_brake never staged at 8 m/s in 90 s on the fixture scene")
+        raise AssertionError("stalled_vehicle never staged at 8 m/s in 90 s on the fixture scene")
     flagged = None
     for _ in range(60 * 12):
         braking.step()
@@ -130,7 +134,7 @@ def generate() -> dict[str, dict]:
         if frame.telemetry.ttc_s is not None and any(d.hazard for d in frame.detections):
             flagged = frame
             break
-    assert flagged is not None, "no frame with a TTC and a hazard flag after the sudden brake"
+    assert flagged is not None, "no frame with a TTC and a hazard flag after the stalled vehicle"
     out["state_update_hazard"] = flagged.model_dump(mode="json")
 
     outcome = sim.apply_dict({"id": "a1", "cmd": "set_paused", "paused": False})

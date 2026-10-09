@@ -224,12 +224,17 @@ class ScriptedTraffic:
             occupied.append((s, length))
             target = speed_limit_mps * mult * self._rng.uniform(0.85, 1.05)
             x, y = route.point_at(s)
+            # Spawned at the speed the corner ahead allows, not at cruise: an agent placed within
+            # the preview of a bend at 9.8 m/s starts life braking at the 4.5 floor (the first
+            # tick of three agents in grid-loop's 150 s, 117 of the 27000 frames).
+            kappa = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
+            start = min(target, math.sqrt(_MAX_LATERAL_MPS2 / kappa)) if kappa > 1e-6 else target
             self._agents.append(
                 Agent(
                     id=f"veh_{i:02d}",
                     cls=cls,
                     state=VehicleState(
-                        x=x, y=y, heading=route.heading_at(s), speed_mps=target
+                        x=x, y=y, heading=route.heading_at(s), speed_mps=start
                     ),
                     size=Size(length=length, width=width, height=height),
                     route=route,
@@ -383,15 +388,12 @@ _IDM_DELTA = 4.0
 #: this is the emergency floor, not the working rate.
 _IDM_MAX_BRAKE = 4.5
 
-#: The floor while there is still room to brake: 3.4 m/s^2, under the 3.5 p99 traffic budget
-#: (`tests/driving_metrics.py`). With only the emergency floor, 2% of pooled agent-frames sat on
-#: 4.5 (measured, grid-loop 150 s: 552 of 27000 -- the first tick of every agent spawned at
-#: speed with a wall in 70 m, lanes ending 16 m ahead at 5.6 m/s, slower leads closed on at
-#: 8 m/s). Gaps under `_IDM_MIN_GAP_M` plus `_EMERGENCY_HEADWAY_S` of travel, and a free term
-#: that has gone to -inf (`traffic_speed_scale=0`), still get the emergency floor.
-_IDM_ROOM_BRAKE = 3.4
-_EMERGENCY_HEADWAY_S = 0.5
-
+#: The floor on the free term: it brakes for a corner
+#: (the 14 m preview asks 8 m/s of an 11 m/s car in 1.2 s) or a speed-scale change. 3.4 m/s^2,
+#: under the 3.5 p99 traffic budget (`tests/driving_metrics.py`); measured on Nob Hill, 1720 of
+#: 81600 agent-frames sat on 4.5 for exactly this. The interaction term adds on top, to `_IDM_MAX_BRAKE`.
+#: `traffic_speed_scale=0` still halts traffic: it needs 3 s from 11 m/s.
+_IDM_FREE_BRAKE = 3.4
 
 #: Beyond this there is no leader worth modelling. Bounding the search is not
 #: a performance dodge -- it is what stops an agent on a short closed loop from
@@ -556,7 +558,6 @@ class IdmTraffic(ScriptedTraffic):
                     gap,
                     lead_speed,
                     headway_s=_IDM_HEADWAY_S if agent.headway_s is None else agent.headway_s,
-                    routine=True,
                 )
                 speed = max(0.0, speed + accel * dt)
 
@@ -1134,12 +1135,8 @@ def _idm_accel(
     lead_speed: float,
     *,
     headway_s: float = _IDM_HEADWAY_S,
-    routine: bool = False,
 ) -> float:
     """The IDM acceleration law.
-
-    `routine` is the agent's own driving: it may use the lower `_IDM_ROOM_BRAKE` floor while there
-    is room. MOBIL's what-ifs leave it off, because they ask what braking a follower would NEED.
 
     `a = a_max * (1 - (v/v0)^delta - (s_star/s)^2)` with
     `s_star = s0 + v*T + v*dv / (2*sqrt(a_max*b))`.
@@ -1159,8 +1156,11 @@ def _idm_accel(
     actually produce.
     """
     free = 1.0 - (speed / desired) ** _IDM_DELTA if desired > 0 else -math.inf
+    # The free term alone never asks for more than `_IDM_FREE_BRAKE`; only the interaction with
+    # something ahead can take the total to the emergency floor.
+    free_accel = max(_IDM_MAX_ACCEL * free, -_IDM_FREE_BRAKE)
     if not math.isfinite(gap):
-        return max(_IDM_MAX_ACCEL * free, -_IDM_MAX_BRAKE)
+        return free_accel
     closing = speed - lead_speed
     s_star = _IDM_MIN_GAP_M + max(
         0.0,
@@ -1170,8 +1170,7 @@ def _idm_accel(
     # A gap that has closed to nothing would divide by zero; the floor makes
     # the interaction term merely enormous, which is the same command.
     interaction = (s_star / max(gap, 0.1)) ** 2
-    room = routine and gap > _IDM_MIN_GAP_M + _EMERGENCY_HEADWAY_S * speed and desired > 0
-    return max(_IDM_MAX_ACCEL * (free - interaction), -(_IDM_ROOM_BRAKE if room else _IDM_MAX_BRAKE))
+    return max(free_accel - _IDM_MAX_ACCEL * interaction, -_IDM_MAX_BRAKE)
 
 
 def _approach(value: float, target: float, max_delta: float) -> float:

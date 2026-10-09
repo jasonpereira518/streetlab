@@ -201,6 +201,22 @@ def test_recording_a_real_run_fills_every_column_consistently():
     assert set(run.phase) <= {"none", "outbound", "passing", "returning"}
 
 
+def test_emergency_frames_are_exempt_from_the_ego_decel_and_jerk_budgets():
+    import dataclasses
+
+    from tests.driving_metrics import ego_jerk, ego_peak_decel
+
+    accel = [0.0, -0.5, -4.0, -4.0, -1.0, -0.5]
+    run = make_run([5.0] * 6, accel=accel)
+    assert ego_peak_decel(run) == 4.0
+    flagged = dataclasses.replace(run, emergency=np.array([False, False, True, True, False, False]))
+    assert ego_peak_decel(flagged) == 0.5
+    # The run-down after the label drops (EMERGENCY_TAIL_S) is exempt too, so here only the
+    # one calm pair before the event is judged.
+    assert len(ego_jerk(flagged)) == 1
+    assert np.abs(ego_jerk(flagged)).max() == pytest.approx(0.5 / DT)
+
+
 def test_peak_decel_is_zero_not_negative_when_the_ego_never_brakes():
     run = make_run([1.0, 2.0, 3.0], accel=[0.9, 1.1, 1.0])
     assert summarize(run)["ego"]["peak_decel_mps2"] == 0.0

@@ -60,6 +60,10 @@ _SPEED_GAIN = 0.9
 #: 3.0 at the 99th percentile (`tests/driving_metrics.py`); a threat reaction is exempt, because
 #: an emergency stop that waits 1.8 s to reach full braking is not one.
 _JERK_MPS3 = 2.5
+#: The hardest braking outside a threat reaction (the budget is 2.5, `tests/driving_metrics.py`).
+_COMFORT_DECEL_MPS2 = 2.4
+#: How hard an emergency stop brakes until the car is at its target speed.
+_AEB_MIN_DECEL_MPS2 = 4.5
 #: The most braking, on top of the braking curve's own, that being above the curve may ask for.
 _CURVE_CATCHUP_MPS2 = 0.6
 
@@ -246,8 +250,11 @@ class CenterlineFollower:
             abs(route.lateral_offset((ego.x, ego.y))) > _OFF_LANE_M
         )
         lead, gap = _closest_lead(detections, route, s, home_lane=returning_home)
+        too_close = False
         if lead is not None:
-            caps.append(_lead_cap(lead, gap, ego, limits))
+            lead_cap = _lead_cap(lead, gap, ego, limits)
+            caps.append(lead_cap)
+            too_close = lead_cap[0] <= 0.0
         ceiling, feed_forward = braking_ceiling(caps, ego.speed_mps)
         target = min(limits.speed_limit_mps, limits.speed_cap_mps)
         # The route's curvature AHEAD says "straight" the moment the look-ahead window clears a
@@ -274,9 +281,29 @@ class CenterlineFollower:
             # The correction for being ABOVE the curve is bounded, or a light that goes
             # amber 49 m out at 12.4 m/s asks the slew limiter for -4.5 and rings through
             # -2.9 (measured, Nob Hill t=125.7 s) before settling at the planned 1.8.
-            accel = max(accel, -_CURVE_CATCHUP_MPS2) + feed_forward
+            # Only for a cap still AHEAD (feed_forward < 0): a cap at the car's own position --
+            # a lead that is too close, a corner it is in -- gets the full proportional law.
+            if feed_forward < 0.0:
+                accel = max(accel, -_CURVE_CATCHUP_MPS2)
+            accel += feed_forward
+        if reaction.maneuver == "emergency_brake" and ego.speed_mps > target:
+            # An emergency stop does not taper: `gain * (0 - v)` falls with v, so a car doing 3.7 m/s
+            # takes 4 m to stop and ends up in what it braked for (red_light_runner on grid_slow,
+            # overlap -1.5 m, 5 of 5 seeds). Hold a real deceleration until it is below the target.
+            accel = min(accel, -_AEB_MIN_DECEL_MPS2)
         accel = _clamp(accel, -_MAX_DECEL_MPS2, _MAX_ACCEL_MPS2)
-        if reaction.kind == "none":
+        # A lead already closer than the gap it asks for is not ordinary driving: it gets the whole
+        # proportional law at once, as before the jerk limit (a cyclist drifting in 12 m ahead of an
+        # ego doing 9 m/s overlapped it by 0.2 m with the limit on, -0.2 on the closed-loop sweep).
+        if reaction.kind == "none" and not (too_close and target <= ceiling):
+            # Ordinary driving never asks for more than the comfort budget (2.5); anything harder
+            # is the threat layer's, which sets `reaction`. Without this a steering-command spike
+            # (`kappa_cmd` below drops the target to 1.7 m/s in one tick at 6.3 m/s, mid lane-change
+            # return) is a -4.5 request that the slew limiter then ramps to -2.85.
+            # A line that must be stopped at (a red, however late it is seen) keeps the full
+            # authority: that is the one place a hard stop is the rules', not a threat's.
+            if decision.stop_distance_m is None:
+                accel = max(accel, -_COMFORT_DECEL_MPS2)
             step = _JERK_MPS3 * context.dt
             accel = _clamp(accel, ego.accel_mps2 - step, ego.accel_mps2 + step)
 

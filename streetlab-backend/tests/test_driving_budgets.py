@@ -20,7 +20,8 @@ from tests.driving_metrics import (
     lateral_accel_by_phase,
     lateral_jerk,
     lead_summary,
-    longitudinal_jerk,
+    ego_jerk,
+    ego_peak_decel,
     record,
     max_turning_deg,
     stats,
@@ -51,13 +52,13 @@ def runs(nob_hill_scene):
 @pytest.mark.parametrize("key", RUN_KEYS)
 def test_the_ego_does_not_brake_harder_than_the_budget(request, runs, key):
     _expect(request, "ego_decel", key)
-    assert -runs[key].accel.min() <= BUDGET.ego_decel_mps2
+    assert ego_peak_decel(runs[key]) <= BUDGET.ego_decel_mps2
 
 
 @pytest.mark.parametrize("key", RUN_KEYS)
 def test_the_ego_jerk_is_within_budget(request, runs, key):
     _expect(request, "ego_jerk", key)
-    s = stats(longitudinal_jerk(runs[key]))
+    s = stats(ego_jerk(runs[key]))
     assert s["p99"] <= BUDGET.ego_jerk_p99
     assert s["max"] <= BUDGET.ego_jerk_max
 
