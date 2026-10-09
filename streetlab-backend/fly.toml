@@ -1,5 +1,9 @@
-# One always-on machine: the simulation is a single shared world per process,
-# so never scale this above 1 and never let it auto-stop (state would reset).
+# One always-on machine. Each WebSocket connection gets its own private
+# simulation (STREETLAB_MAX_SESSIONS caps how many at once), so visitors do not
+# share a world. Still never scale this above 1 machine: sessions live in one
+# process's memory, and a second machine would not know about the first one's cap.
+# Never let it auto-stop either: a stopped machine drops every live session.
+# Capacity reasoning and the cost/size trade-off: docs/hosted-sessions.md.
 app = "streetlab-sim"
 primary_region = "iad"
 
@@ -7,8 +11,11 @@ primary_region = "iad"
   dockerfile = "Dockerfile"
 
 [env]
-  # Browser origins allowed to open the WebSocket. Set the real value with
-  # `fly secrets set STREETLAB_ALLOWED_ORIGINS=https://<your-vercel-domain>`.
+  STREETLAB_MAX_SESSIONS = "2"
+  # Browser origins allowed to open the WebSocket is NOT set here: it is a
+  # deploy-time decision. Set it with
+  # `fly secrets set STREETLAB_ALLOWED_ORIGINS=https://<your-vercel-domain>`
+  # and read the startup log line "origin policy: ALLOWLIST" to confirm it took.
 
 [http_service]
   internal_port = 8080

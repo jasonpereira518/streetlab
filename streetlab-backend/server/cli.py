@@ -255,6 +255,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--sim-hz", type=float, default=1 / DEFAULT_DT)
     serve.add_argument("--tick-hz", type=float, default=60.0)
+    serve.add_argument(
+        "--max-sessions",
+        type=int,
+        default=int(os.environ.get("STREETLAB_MAX_SESSIONS", "0")),
+        help="hosted mode: give every WebSocket connection its own private "
+        "simulation, at most this many at once (further connections are "
+        "closed with code 4429 'server busy'). 0, the default, is the "
+        "desktop sidecar's single shared world. Defaults to "
+        "$STREETLAB_MAX_SESSIONS. Not combinable with --perception ml or "
+        "--capture, which own a single process-wide pipeline.",
+    )
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
     serve.add_argument(
         "--no-stdin-watchdog",
@@ -341,6 +352,13 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 "--traffic applies to synthetic scenarios only; OsmSceneSource "
                 "builds its agent routes from the ingested graph and would ignore it"
+            )
+        if args.max_sessions < 0:
+            parser.error("--max-sessions must be >= 0")
+        if args.max_sessions and (args.perception == "ml" or args.capture):
+            parser.error(
+                "--max-sessions cannot be combined with --perception ml or --capture: "
+                "both own one process-wide pipeline that sessions would share"
             )
         return _serve(args)
     if args.command == "build":
@@ -499,12 +517,31 @@ def _serve(args) -> int:
     sock = _bind(args.host, port)
     real_port = sock.getsockname()[1]
 
-    loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
     # Address suggestions need a real geocoder; SyntheticGrid has none, and
     # asking it for one would be a lie the dropdown would then show as an
     # empty result anyway -- `None` here makes that explicit instead.
     geocoder = source.geocoder if isinstance(source, OsmSceneSource) else None
-    app = create_app(loop, tick_hz=args.tick_hz, geocoder=geocoder)
+    if args.max_sessions:
+        # `sim` above exists to fail fast on a bad scenario and to warm the
+        # source's scene cache; each connection gets its own from the factory.
+        def make_session() -> SimLoop:
+            src = source.fork() if isinstance(source, OsmSceneSource) else scene_source_for(
+                args.source, args.traffic
+            )
+            return SimLoop(
+                Simulation(src, args.scenario, seed=args.seed, dt=1 / args.sim_hz),
+                hz=args.sim_hz,
+            )
+
+        app = create_app(
+            tick_hz=args.tick_hz,
+            geocoder=geocoder,
+            session_factory=make_session,
+            max_sessions=args.max_sessions,
+        )
+    else:
+        loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
+        app = create_app(loop, tick_hz=args.tick_hz, geocoder=geocoder)
 
     print(
         f"StreetLab serving {sim.scene.description.scenario_id} on "
