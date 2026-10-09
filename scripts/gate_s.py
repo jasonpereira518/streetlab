@@ -120,8 +120,10 @@ def cmd_run(args) -> None:
         for k in args.keys for s in args.seeds for h in [None, *hazards()] for v in VARIANTS
         if (k, s, h, v) not in done
     ]
-    # Longest first so the pool does not end on a lone Nob Hill run.
-    cells.sort(key=lambda c: -(STANDARD_S[c[0]] if c[2] is None else HAZARD_RUN_S) * (3 if c[0] == "nobhill" else 1))
+    # The binding variants first (stress is only ever checked for collisions), and
+    # longest first within each so the pool does not end on a lone Nob Hill run.
+    cells.sort(key=lambda c: (c[3] == "stress",
+                              -(STANDARD_S[c[0]] if c[2] is None else HAZARD_RUN_S) * (3 if c[0] == "nobhill" else 1)))
     print(f"{len(cells)} cells to run, {len(done)} done", flush=True)
     with ProcessPoolExecutor(args.jobs) as pool, out.open("a") as fh:
         futures = {pool.submit(run_cell, c): c for c in cells}
