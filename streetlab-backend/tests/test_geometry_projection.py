@@ -229,3 +229,17 @@ def test_the_detector_mount_pitch_sign_agrees_with_the_frontend():
     level = project_to_ground(below, camera(z=1.33, pitch=0.0), W, H)
     assert tilted is not None and level is not None
     assert tilted[0] < level[0], "a negative (nose-down) pitch must shorten the range"
+
+
+def test_the_detector_frame_is_the_pinned_native_square_with_unchanged_coverage():
+    """The wire frame is 640x640 (no stretch into the model) and its fovY is
+    the horizontal FOV of the old 640x384 / fovY 50 frame, so what a scene
+    shows horizontally did not move. `detectorCamera.test.ts` pins the same
+    JSON on the frontend side."""
+    pin = MOUNT_PITCH_FIXTURE["detector_frame"]
+    assert (pin["width"], pin["height"], pin["aspect"]) == (640, 640, 1.0)
+    old_half_h = math.tan(math.radians(50.0) / 2.0) * (640 / 384)
+    assert math.isclose(math.tan(math.radians(pin["fov_y_deg"]) / 2.0), old_half_h, rel_tol=1e-12)
+    from perception.detector import MODEL_INPUT
+
+    assert (pin["width"], pin["height"]) == MODEL_INPUT, "the resize must be a no-op"

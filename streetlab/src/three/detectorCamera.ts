@@ -20,10 +20,23 @@ import { setDetectorLayers } from './layers';
  */
 export type Backend = 'webgpu' | 'webgl2';
 
+/**
+ * Horizontal coverage the detector has always had: fovY 50 deg on a 640x384
+ * frame, so tan(hFOV/2) = tan(25 deg) * 640 / 384, i.e. ~75.7 deg.
+ */
+const HORIZONTAL_FOV_DEG =
+  (2 * Math.atan(Math.tan((25 * Math.PI) / 180) * (640 / 384)) * 180) / Math.PI;
+
+/**
+ * Square, because the model's input is: a 640x384 frame was stretched to
+ * 640x640 (1.67x vertical squash), so a car reached the network as a shape no
+ * COCO car has. At 1:1 `fovYDeg` equals the horizontal FOV, so the coverage a
+ * scene sees is unchanged and the backend's resize is a no-op.
+ */
 export const DETECTOR_FRAME = {
   width: 640,
-  height: 384,
-  fovYDeg: 50,
+  height: 640,
+  fovYDeg: HORIZONTAL_FOV_DEG,
   /** ~10 Hz. Independent of render FPS. */
   intervalMs: 100,
   /** JPEG quality: the wire cost is roughly linear in this. */
@@ -228,7 +241,9 @@ export function createDetectorCamera(
   // changes for the renderer's lifetime, so there is nothing to recompute
   // per capture.
   const flip = shouldFlipRows(backend);
-  const camera = new THREE.PerspectiveCamera(fovYDeg, width / height, 0.1, 400);
+  // Far plane past the sky dome (SKY_RADIUS 900 in Renderer.tsx): at 400 the dome
+  // was clipped and every detector frame had a black sky, a void no COCO scene has.
+  const camera = new THREE.PerspectiveCamera(fovYDeg, width / height, 0.1, 1400);
   // Defaults to UnsignedByteType. `capture()` reinterprets the readback's raw
   // bytes as a Uint8Array directly (no per-channel conversion) — switching this
   // to FloatType/HalfFloatType would make that reinterpretation silent garbage.
@@ -330,7 +345,7 @@ export function createDetectorCamera(
         // that ever changes. Left dangling, it would silently corrupt the
         // *next* canvas frame too: `_getFrameBufferTarget()` keys its cached
         // intermediate buffer on `_outputRenderTarget || _canvasTarget`, so a
-        // stale 640x384 detector target there would hand the main view's own
+        // stale 640x640 detector target there would hand the main view's own
         // tonemap pass a buffer sized for the wrong viewport.
         renderer.setOutputRenderTarget(previousOutput);
         restoredEarly = true;
@@ -405,7 +420,7 @@ export function createDetectorCamera(
           // setRenderTarget (the device-lost case this whole block exists
           // for) skip setOutputRenderTarget entirely, since a throw jumps
           // straight past the rest of the try body. That left
-          // `_outputRenderTarget` pointed at this detector's 640x384 target
+          // `_outputRenderTarget` pointed at this detector's 640x640 target
           // indefinitely — worse than the dangling `_renderTarget` this
           // block was written to guard against, since `_getFrameBufferTarget()`
           // keys its cached intermediate buffer on `_outputRenderTarget ||
