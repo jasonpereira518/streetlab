@@ -371,7 +371,13 @@ def test_time_to_change_counts_down(sim):
 
 
 def test_detections_appear_for_nearby_traffic(sim):
-    advance(sim, 1.0)
+    # Not "at t=1.0 s": the nearest car starts 73 m away at -74..-78 deg, which is the edge of the
+    # 75 deg windscreen cone, so whether it is in the feed that exact second depends on where the
+    # jerk-limited start has put the ego (1.9 m/s then, 1.2 m/s now). It is in the feed by 5 s.
+    for _ in range(5):
+        advance(sim, 1.0)
+        if sim.state_update().detections:
+            break
     assert sim.state_update().detections
 
 

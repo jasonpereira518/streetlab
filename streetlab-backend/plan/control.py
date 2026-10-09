@@ -19,6 +19,7 @@ from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from plan.behavior import BehaviorFSM
 from plan.hazard import NO_REACTION, Reaction, ThreatAssessor
+from plan.profile import Cap, braking_ceiling, braking_horizon, curvature_caps
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
@@ -55,11 +56,20 @@ _MAX_ACCEL_MPS2 = 2.2
 _MAX_DECEL_MPS2 = 4.5
 _SPEED_GAIN = 0.9
 
-# Car-following spacing. `desired = standstill + follow_distance_s * speed`;
-# beyond `_IGNORE_LEAD_FACTOR` times that, the lead is too far to matter.
-_STANDSTILL_GAP_M = 5.0
+#: How fast the commanded acceleration may change, m/s^3, when nothing is wrong. The budget is
+#: 3.0 at the 99th percentile (`tests/driving_metrics.py`); a threat reaction is exempt, because
+#: an emergency stop that waits 1.8 s to reach full braking is not one.
+_JERK_MPS3 = 2.5
+#: The most braking, on top of the braking curve's own, that being above the curve may ask for.
+_CURVE_CATCHUP_MPS2 = 0.6
+
+# Car-following spacing: `desired = standstill + follow_distance_s * speed`, as a cap on the
+# braking profile (`_lead_cap`).
+#: Bumper to bumper, so a lead at rest is stopped behind at the middle of the 2-4 m budget.
+_STANDSTILL_GAP_M = 3.0
 _GAP_GAIN = 0.7
-_IGNORE_LEAD_FACTOR = 3.0
+#: The ego's half-length: the pose is the body centre, and the gap to a lead is body to body.
+_EGO_HALF_LENGTH_M = 2.35
 
 # The plan ribbon the frontend draws.
 #: A car this far from its home lane's line, and not mid-overtake, is on its way back to it.
@@ -219,25 +229,27 @@ class CenterlineFollower:
             self.last_steer + MAX_STEER_RATE_RAD_S * context.dt,
         )
         self.last_steer = steer
-        curvature = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
+        horizon = braking_horizon(ego.speed_mps, _CURVATURE_PREVIEW_M)
+        caps = list(curvature_caps(route, s, horizon, _MAX_LATERAL_MPS2))
         if away is not None:
             # The lane being held can be the INSIDE of a corner. A 6 m fillet leaves
             # ~2.4 m there, below the car's 4.1 m minimum turning radius, and speed
             # planned from the ego lane alone drives the car at full steering lock
             # (7.9 m/s^2 at 5.7 m/s, measured) while it drifts off the lane.
-            curvature = max(
-                curvature,
-                away.route.peak_curvature(
-                    away.route.project((ego.x, ego.y)), distance_m=_CURVATURE_PREVIEW_M
-                ),
+            caps += curvature_caps(
+                away.route, away.route.project((ego.x, ego.y)), horizon, _MAX_LATERAL_MPS2
             )
+        if decision.stop_distance_m is not None:
+            caps.append((decision.stop_distance_m, 0.0, 0.0))
         lc = self.fsm.lane_change
         returning_home = (lc is None or lc.returning) and (
             abs(route.lateral_offset((ego.x, ego.y))) > _OFF_LANE_M
         )
-        target = self._target_speed(
-            limits, curvature, detections, ego, route, s, home_lane=returning_home
-        )
+        lead, gap = _closest_lead(detections, route, s, home_lane=returning_home)
+        if lead is not None:
+            caps.append(_lead_cap(lead, gap, ego, limits))
+        ceiling, feed_forward = braking_ceiling(caps, ego.speed_mps)
+        target = min(limits.speed_limit_mps, limits.speed_cap_mps)
         # The route's curvature AHEAD says "straight" the moment the look-ahead window clears a
         # corner, while the car is still yawing out of it: it then accelerates at full authority
         # through the exit (2.3 m/s^2 lateral at 3.1 m/s on grid, 6.9 on Nob Hill with traffic).
@@ -246,15 +258,28 @@ class CenterlineFollower:
         kappa_cmd = abs(math.tan(steer)) / self.wheelbase_m
         if kappa_cmd > 1e-3:
             target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / kappa_cmd))
-        # The behaviour ceiling folds in exactly like the curvature and
-        # lead-vehicle caps: another upper bound, not a separate control path.
-        # So does the threat layer's: it can only lower the target.
-        target = min(target, decision.speed_ceiling_mps, reaction.speed_ceiling_mps)
-        accel = _clamp(
-            _SPEED_GAIN * (target - ego.speed_mps), -_MAX_DECEL_MPS2, _MAX_ACCEL_MPS2
-        )
+        on_the_curve = ceiling <= target
+        target = min(target, ceiling)
+        # The behaviour ceiling folds in exactly like the others: another upper bound, not a
+        # separate control path. An approach to a line is the exception, the profile above
+        # already brakes to it. So does the threat layer's: it can only lower the target.
+        if decision.stop_distance_m is None and decision.speed_ceiling_mps < target:
+            target, on_the_curve = decision.speed_ceiling_mps, False
+        if reaction.speed_ceiling_mps <= target:
+            target, on_the_curve = reaction.speed_ceiling_mps, False
+        accel = _SPEED_GAIN * (target - ego.speed_mps)
+        if on_the_curve:
+            # Hold the car on the braking curve rather than chase it: a proportional law
+            # trails a falling ceiling by `a / gain` of speed, which is metres at a stop line.
+            # The correction for being ABOVE the curve is bounded, or a light that goes
+            # amber 49 m out at 12.4 m/s asks the slew limiter for -4.5 and rings through
+            # -2.9 (measured, Nob Hill t=125.7 s) before settling at the planned 1.8.
+            accel = max(accel, -_CURVE_CATCHUP_MPS2) + feed_forward
+        accel = _clamp(accel, -_MAX_DECEL_MPS2, _MAX_ACCEL_MPS2)
+        if reaction.kind == "none":
+            step = _JERK_MPS3 * context.dt
+            accel = _clamp(accel, ego.accel_mps2 - step, ego.accel_mps2 + step)
 
-        lead, _gap = _closest_lead(detections, route, s)
         source_id = None
         if decision.target is not None:
             source_id = decision.target.id
@@ -304,26 +329,6 @@ class CenterlineFollower:
             ax, ay = ax + (bx - ax) * blend, ay + (by - ay) * blend
         alpha = math.remainder(math.atan2(ay - ego.y, ax - ego.x) - ego.heading, math.tau)
         return math.atan2(2.0 * self.wheelbase_m * math.sin(alpha), lookahead)
-
-    def _target_speed(
-        self,
-        limits: PlanLimits,
-        curvature: float,
-        detections: Sequence[Detection],
-        ego: VehicleState,
-        route: Route,
-        s: float,
-        *,
-        home_lane: bool = False,
-    ) -> float:
-        target = min(limits.speed_limit_mps, limits.speed_cap_mps)
-        if curvature > 1e-6:
-            target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / curvature))
-
-        lead, gap = _closest_lead(detections, route, s, home_lane=home_lane)
-        if lead is not None:
-            target = min(target, _following_speed(lead, gap, ego, limits))
-        return target
 
 
 _LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
@@ -385,21 +390,19 @@ def _closest_lead(
     return best, best_gap
 
 
-def _following_speed(
-    lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits
-) -> float:
-    """A linear spacing law: hold `desired_gap`, then match the lead's speed.
+def _lead_cap(lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits) -> Cap:
+    """The lead as a cap on the braking profile: no faster than it, `_STANDSTILL_GAP_M` short of it.
 
-    Not IDM — that arrives in Cycle 3 behind this same protocol. This is the
-    minimum that makes `follow_distance_s` mean something and stops the car
-    driving through stationary traffic.
+    Body to body, so a long lead vehicle is accounted for and the ego's own half-length is too.
+    Closer than the gap it asks for, the cap drops BELOW the lead's speed in proportion, which
+    opens the gap back up instead of holding it.
     """
+    clear = gap - lead.size.length / 2 - _EGO_HALF_LENGTH_M
     desired = _STANDSTILL_GAP_M + max(limits.follow_distance_s, 0.6) * ego.speed_mps
-    if gap > desired * _IGNORE_LEAD_FACTOR:
-        return math.inf
-    # Bumper-to-bumper distance, so a long lead vehicle is accounted for.
-    clear = gap - lead.size.length / 2
-    return max(0.0, lead.speed_mps + _GAP_GAIN * (clear - desired))
+    room = clear - desired
+    if room <= 0.0:
+        return 0.0, max(0.0, lead.speed_mps + _GAP_GAIN * room), 0.0
+    return room, lead.speed_mps, lead.speed_mps
 
 
 def _maneuver(route: Route, s: float) -> str:
