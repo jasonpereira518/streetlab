@@ -209,3 +209,15 @@ def test_a_young_track_is_discounted_and_cannot_trigger_a_threat_reaction():
     kinds = lambda d: ThreatAssessor().assess([d], ego, route, route.project((0.0, 0.0)), 1 / 60).kind  # noqa: E731
     assert kinds(old) == "aeb", "an established obstacle 15 m ahead at 11 m/s is an emergency"
     assert kinds(young) == "none", "a two-frame ghost is not"
+
+
+def test_a_two_frame_ghost_is_not_a_lead_to_brake_for():
+    from plan.control import _closest_lead
+
+    x, y = 25.0, 0.0
+    route = __import__("sim.route", fromlist=["Route"]).Route([(-50.0, 0.0), (100.0, 0.0)], closed=False)
+    ghost = det(x, y, 0.0, 0.0).model_copy(update={"confidence": 0.28})
+    real = ghost.model_copy(update={"confidence": 0.9})
+    es = route.project((0.0, 0.0))
+    assert _closest_lead([ghost], route, es)[0] is None
+    assert _closest_lead([ghost, real], route, es)[0] is real

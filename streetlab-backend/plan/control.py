@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from plan.behavior import BehaviorFSM
-from plan.hazard import NO_REACTION, Reaction, ThreatAssessor
+from plan.hazard import NO_REACTION, REACTION_MIN_CONFIDENCE, Reaction, ThreatAssessor
 from plan.profile import Cap, braking_ceiling, braking_horizon, curvature_caps
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Lane, LaneSet, Route
@@ -416,9 +416,16 @@ def _closest_lead(
     Distance rather than time-to-collision: TTC is undefined at zero closing
     speed, so a TTC-ranked lead vanishes the moment ego matches a stopped car's
     speed — and the car then accelerates into it.
+
+    A detection under `REACTION_MIN_CONFIDENCE` (a track seen in only two or
+    three frames) is not a lead: the following law's hard cap would brake the car
+    at the limit for a ghost. Seen in noisy-truth driving as 4.5 m/s^2 stops for
+    a 0.28-confidence "truck" 10 m ahead of an empty road. Ground truth is 1.0.
     """
     best, best_gap = None, math.inf
     for d in detections:
+        if d.confidence < REACTION_MIN_CONFIDENCE:
+            continue
         if d.lane_offset != 0 and not (
             home_lane and abs(route.lateral_offset((d.pose.x, d.pose.y))) <= _HOME_LANE_HALF_M
         ):
