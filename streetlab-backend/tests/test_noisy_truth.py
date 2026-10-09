@@ -217,3 +217,49 @@ def test_the_sensor_does_not_read_the_driving_feed():
         return [(d.id, round(d.pose.x, 6)) for d in sim.world.detections]
 
     assert drive(False) == drive(True)
+
+
+# -- camera sets (FOV study) ---------------------------------------------------- #
+
+
+def beside(route, bearing_deg, dist, **kw):
+    """An agent `dist` m from the ego at `bearing_deg` off its heading (positive = left)."""
+    ego = ego_at(route)
+    b = ego.heading + math.radians(bearing_deg)
+    a = agent_at(route, S0, **kw)
+    a.state.x, a.state.y = ego.x + dist * math.cos(b), ego.y + dist * math.sin(b)
+    a.state.heading = b + math.pi / 2
+    return a
+
+
+def seen_by(cameras, agent, route, seconds=2.0):
+    src = NoisyTruthPerception(CLEAN, seed=1, cameras=cameras)
+    return run(src, ego_at(route), [agent], route, seconds)
+
+
+def test_a_car_at_66_degrees_is_invisible_to_the_front_camera_and_seen_by_side_cameras(built):
+    route = built.ego_route
+    car = beside(route, 66.0, 14.0)
+    assert seen_by("front", car, route) == []
+    assert len(seen_by("front+sides76", car, route)) == 1
+    assert len(seen_by("front+sides100", car, route)) == 1
+    assert seen_by("wide110", car, route) == [], "+-55 deg: 66 is outside it"
+    assert seen_by("wide110", beside(route, 50.0, 14.0), route)
+
+
+def test_a_car_in_the_overlap_of_two_cameras_is_one_track_not_two(built):
+    route = built.ego_route
+    car = beside(route, 38.0, 16.0)
+    out = seen_by("front+sides76", car, route, 3.0)
+    assert len(out) == 1
+    assert math.hypot(out[0].pose.x - car.state.x, out[0].pose.y - car.state.y) < 2.0
+
+
+def test_coarser_pixels_cost_focal_length():
+    from perception.noisy_truth import CAMERA_SETS, FRONT, REFERENCE_F_PX
+
+    wide = CAMERA_SETS["wide110"][0]
+    assert wide.f_px < FRONT.f_px == REFERENCE_F_PX
+    assert 108 < wide.hfov_deg < 112 and 75 < FRONT.hfov_deg < 76
+    side = CAMERA_SETS["front+sides100"][1]
+    assert side.width == side.height == 640 and side.f_px < FRONT.f_px

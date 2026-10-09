@@ -20,6 +20,8 @@ for a model.
 from __future__ import annotations
 
 import math
+
+import numpy as np
 from typing import Protocol, Sequence
 
 from perception.geometry import CLASS_SIZE
@@ -129,9 +131,14 @@ class MlPerception:
     def observe(
         self, ego: VehicleState, agents: Sequence[Agent], route: Route
     ) -> list[Detection]:
-        result = self._pipeline.latest()
-        if result is None:
+        latest_set = getattr(self._pipeline, "latest_set", None)
+        results = latest_set() if latest_set is not None else None
+        if results is None:
+            single = self._pipeline.latest()
+            results = None if single is None else (single,)
+        if results is None:
             return []
+        result = results[0]
 
         # Computed before the tracker runs, because the range gate below
         # needs it too: both this source and `GroundTruthPerception` answer
@@ -146,7 +153,8 @@ class MlPerception:
         # track takes a miss each call -- kill live tracks within a single
         # frame interval.
         if result is not self._processed:
-            observations = _observations(result, frame, self.max_range_m, self.ground)
+            per_camera = [_observations(r, frame, self.max_range_m, self.ground) for r in results]
+            observations = per_camera[0] if len(per_camera) == 1 else fuse_cameras(per_camera)
             self._tracker.update(observations, result.frame_t)
             self._processed = result
         self._tracks = self._tracker.snapshot(
@@ -175,6 +183,57 @@ class MlPerception:
             for track in self._tracks
             if frame.range_to(track.x, track.y) <= self.max_range_m
         ]
+
+
+def fuse_cameras(per_camera: Sequence[Sequence[Observation]]) -> list[Observation]:
+    """One observation per object when several cameras overlap on it.
+
+    Two observations from DIFFERENT cameras that agree within their combined
+    uncertainty (Mahalanobis, 95 %) are one object seen twice: fused by inverse
+    covariance into a single, tighter observation. Without this a car in the
+    overlap would spawn two tracks and the planner would brake for a ghost
+    beside the real one. Observations from the same camera are never merged:
+    they are distinct boxes by construction.
+    """
+    out: list[tuple[int, Observation]] = [(ci, o) for ci, obs in enumerate(per_camera) for o in obs]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                (ci, a), (cj, b) = out[i], out[j]
+                if ci == cj:
+                    continue
+                ra, rb = _obs_cov(a), _obs_cov(b)
+                d = np.array([a.x - b.x, a.y - b.y])
+                if float(d @ np.linalg.solve(ra + rb, d)) > _SAME_OBJECT_CHI2:
+                    continue
+                pa, pb = np.linalg.inv(ra), np.linalg.inv(rb)
+                cov = np.linalg.inv(pa + pb)
+                mean = cov @ (pa @ np.array([a.x, a.y]) + pb @ np.array([b.x, b.y]))
+                w, v = np.linalg.eigh(cov)
+                best = a if a.confidence >= b.confidence else b
+                fused = Observation(
+                    best.cls, float(mean[0]), float(mean[1]), max(a.confidence, b.confidence),
+                    math.atan2(v[1, 1], v[0, 1]), math.sqrt(w[1]), math.sqrt(w[0]),
+                )
+                out[i] = (-1 - i, fused)  # a fused observation joins no camera: it may fuse no more
+                del out[j]
+                changed = True
+                break
+            if changed:
+                break
+    return [o for _, o in out]
+
+
+#: 95 % point of chi-squared with 2 degrees of freedom: two cameras' boxes this close are one object.
+_SAME_OBJECT_CHI2 = 5.99
+
+
+def _obs_cov(o: Observation) -> np.ndarray:
+    c, s = math.cos(o.bearing), math.sin(o.bearing)
+    rot = np.array([[c, -s], [s, c]])
+    return rot @ np.diag([max(o.sigma_r, 0.3) ** 2, max(o.sigma_t, 0.3) ** 2]) @ rot.T
 
 
 def _observations(

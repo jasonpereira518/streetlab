@@ -220,6 +220,10 @@ def locate(
     sigma_r = math.hypot(sigma_r, extent_sigma / 2.0)
 
     sigma_t = max(d * sigma_px / f_px / math.sqrt(2.0), 0.05)
+    if cropped_side:
+        # Part of the body is outside the frame, so the box centre sits inboard of the body
+        # centre by up to half its width across the line of sight.
+        sigma_t = math.hypot(sigma_t, 0.5 * max(size.width, 0.5 * size.length))
     ux, uy = math.cos(bearing), math.sin(bearing)
     return Located(
         x=camera.x + ux * d,

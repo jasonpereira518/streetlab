@@ -85,17 +85,74 @@ NOMINAL = NoiseParams(1.5, 0.95, 0.60, 0.10, 0.2, 0.170, 0.05, name="nominal")
 STRESS = NoiseParams(3.0, 0.85, 0.40, 0.05, 0.4, 0.250, 0.10, name="stress")
 
 
-def camera_for(ego: VehicleState, ground_rel: float = 0.0) -> CameraParams:
-    """The detector camera for an ego pose, as the frontend would report it."""
+@dataclass(frozen=True, slots=True)
+class CameraSpec:
+    """One camera on the ego: where it points and what it can resolve.
+
+    All cameras share the mount position and downtilt; they differ in `yaw_rad`
+    (relative to the ego heading), frame size and field of view. The detector
+    always sees a 640x640 square, so a camera's cost is one inference per frame
+    whatever its resolution -- N cameras cost N inferences.
+    """
+
+    name: str
+    yaw_rad: float
+    fov_y_deg: float
+    width: int
+    height: int
+
+    @property
+    def hfov_deg(self) -> float:
+        tan_v = math.tan(math.radians(self.fov_y_deg) / 2.0)
+        return math.degrees(2.0 * math.atan(tan_v * self.width / self.height))
+
+    @property
+    def f_px(self) -> float:
+        """Focal length in pixels: how many pixels a metre of a given angle gets."""
+        return (self.height / 2.0) / math.tan(math.radians(self.fov_y_deg) / 2.0)
+
+
+def _spec(name: str, yaw_deg: float, hfov_deg: float, width: int, height: int) -> CameraSpec:
+    tan_v = math.tan(math.radians(hfov_deg) / 2.0) * height / width
+    return CameraSpec(name, math.radians(yaw_deg), math.degrees(2.0 * math.atan(tan_v)), width, height)
+
+
+#: The shipped camera (`DETECTOR_FRAME`): 640x384, fovY 50 => hFOV 75.7.
+FRONT = CameraSpec("front", 0.0, FOV_Y_DEG, FRAME_W, FRAME_H)
+#: Pixels per radian the p(detect) table was written for; other cameras are scaled to it.
+REFERENCE_F_PX = FRONT.f_px
+
+#: Candidate coverage layouts for the FOV study (docs/measurements/*-ml-fov-study.md).
+CAMERA_SETS: dict[str, tuple[CameraSpec, ...]] = {
+    "front": (FRONT,),
+    # One wide camera at the same 640 px width: coverage +-55, angular resolution x0.58.
+    "wide110": (_spec("wide", 0.0, 110.0, 640, 384),),
+    # Front + two 640x640 side cameras (76 deg) at +-74: contiguous to +-112.
+    "front+sides76": (
+        FRONT,
+        _spec("left", 74.0, 76.0, 640, 640),
+        _spec("right", -74.0, 76.0, 640, 640),
+    ),
+    # Front + two 640x640 side cameras (100 deg) at +-80: to +-130, coarser sides.
+    "front+sides100": (
+        FRONT,
+        _spec("left", 80.0, 100.0, 640, 640),
+        _spec("right", -80.0, 100.0, 640, 640),
+    ),
+}
+
+
+def camera_for(ego: VehicleState, spec: CameraSpec = FRONT) -> CameraParams:
+    """A detector camera for an ego pose, as the frontend would report it."""
     return CameraParams(
         x=ego.x + math.cos(ego.heading) * MOUNT_FORWARD_M,
         y=ego.y + math.sin(ego.heading) * MOUNT_FORWARD_M,
         z=MOUNT_HEIGHT_M,
-        yaw=ego.heading,
+        yaw=ego.heading + spec.yaw_rad,
         pitch=MOUNT_PITCH_RAD,
         roll=0.0,
-        fov_y_deg=FOV_Y_DEG,
-        aspect=FRAME_W / FRAME_H,
+        fov_y_deg=spec.fov_y_deg,
+        aspect=spec.width / spec.height,
     )
 
 
@@ -107,11 +164,12 @@ class _Sensor:
     health like the real thing.
     """
 
-    def __init__(self, params: NoiseParams, seed: int) -> None:
+    def __init__(self, params: NoiseParams, seed: int, cameras: Sequence[CameraSpec] = (FRONT,)) -> None:
         self.params = params
         self._seed = seed
-        self._pending: deque[tuple[float, PipelineResult]] = deque()
-        self._latest: PipelineResult | None = None
+        self.cameras = tuple(cameras)
+        self._pending: deque[tuple[float, tuple[PipelineResult, ...]]] = deque()
+        self._latest: tuple[PipelineResult, ...] | None = None
         self._next_capture = 0.0
         self._seq = 0
         self.failures = 0
@@ -124,6 +182,11 @@ class _Sensor:
     # -- the PerceptionPipeline surface the loop touches ------------------- #
 
     def latest(self) -> PipelineResult | None:
+        """The primary (first) camera's newest result."""
+        return None if self._latest is None else self._latest[0]
+
+    def latest_set(self) -> tuple[PipelineResult, ...] | None:
+        """Every camera's result for the newest delivered frame time; the same object until the next."""
         return self._latest
 
     def submit_frame(self, frame) -> bool:
@@ -131,7 +194,7 @@ class _Sensor:
         return False
 
     def stats(self, mode: PerceptionMode, quality: ScoreResult | None = None) -> PerceptionStats:
-        r = self._latest
+        r = self.latest()
         return PerceptionStats(
             mode=mode,
             detector_ms=None if r is None else r.detector_ms,
@@ -164,10 +227,24 @@ class _Sensor:
         while self._pending and self._pending[0][0] <= t + eps:
             self._latest = self._pending.popleft()[1]
 
-    def _capture(self, t: float, ego: VehicleState, agents: Sequence[Agent]) -> PipelineResult:
-        p = self.params
+    def _capture(self, t: float, ego: VehicleState, agents: Sequence[Agent]) -> tuple[PipelineResult, ...]:
         self._seq += 1
-        cam = camera_for(ego)
+        out = tuple(self._capture_one(t, ego, agents, spec) for spec in self.cameras)
+        #: Which agent (or "false-positive") each box of the newest frame came from; diagnostics only.
+        self.last_sources = [src for _, srcs in out for src in srcs]
+        return tuple(r for r, _ in out)
+
+    def _capture_one(
+        self, t: float, ego: VehicleState, agents: Sequence[Agent], spec: CameraSpec
+    ) -> tuple[PipelineResult, list[str]]:
+        p = self.params
+        cam = camera_for(ego, spec)
+        fw, fh = spec.width, spec.height
+        # Fewer pixels per metre make a box smaller and its edge jitter worth more metres
+        # (both follow from the projection); detection probability falls the same way, as if
+        # the object were proportionally further away.
+        range_scale = REFERENCE_F_PX / spec.f_px
+        key_prefix = f"{self._seed}/{self._seq}" + ("" if spec.name == "front" else f"/{spec.name}")
         g0 = self.ground(cam.x, cam.y) if self.ground else 0.0
         boxes: list[Box2D] = []
         sources: list[str] = []
@@ -177,20 +254,21 @@ class _Sensor:
                 continue
             z0 = (self.ground(a.state.x, a.state.y) - g0) if self.ground else 0.0
             c = cam if z0 == 0.0 else cam.model_copy(update={"z": cam.z - z0})
-            raw = project_box(a.state.x, a.state.y, a.state.heading, a.size, c, FRAME_W, FRAME_H)
+            raw = project_box(a.state.x, a.state.y, a.state.heading, a.size, c, fw, fh)
             if raw is None:
                 continue
-            x0, y0, x1, y1 = _clamp(raw)
+            x0, y0, x1, y1 = _clamp(raw, fw, fh)
             if x1 - x0 < MIN_BOX_PX or y1 - y0 < MIN_BOX_PX:
                 continue
             frac = visible_fraction(a.state.x, a.state.y, a.state.heading, a.size, c, self.buildings)
             near, far = p.p_detect_near, p.p_detect_far
-            p_det = near if dist <= 20.0 else near + (far - near) * (dist - 20.0) / (MAX_RANGE_M - 20.0)
+            eff = min(dist * range_scale, MAX_RANGE_M)
+            p_det = near if eff <= 20.0 else near + (far - near) * (eff - 20.0) / (MAX_RANGE_M - 20.0)
             if not is_visible(frac):
                 p_det = p.p_detect_occluded
             # One stream per (seed, frame, agent): what an agent's box looks like
             # does not depend on which other agents exist, or on what the car did.
-            rng = random.Random(f"{self._seed}/{self._seq}/{a.id}")
+            rng = random.Random(f"{key_prefix}/{a.id}")
             keep, confuse = rng.random() < p_det, rng.random() < p.confusion
             jitter = [rng.gauss(0.0, p.jitter_px) for _ in range(4)]
             swap = rng.random()
@@ -200,53 +278,58 @@ class _Sensor:
             if confuse and cls in _VEHICLES:
                 others = [v for v in _VEHICLES if v != cls]
                 cls = others[min(int(swap * len(others)), len(others) - 1)]
-            box = _jitter((x0, y0, x1, y1), jitter)
+            box = _jitter((x0, y0, x1, y1), jitter, fw, fh)
             if box is not None:
                 boxes.append(Box2D(*box, cls=cls, confidence=0.9))
                 sources.append(a.id)
-        fp_rng = random.Random(f"{self._seed}/{self._seq}/fp")
+        fp_rng = random.Random(f"{key_prefix}/fp")
         if fp_rng.random() < p.fp_per_frame:
-            fp = self._false_positive(cam, fp_rng)
+            fp = self._false_positive(cam, fp_rng, fw, fh)
             if fp is not None:
                 boxes.append(fp)
                 sources.append("false-positive")
-        #: Which agent (or "false-positive") each box of the newest frame came from; diagnostics only.
-        self.last_sources = sources
-        return PipelineResult(
-            boxes=boxes,
-            frame_seq=self._seq,
-            frame_t=t,
-            detector_ms=p.latency_s * 1000.0,
-            server_e2e_ms=p.latency_s * 1000.0,
-            camera=cam,
-            frame_w=FRAME_W,
-            frame_h=FRAME_H,
+        return (
+            PipelineResult(
+                boxes=boxes,
+                frame_seq=self._seq,
+                frame_t=t,
+                detector_ms=p.latency_s * 1000.0,
+                server_e2e_ms=p.latency_s * 1000.0,
+                camera=cam,
+                frame_w=fw,
+                frame_h=fh,
+            ),
+            sources,
         )
 
-    def _false_positive(self, cam: CameraParams, rng: random.Random) -> Box2D | None:
+    def _false_positive(self, cam: CameraParams, rng: random.Random, fw: int, fh: int) -> Box2D | None:
         """A box on the ground plane somewhere in the frustum, of a random class."""
         rng_m = rng.uniform(8.0, 80.0)
         bearing = cam.yaw + rng.uniform(-0.5, 0.5)
         heading = rng.uniform(-math.pi, math.pi)
         cls = _ALL[rng.randrange(len(_ALL))]
         x, y = cam.x + rng_m * math.cos(bearing), cam.y + rng_m * math.sin(bearing)
-        raw = project_box(x, y, heading, CLASS_SIZE[cls], cam, FRAME_W, FRAME_H)
+        raw = project_box(x, y, heading, CLASS_SIZE[cls], cam, fw, fh)
         if raw is None:
             return None
-        x0, y0, x1, y1 = _clamp(raw)
+        x0, y0, x1, y1 = _clamp(raw, fw, fh)
         if x1 - x0 < MIN_BOX_PX or y1 - y0 < MIN_BOX_PX:
             return None
         return Box2D(x0, y0, x1, y1, cls=cls, confidence=0.55)
 
 
-def _clamp(raw: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+def _clamp(
+    raw: tuple[float, float, float, float], fw: int = FRAME_W, fh: int = FRAME_H
+) -> tuple[float, float, float, float]:
     x0, y0, x1, y1 = raw
     cl = lambda v, hi: max(0.0, min(v, float(hi)))  # noqa: E731
-    return cl(x0, FRAME_W), cl(y0, FRAME_H), cl(x1, FRAME_W), cl(y1, FRAME_H)
+    return cl(x0, fw), cl(y0, fh), cl(x1, fw), cl(y1, fh)
 
 
-def _jitter(box: tuple[float, float, float, float], noise: list[float]) -> tuple[float, float, float, float] | None:
-    x0, y0, x1, y1 = _clamp(tuple(v + n for v, n in zip(box, noise)))  # type: ignore[arg-type]
+def _jitter(
+    box: tuple[float, float, float, float], noise: list[float], fw: int = FRAME_W, fh: int = FRAME_H
+) -> tuple[float, float, float, float] | None:
+    x0, y0, x1, y1 = _clamp(tuple(v + n for v, n in zip(box, noise)), fw, fh)  # type: ignore[arg-type]
     if x1 - x0 < MIN_BOX_PX or y1 - y0 < MIN_BOX_PX:
         return None
     return x0, y0, x1, y1
@@ -259,9 +342,15 @@ class NoisyTruthPerception:
     itself to `ml_perception=`; then `sim.perception_mode = "ml"` drives on it.
     """
 
-    def __init__(self, params: NoiseParams = NOMINAL, seed: int = 0, tracker: Tracker | None = None) -> None:
+    def __init__(
+        self,
+        params: NoiseParams = NOMINAL,
+        seed: int = 0,
+        tracker: Tracker | None = None,
+        cameras: Sequence[CameraSpec] | str = (FRONT,),
+    ) -> None:
         self.params = params
-        self.pipeline = _Sensor(params, seed)
+        self.pipeline = _Sensor(params, seed, CAMERA_SETS[cameras] if isinstance(cameras, str) else cameras)
         self._ml = MlPerception(self.pipeline, tracker or Tracker())
         self._now: float | None = None
 

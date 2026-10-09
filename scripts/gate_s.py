@@ -79,14 +79,28 @@ def hazards() -> list[str]:
     return list(SCENARIOS)
 
 
-def run_cell(cell: tuple[str, int, str | None, str]) -> dict:
+#: Cells whose failure in the first Gate S run was a field-of-view limit (the other vehicle
+#: was outside the front camera), plus hazard-free controls (a clean run, and the two runs
+#: that still fire AEB). Used by the FOV study.
+FOV_CELLS = [
+    ("nobhill", 1, "red_light_runner"), ("nobhill", 2, "red_light_runner"),
+    ("nobhill", 3, "red_light_runner"), ("nobhill", 5, "red_light_runner"),
+    ("nobhill_slow", 4, "oncoming_drift"), ("nobhill_slow", 5, "cut_in"),
+    ("nobhill_slow", 4, "red_light_runner"), ("grid", 4, "cut_in"), ("grid", 5, "cut_in"),
+    ("grid", 5, "red_light_runner"), ("grid_slow", 4, "red_light_runner"),
+    ("nobhill", 1, None), ("grid", 1, None), ("grid_slow", 3, None), ("grid_slow", 5, None),
+]
+
+
+def run_cell(cell: tuple) -> dict:
     from evaluation.driving_metrics import budget_failures, closed_loop_summary, make_sim, record
     from perception.noisy_truth import NOMINAL, STRESS, NoisyTruthPerception
 
-    key, seed, hazard, variant = cell
+    key, seed, hazard, variant = cell[:4]
+    cameras = cell[4] if len(cell) > 4 else "front"
     kwargs = {}
     if variant != "gt":
-        npt = NoisyTruthPerception(NOMINAL if variant == "noisy" else STRESS, seed)
+        npt = NoisyTruthPerception(NOMINAL if variant == "noisy" else STRESS, seed, cameras=cameras)
         kwargs = {"perception_pipeline": npt.pipeline, "ml_perception": npt}
     sim = make_sim(key, _scene(), seed=seed, **kwargs)
     if variant != "gt":
@@ -100,6 +114,7 @@ def run_cell(cell: tuple[str, int, str | None, str]) -> dict:
     )
     out = {
         "key": key, "seed": seed, "hazard": hazard, "variant": variant,
+        "cameras": cameras if variant != "gt" else None,
         "staged": bool(run.hazards), "staged_at": run.hazards[0][0] if run.hazards else None,
         **closed_loop_summary(run),
     }
@@ -121,6 +136,9 @@ def cmd_run(args) -> None:
         for h in ([None] if args.free_only else [None, *hazards()]) for v in args.variants
         if (k, s, h, v) not in done
     ]
+    if args.fov:
+        cells = [(k, s, h, v) for (k, s, h) in FOV_CELLS for v in args.variants if (k, s, h, v) not in done]
+    cells = [c + (args.cameras,) if c[3] != "gt" else c for c in cells]
     # The binding variants first (stress is only ever checked for collisions), and
     # longest first within each so the pool does not end on a lone Nob Hill run.
     cells.sort(key=lambda c: (c[3] == "stress",
@@ -138,11 +156,20 @@ def cmd_run(args) -> None:
 # -- the criteria --------------------------------------------------------------- #
 
 
-def _load(path: str) -> dict[tuple, dict]:
+def _load(*paths: str, subset_of: str | None = None) -> dict[tuple, dict]:
+    """Rows keyed by (scene, seed, hazard, variant); later files override earlier ones.
+
+    `subset_of` keeps only the (scene, seed, hazard) cells present in that file, so a
+    study run over a few cells can borrow its ground-truth pairs from the full run.
+    """
     rows = {}
-    for line in Path(path).read_text().splitlines():
-        r = json.loads(line)
-        rows[(r["key"], r["seed"], r["hazard"], r["variant"])] = r
+    for path in paths:
+        for line in Path(path).read_text().splitlines():
+            r = json.loads(line)
+            rows[(r["key"], r["seed"], r["hazard"], r["variant"])] = r
+    if subset_of:
+        keep = {(r["key"], r["seed"], r["hazard"]) for r in map(json.loads, Path(subset_of).read_text().splitlines())}
+        rows = {k: r for k, r in rows.items() if k[:3] in keep}
     return rows
 
 
@@ -363,7 +390,7 @@ def render(rows, res, meta) -> str:
 
 
 def cmd_report(args) -> None:
-    rows = _load(args.cells)
+    rows = _load(*args.cells, subset_of=args.subset_of)
     res = verdict(rows)
     sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
     meta = {"date": datetime.date.today().isoformat(), "sha": sha or "unknown"}
@@ -387,9 +414,12 @@ def main() -> None:
     r.add_argument("--seeds", nargs="+", type=int, default=list(SEEDS))
     r.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=VARIANTS)
     r.add_argument("--free-only", action="store_true", help="hazard-free cells only (diagnosis)")
+    r.add_argument("--cameras", default="front", help="camera set for the noisy variants (noisy_truth.CAMERA_SETS)")
+    r.add_argument("--fov", action="store_true", help="only the FOV-study cells (FOV_CELLS)")
     r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report")
-    p.add_argument("--cells", required=True)
+    p.add_argument("--cells", required=True, nargs="+")
+    p.add_argument("--subset-of", default=None)
     p.add_argument("--write", action="store_true")
     p.set_defaults(fn=cmd_report)
     args = ap.parse_args()
