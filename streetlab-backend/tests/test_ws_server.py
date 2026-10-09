@@ -353,7 +353,10 @@ async def test_step_and_reset_are_acked(server):
 async def test_inject_hazard_is_acked(server):
     async with connect(server) as ws:
         await recv_typed(ws, "scene_description")
-        await send(ws, {"id": "h1", "cmd": "inject_hazard", "kind": "cut_in"})
+        # `obstacle` rather than `cut_in`: a cut-in now needs a lane beside the
+        # ego to come from and is declined, with that reason, at the start line
+        # of the default scene; this test is about the command reaching the sim.
+        await send(ws, {"id": "h1", "cmd": "inject_hazard", "kind": "obstacle"})
         ack = await recv_typed(ws, "ack")
         assert ack.ok and ack.cmd == "inject_hazard"
 

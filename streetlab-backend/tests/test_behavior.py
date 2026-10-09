@@ -1121,3 +1121,21 @@ def test_a_junction_abort_cannot_stay_labelled_indefinitely(road):
     )
     assert d.maneuver == "stop", f"the label outlived the manoeuvre: {d.maneuver!r}"
     assert d.target_lane_id is None
+
+
+def test_stop_line_ceiling_is_pinned_to_its_pre_extraction_values():
+    """`stop_line_ceiling` was an inline expression in `_junction_step`; these
+    values were recorded from it BEFORE it was extracted, so moving it for
+    `yield_to_entry` is provably not a retune."""
+    from plan.behavior import stop_line_ceiling
+
+    pinned = {
+        3.0: 0.0,
+        6.5: 0.0,
+        7.5: 2.0,
+        20.0: 7.3484692283495345,
+        50.0: 13.19090595827292,
+        100.0: 19.339079605813716,
+    }
+    for distance, expected in pinned.items():
+        assert stop_line_ceiling(distance) == expected

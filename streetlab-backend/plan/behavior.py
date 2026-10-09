@@ -120,6 +120,19 @@ assert STOP_ZONE_M >= STOP_MARGIN_M, (
     "even on green."
 )
 
+def stop_line_ceiling(distance_m: float) -> float:
+    """The speed ceiling that brings the car to rest `STOP_MARGIN_M` short of a line.
+
+    `sqrt(2 * COMFORT_DECEL_MPS2 * (distance - STOP_MARGIN_M))`, zero once the
+    car is inside the margin. One definition, shared by the junction FSM and by
+    `plan/hazard.py`'s `yield_to_entry`, which treats a predicted lane entry as
+    a virtual stop line: two copies of this arithmetic would drift, and every
+    number around it (`STOP_MARGIN_M`, `STOP_ZONE_M`, the tracker's gain) was
+    tuned against this exact shape.
+    """
+    return math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance_m - STOP_MARGIN_M, 0.0))
+
+
 #: How long a stop sign is honoured at rest.
 STOP_DWELL_S = 1.0
 
@@ -542,7 +555,7 @@ class BehaviorFSM:
             BehaviorState.APPROACH,
             # Zero out STOP_MARGIN_M early -- see its docstring -- so the
             # tracker's own lag overshoots toward the line rather than past it.
-            math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance - STOP_MARGIN_M, 0.0)),
+            stop_line_ceiling(distance),
             "arrived" if target.kind == "arrival" else "stop",
             target,
         )

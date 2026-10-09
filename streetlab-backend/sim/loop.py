@@ -42,6 +42,7 @@ from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSou
 from perception.tracker import Tracker
 from plan.behavior import BehaviorState
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
+from plan.hazard import Reaction
 from schema import (
     Ack,
     Cruise,
@@ -1141,7 +1142,7 @@ def assemble_state_update(
             lane=_lane_state(scene, route, ego_s, offset, heading_error, detections),
             ttc_s=ttc,
             vehicle=_vehicle_status(world, perception_mode),
-            trajectory=_trajectory(world, offset, detections),
+            trajectory=_trajectory(world, offset),
         ),
         signals=list(signals),
         events=list(world.events),
@@ -1280,10 +1281,9 @@ def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
     )
 
 
-def _trajectory(
-    world: WorldState, offset: float, detections: Sequence[Detection]
-) -> TrajectoryPrediction:
-    """Observed lateral history (t < 0) followed by a decay toward the centreline."""
+def _trajectory(world: WorldState, offset: float) -> TrajectoryPrediction:
+    """Observed lateral history (t < 0) followed by a decay toward the centreline,
+    plus the prediction the planner is currently reacting to, if it is."""
     samples = [
         TrajectorySample(t=round(t - world.t, 3), lateral_m=round(d, 3))
         for t, d in world.history
@@ -1298,24 +1298,44 @@ def _trajectory(
             TrajectorySample(t=round(t, 3), lateral_m=round(offset * math.exp(-t / 1.2), 3))
         )
 
-    reacting_to = next((d for d in detections if d.hazard), None)
-    threat = None
-    if reacting_to is not None:
-        start = (reacting_to.lane_offset or 1) * LANE_W
-        threat = [
-            TrajectorySample(
-                t=round(i * _TRAJECTORY_STEP_S, 3),
-                lateral_m=round(start * math.exp(-i * _TRAJECTORY_STEP_S / 1.5), 3),
-            )
-            for i in range(steps + 1)
-        ]
-
+    threat, label = _threat_series(world.plan_result.reaction if world.plan_result else None, steps)
     return TrajectoryPrediction(
         horizon_s=_TRAJECTORY_HORIZON_S,
         planned=samples,
         threat=threat,
-        threat_label=(reacting_to.hazard_label if reacting_to else None),
+        threat_label=label,
     )
+
+
+_REACTION_VERBS = {"aeb": "Emergency braking", "yield_to_entry": "Yielding"}
+
+
+def _threat_series(
+    reaction: Reaction | None, steps: int
+) -> tuple[list[TrajectorySample] | None, str | None]:
+    """The sideways path of the thing the planner is reacting to, over the horizon.
+
+    This is the prediction the planner acts on -- `plan/hazard.py`'s strip
+    window for its source -- not a separate guess: `offset + v_lat * t` relative
+    to the line the ego is steering along, stopped at the far edge of the strip
+    once it has crossed (it is no longer a threat beyond it). It replaced an
+    exponential decay drawn for any detection flagged `hazard`, which showed a
+    curve the planner knew nothing about.
+    """
+    if reaction is None or reaction.source_window is None:
+        return None, None
+    w = reaction.source_window
+    series = []
+    for i in range(steps + 1):
+        t = i * _TRAJECTORY_STEP_S
+        lateral = w.offset_m + w.lateral_speed_mps * t
+        if w.lateral_speed_mps < 0:
+            lateral = max(lateral, -w.strip_half_m)
+        elif w.lateral_speed_mps > 0:
+            lateral = min(lateral, w.strip_half_m)
+        series.append(TrajectorySample(t=round(t, 3), lateral_m=round(lateral, 3)))
+    verb = _REACTION_VERBS.get(reaction.kind, "Reacting")
+    return series, f"{verb} for {w.cls}"
 
 
 # --------------------------------------------------------------------------- #
