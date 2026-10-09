@@ -504,8 +504,13 @@ class OsmSceneSource:
         roads = fit_road_widths(roads, buildings, under)
         crosswalks = build_crosswalks(graph, origin)
         keep_out = KeepOut(roads, crosswalks, buildings)
-        lights = build_traffic_lights(graph, origin, keep_out)
-        stop_signs = build_stop_signs(graph, origin, keep_out)
+        # Controls are derived from EVERY head, drawn or not: a pole that finds
+        # no clear kerb is dropped from the picture, but its junction still
+        # stops the ego. Only the drawn lists are filtered by the blocker.
+        control_lights = build_traffic_lights(graph, origin, keep_out, keep_crowded=True)
+        control_signs = build_stop_signs(graph, origin, keep_out, keep_crowded=True)
+        lights = [l for l in control_lights if not keep_out.blocks_post(l.position)]
+        stop_signs = [s for s in control_signs if not keep_out.blocks_post(s.position)]
         trees = clear_trees(build_trees(graph, origin, buildings), keep_out)
 
         build_notes: list[tuple[str, str]] = []
@@ -590,7 +595,7 @@ class OsmSceneSource:
         anchors = control_anchors(graph, origin)
         candidates = []
         seen_junctions = set()
-        for light in lights:
+        for light in control_lights:
             junction = junction_of(light.id)
             at = anchors.get(junction)
             if at is None or junction in seen_junctions:
@@ -605,7 +610,7 @@ class OsmSceneSource:
         # remaining few are tagged on the junction node itself, where the full
         # setback is exactly right.
         junctions = junction_node_ids(graph)
-        for sign in stop_signs:
+        for sign in control_signs:
             at = anchors.get(sign.id)
             if at is None:
                 continue
@@ -632,7 +637,7 @@ class OsmSceneSource:
             description=description,
             ego_route=ego_route,
             agent_routes=self._agent_routes(traffic_loops, spec.traffic),
-            signal_groups=signal_groups(lights),
+            signal_groups=signal_groups(control_lights),
             speed_limit_mps=self._speed_limit(roads),
             traffic_count=spec.traffic,
             control_points=control_points,
