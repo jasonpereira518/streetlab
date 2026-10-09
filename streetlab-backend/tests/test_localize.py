@@ -76,3 +76,33 @@ def test_terrain_moves_the_ground_intersection():
 def test_a_ray_that_never_meets_the_terrain_gives_no_position():
     wall = lambda x, y: -500.0 if x > 1.0 else 0.0  # noqa: E731
     assert locate(box_of(30.0, 0.0, 0.0), CAM, W, H, ground=wall) is None
+
+
+@pytest.mark.parametrize("deg,bound", [(0, 0.15), (30, 0.4), (60, 0.6), (90, 0.9)])
+def test_the_box_width_tells_the_centre_whatever_the_heading(deg, bound):
+    """Without it the centre assumed 'aligned with the sight line' and a broadside car was
+    1.35 m off; the width of the box pins the heading, and the depth extent with it."""
+    import math
+
+    got = locate(box_of(25.0, 0.0, math.radians(deg)), CAM, W, H)
+    assert math.hypot(got.x - 25.0, got.y) < bound
+
+
+def test_a_box_cropped_at_the_side_falls_back_to_half_the_length():
+    box = box_of(8.0, 3.0, 0.0)
+    cropped = Box2D(0.0, box.y0, box.x1, box.y1, box.cls, box.confidence)
+    got = locate(cropped, CAM, W, H)
+    contact = project_to_ground(cropped, CAM, W, H)
+    assert got is not None and got.x > contact[0] + 1.5
+
+
+def test_a_car_mislabelled_as_a_bus_is_not_centred_six_metres_too_far():
+    """A 12 m bus prior moved a mislabelled car's centre by 6 m (seen: a 3.5 m position jump in
+    one frame, then a spurious 8 m/s velocity). A box whose width fits no bus heading falls back
+    to at most a car's length."""
+    import math
+
+    car = box_of(20.0, 0.0, 0.0, cls="car")
+    as_bus = Box2D(car.x0, car.y0, car.x1, car.y1, "bus", 0.9)
+    got = locate(as_bus, CAM, W, H)
+    assert got is not None and math.hypot(got.x - 20.0, got.y) < 3.0

@@ -117,7 +117,8 @@ def cmd_run(args) -> None:
             done.add((r["key"], r["seed"], r["hazard"], r["variant"]))
     cells = [
         (k, s, h, v)
-        for k in args.keys for s in args.seeds for h in [None, *hazards()] for v in VARIANTS
+        for k in args.keys for s in args.seeds
+        for h in ([None] if args.free_only else [None, *hazards()]) for v in args.variants
         if (k, s, h, v) not in done
     ]
     # The binding variants first (stress is only ever checked for collisions), and
@@ -332,7 +333,7 @@ def render(rows, res, meta) -> str:
     else:
         L.append(f"None of the {res['4']['checked']} checks failed.")
     L += ["", "Budgets each GT run fails (so are not required of the noisy run):", ""]
-    for (k, s, h, v), r in sorted(rows.items()):
+    for (k, s, h, v), r in sorted(rows.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or "", kv[0][3])):
         if v == "gt" and h is None:
             bad = sorted(n for n, w in r["budget"].items() if w is not None)
             L.append(f"- {k}/seed{s}: {', '.join(bad) or 'none'}")
@@ -384,6 +385,8 @@ def main() -> None:
     r.add_argument("--jobs", type=int, default=6)
     r.add_argument("--keys", nargs="+", default=list(KEYS), choices=KEYS)
     r.add_argument("--seeds", nargs="+", type=int, default=list(SEEDS))
+    r.add_argument("--variants", nargs="+", default=list(VARIANTS), choices=VARIANTS)
+    r.add_argument("--free-only", action="store_true", help="hazard-free cells only (diagnosis)")
     r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report")
     p.add_argument("--cells", required=True)

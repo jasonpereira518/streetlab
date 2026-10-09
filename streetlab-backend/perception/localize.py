@@ -61,6 +61,9 @@ _CROPPED_INFLATION = 4.0
 #: neighbour, a wrong class): fall back to the ground contact alone.
 _DISAGREE_SIGMAS = 4.0
 
+#: Longest body assumed when the box width cannot be matched to the class (see `locate`).
+_UNMATCHED_EXTENT_CAP_M = 4.6
+
 _MIN_DOWNWARD_SLOPE = 1e-6
 _MAX_MARCH_M = 250.0
 
@@ -121,6 +124,29 @@ def _slope(camera: CameraParams, px: float, py: float, w: int, h: int) -> float:
     return rz / math.hypot(rx, ry)
 
 
+def _depth_extent(
+    width_m: float, length: float, width: float, tol_m: float
+) -> tuple[float, float] | None:
+    """Body depth along the sight line implied by its apparent width, and its uncertainty.
+
+    Tries every heading from 0 to 90 degrees; keeps those whose across-line span is within
+    `tol_m` (at least a few cm) of the measured width. Two headings can match (the span peaks
+    at atan(L/W)); their depth extents are averaged and half their spread is the uncertainty.
+    None if the width matches no heading (the box is not a whole body).
+    """
+    tol = max(tol_m, 0.15)
+    hits = []
+    for deg in range(0, 91):
+        t = math.radians(deg)
+        span = length * math.sin(t) + width * math.cos(t)
+        if abs(span - width_m) <= tol:
+            hits.append(length * math.cos(t) + width * math.sin(t))
+    if not hits:
+        return None
+    lo, hi = min(hits), max(hits)
+    return (lo + hi) / 2.0, max((hi - lo) / 2.0, 0.1)
+
+
 def locate(
     box: Box2D,
     camera: CameraParams,
@@ -171,12 +197,28 @@ def locate(
                 sigma_r = math.sqrt(1.0 / (w_g + w_h))
                 source = "fused"
 
-    # Contact -> centre, along the bearing; the depth extent is unknown.
-    half = size.length / 2.0
-    d += half
-    sigma_r = math.hypot(sigma_r, CENTRE_REL * half)
-
+    # Contact -> centre, along the bearing. How far the body reaches along the line of
+    # sight depends on its heading, which one frame does not give -- but the box WIDTH
+    # does: across the line of sight a body spans L|sin t| + W|cos t|, so a width in
+    # metres (pixels x depth / focal length) pins the heading up to a mirror ambiguity,
+    # and with it the depth extent L|cos t| + W|sin t|. Falls back to "aligned with the
+    # sight line" (half the length) when the width cannot be trusted (cropped sideways).
     f_px = (frame_h / 2.0) / math.tan(math.radians(camera.fov_y_deg) / 2.0)
+    cropped_side = box.x0 <= _EDGE_PX or box.x1 >= frame_w - _EDGE_PX
+    # The prior length is capped at a car's: a box whose width fits no heading of the
+    # detected class is as likely a mislabelled car as a cropped bus, and a 12 m bus prior
+    # moved a mislabelled car's centre 6 m.
+    extent = min(size.length, _UNMATCHED_EXTENT_CAP_M)
+    extent_sigma = max(CENTRE_REL * extent, 0.8)
+    if not cropped_side and d > 1.0:
+        depth = d * max(math.cos(bearing - camera.yaw), 0.2)
+        width_m = (box.x1 - box.x0) * depth / f_px
+        found = _depth_extent(width_m, size.length, size.width, 2.0 * sigma_px * depth / f_px)
+        if found is not None:
+            extent, extent_sigma = found
+    d += extent / 2.0
+    sigma_r = math.hypot(sigma_r, extent_sigma / 2.0)
+
     sigma_t = max(d * sigma_px / f_px / math.sqrt(2.0), 0.05)
     ux, uy = math.cos(bearing), math.sin(bearing)
     return Located(
