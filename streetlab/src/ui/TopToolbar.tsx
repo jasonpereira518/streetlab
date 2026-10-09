@@ -15,14 +15,12 @@ import {
   CameraIcon,
   ChevronDownIcon,
   EyeIcon,
-  FileIcon,
+  HelpIcon,
   PauseIcon,
   PlayIcon,
   RefreshIcon,
   ResetIcon,
-  SaveIcon,
   SettingsIcon,
-  UndoIcon,
 } from './Icons';
 import { IconButton } from './controls';
 
@@ -85,6 +83,8 @@ export function TopToolbar() {
   const setRightTab = useSimStore((s) => s.setRightTab);
   const perfOverlayVisible = useSimStore((s) => s.perfOverlayVisible);
   const togglePerfOverlay = useSimStore((s) => s.togglePerfOverlay);
+  const helpOpen = useSimStore((s) => s.helpOpen);
+  const setHelpOpen = useSimStore((s) => s.setHelpOpen);
 
   const mph = useFrameValue((f) => Math.round(toMph(f.ego.speed_mps)), 12);
   // Primitives, not the trip object, so the toolbar re-renders only when a
@@ -121,22 +121,6 @@ export function TopToolbar() {
             <span className="brand-sub">{scenarioName}</span>
           </div>
         </div>
-        <span className="toolbar-sep" />
-        {/* Disabled, not removed. These three have never had an onClick, but
-            hover, focus-visible and aria-pressed all fired on them, so they
-            were indistinguishable from "Reset scenario" two buttons along —
-            the UI promising an affordance it does not keep. Marking them
-            disabled with a reason keeps the roadmap signal and stops the
-            promise. Delete them, or implement them, and this goes away. */}
-        <IconButton label="New session" disabled title="New session — not implemented yet">
-          <FileIcon />
-        </IconButton>
-        <IconButton label="Save scenario" disabled title="Save scenario — not implemented yet">
-          <SaveIcon />
-        </IconButton>
-        <IconButton label="Undo" disabled title="Undo — not implemented yet">
-          <UndoIcon />
-        </IconButton>
       </div>
 
       <div className="toolbar-group toolbar-group--transport">
@@ -228,6 +212,14 @@ export function TopToolbar() {
           mlAvailable={hasPipeline(perception)}
           onSelect={setPerceptionMode}
         />
+        <IconButton
+          label="Help and shortcuts"
+          title="Help and shortcuts (?)"
+          active={helpOpen}
+          onClick={() => setHelpOpen(!helpOpen)}
+        >
+          <HelpIcon />
+        </IconButton>
         <IconButton label="Settings" onClick={() => setRightTab('parameters')}>
           <SettingsIcon />
         </IconButton>
@@ -342,7 +334,7 @@ function PerceptionMenu({
   }, [open]);
 
   return (
-    <div className="menu" ref={ref}>
+    <div className="menu" ref={ref} title={disabled ? title : undefined}>
       <button
         type="button"
         className={`menu-trigger${open ? ' is-open' : ''}`}
