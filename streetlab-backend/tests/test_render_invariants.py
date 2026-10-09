@@ -191,3 +191,21 @@ def test_no_building_reaches_into_the_side_of_a_carriageway(scene, request):
     assert len(irreconcilable) <= {"nob_hill": 20, "twin_peaks": 4}.get(
         request.node.callspec.params["scene"], 0
     )
+
+
+def test_fitting_keeps_through_lanes_drivable_and_drops_the_centre_line_on_single_tracks(scene):
+    """Narrowing a road to clear a wall must not turn it into something undrivable.
+
+    Arterials and collectors keep lanes of at least `MIN_LANE_W_M`; anything
+    non-arterial whose carriageway fell below two such lanes is a single shared
+    track and must have lost the centre line that would divide nothing.
+    Measured 2026-10-09 on both extracts: no violations.
+    """
+    from map.clearance import MIN_LANE_W_M
+
+    for road in scene.roads:
+        lanes = road.lanes_forward + road.lanes_backward
+        if road.road_class in ("arterial", "collector"):
+            assert road.lane_width_m >= MIN_LANE_W_M - 1e-6, road.id
+        elif lanes * road.lane_width_m < 2 * MIN_LANE_W_M - 1e-6:
+            assert road.center_marking == "none", (road.id, road.center_marking)
