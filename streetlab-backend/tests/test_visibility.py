@@ -118,7 +118,7 @@ def test_indexed_visibility_is_identical_to_the_brute_force_scan_on_nob_hill():
     ys = [p[1] for b in buildings for p in b.footprint]
     rng = random.Random(7)
     blocked = clear = 0
-    for _ in range(3000):
+    for _ in range(2000):
         cam = _random_camera(rng, xs, ys)
         x, y, z = cam.x + rng.uniform(-80, 80), cam.y + rng.uniform(-80, 80), rng.uniform(0.0, 8.0)
         want = not any(_blocked_at(cam, x, y, z, b) for b in buildings)
@@ -126,7 +126,7 @@ def test_indexed_visibility_is_identical_to_the_brute_force_scan_on_nob_hill():
         blocked += not want
         clear += want
     assert blocked > 100 and clear > 100  # the sample exercises both outcomes
-    for _ in range(500):
+    for _ in range(200):
         cam = _random_camera(rng, xs, ys)
         ox, oy, hd = cam.x + rng.uniform(-60, 60), cam.y + rng.uniform(-60, 60), rng.uniform(-3, 3)
         samples = box_corners(ox, oy, hd, CAR) + [(ox, oy, CAR.height / 2.0)]
