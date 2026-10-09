@@ -17,7 +17,7 @@ describe('PerceptionPanel', () => {
         stats={{
           mode: 'ground-truth', detector_ms: 4.5, server_e2e_ms: 31.2,
           frames_received: 120, frames_dropped: 3,
-          precision: null, recall: null, mean_pos_err_m: null,
+          precision: null, recall: null, mean_pos_err_m: null, health: 'ok',
         }}
       />,
     );
@@ -35,7 +35,7 @@ describe('PerceptionPanel', () => {
         stats={{
           mode: 'ml', detector_ms: 4.5, server_e2e_ms: 31.2,
           frames_received: 120, frames_dropped: 3,
-          precision: 0.91, recall: 0.83, mean_pos_err_m: 1.234,
+          precision: 0.91, recall: 0.83, mean_pos_err_m: 1.234, health: 'ok',
         }}
       />,
     );
@@ -51,7 +51,7 @@ describe('PerceptionPanel', () => {
         stats={{
           mode: 'ml', detector_ms: 4.5, server_e2e_ms: 31.2,
           frames_received: 120, frames_dropped: 3,
-          precision: 0, recall: 0, mean_pos_err_m: 0,
+          precision: 0, recall: 0, mean_pos_err_m: 0, health: 'ok',
         }}
       />,
     );

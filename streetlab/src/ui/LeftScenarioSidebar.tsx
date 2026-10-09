@@ -6,8 +6,27 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AddressSuggestion, ScenarioSummary } from '../schema';
 import { useSimStore } from '../store/simStore';
-import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon, SearchIcon } from './Icons';
+import { BookmarkIcon, PlayIcon, SearchIcon } from './Icons';
 import { alpha, color } from './theme';
+
+const BOOKMARKS_KEY = 'streetlab.bookmarks';
+
+function loadBookmarks(): Record<string, boolean> {
+  try {
+    const v = JSON.parse(localStorage.getItem(BOOKMARKS_KEY) ?? '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveBookmarks(b: Record<string, boolean>) {
+  try {
+    localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(b));
+  } catch {
+    // Storage blocked or full: bookmarks fall back to session-only.
+  }
+}
 
 /** Debounce before an as-you-type address fires a `suggest_address` request.
  * Short enough to feel responsive, long enough that a fast typist doesn't
@@ -149,7 +168,7 @@ export function LeftScenarioSidebar() {
   const locationProgress = useSimStore((s) => s.locationProgress);
   const locationError = useSimStore((s) => s.locationError);
   const tripComplete = useSimStore((s) => s.tripComplete);
-  const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({});
+  const [bookmarks, setBookmarks] = useState<Record<string, boolean>>(loadBookmarks);
   const [query, setQuery] = useState('');
   const [destQuery, setDestQuery] = useState('');
 
@@ -285,9 +304,11 @@ export function LeftScenarioSidebar() {
               <button
                 type="button"
                 className={`ghost-btn${isBookmarked(s) ? ' is-marked' : ''}`}
-                onClick={() =>
-                  setBookmarks((b) => ({ ...b, [s.id]: !isBookmarked(s) }))
-                }
+                onClick={() => {
+                  const next = { ...bookmarks, [s.id]: !isBookmarked(s) };
+                  setBookmarks(next);
+                  saveBookmarks(next);
+                }}
                 aria-label={`${isBookmarked(s) ? 'Remove' : 'Add'} bookmark for ${s.name}`}
                 aria-pressed={isBookmarked(s)}
                 title="Bookmark"
@@ -319,30 +340,6 @@ export function LeftScenarioSidebar() {
           </article>
         ))}
       </div>
-
-      <footer className="sidebar-foot">
-        {/* Inert, like the three icon buttons in the toolbar. `.foot-btn`'s
-            dashed border reads as "placeholder" for New and much less so for
-            Open, so both say it outright rather than relying on the border. */}
-        <button
-          type="button"
-          className="foot-btn"
-          disabled
-          title="New scenario — not implemented yet"
-        >
-          <PlusIcon size={16} />
-          <span>New</span>
-        </button>
-        <button
-          type="button"
-          className="foot-btn"
-          disabled
-          title="Open folder — not implemented yet"
-        >
-          <FolderIcon size={16} />
-          <span>Open</span>
-        </button>
-      </footer>
     </aside>
   );
 }

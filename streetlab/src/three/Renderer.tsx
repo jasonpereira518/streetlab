@@ -35,12 +35,15 @@ import { HazardOverlay } from './hazardOverlay';
 import { RenderTimeline } from './renderTimeline';
 import type { RenderSample } from './renderTimeline';
 import { createShadowBoxes } from './shadowBoxes';
+import { CH, applyMainLayers, assignChannel } from './layers';
 import { createDetectorCamera, DETECTOR_FRAME } from './detectorCamera';
 import type { Backend } from './detectorCamera';
 
 const SKY_RADIUS = 900;
 const GROUND_SIZE = 3000;
 const SHADOW_EXTENT = 80;
+/** Outline tint for the driving source's detections; shadow boxes stay purple. */
+const PERCEIVED_OUTLINE = '#2DD4BF';
 
 export type { Backend };
 
@@ -360,7 +363,13 @@ function mount(
   // off the newest arrival; see renderTimeline.ts for why.
   const timeline = new RenderTimeline();
   const shadowBoxes = createShadowBoxes(scene);
+  const perceivedBoxes = createShadowBoxes(scene, PERCEIVED_OUTLINE, 'perceived-detections');
   ego.group.add(radar.mesh);
+  // Channels, not `visible`: see layers.ts. The ego is invisible to the detector
+  // (it sits inside it); the radar fan and plan ribbon are annotations.
+  assignChannel(ego.group, CH.EGO);
+  assignChannel(radar.mesh, CH.OVERLAY);
+  assignChannel(ribbon.mesh, CH.OVERLAY);
   scene.add(ego.group, fleet.group, ribbon.mesh, hazards.group);
 
   let world: World | null = null;
@@ -395,16 +404,14 @@ function mount(
   };
 
   const applyLayers = (layers: Record<LayerKey, boolean>) => {
-    world?.setLayerVisible('lane_markings', layers.lane_markings);
-    world?.setLayerVisible('crosswalks', layers.crosswalks);
-    world?.setLayerVisible('buildings', layers.buildings);
-    world?.setLayerVisible('trees', layers.trees);
-    world?.setLayerVisible('traffic_lights', layers.traffic_lights);
-    world?.setLayerVisible('labels', layers.labels);
-    fleet.setVisible(layers.detections);
+    // World categories: hidden from the user's camera only. The traffic fleet
+    // is world geometry too, so no toggle touches it -- `detections` governs
+    // the annotations drawn over it.
+    applyMainLayers(cam.camera, layers);
     hazards.setVisible(layers.detections);
     hazards.setLabelsVisible(layers.labels);
     shadowBoxes.setVisible(layers.detections);
+    perceivedBoxes.setVisible(layers.detections);
     ribbon.setVisible(layers.plan_path);
     radar.mesh.visible = layers.radar_cone;
   };
@@ -531,11 +538,12 @@ function mount(
   const applyFrame = (frame: StateUpdate, sample: RenderSample, dt: number) => {
     ego.setPose(sample.pose, ground_);
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
-    fleet.update(frame.detections, dt, ground_);
+    fleet.update(frame.world_agents, dt, ground_);
     ribbon.update(sample.plan, ground_);
     ribbon.setIntent(frame.plan.maneuver);
     hazards.update(frame.detections, cam.camera, ground_);
     shadowBoxes.update(frame.detections_shadow, ground_);
+    perceivedBoxes.update(frame.detections, ground_);
     world?.updateSignals(frame.signals, frame.t);
 
     // Keep the shadow frustum centred on the car so a 160 m box is enough.
@@ -668,6 +676,7 @@ function mount(
     ribbon.dispose();
     hazards.dispose();
     shadowBoxes.dispose();
+    perceivedBoxes.dispose();
     sky.dispose();
     ground.dispose();
     radar.dispose();

@@ -236,8 +236,10 @@ describe('TopToolbar', () => {
     harness.emitScene();
     harness.emitFrame(1);
 
-    const trigger = screen.getByTitle(/no perception pipeline running/i);
-    expect(trigger.hasAttribute('disabled')).toBe(true);
+    // The reason sits on the wrapper: a disabled button swallows hover in
+    // some webviews, the wrapper does not.
+    const wrapper = screen.getByTitle(/no perception pipeline running/i);
+    expect(wrapper.querySelector('button')?.hasAttribute('disabled')).toBe(true);
   });
 
   it('labels the ML perception mode experimental in the control itself', () => {
@@ -259,6 +261,7 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 
@@ -284,6 +287,7 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 
@@ -1035,6 +1039,7 @@ describe('RightPanel', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     };
     harness.emit(frame);
@@ -1086,7 +1091,7 @@ describe('Telemetry row', () => {
     const mph = String(Math.round(toMph(frame.ego.speed_mps)));
     expect(canvasText(speed)).toContain(mph);
     expect(canvasText(speed)).toContain(
-      `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} MAX`,
+      `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} TARGET`,
     );
 
     // Lane widget states the lane index that came down the wire.

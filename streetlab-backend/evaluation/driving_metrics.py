@@ -14,7 +14,8 @@ nose is therefore `EGO_LENGTH_M / 2` ahead of the pose.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
@@ -22,8 +23,9 @@ import numpy as np
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
 
-#: `BicycleModel.length_m`.
+#: `BicycleModel.length_m`, and the width the wire reports for the ego (`Ego.size`).
 EGO_LENGTH_M = 4.7
+EGO_WIDTH_M = 1.9
 
 #: Below this the ego counts as at rest; at or above `MOVING_MPS` it counts as
 #: moving again. The gap between them stops a creep from reading as a new stop.
@@ -68,6 +70,20 @@ BUDGET = SimpleNamespace(
 
 RUN_KEYS = ("nobhill", "grid", "grid_slow")
 
+#: Maneuvers that count as the car reacting to something. `reaction_source_id`
+#: on the wire is the better signal but is null until the hazard planner lands.
+REACTION_MANEUVERS = ("emergency_brake", "yield", "stop", "pull_over")
+
+#: How long after an injection a reaction still counts as the reaction to it.
+REACTION_WINDOW_S = 8.0
+
+#: Below this ego speed a time gap says nothing (a stationary ego has an
+#: infinite headway to everything).
+TIME_GAP_MIN_SPEED_MPS = MOVING_MPS
+
+#: Only agents this close can touch the ego; everything else skips the overlap test.
+COLLISION_PREFILTER_M = 8.0
+
 
 @dataclass(frozen=True)
 class Run:
@@ -93,6 +109,42 @@ class Run:
     agent_heading_step: np.ndarray
     #: Acceleration of each agent on each tick, m/s^2, all agents pooled.
     agent_accel: np.ndarray
+    # -- closed-loop fields (M0). All default to "not recorded", so a Run built
+    # without them (every pre-M0 caller) still works and the metrics below
+    # report nothing rather than a number nobody measured.
+    #: Ego body-centre pose per frame.
+    ego_x: np.ndarray = field(default_factory=lambda: np.empty(0))
+    ego_y: np.ndarray = field(default_factory=lambda: np.empty(0))
+    ego_heading: np.ndarray = field(default_factory=lambda: np.empty(0))
+    #: Every agent's oriented box on each frame (ragged, so a tuple per frame).
+    agent_boxes: tuple[tuple[AgentBox, ...], ...] = ()
+    #: The plan's maneuver on each frame (a `schema.Maneuver`).
+    maneuver: np.ndarray = field(default_factory=lambda: np.empty(0, dtype="<U16"))
+    #: `Plan.reaction_source_id` on each frame, "" when null.
+    reaction_source: np.ndarray = field(default_factory=lambda: np.empty(0, dtype="<U32"))
+    #: Planning time minus the observation time of the driving feed, seconds;
+    #: nan where the feed has no observation time.
+    obs_age: np.ndarray = field(default_factory=lambda: np.empty(0))
+    #: `perception.health == "degraded"` on each frame.
+    degraded: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=bool))
+    #: Ego arc position on its route, and the route's length (0 for no route).
+    route_s: np.ndarray = field(default_factory=lambda: np.empty(0))
+    route_len: float = 0.0
+    route_closed: bool = True
+    #: Hazards injected during the run: (sim time, kind).
+    hazards: tuple[tuple[float, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class AgentBox:
+    """One agent's oriented footprint on one frame. The pose is the body centre."""
+
+    id: str
+    x: float
+    y: float
+    heading: float
+    length: float
+    width: float
 
 
 @dataclass(frozen=True)
@@ -234,15 +286,140 @@ def agent_heading_step_deg(run: Run) -> np.ndarray:
     return np.degrees(run.agent_heading_step)
 
 
+# -- closed-loop measurements (M0) ------------------------------------------ #
+
+
+def _corners(x: float, y: float, heading: float, length: float, width: float):
+    c, s = math.cos(heading), math.sin(heading)
+    hl, hw = length / 2, width / 2
+    return [
+        (x + c * dx - s * dy, y + s * dx + c * dy)
+        for dx, dy in ((hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw))
+    ]
+
+
+def boxes_overlap(a, b) -> bool:
+    """Whether two oriented rectangles `(x, y, heading, length, width)` overlap.
+
+    Separating-axis test on the four face normals. Touching edges do not count.
+    """
+    pa, pb = _corners(*a), _corners(*b)
+    for h in (a[2], a[2] + math.pi / 2, b[2], b[2] + math.pi / 2):
+        ax, ay = math.cos(h), math.sin(h)
+        pr_a = [px * ax + py * ay for px, py in pa]
+        pr_b = [px * ax + py * ay for px, py in pb]
+        if max(pr_a) <= min(pr_b) or max(pr_b) <= min(pr_a):
+            return False
+    return True
+
+
+def collisions(run: Run) -> int:
+    """How many times the ego's box came to overlap an agent's.
+
+    Counted per (agent, contiguous overlap): a car that stays inside the ego for
+    a second is one collision, not sixty. Zero when the run recorded no poses.
+    """
+    if not len(run.ego_x) or not run.agent_boxes:
+        return 0
+    touching: set[str] = set()
+    count = 0
+    for k, boxes in enumerate(run.agent_boxes):
+        ego = (run.ego_x[k], run.ego_y[k], run.ego_heading[k], EGO_LENGTH_M, EGO_WIDTH_M)
+        now: set[str] = set()
+        for b in boxes:
+            if math.hypot(b.x - ego[0], b.y - ego[1]) > COLLISION_PREFILTER_M:
+                continue
+            if boxes_overlap(ego, (b.x, b.y, b.heading, b.length, b.width)):
+                now.add(b.id)
+        count += len(now - touching)
+        touching = now
+    return count
+
+
+def time_gaps(run: Run) -> np.ndarray:
+    """Bumper gap to the in-lane lead over ego speed, on the frames where it means something."""
+    ok = np.isfinite(run.lead_gap) & (run.speed >= TIME_GAP_MIN_SPEED_MPS)
+    return run.lead_gap[ok] / run.speed[ok]
+
+
+def min_time_gap(run: Run) -> float | None:
+    """The smallest time gap to the lead, seconds; None if there was never a lead while moving."""
+    gaps = time_gaps(run)
+    return float(gaps.min()) if gaps.size else None
+
+
+def _episodes(mask: np.ndarray) -> int:
+    """Number of contiguous True runs."""
+    m = np.asarray(mask, dtype=bool)
+    return int(np.count_nonzero(m[1:] & ~m[:-1]) + (1 if m.size and m[0] else 0))
+
+
+def hard_brakes(run: Run) -> int:
+    """Braking episodes harder than the ego-decel budget (one per contiguous stretch)."""
+    return _episodes(run.accel < -BUDGET.ego_decel_mps2)
+
+
+def aeb_activations(run: Run) -> int:
+    """Times the plan went into `emergency_brake` (one per contiguous stretch)."""
+    return _episodes(run.maneuver == "emergency_brake") if len(run.maneuver) else 0
+
+
+def hazard_reactions(run: Run) -> dict[str, dict[str, int]]:
+    """Per hazard kind, how many injections the ego reacted to within `REACTION_WINDOW_S`.
+
+    A reaction is a named reaction source on the plan, or a stop/yield/AEB
+    maneuver, on any frame in the window after the injection.
+    """
+    out: dict[str, dict[str, int]] = {}
+    for t0, kind in run.hazards:
+        window = (run.t >= t0) & (run.t <= t0 + REACTION_WINDOW_S)
+        reacted = bool(
+            (len(run.reaction_source) and (run.reaction_source[window] != "").any())
+            or (len(run.maneuver) and np.isin(run.maneuver[window], REACTION_MANEUVERS).any())
+        )
+        entry = out.setdefault(kind, {"injected": 0, "reacted": 0})
+        entry["injected"] += 1
+        entry["reacted"] += int(reacted)
+    return out
+
+
+def perception_staleness(run: Run) -> dict[str, float] | None:
+    """p50 / p99 / max of how old the driving feed was at planning time, seconds."""
+    return stats(run.obs_age)
+
+
+def degraded_share(run: Run) -> float:
+    """Fraction of frames the perception health said `degraded`."""
+    return float(np.mean(run.degraded)) if len(run.degraded) else 0.0
+
+
+def route_progress_m(run: Run) -> float:
+    """Distance driven along the route, wrapping a closed circuit; reversing subtracts."""
+    if len(run.route_s) < 2:
+        return 0.0
+    d = np.diff(run.route_s)
+    if run.route_closed and run.route_len > 0:
+        d = (d + run.route_len / 2) % run.route_len - run.route_len / 2
+    return float(d.sum())
+
+
 # -- recording --------------------------------------------------------------- #
 
 
-def record(sim: Simulation, seconds: float, label: str) -> Run:
+def record(
+    sim: Simulation,
+    seconds: float,
+    label: str,
+    *,
+    inject: Sequence[tuple[float, str]] = (),
+) -> Run:
     """Step `sim` for `seconds` and record what the ego and the traffic did.
 
     Reads `sim._planner.fsm` and `sim._traffic.agents`, as `test_lane_changes.py`
     already does: neither is on the wire, and both are what the question is about.
-    The sim must be hazard-free; nothing here filters hazard frames.
+    The budgets are defined on hazard-free runs and nothing here filters hazard
+    frames, so `inject` is for the closed-loop scorecard only: each `(t, kind)`
+    fires `inject_hazard` on the first step at or after `t`.
     """
     route = sim.scene.ego_route
     kinds = {cp.id: cp.kind for cp in sim.scene.control_points}
@@ -261,8 +438,21 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
     heading_steps: list[float] = []
     agent_accels: list[float] = []
     prev_heading: dict[str, float] = {}
+    ego_x, ego_y, ego_h = np.empty(n), np.empty(n), np.empty(n)
+    maneuver = np.empty(n, dtype="<U16")
+    reaction = np.empty(n, dtype="<U32")
+    obs_age = np.full(n, np.nan)
+    degraded = np.zeros(n, dtype=bool)
+    route_s = np.empty(n)
+    boxes: list[tuple[AgentBox, ...]] = []
+    pending = sorted(inject)
+    injected: list[tuple[float, str]] = []
 
     for i in range(n):
+        while pending and sim.world.t >= pending[0][0]:
+            _, kind = pending.pop(0)
+            if sim.apply_dict({"id": f"h{i}", "cmd": "inject_hazard", "kind": kind}).ok:
+                injected.append((sim.world.t, kind))
         sim.step()
         ego = sim.world.ego
         fsm = sim._planner.fsm
@@ -273,6 +463,26 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
         target_kind[i] = kinds.get(fsm.target_id, "") if fsm.target_id else ""
 
         ego_s = route.project((ego.x, ego.y))
+        route_s[i] = ego_s
+        ego_x[i], ego_y[i], ego_h[i] = ego.x, ego.y, ego.heading
+        plan = sim.world.plan_result.plan if sim.world.plan_result else None
+        maneuver[i] = plan.maneuver if plan else ""
+        reaction[i] = (plan.reaction_source_id or "") if plan else ""
+        # Ground truth is read at planning time; an ML feed is as old as its frame.
+        if sim.perception_mode == "ground-truth":
+            obs_age[i] = 0.0
+        else:
+            frame_t = getattr(sim._ml_perception, "last_frame_t", None)
+            if frame_t is not None:
+                obs_age[i] = sim.world.t - frame_t
+        pipeline = sim.perception_pipeline
+        degraded[i] = pipeline is not None and pipeline.stats(sim.perception_mode).health == "degraded"
+        boxes.append(
+            tuple(
+                AgentBox(a.id, a.state.x, a.state.y, a.state.heading, a.size.length, a.size.width)
+                for a in sim._traffic.agents
+            )
+        )
         if fsm.target_id in stops_at:
             line_gap[i] = route.signed_gap(ego_s, stops_at[fsm.target_id])
 
@@ -306,6 +516,18 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
         lead_gap=lead_gap,
         agent_heading_step=np.asarray(heading_steps),
         agent_accel=np.asarray(agent_accels),
+        ego_x=ego_x,
+        ego_y=ego_y,
+        ego_heading=ego_h,
+        agent_boxes=tuple(boxes),
+        maneuver=maneuver,
+        reaction_source=reaction,
+        obs_age=obs_age,
+        degraded=degraded,
+        route_s=route_s,
+        route_len=route.length_m,
+        route_closed=route.closed,
+        hazards=tuple(injected),
     )
 
 
@@ -321,18 +543,45 @@ def standard_runs(
     setting `test_lane_changes.py` uses for the same reason) it follows and
     overtakes, so 200 s covers several episodes and the queue behind them.
     """
-    nob = Simulation(SyntheticGrid(), "grid-loop", seed=1)
-    nob.adopt_scene(nob_hill_scene)
-
-    grid = Simulation(SyntheticGrid(), "grid-loop", seed=7)
-
-    slow = Simulation(SyntheticGrid(), "grid-loop", seed=7)
-    slow.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
-
     return {
-        "nobhill": record(nob, nobhill_s, "nobhill"),
-        "grid": record(grid, grid_s, "grid"),
-        "grid_slow": record(slow, grid_slow_s, "grid_slow"),
+        "nobhill": record(make_sim("nobhill", nob_hill_scene), nobhill_s, "nobhill"),
+        "grid": record(make_sim("grid", nob_hill_scene), grid_s, "grid"),
+        "grid_slow": record(make_sim("grid_slow", nob_hill_scene), grid_slow_s, "grid_slow"),
+    }
+
+
+#: The seed `standard_runs` has always used for each key.
+DEFAULT_SEEDS = {"nobhill": 1, "grid": 7, "grid_slow": 7}
+
+
+def make_sim(key: str, nob_hill_scene, *, seed: int | None = None, **sim_kwargs) -> Simulation:
+    """One of the three standard scenes. `seed` defaults to the budgets' own, so a
+    scorecard pairs runs by passing the same seed to a ground-truth and a noisy sim."""
+    seed = DEFAULT_SEEDS[key] if seed is None else seed
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=seed, **sim_kwargs)
+    if key == "nobhill":
+        sim.adopt_scene(nob_hill_scene)
+    elif key == "grid_slow":
+        sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    return sim
+
+
+def closed_loop_summary(run: Run) -> dict:
+    """The M0 scorecard metrics for one run, as plain JSON-able values."""
+    return {
+        "label": run.label,
+        "seconds": float(run.t[-1]),
+        "collisions": collisions(run),
+        "min_time_gap_s": min_time_gap(run),
+        "time_gap_p5_s": (
+            float(np.percentile(time_gaps(run), 5)) if time_gaps(run).size else None
+        ),
+        "hard_brakes": hard_brakes(run),
+        "aeb_activations": aeb_activations(run),
+        "hazard_reactions": hazard_reactions(run),
+        "perception_staleness_s": perception_staleness(run),
+        "degraded_share": degraded_share(run),
+        "route_progress_m": route_progress_m(run),
     }
 
 
