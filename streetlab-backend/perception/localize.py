@@ -208,8 +208,15 @@ def locate(
     # The prior length is capped at a car's: a box whose width fits no heading of the
     # detected class is as likely a mislabelled car as a cropped bus, and a 12 m bus prior
     # moved a mislabelled car's centre 6 m.
-    extent = min(size.length, _UNMATCHED_EXTENT_CAP_M)
-    extent_sigma = max(CENTRE_REL * extent, 0.8)
+    #
+    # Not the full length either: seen from the side, a body's depth along the sight line is its
+    # WIDTH. With the heading unknown the depth extent lies between the two, so the fallback is
+    # their midpoint and the spread is carried as uncertainty. (The aligned-with-the-sight-line
+    # assumption put a car alongside the ego 1.2 m too far out, enough for a lane change to
+    # squeeze past it: Gate S nobhill_slow seed 4.)
+    longest = min(size.length, _UNMATCHED_EXTENT_CAP_M)
+    extent = (longest + size.width) / 2.0
+    extent_sigma = max(0.4 * (longest - size.width), 0.3)
     if not cropped_side and d > 1.0:
         depth = d * max(math.cos(bearing - camera.yaw), 0.2)
         width_m = (box.x1 - box.x0) * depth / f_px

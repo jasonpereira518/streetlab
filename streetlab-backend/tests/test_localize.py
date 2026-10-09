@@ -88,12 +88,13 @@ def test_the_box_width_tells_the_centre_whatever_the_heading(deg, bound):
     assert math.hypot(got.x - 25.0, got.y) < bound
 
 
-def test_a_box_cropped_at_the_side_falls_back_to_half_the_length():
+def test_a_box_cropped_at_the_side_falls_back_to_the_midpoint_of_its_possible_depth():
     box = box_of(8.0, 3.0, 0.0)
     cropped = Box2D(0.0, box.y0, box.x1, box.y1, box.cls, box.confidence)
     got = locate(cropped, CAM, W, H)
     contact = project_to_ground(cropped, CAM, W, H)
-    assert got is not None and got.x > contact[0] + 1.5
+    # Between half the width (0.95) and half the length (2.25) beyond the contact point.
+    assert got is not None and contact[0] + 0.9 < got.x < contact[0] + 2.4
 
 
 def test_a_car_mislabelled_as_a_bus_is_not_centred_six_metres_too_far():
