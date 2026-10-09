@@ -50,6 +50,12 @@ SAME_LANE_M = 1.8
 
 PHASES = ("none", "outbound", "passing", "returning")
 
+#: Maneuvers only a hazard produces (`schema.Maneuver`). Decision 5 of the spec exempts their
+#: frames from the ego's longitudinal budgets; a hazard-free run can still contain a few, when
+#: two cars share a corner and the threat layer fires at 3.7 m.
+HAZARD_ONLY_MANEUVERS = ("emergency_brake", "pull_over")
+EMERGENCY_TAIL_S = 2.0
+
 #: The numbers the sim is held to (the spec's Budgets table). Edit here, nowhere else.
 BUDGET = SimpleNamespace(
     ego_decel_mps2=2.5,
@@ -66,7 +72,7 @@ BUDGET = SimpleNamespace(
     standstill_gap_m=(2.0, 4.0),
 )
 
-RUN_KEYS = ("nobhill", "grid", "grid_slow")
+RUN_KEYS = ("nobhill", "nobhill_slow", "grid", "grid_slow")
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,9 @@ class Run:
     agent_heading_step: np.ndarray
     #: Acceleration of each agent on each tick, m/s^2, all agents pooled.
     agent_accel: np.ndarray
+    #: The plan's maneuver was in `HAZARD_ONLY_MANEUVERS` on this frame: emergency braking,
+    #: exempt from the ego's decel and jerk budgets (the spec's Decision 5). None = no frame was.
+    emergency: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +135,33 @@ def stats(values) -> dict[str, float] | None:
 
 def longitudinal_jerk(run: Run) -> np.ndarray:
     return np.diff(run.accel) / run.dt
+
+
+def _calm(run: Run) -> np.ndarray:
+    """Frames that are not emergency braking or its tail.
+
+    The planner slews its command back at the jerk limit once a reaction ends, so the frames
+    after the last emergency-labelled one are still the same braking running down: measured on
+    grid_slow, a 2.78 m/s^2 frame 0.1 s after the label dropped. `EMERGENCY_TAIL_S` covers the
+    longest run-down (4.5 m/s^2 at 2.5 m/s^3 is 1.8 s).
+    """
+    if run.emergency is None:
+        return np.ones(len(run.accel), dtype=bool)
+    tail = int(EMERGENCY_TAIL_S / run.dt)
+    flagged = np.convolve(run.emergency.astype(float), np.ones(tail + 1), mode="full")[: len(run.emergency)] > 0
+    return ~flagged
+
+
+def ego_peak_decel(run: Run) -> float:
+    """Hardest braking outside emergency frames, as a positive number (0 if it never brakes)."""
+    a = run.accel[_calm(run)]
+    return float(max(0.0, -a.min())) if a.size else 0.0
+
+
+def ego_jerk(run: Run) -> np.ndarray:
+    """Longitudinal jerk between two consecutive non-emergency frames."""
+    calm = _calm(run)
+    return longitudinal_jerk(run)[calm[1:] & calm[:-1]]
 
 
 def lateral_accel(run: Run) -> np.ndarray:
@@ -198,7 +234,12 @@ def stop_episodes(run: Run) -> list[Stop]:
         if math.isnan(run.line_gap[k]) or run.state[k] not in ("approach", "stop"):
             continue
         lo = max(0, k - window)
-        gap = run.lead_gap[k]
+        # Queued if a lead was close at ANY point of the final approach, not only at the instant
+        # of rest: grid_slow t=64 s stopped behind a car waiting at the line, which pulled away
+        # while the ego was still at 0.3 m/s, and was read as a free stop 1.1 m too short.
+        window_gaps = run.lead_gap[lo : k + 1]
+        window_gaps = window_gaps[np.isfinite(window_gaps)]
+        gap = window_gaps.min() if window_gaps.size else math.nan
         out.append(
             Stop(
                 t=float(run.t[k]),
@@ -253,6 +294,7 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
     speed = np.empty(n)
     accel = np.empty(n)
     yaw = np.empty(n)
+    emergency = np.zeros(n, dtype=bool)
     phase = np.empty(n, dtype="<U9")
     state = np.empty(n, dtype="<U9")
     target_kind = np.empty(n, dtype="<U9")
@@ -267,6 +309,7 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
         ego = sim.world.ego
         fsm = sim._planner.fsm
         t[i], speed[i], accel[i], yaw[i] = sim.world.t, ego.speed_mps, ego.accel_mps2, ego.yaw_rate
+        emergency[i] = sim.world.plan_result.plan.maneuver in HAZARD_ONLY_MANEUVERS
         lc = fsm.lane_change
         phase[i] = lc.phase if lc is not None else "none"
         state[i] = fsm.state.value
@@ -306,13 +349,25 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
         lead_gap=lead_gap,
         agent_heading_step=np.asarray(heading_steps),
         agent_accel=np.asarray(agent_accels),
+        emergency=emergency,
     )
 
 
 def standard_runs(
-    nob_hill_scene, *, nobhill_s: float = 340.0, grid_s: float = 150.0, grid_slow_s: float = 200.0
+    nob_hill_scene,
+    *,
+    nobhill_s: float = 340.0,
+    nobhill_slow_s: float = 340.0,
+    grid_s: float = 150.0,
+    grid_slow_s: float = 200.0,
 ) -> dict[str, Run]:
-    """The three hazard-free recordings the budgets and the report are built on.
+    """The four hazard-free recordings the budgets and the report are built on.
+
+    `nobhill` is Nob Hill at default traffic and `nobhill_slow` the same at 0.4x, the setting
+    `test_lane_changes.py` replays it at. Since the Phase 3 speed law the default-traffic ego
+    stays ahead of the traffic for 620 s and never meets a lead, so it never changes lane or
+    follows (measured: 0 frames with a lead, no lane change); the slow recording is the one
+    that does both, first lane change at 112 s.
 
     Nob Hill at default traffic reaches signals and stop signs within 250 s and
     starts overtaking from about 290 s (the lane-change return is the worst thing it
@@ -324,6 +379,10 @@ def standard_runs(
     nob = Simulation(SyntheticGrid(), "grid-loop", seed=1)
     nob.adopt_scene(nob_hill_scene)
 
+    nob_slow = Simulation(SyntheticGrid(), "grid-loop", seed=1)
+    nob_slow.adopt_scene(nob_hill_scene)
+    nob_slow.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
+
     grid = Simulation(SyntheticGrid(), "grid-loop", seed=7)
 
     slow = Simulation(SyntheticGrid(), "grid-loop", seed=7)
@@ -331,6 +390,7 @@ def standard_runs(
 
     return {
         "nobhill": record(nob, nobhill_s, "nobhill"),
+        "nobhill_slow": record(nob_slow, nobhill_slow_s, "nobhill_slow"),
         "grid": record(grid, grid_s, "grid"),
         "grid_slow": record(slow, grid_slow_s, "grid_slow"),
     }
@@ -345,8 +405,9 @@ def summarize(run: Run) -> dict:
         "seconds": float(run.t[-1]),
         "ego": {
             "longitudinal_accel": stats(run.accel),
-            "peak_decel_mps2": float(max(0.0, -run.accel.min())),
-            "longitudinal_jerk": stats(longitudinal_jerk(run)),
+            "peak_decel_mps2": ego_peak_decel(run),
+            "longitudinal_jerk": stats(ego_jerk(run)),
+            "emergency_frames": int(run.emergency.sum()) if run.emergency is not None else 0,
             "lateral_accel": stats(lateral_accel(run)),
             "lateral_jerk": stats(lateral_jerk(run)),
             "lateral_accel_by_phase": lateral_accel_by_phase(run),

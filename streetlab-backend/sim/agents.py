@@ -224,12 +224,17 @@ class ScriptedTraffic:
             occupied.append((s, length))
             target = speed_limit_mps * mult * self._rng.uniform(0.85, 1.05)
             x, y = route.point_at(s)
+            # Spawned at the speed the corner ahead allows, not at cruise: an agent placed within
+            # the preview of a bend at 9.8 m/s starts life braking at the 4.5 floor (the first
+            # tick of three agents in grid-loop's 150 s, 117 of the 27000 frames).
+            kappa = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
+            start = min(target, math.sqrt(_MAX_LATERAL_MPS2 / kappa)) if kappa > 1e-6 else target
             self._agents.append(
                 Agent(
                     id=f"veh_{i:02d}",
                     cls=cls,
                     state=VehicleState(
-                        x=x, y=y, heading=route.heading_at(s), speed_mps=target
+                        x=x, y=y, heading=route.heading_at(s), speed_mps=start
                     ),
                     size=Size(length=length, width=width, height=height),
                     route=route,
@@ -344,6 +349,12 @@ class ScriptedTraffic:
         if lateral_rate and speed > 0.1:
             # The body points where the car is going, not where the lane does.
             heading = _wrap(heading + math.atan2(lateral_rate, speed))
+        # A body turns at a bounded rate. Both inputs above step: the route's heading by a whole
+        # vertex (11 degrees on an 8-segment fillet) and the crab from 0 to atan(1.2 / v) the
+        # tick a lane change starts (27 degrees at 2.5 m/s). Followed through, as a real
+        # chassis would, they cost a few ticks of lag instead of a visible snap.
+        before = agent.state.heading
+        heading = _wrap(before + max(-_MAX_YAW_STEP_RAD, min(_MAX_YAW_STEP_RAD, _wrap(heading - before))))
 
         agent.s = s
         agent.state = VehicleState(
@@ -376,6 +387,13 @@ _IDM_DELTA = 4.0
 #: `_IDM_COMFORT_DECEL` stays at 2.0 and is what car-following actually uses --
 #: this is the emergency floor, not the working rate.
 _IDM_MAX_BRAKE = 4.5
+
+#: The floor on the free term: it brakes for a corner
+#: (the 14 m preview asks 8 m/s of an 11 m/s car in 1.2 s) or a speed-scale change. 3.4 m/s^2,
+#: under the 3.5 p99 traffic budget (`tests/driving_metrics.py`); measured on Nob Hill, 1720 of
+#: 81600 agent-frames sat on 4.5 for exactly this. The interaction term adds on top, to `_IDM_MAX_BRAKE`.
+#: `traffic_speed_scale=0` still halts traffic: it needs 3 s from 11 m/s.
+_IDM_FREE_BRAKE = 3.4
 
 #: Beyond this there is no leader worth modelling. Bounding the search is not
 #: a performance dodge -- it is what stops an agent on a short closed loop from
@@ -427,6 +445,11 @@ MOBIL_COOLDOWN_S = 4.0
 #: Half the span of the centred difference the lateral normal is taken from.
 #: See `lateral_unit`.
 _NORMAL_SPAN_M = 1.0
+
+#: The most an agent's body may turn in one tick, radians: 1.8 degrees, under the 2.0 budget
+#: (`tests/driving_metrics.py`). 1.88 rad/s at 60 Hz; the tightest corner traffic takes
+#: (3.1 m radius, at 2.6 m/s) needs 0.84.
+_MAX_YAW_STEP_RAD = math.radians(1.8)
 
 #: The clear space, beyond both vehicles' half-lengths, a change needs in the
 #: target lane. A gap a car is already occupying is not a gap, and "it fits
@@ -1133,8 +1156,11 @@ def _idm_accel(
     actually produce.
     """
     free = 1.0 - (speed / desired) ** _IDM_DELTA if desired > 0 else -math.inf
+    # The free term alone never asks for more than `_IDM_FREE_BRAKE`; only the interaction with
+    # something ahead can take the total to the emergency floor.
+    free_accel = max(_IDM_MAX_ACCEL * free, -_IDM_FREE_BRAKE)
     if not math.isfinite(gap):
-        return max(_IDM_MAX_ACCEL * free, -_IDM_MAX_BRAKE)
+        return free_accel
     closing = speed - lead_speed
     s_star = _IDM_MIN_GAP_M + max(
         0.0,
@@ -1144,7 +1170,7 @@ def _idm_accel(
     # A gap that has closed to nothing would divide by zero; the floor makes
     # the interaction term merely enormous, which is the same command.
     interaction = (s_star / max(gap, 0.1)) ** 2
-    return max(_IDM_MAX_ACCEL * (free - interaction), -_IDM_MAX_BRAKE)
+    return max(free_accel - _IDM_MAX_ACCEL * interaction, -_IDM_MAX_BRAKE)
 
 
 def _approach(value: float, target: float, max_delta: float) -> float:
