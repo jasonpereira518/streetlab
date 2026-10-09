@@ -83,14 +83,21 @@ function HazardMenu() {
             <span className="hazard-group-title">{title}</span>
             <div className="hazard-grid">
               {items.map((h) => (
-                <button
-                  key={h.code}
-                  type="button"
-                  className="panel-action panel-action--sm"
-                  onClick={() => injectHazard(h.code)}
-                >
-                  {h.label}
-                </button>
+                <div key={h.code} className="hazard-item">
+                  <button
+                    type="button"
+                    className="panel-action panel-action--sm"
+                    onClick={() => injectHazard(h.code)}
+                    aria-describedby={h.ml_limitation ? `ml-limit-${h.code}` : undefined}
+                  >
+                    {h.label}
+                  </button>
+                  {h.ml_limitation && (
+                    <p className="hazard-limit" id={`ml-limit-${h.code}`}>
+                      <span className="tbadge tbadge--warn">ML</span> {h.ml_limitation}
+                    </p>
+                  )}
+                </div>
               ))}
             </div>
           </div>
@@ -167,7 +174,7 @@ function ParametersTab() {
       <Field title="Inject hazard">
         <HazardMenu />
         {lastAck && (
-          <p className={`ack${lastAck.ok ? '' : ' ack--error'}`}>
+          <p className={`ack${lastAck.ok ? '' : ' ack--error'}`} aria-live="polite">
             <code>{lastAck.cmd}</code>
             <span>{lastAck.message ?? (lastAck.ok ? 'ok' : 'failed')}</span>
           </p>
