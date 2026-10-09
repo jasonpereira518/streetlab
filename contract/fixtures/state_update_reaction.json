@@ -9,16 +9,16 @@
   "scenario_id": "grid-merge",
   "ego": {
     "pose": {
-      "x": 1.685831874171183,
-      "y": 17.436223952788563,
-      "heading": 1.537276108368176
+      "x": 1.6858543933974564,
+      "y": 17.436895543887246,
+      "heading": 1.5372793487448224
     },
-    "speed_mps": 7.163486811504683,
-    "accel_mps2": -0.2607534123310961,
+    "speed_mps": 7.203804923932423,
+    "accel_mps2": 2.1583333333333337,
     "steering_angle": 0.01398351143312212,
-    "yaw_rate": 0.034543872179174276,
-    "throttle": 0.0,
-    "brake": 0.05794520274024358,
+    "yaw_rate": 0.03473829477795294,
+    "throttle": 0.9810606060606061,
+    "brake": 0.0,
     "gear": "D",
     "speed_limit_mps": 11.176,
     "cruise": {
@@ -162,7 +162,7 @@
         "id": "veh_00",
         "azimuth": 0.0091,
         "range_m": 50.51,
-        "range_rate_mps": -3.7,
+        "range_rate_mps": -3.74,
         "rcs_db": 7.96,
         "tracked": true
       },
@@ -170,7 +170,7 @@
         "id": "veh_05",
         "azimuth": -0.3059,
         "range_m": 10.86,
-        "range_rate_mps": -3.54,
+        "range_rate_mps": -3.58,
         "rcs_db": 11.13,
         "tracked": true
       },
@@ -227,8 +227,8 @@
       "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
-      "offset_m": 0.11416812582881652,
-      "heading_error": -0.03352021842672048,
+      "offset_m": 0.11414560660254325,
+      "heading_error": -0.03351697805007414,
       "left_marking": "double_yellow",
       "right_marking": "dashed_white",
       "neighbors": [

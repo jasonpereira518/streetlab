@@ -68,10 +68,10 @@ _AEB_MIN_DECEL_MPS2 = 4.5
 _CURVE_CATCHUP_MPS2 = 0.6
 
 # Car-following spacing: `desired = standstill + follow_distance_s * speed`, as a cap on the
-# braking profile (`_lead_cap`).
+# braking profile (`_lead_caps`).
 #: Bumper to bumper, so a lead at rest is stopped behind at the middle of the 2-4 m budget.
 _STANDSTILL_GAP_M = 3.0
-_GAP_GAIN = 0.7
+_GAP_GAIN = 0.25
 #: The ego's half-length: the pose is the body centre, and the gap to a lead is body to body.
 _EGO_HALF_LENGTH_M = 2.35
 
@@ -252,9 +252,13 @@ class CenterlineFollower:
         lead, gap = _closest_lead(detections, route, s, home_lane=returning_home)
         too_close = False
         if lead is not None:
-            lead_cap = _lead_cap(lead, gap, ego, limits)
-            caps.append(lead_cap)
-            too_close = lead_cap[0] <= 0.0
+            lead_caps, clear = _lead_caps(lead, gap, ego, limits)
+            caps += lead_caps
+            # Urgent: the brake that matches the lead's speed by the standstill gap is already
+            # harder than ordinary driving may ask, so the slewed one would be late.
+            closing = ego.speed_mps - lead.speed_mps
+            room = max(clear - _STANDSTILL_GAP_M, 0.5)
+            too_close = closing > 0.0 and closing * closing / (2.0 * room) > _COMFORT_DECEL_MPS2
         ceiling, feed_forward = braking_ceiling(caps, ego.speed_mps)
         target = min(limits.speed_limit_mps, limits.speed_cap_mps)
         # The route's curvature AHEAD says "straight" the moment the look-ahead window clears a
@@ -295,14 +299,21 @@ class CenterlineFollower:
         # A lead already closer than the gap it asks for is not ordinary driving: it gets the whole
         # proportional law at once, as before the jerk limit (a cyclist drifting in 12 m ahead of an
         # ego doing 9 m/s overlapped it by 0.2 m with the limit on, -0.2 on the closed-loop sweep).
-        if reaction.kind == "none" and not (too_close and target <= ceiling):
+        emergency = reaction.maneuver == "emergency_brake" or (too_close and target <= ceiling)
+        if not emergency:
             # Ordinary driving never asks for more than the comfort budget (2.5); anything harder
             # is the threat layer's, which sets `reaction`. Without this a steering-command spike
             # (`kappa_cmd` below drops the target to 1.7 m/s in one tick at 6.3 m/s, mid lane-change
             # return) is a -4.5 request that the slew limiter then ramps to -2.85.
             # A line that must be stopped at (a red, however late it is seen) keeps the full
-            # authority: that is the one place a hard stop is the rules', not a threat's.
-            if decision.stop_distance_m is None:
+            # authority once the stop itself needs more than comfort: that is the one place a hard
+            # stop is the rules', not a threat's. Braking for something ELSE on the way to a line
+            # (a held lane's corner, 0.6 m/s) does not inherit it: that peaked at 2.59.
+            hard_stop = (
+                decision.stop_distance_m is not None
+                and ego.speed_mps**2 / (2.0 * max(decision.stop_distance_m, 0.5)) > _COMFORT_DECEL_MPS2
+            )
+            if not hard_stop:
                 accel = max(accel, -_COMFORT_DECEL_MPS2)
             step = _JERK_MPS3 * context.dt
             accel = _clamp(accel, ego.accel_mps2 - step, ego.accel_mps2 + step)
@@ -417,19 +428,28 @@ def _closest_lead(
     return best, best_gap
 
 
-def _lead_cap(lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits) -> Cap:
-    """The lead as a cap on the braking profile: no faster than it, `_STANDSTILL_GAP_M` short of it.
+def _lead_caps(lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits) -> tuple[list[Cap], float]:
+    """The lead as caps on the braking profile, and the body-to-body gap to it.
+
+    Two of them. The hard one: never closer than `_STANDSTILL_GAP_M`, matching the lead's speed by
+    then -- the kinematic limit, which asks for a gentle brake when the lead is 5 m closer than it
+    should be and 1 m/s slower, and for a hard one only when it must. The soft one: the headway
+    (`follow_distance_s`) the driver wants. With room left it is the same curve; short of it, the
+    cap drops BELOW the lead's speed in proportion to the shortfall, which opens the gap back up
+    without asking for a stop (it asked for one -- 0.7 per metre -- and a lead 4.7 m inside its
+    headway at 2.8 m/s closing was a -4.5 m/s^2 request).
 
     Body to body, so a long lead vehicle is accounted for and the ego's own half-length is too.
-    Closer than the gap it asks for, the cap drops BELOW the lead's speed in proportion, which
-    opens the gap back up instead of holding it.
     """
     clear = gap - lead.size.length / 2 - _EGO_HALF_LENGTH_M
     desired = _STANDSTILL_GAP_M + max(limits.follow_distance_s, 0.6) * ego.speed_mps
     room = clear - desired
-    if room <= 0.0:
-        return 0.0, max(0.0, lead.speed_mps + _GAP_GAIN * room), 0.0
-    return room, lead.speed_mps, lead.speed_mps
+    caps: list[Cap] = [(max(clear - _STANDSTILL_GAP_M, 0.0), lead.speed_mps, lead.speed_mps)]
+    if room > 0.0:
+        caps.append((room, lead.speed_mps, lead.speed_mps))
+    else:
+        caps.append((0.0, max(0.0, lead.speed_mps + _GAP_GAIN * room), 0.0))
+    return caps, clear
 
 
 def _maneuver(route: Route, s: float) -> str:

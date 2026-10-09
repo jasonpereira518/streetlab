@@ -29,8 +29,9 @@ from sim.route import Route
 #: command trails the plan by ~0.7 s and the closed loop makes it up.
 BRAKE_DECEL_MPS2 = 1.8
 
-#: The jerk-limited command takes this long to reach the braking level (`a / jerk`), and the car
-#: travels, on average, half of it at the old level first. A cap is treated as that much nearer.
+#: The jerk-limited command (2.5 m/s^3, `plan/control.py`) takes `(a_brake + a_now) / jerk` to go
+#: from where it is to the braking level, and the car covers about half of that at the old level
+#: first. `a_now` is taken as 1 m/s^2 of acceleration being shed. A cap is treated as that much nearer.
 ONSET_S = (BRAKE_DECEL_MPS2 + 1.0) / (2.0 * 2.5)
 
 #: Returned when nothing constrains the car.

@@ -1020,6 +1020,7 @@ class BehaviorFSM:
             maneuver=back.maneuver,
             target=junction.target,
             target_lane_id=back.target_lane_id,
+            stop_distance_m=junction.stop_distance_m,
         )
 
     def _begin_return(self) -> None:
