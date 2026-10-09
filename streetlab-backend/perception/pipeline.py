@@ -90,6 +90,8 @@ class PerceptionPipeline:
         self._latest: PipelineResult | None = None
         self._inflight: Future | None = None
         self.failures = 0
+        # Failures since the last success: what "degraded" means on the wire.
+        self._failing = False
 
     def submit_frame(self, frame: CameraFrame) -> bool:
         """Offer a frame and make sure a worker is running. Never blocks."""
@@ -121,6 +123,7 @@ class PerceptionPipeline:
                 log.exception("detector failed on frame %d", frame.seq)
                 with self._lock:
                     self.failures += 1
+                    self._failing = True
                 continue
             now = time.perf_counter()
             result = PipelineResult(
@@ -135,6 +138,7 @@ class PerceptionPipeline:
             )
             with self._lock:
                 self._latest = result
+                self._failing = False
 
     def drain(self, timeout_s: float = 5.0) -> None:
         """Block until the worker is idle. For tests only — never call from the sim."""
@@ -152,6 +156,7 @@ class PerceptionPipeline:
     ) -> PerceptionStats:
         with self._lock:
             latest = self._latest
+            failing = self._failing
         return PerceptionStats(
             mode=mode,
             detector_ms=None if latest is None else latest.detector_ms,
@@ -166,6 +171,9 @@ class PerceptionPipeline:
             precision=None if quality is None else quality.precision,
             recall=None if quality is None else quality.recall,
             mean_pos_err_m=None if quality is None else quality.mean_pos_err_m,
+            # A stub detector never looks at the pixels; a failing one has no
+            # current answer. Either way the planner must not trust the feed.
+            health="degraded" if failing or isinstance(self._detector, StubDetector) else "ok",
         )
 
     def reset(self) -> None:

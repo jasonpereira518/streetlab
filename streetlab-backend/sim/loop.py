@@ -63,6 +63,7 @@ from schema import (
     TrajectoryPrediction,
     TrajectorySample,
     VehicleStatus,
+    WorldAgent,
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
@@ -747,6 +748,19 @@ class Simulation:
 
     # -- frame assembly ---------------------------------------------------- #
 
+    def _world_agents(self) -> list[WorldAgent]:
+        """Ground truth for every agent: not range-gated, not perception-gated."""
+        return [
+            WorldAgent(
+                id=a.id,
+                cls=a.cls,
+                pose=Pose(x=a.state.x, y=a.state.y, heading=a.state.heading),
+                size=Size(length=a.size.length, width=a.size.width, height=a.size.height),
+                speed_mps=a.state.speed_mps,
+            )
+            for a in self._traffic.agents
+        ]
+
     def state_update(self) -> StateUpdate:
         self._guard_world()
         # Reuse this tick's plan rather than computing a second one. The frame
@@ -764,6 +778,7 @@ class Simulation:
             world=self.world,
             scene=self.scene,
             detections=detections,
+            world_agents=self._world_agents(),
             detections_shadow=self.world.detections_shadow,
             plan=plan.plan,
             # Reused from `_plan()` rather than recomputed, for the same
@@ -1036,6 +1051,7 @@ def assemble_state_update(
     world: WorldState,
     scene: BuiltScene,
     detections: Sequence[Detection],
+    world_agents: Sequence[WorldAgent],
     detections_shadow: Sequence[Detection] | None,
     plan: Plan,
     signals: Sequence[SignalState],
@@ -1112,6 +1128,7 @@ def assemble_state_update(
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
         detections=list(detections),
+        world_agents=list(world_agents),
         # Null when there is no second source at all; a real (possibly
         # empty) list whenever both sources ran -- see `_observe`'s
         # docstring. Never collapse `None` into `[]` here.

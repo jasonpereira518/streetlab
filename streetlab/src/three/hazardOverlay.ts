@@ -12,6 +12,7 @@ import { float, min, smoothstep, time, uniform, uv } from 'three/tsl';
 import type { Detection } from '../schema';
 import { clamp } from '../units';
 import { hazardLabelTexture } from './labels';
+import { CH } from './layers';
 import type { HeightFn } from './terrain';
 
 const MAX_HAZARDS = 12;
@@ -128,6 +129,9 @@ export class HazardOverlay {
     sprite.renderOrder = 20;
     sprite.frustumCulled = false;
 
+    // Annotations: the detector must never photograph its own billboards.
+    box.layers.set(CH.OVERLAY);
+    sprite.layers.set(CH.OVERLAY);
     this.group.add(box, sprite);
     slot = { box, sprite, spriteMat, labelKey: '', aspect: 4 };
     this.slots[i] = slot;

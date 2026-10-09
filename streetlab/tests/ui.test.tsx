@@ -259,6 +259,7 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 
@@ -284,6 +285,7 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 
@@ -302,11 +304,11 @@ describe('LeftScenarioSidebar', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    expect(screen.getByText('Nob Hill')).toBeTruthy();
+    expect(screen.getByTestId('scene-name').textContent).toBe('Synthetic Grid');
     expect(screen.getAllByRole('listitem')).toHaveLength(5);
     expect(screen.getByText('01')).toBeTruthy();
     expect(screen.getByText('05')).toBeTruthy();
-    expect(screen.getByText('Hyde St Descent')).toBeTruthy();
+    expect(screen.getByText('Signal Ladder')).toBeTruthy();
   });
 
   it("a card's play button emits load_scenario", () => {
@@ -314,14 +316,14 @@ describe('LeftScenarioSidebar', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    fireEvent.click(screen.getByLabelText('Load Hyde St Descent'));
+    fireEvent.click(screen.getByLabelText('Load Signal Ladder'));
 
     expect(harness.sent).toContainEqual(
-      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'hyde-descent' }),
+      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'grid-signals' }),
     );
     // The server answered with a new scene, so the sidebar now shows its location.
-    expect(useSimStore.getState().activeScenarioId).toBe('hyde-descent');
-    expect(screen.getByText('Russian Hill')).toBeTruthy();
+    expect(useSimStore.getState().activeScenarioId).toBe('grid-signals');
+    expect(screen.getByTestId('scene-name').textContent).toBe('Synthetic Grid');
   });
 
   it('renders a mini-map thumbnail per scenario', () => {
@@ -649,21 +651,21 @@ describe('Location search box', () => {
     // the one actually being awaited — so the address build's own scene
     // could land later and silently replace whatever the user just picked,
     // with no warning since the indicator vanished the moment they clicked.
-    const playBtn = screen.getByLabelText('Load Hyde St Descent') as HTMLButtonElement;
+    const playBtn = screen.getByLabelText('Load Signal Ladder') as HTMLButtonElement;
     expect(playBtn.disabled).toBe(true);
 
     fireEvent.click(playBtn);
     expect(harness.sent.filter((c) => c.cmd === 'load_scenario')).toHaveLength(0);
-    expect(useSimStore.getState().activeScenarioId).not.toBe('hyde-descent');
+    expect(useSimStore.getState().activeScenarioId).not.toBe('grid-signals');
     // A blocked click must not itself disturb the address search still in flight.
     expect(useSimStore.getState().locationPending).toBe('1600 Amphitheatre Parkway');
 
     // Once the address search resolves, the scenario list works normally again.
     harness.emitScene();
     expect(playBtn.disabled).toBe(false);
-    fireEvent.click(screen.getByLabelText('Load Hyde St Descent'));
+    fireEvent.click(screen.getByLabelText('Load Signal Ladder'));
     expect(harness.sent).toContainEqual(
-      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'hyde-descent' }),
+      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'grid-signals' }),
     );
   });
 });
@@ -1035,6 +1037,7 @@ describe('RightPanel', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     };
     harness.emit(frame);

@@ -19,6 +19,7 @@
 import * as THREE from 'three/webgpu';
 import { float, min, smoothstep, uniform, uv } from 'three/tsl';
 import type { Detection } from '../schema';
+import { CH } from './layers';
 import type { HeightFn } from './terrain';
 
 /** Distinct from the hazard overlay's orange and the plan ribbon's blue. */
@@ -26,9 +27,18 @@ const OUTLINE_COLOR = '#8B5CF6';
 /** Boxes are padded slightly so the outline reads as an annotation, not coplanar bodywork. */
 const PAD = 0.08;
 
-export function createShadowBoxes(scene: THREE.Scene) {
+/**
+ * `color`/`name` let a second instance outline the DRIVING source's detections
+ * (protocol 10: traffic is drawn from `world_agents`, so what perception
+ * reported is only an annotation) in a different tint.
+ */
+export function createShadowBoxes(
+  scene: THREE.Scene,
+  color: string = OUTLINE_COLOR,
+  name = 'shadow-detections',
+) {
   const group = new THREE.Group();
-  group.name = 'shadow-detections';
+  group.name = name;
   scene.add(group);
 
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -45,7 +55,7 @@ export function createShadowBoxes(scene: THREE.Scene) {
   // translucent solid.
   const d = min(min(uv().x, uv().x.oneMinus()), min(uv().y, uv().y.oneMinus()));
   const edge = smoothstep(float(0.035), float(0.008), d);
-  boxMat.colorNode = uniform(new THREE.Color(OUTLINE_COLOR));
+  boxMat.colorNode = uniform(new THREE.Color(color));
   boxMat.opacityNode = edge;
 
   const boxes: THREE.Mesh[] = [];
@@ -56,6 +66,7 @@ export function createShadowBoxes(scene: THREE.Scene) {
     box = new THREE.Mesh(boxGeo, boxMat);
     box.renderOrder = 6;
     box.frustumCulled = false;
+    box.layers.set(CH.OVERLAY);
     group.add(box);
     boxes[i] = box;
     return box;

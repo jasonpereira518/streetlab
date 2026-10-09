@@ -87,6 +87,7 @@ describe('perception change-gate', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 

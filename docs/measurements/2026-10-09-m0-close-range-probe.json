@@ -1,0 +1,137 @@
+{
+  "meta": {
+    "sha": "c654c5b",
+    "date": "2026-10-09",
+    "capture": "/tmp/m0-probe-cap-grid-loop-22, /tmp/m0-probe-cap-grid-arterial-23",
+    "note": "grid-loop seed 22 and grid-arterial seed 23, --traffic 30, default tick rate, headless Chromium (WebGL2) via scripts/run_capture.sh with isolated ports; 91 + 81 frames captured. Excluded: grid-loop seed 11 --traffic 60 (73 frames, but the ego sat gridlocked at one position the whole run, so it was one scene photographed 73 times) and grid-loop seed 21 (0 frames: the machine was too loaded for frames to be labelled inside the 2 s pose-history window). Renderer is this branch's: same look as main, except the detector no longer sees overlays or the ego mesh (layers.ts)."
+  },
+  "results": {
+    "int8 (shipped)": {
+      "objects": 276,
+      "frames": 140,
+      "bins": {
+        "5-10 m": {
+          "n": 72,
+          "median_px_height": 107.56426363687346,
+          "median_match_iou": 0.5478113887733345,
+          "median_best_vehicle_score": 0.015122971963137388,
+          "p90_best_vehicle_score": 0.09450664073228836,
+          "max_best_vehicle_score": 0.17008176445960999,
+          "at_or_above_0.5": 0
+        },
+        "10-15 m": {
+          "n": 106,
+          "median_px_height": 45.046174224500405,
+          "median_match_iou": 0.1782694309051807,
+          "median_best_vehicle_score": 0.006247806362807751,
+          "p90_best_vehicle_score": 0.02684963122010231,
+          "max_best_vehicle_score": 0.1368558406829834,
+          "at_or_above_0.5": 0
+        },
+        "15-20 m": {
+          "n": 98,
+          "median_px_height": 36.64507198961515,
+          "median_match_iou": 0.3722959519389144,
+          "median_best_vehicle_score": 0.006588699761778116,
+          "p90_best_vehicle_score": 0.019612180441617954,
+          "max_best_vehicle_score": 0.10289689153432846,
+          "at_or_above_0.5": 0
+        }
+      },
+      "distinct_viewpoints": 132,
+      "per_class_peak_over_objects": {
+        "car": 0.17008176445960999,
+        "truck": 0.16120052337646484,
+        "bus": 0.09781119227409363,
+        "motorcycle": 0.05652813985943794
+      },
+      "per_class_peak_over_frames": {
+        "car": 0.24360968172550201,
+        "truck": 0.2375592589378357,
+        "bus": 0.15332286059856415,
+        "motorcycle": 0.12188233435153961
+      },
+      "top_any_class_of_matched_query": [
+        [
+          "chair",
+          111
+        ],
+        [
+          "hot dog",
+          16
+        ],
+        [
+          "bench",
+          16
+        ],
+        [
+          "car",
+          13
+        ],
+        [
+          "bowl",
+          12
+        ],
+        [
+          "toothbrush",
+          10
+        ],
+        [
+          "couch",
+          10
+        ],
+        [
+          "vase",
+          10
+        ]
+      ],
+      "share_top_class_is_a_vehicle": 0.07971014492753623,
+      "frame_top_any_class": [
+        [
+          "chair",
+          43
+        ],
+        [
+          "traffic light",
+          25
+        ],
+        [
+          "umbrella",
+          20
+        ],
+        [
+          "dining table",
+          16
+        ],
+        [
+          "stop sign",
+          16
+        ],
+        [
+          "toilet",
+          11
+        ],
+        [
+          "aeroplane",
+          6
+        ],
+        [
+          "cake",
+          1
+        ]
+      ],
+      "share_objects_best_iou_ge_0.3": 0.5942028985507246
+    },
+    "fp32": {
+      "objects": 0,
+      "frames": 0,
+      "bins": {},
+      "per_class_peak_over_objects": {},
+      "per_class_peak_over_frames": {},
+      "top_any_class_of_matched_query": [],
+      "share_top_class_is_a_vehicle": null,
+      "frame_top_any_class": [],
+      "share_objects_best_iou_ge_0.3": null
+    }
+  }
+}
