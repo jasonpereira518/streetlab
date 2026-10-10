@@ -263,6 +263,16 @@ COMMANDS = [
         "radius_m": 400.0,
         "destination": "Fisherman's Wharf",
     },
+    {
+        "id": "c4d",
+        "cmd": "load_location",
+        "query": "Nob Hill",
+        "destination": "Fisherman's Wharf",
+        "lat": 37.79,
+        "lon": -122.42,
+        "destination_lat": 37.808,
+        "destination_lon": -122.415,
+    },
     {"id": "c5", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 35},
     {"id": "c6", "cmd": "set_param", "key": "hazard_color", "value": "#FF7A1A"},
     {"id": "c7", "cmd": "set_param", "key": "assist_enabled", "value": False},
@@ -276,7 +286,9 @@ COMMANDS = [
 def test_every_command_variant_round_trips(raw):
     parsed = parse_command(raw)
     assert parsed.ok, parsed.error
-    assert parsed.value.model_dump(mode="json") == raw
+    assert parsed.value.model_dump(mode="json", exclude_none=True) == {
+        k: v for k, v in raw.items() if v is not None
+    }
 
 
 def test_command_union_discriminates_on_cmd():

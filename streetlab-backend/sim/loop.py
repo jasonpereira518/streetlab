@@ -28,6 +28,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
+from map.geocode import Place
 from map.lanes import ARRIVAL_CONTROL_ID
 from map.osm_source import describe_build_failure
 from map.scene_build import LANE_W, BuiltScene, SceneSource
@@ -841,9 +842,18 @@ class Simulation:
             return CommandOutcome(ok=False, message="no build executor attached")
 
         query, radius, destination = command.query, command.radius_m, command.destination
+        # A picked suggestion's coordinates skip the second geocode. The label
+        # text is the display name; the pair is both-or-neither (schema).
+        picks: dict = {}
+        if command.lat is not None and command.lon is not None:
+            picks["place"] = Place(lat=command.lat, lon=command.lon, display_name=query)
+        if destination and command.destination_lat is not None and command.destination_lon is not None:
+            picks["destination_place"] = Place(
+                lat=command.destination_lat, lon=command.destination_lon, display_name=destination
+            )
         self._build_sink(
             lambda on_progress: builder(
-                query, radius, destination=destination, on_progress=on_progress
+                query, radius, destination=destination, on_progress=on_progress, **picks
             )
         )
         label = f"{query} → {destination}" if destination else query
