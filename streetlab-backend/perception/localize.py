@@ -64,6 +64,9 @@ _DISAGREE_SIGMAS = 4.0
 #: Longest body assumed when the box width cannot be matched to the class (see `locate`).
 _UNMATCHED_EXTENT_CAP_M = 4.6
 
+CENSORED_MODEL = True
+#: Also apply the blanket cropped-box inflation to a censored box (A/B switch, see the Gate S amendment).
+CENSORED_BLANKET = True
 _MIN_DOWNWARD_SLOPE = 1e-6
 _MAX_MARCH_M = 250.0
 
@@ -181,7 +184,7 @@ def locate(
     right_cut = box.x1 >= frame_w - _EDGE_PX
     cropped_side = left_cut or right_cut
     censored_w: tuple[float, float] | None = None  # (width estimate m, its sigma m)
-    if left_cut != right_cut and d_ground > 1.0:
+    if CENSORED_MODEL and left_cut != right_cut and d_ground > 1.0:
         z_m = d_ground * max(math.cos(bearing - camera.yaw), 0.2)
         vis_w = (box.x1 - box.x0) * z_m / f_px
         longest_c = min(size.length, _UNMATCHED_EXTENT_CAP_M)
@@ -254,7 +257,7 @@ def locate(
             extent, extent_sigma = found
     d += extent / 2.0
     sigma_r = math.hypot(sigma_r, extent_sigma / 2.0)
-    if cropped_side and censored_w is None:
+    if cropped_side and (censored_w is None or CENSORED_BLANKET):
         # A body straddling the frame edge (the hand-off between two cameras) shows only part
         # of itself, so its depth extent is a guess: say so, or the tracker's tight gate
         # rejects the next frame's estimate from the other camera and the object gets a new id.
@@ -264,8 +267,8 @@ def locate(
     if censored_w is not None:
         sigma_t = math.hypot(sigma_t, censored_w[1] / 2.0)
         sigma_r = math.hypot(sigma_r, censored_w[1] / 2.0)
-    elif cropped_side:
-        # Cut by both sides: no real edge to anchor on. The box centre sits inboard of the body
+    if cropped_side and (censored_w is None or CENSORED_BLANKET):
+        # Cut by a frame edge: the hidden part is unknown. (Cut by both: no real edge to anchor on.) The box centre sits inboard of the body
         # centre by up to half its width across the line of sight.
         sigma_t = math.hypot(sigma_t, 0.5 * max(size.width, 0.5 * size.length))
     ux, uy = math.cos(bearing), math.sin(bearing)
