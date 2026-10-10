@@ -8,7 +8,7 @@ import threading
 import pytest
 import uvicorn
 from websockets.asyncio.client import connect
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import ConnectionClosed
 
 from server import ws_server
 from server.ws_server import create_app
@@ -54,6 +54,10 @@ async def test_allowed_origin_gets_the_scene(url):
 
 
 async def test_other_origin_is_refused(url):
-    with pytest.raises(InvalidStatus):
-        async with connect(url, origin="https://evil.example"):
-            pass
+    # Accepted then closed 1008, not an HTTP 403 at the handshake: a browser
+    # reports a refused handshake as a bare 1006, which it cannot tell apart
+    # from "backend down". test_ws_sessions.py asserts the code itself.
+    async with connect(url, origin="https://evil.example") as ws:
+        with pytest.raises(ConnectionClosed) as info:
+            await asyncio.wait_for(ws.recv(), timeout=5)
+    assert info.value.rcvd.code == 1008

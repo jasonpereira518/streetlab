@@ -172,6 +172,20 @@ anyone who wants to see the actual process, not just the summary.
 See [`DEMO.md`](DEMO.md) for the full walkthrough (packaged `.app`, or
 frontend + backend as two dev processes).
 
+### Hosted (Vercel frontend + Fly backend)
+
+The browser build finds its simulator through **`VITE_BACKEND_WS_URL`**, baked in at
+build time (e.g. `wss://streetlab-sim.fly.dev`; see [`streetlab/.env.example`](streetlab/.env.example)).
+A Vercel *production* build fails with a clear message if it is unset, because the
+fallback (`ws://127.0.0.1:8765`) would point every visitor at their own machine. For
+testing, `?backend=ws://…` / `?backend=wss://…` in the page URL overrides it, and
+`?mock=1` runs the in-browser mock with no backend at all. On the backend, every
+connection gets a private simulation, capped by `STREETLAB_MAX_SESSIONS`; browser
+origins are restricted with `STREETLAB_ALLOWED_ORIGINS`. Design, measurements, the
+cap/machine-size decision and the deploy commands are in
+[`docs/hosted-sessions.md`](docs/hosted-sessions.md); `scripts/smoke_hosted.py` checks a
+running backend end to end.
+
 ## Testing
 
 ```bash

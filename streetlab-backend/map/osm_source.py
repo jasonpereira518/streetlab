@@ -395,6 +395,22 @@ class OsmSceneSource:
         self._locations = locations
         self._scenes: dict[str, BuiltScene] = {}
 
+    def fork(self) -> "OsmSceneSource":
+        """A private catalog for one hosted session.
+
+        Shares the network clients (so Nominatim's 1 req/s and the disk cache
+        stay global) and the already-built scenes (frozen, so sharing them
+        costs nothing), but not the catalog: an address one visitor loads must
+        not appear in another's sidebar, and its scene is freed with its
+        session instead of accumulating for the life of the process.
+        """
+        with self._lock:
+            child = OsmSceneSource(
+                self.geocoder, self.overpass, self._locations, elevation=self.elevation
+            )
+            child._scenes = dict(self._scenes)
+        return child
+
     @property
     def locations(self) -> tuple[LocationSpec, ...]:
         """A snapshot of the current catalog specs, oldest (bundled) first.
