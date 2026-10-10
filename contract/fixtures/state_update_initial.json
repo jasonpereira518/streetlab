@@ -23,7 +23,7 @@
     "speed_limit_mps": 11.176,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 3.3689758816059947
+      "set_speed_mps": 4.317164255891927
     },
     "size": {
       "length": 4.7,
@@ -243,7 +243,7 @@
         43.39035452836218
       ]
     ],
-    "target_speed_mps": 3.3689758816059947,
+    "target_speed_mps": 4.317164255891927,
     "maneuver": "turn_right",
     "confidence": 1.0,
     "reaction_source_id": null

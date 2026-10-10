@@ -37,27 +37,15 @@ FROM_BEHIND = frozenset({"emergency_vehicle", "tailgater"})
 #: why. Strict: when one starts passing the xfail must be removed, so this list
 #: can only get shorter.
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("cut_in", "grid_slow"): (
-        "contact ~12 s AFTER the cut-in, not in reacting to it: the ego returns to its "
-        "lane while the cut-in car is beside it, outside both driving-feed cones "
-        "(forward +-75 deg, rear +-40 deg). 3 of 5 seeds, all unseen in the second "
-        "before contact. Needs a side-mirror zone in perception/driver_view.py"
-    ),
-    ("tailgater", "grid"): (
-        "the ego changes lane while the tailgater is alongside, in the same driving-feed "
-        "blind spot as cut_in/grid_slow; 5 of 5 seeds, 4 unseen before contact"
-    ),
-    ("emergency_vehicle", "grid_slow"): (
-        "the emergency car swings through a junction past a stopped ego and clips it "
-        "(seen; 2 of 5 seeds). The ego has no reaction to a vehicle behind it until "
-        "Cycle 6 Phase 3's pull_over"
-    ),
-    ("red_light_runner", "grid_slow"): (
-        "timed on the ego's speed at staging; at 0.45x traffic the ego slows for the "
-        "corner and the runner has crossed first: inert in 3 of 5 seeds, and 1 of 5 "
-        "overlaps the ego after being seen 0.2 s before contact"
+    ("oncoming_drift", "grid"): (
+        "grazes by 0.05 m in 2 of 5 seeds (1 and 3; seen). The ego brakes to a full stop 31 m "
+        "short (aeb), and the car drifting 0.6 m over the centre line at 11 m/s still passes the "
+        "stopped ego at -0.05 m: the staging's own margin was 0.06-0.24 m "
+        "(2026-10-09-hazard-reactions.md). Evading it is Phase 3's oncoming_nudge, not "
+        "longitudinal driving"
     ),
 }
+
 
 CELLS = [(kind, scene) for kind in SCENARIOS for scene in SCENES]
 

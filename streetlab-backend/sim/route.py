@@ -295,6 +295,11 @@ class Route:
         gap = (to_s - from_s) % loop
         return gap - loop if gap > loop / 2 else gap
 
+    def curvature_at(self, s: float, window_m: float = 4.0) -> float:
+        """Curvature (1/m) at `s`, from the circle through three points `window_m` apart."""
+        half = window_m / 2
+        return _menger_curvature(self.point_at(s - half), self.point_at(s), self.point_at(s + half))
+
     def peak_curvature(
         self,
         s: float,

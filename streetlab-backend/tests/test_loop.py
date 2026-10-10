@@ -371,7 +371,13 @@ def test_time_to_change_counts_down(sim):
 
 
 def test_detections_appear_for_nearby_traffic(sim):
-    advance(sim, 1.0)
+    # Not "at t=1.0 s": the nearest car starts 73 m away at -74..-78 deg, which is the edge of the
+    # 75 deg windscreen cone, so whether it is in the feed that exact second depends on where the
+    # jerk-limited start has put the ego (1.9 m/s then, 1.2 m/s now). It is in the feed by 5 s.
+    for _ in range(5):
+        advance(sim, 1.0)
+        if sim.state_update().detections:
+            break
     assert sim.state_update().detections
 
 
@@ -509,8 +515,10 @@ def test_the_kerb_marking_tracks_the_kerbside_lane_where_there_is_another_one():
     """
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    # 180 s, not 120: since the Phase 3 speed law the first overtake in this scenario starts at
+    # t=136.7 s (it was 46.5 s), so 120 s never drives the kerbside lane at all.
     kerbside_of_many, inner = 0, 0
-    for _ in range(int(120.0 / DT)):
+    for _ in range(int(180.0 / DT)):
         sim.step()
         lane = sim.state_update().telemetry.lane
         kerbside = lane.lane_index == lane.lane_count - 1

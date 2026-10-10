@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 from perception.driver_view import can_see
+from plan.profile import braking_ceiling, braking_horizon, curvature_caps
 from plan.hazard import stopping_distance
 from schema import HazardSummary, Size
 from sim.agents import (
@@ -186,7 +187,7 @@ SPAWN_SEARCH_M = 60.0
 
 #: The ego's speed law with nothing in its way, restated from `plan/control.py`
 #: (`_SPEED_GAIN`, `_MAX_ACCEL_MPS2`, `_MAX_DECEL_MPS2`, `_MAX_LATERAL_MPS2`,
-#: `_CURVATURE_PREVIEW_M`): `a = gain * (target - v)`, capped. Stagings that must arrive WHEN the ego does need to know where it will
+#: `plan/profile.py`): `a = gain * (target - v) + feed_forward`, capped. Stagings that must arrive WHEN the ego does need to know where it will
 #: be, and "where it is now at its current speed" is wrong whenever it is still
 #: accelerating. Restated for the reason `plan/hazard.py` restates its own: an
 #: import back into `plan.control` would be a cycle.
@@ -258,13 +259,16 @@ def _ego_path(
     limit, hold = sim.posted_limit(), v
     while t <= horizon_s:
         yield t, d, v
-        target = hold
+        target, ff = hold, 0.0
         if not hold_speed:
             target = limit
-            kappa = route.peak_curvature(s0 + d, distance_m=EGO_PREVIEW_M)
-            if kappa > 1e-6:
-                target = min(target, math.sqrt(EGO_LATERAL_MPS2 / kappa))
-        a = max(-EGO_BRAKE_MPS2, min(EGO_ACCEL_MPS2, EGO_SPEED_GAIN * (target - v)))
+            ceiling, ff = braking_ceiling(
+                curvature_caps(route, s0 + d, braking_horizon(v, EGO_PREVIEW_M), EGO_LATERAL_MPS2), v
+            )
+            if ceiling > target:
+                ff = 0.0
+            target = min(target, ceiling)
+        a = max(-EGO_BRAKE_MPS2, min(EGO_ACCEL_MPS2, EGO_SPEED_GAIN * (target - v) + ff))
         v = max(v + a * step_s, 0.0)
         d += v * step_s
         t += step_s

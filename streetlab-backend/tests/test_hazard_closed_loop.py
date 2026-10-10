@@ -219,13 +219,9 @@ def test_a_reaction_never_holds_the_ego_down_indefinitely(sweep):
 
 #: Runs measured to resume late, and why. Strict: an entry that stops being late
 #: must be removed, so this list can only get shorter.
-KNOWN_SLOW_TO_RESUME = {
-    ("grid", "cyclist_drift", 3): (
-        "after passing the cyclist the ego meets the next corner's curvature cap, "
-        "which is not a junction-FSM hold, and is back above half the limit more than "
-        "10 s after the clear (never, within the 35 s window; 2026-10-09)"
-    ),
-}
+#: Empty since the braking profile (2026-10-09): ('grid', 'cyclist_drift', 3) met the next corner's
+#: curvature cap for more than 10 s because the old cap applied from 22 m out, and now resumes.
+KNOWN_SLOW_TO_RESUME: dict[tuple[str, str, int], str] = {}
 
 
 def test_the_ego_drives_on_after_the_hazard_has_cleared(sweep):
@@ -299,10 +295,34 @@ def test_hazard_free_driving_never_reacts_to_anything_far_away(scene, scenario_i
 # --- the live stopping distance ---------------------------------------------- #
 
 
+class _AlwaysBrake:
+    """A threat layer that fires `aeb` with ceiling 0 every tick: the stop `stopping_distance` models."""
+
+    def assess(self, *args, **kwargs):
+        from plan.hazard import Reaction
+
+        return Reaction(kind="aeb", speed_ceiling_mps=0.0, source_id="x", maneuver="emergency_brake")
+
+    def reset(self):
+        pass
+
+
+#: Measured live/model ratio at 6, 8, 11.18 and 15 m/s, with an `aeb` reaction commanded at t=1 s
+#: on the straightest 110 m of grid-loop: 0.61, 0.74, 0.84, 0.76. The model is the exponential
+#: taper of the proportional law; an emergency stop now holds 4.5 m/s^2 until the car is at its
+#: target (`plan/control.py::_AEB_MIN_DECEL_MPS2`), so it stops sooner than the model says. Never
+#: later is the safety property; "within 3 %" is no longer true and is not claimed.
+LIVE_OVER_MODEL_MIN = 0.5
+
+
 @pytest.mark.parametrize("speed", [6.0, 8.0, 11.18, 15.0])
 def test_the_live_loop_stops_within_the_modelled_distance(speed):
-    """`stopping_distance` against the tracker driving the real route -- not the
-    table it was fitted to, which `test_hazard.py` pins."""
+    """`stopping_distance` against the tracker driving the real route under an emergency brake
+    -- not the table it was fitted to, which `test_hazard.py` pins.
+
+    The brake is a commanded `aeb` reaction, not a speed cap of 0: a cap is ordinary driving and
+    is jerk-limited (2.5 m/s^3), which is the point of that limit and not what the hazard layer's
+    distances are for."""
     from plan.control import CenterlineFollower, PlanContext, PlanLimits
     from sim.vehicle import BicycleModel, VehicleState
 
@@ -317,7 +337,7 @@ def test_the_live_loop_stops_within_the_modelled_distance(speed):
     state = VehicleState(x=x, y=y, heading=route.heading_at(s0), speed_mps=speed)
     braking, distance, t = False, 0.0, 0.0
     for _ in range(int(60 / DT)):
-        limits = PlanLimits(speed_limit_mps=speed, speed_cap_mps=0.0 if braking else speed)
+        limits = PlanLimits(speed_limit_mps=speed, speed_cap_mps=speed)
         out = planner.plan(state, route, [], limits, PlanContext(t=t, dt=DT))
         state = model.step(state, accel_mps2=out.accel_mps2, steer_rad=out.steer_rad, dt=DT)
         t += DT
@@ -327,6 +347,7 @@ def test_the_live_loop_stops_within_the_modelled_distance(speed):
                 break
         elif t >= 1.0:
             braking = True
+            planner.assessor = _AlwaysBrake()
     expected = stopping_distance(speed)
     assert distance <= expected + 1e-6, f"stopped in {distance:.2f} m, longer than modelled {expected:.2f} m"
-    assert distance >= expected * 0.97, f"model is {expected / distance:.2f}x the measured {distance:.2f} m"
+    assert distance >= expected * LIVE_OVER_MODEL_MIN, f"live {distance:.2f} m is under {LIVE_OVER_MODEL_MIN}x the model {expected:.2f} m"

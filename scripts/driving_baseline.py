@@ -69,6 +69,8 @@ def _rows(summary: dict) -> list[tuple[str, str, str, bool | None]]:
     rows = [
         ("Ego peak decel, m/s2", _fmt(ego["peak_decel_mps2"]), f"<= {BUDGET.ego_decel_mps2}",
          ego["peak_decel_mps2"] <= BUDGET.ego_decel_mps2),
+        ("Emergency-braking frames (exempt from the two ego rows)", str(ego.get("emergency_frames", 0)),
+         "-", None),
         ("Ego longitudinal jerk p99 / max, m/s3",
          f"{_fmt(ego['longitudinal_jerk']['p99'], 1)} / {_fmt(ego['longitudinal_jerk']['max'], 0)}",
          f"<= {BUDGET.ego_jerk_p99} / {BUDGET.ego_jerk_max}",
@@ -137,7 +139,7 @@ def main() -> None:
         sys.exit(f"{path.relative_to(REPO)} already exists; pick another --label rather than overwrite it")
 
     runs = standard_runs(
-        _nob_hill_scene(), nobhill_s=args.seconds, grid_s=args.seconds, grid_slow_s=args.seconds
+        _nob_hill_scene(), nobhill_s=args.seconds, nobhill_slow_s=args.seconds, grid_s=args.seconds, grid_slow_s=args.seconds
     )
     sha = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True, check=False
