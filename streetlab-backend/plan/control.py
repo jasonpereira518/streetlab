@@ -57,10 +57,10 @@ _MAX_DECEL_MPS2 = 4.5
 _SPEED_GAIN = 0.9
 
 #: How fast the commanded acceleration may change, m/s^3, when nothing is wrong. The budget is
-#: 3.0 at the 99th percentile (`tests/driving_metrics.py`); a threat reaction is exempt, because
+#: 3.0 at the 99th percentile (`evaluation/driving_metrics.py`); a threat reaction is exempt, because
 #: an emergency stop that waits 1.8 s to reach full braking is not one.
 _JERK_MPS3 = 2.5
-#: The hardest braking outside a threat reaction (the budget is 2.5, `tests/driving_metrics.py`).
+#: The hardest braking outside a threat reaction (the budget is 2.5, `evaluation/driving_metrics.py`).
 _COMFORT_DECEL_MPS2 = 2.4
 #: How hard an emergency stop brakes until the car is at its target speed.
 _AEB_MIN_DECEL_MPS2 = 4.5

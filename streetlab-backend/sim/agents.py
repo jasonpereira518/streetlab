@@ -390,7 +390,7 @@ _IDM_MAX_BRAKE = 4.5
 
 #: The floor on the free term: it brakes for a corner
 #: (the 14 m preview asks 8 m/s of an 11 m/s car in 1.2 s) or a speed-scale change. 3.4 m/s^2,
-#: under the 3.5 p99 traffic budget (`tests/driving_metrics.py`); measured on Nob Hill, 1720 of
+#: under the 3.5 p99 traffic budget (`evaluation/driving_metrics.py`); measured on Nob Hill, 1720 of
 #: 81600 agent-frames sat on 4.5 for exactly this. The interaction term adds on top, to `_IDM_MAX_BRAKE`.
 #: `traffic_speed_scale=0` still halts traffic: it needs 3 s from 11 m/s.
 _IDM_FREE_BRAKE = 3.4
@@ -447,7 +447,7 @@ MOBIL_COOLDOWN_S = 4.0
 _NORMAL_SPAN_M = 1.0
 
 #: The most an agent's body may turn in one tick, radians: 1.8 degrees, under the 2.0 budget
-#: (`tests/driving_metrics.py`). 1.88 rad/s at 60 Hz; the tightest corner traffic takes
+#: (`evaluation/driving_metrics.py`). 1.88 rad/s at 60 Hz; the tightest corner traffic takes
 #: (3.1 m radius, at 2.6 m/s) needs 0.84.
 _MAX_YAW_STEP_RAD = math.radians(1.8)
 

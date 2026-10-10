@@ -114,7 +114,7 @@ STOP_ZONE_M = 7.0
 STOPPED_MPS = 0.3
 
 #: Where the nose comes to rest short of a stop line, m. The budget is 0.5-2.0
-#: (`tests/driving_metrics.py`); stops measured rest 0.25 m past the target, and 2.31 m was the worst nose with 1.25.
+#: (`evaluation/driving_metrics.py`); stops measured rest 0.25 m past the target, and 2.31 m was the worst nose with 1.25.
 STOP_NOSE_GAP_M = 0.9
 #: The ego's half-length (`EGO_LENGTH_M` below is declared later): the pose is the body centre.
 _EGO_HALF_LENGTH_M = 2.35

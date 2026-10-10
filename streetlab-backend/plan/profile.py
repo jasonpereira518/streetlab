@@ -25,7 +25,7 @@ from typing import Iterable, Iterator
 from sim.route import Route
 
 #: Deceleration the profile plans for, m/s^2. Under the 2.5 budget
-#: (`tests/driving_metrics.py`) by what the jerk limit costs: the slewed
+#: (`evaluation/driving_metrics.py`) by what the jerk limit costs: the slewed
 #: command trails the plan by ~0.7 s and the closed loop makes it up.
 BRAKE_DECEL_MPS2 = 1.8
 

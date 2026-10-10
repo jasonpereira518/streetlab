@@ -3,7 +3,7 @@
 
 The acceptance bar for driving realism Phase 3 is "zero overlaps across all RUN_KEYS x seeds
 1-5". `test_vehicle_clearance.py` covers the five synthetic scenarios at seeds 7 and 11; this
-covers the four recordings the driving budgets are built on (`tests/driving_metrics.RUN_KEYS`)
+covers the four recordings the driving budgets are built on (`evaluation/driving_metrics.RUN_KEYS`)
 at the seeds that bar names, ego included, Nob Hill included.
 
 Run from `streetlab-backend/`:
@@ -29,7 +29,7 @@ from map.osm_source import OsmSceneSource  # noqa: E402
 from map.overpass import OverpassClient  # noqa: E402
 from map.scene_build import SyntheticGrid  # noqa: E402
 from sim.loop import Simulation  # noqa: E402
-from tests.driving_metrics import RUN_KEYS  # noqa: E402
+from evaluation.driving_metrics import RUN_KEYS  # noqa: E402
 from tests.helpers_separation import box_corners, min_separation_m  # noqa: E402
 
 FIXTURE = Path(__file__).resolve().parents[1] / "streetlab-backend" / "tests" / "fixtures" / "overpass_nob_hill.json"

@@ -204,7 +204,7 @@ def test_recording_a_real_run_fills_every_column_consistently():
 def test_emergency_frames_are_exempt_from_the_ego_decel_and_jerk_budgets():
     import dataclasses
 
-    from tests.driving_metrics import ego_jerk, ego_peak_decel
+    from evaluation.driving_metrics import ego_jerk, ego_peak_decel
 
     accel = [0.0, -0.5, -4.0, -4.0, -1.0, -0.5]
     run = make_run([5.0] * 6, accel=accel)
