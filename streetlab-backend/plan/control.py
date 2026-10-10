@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from plan.behavior import BehaviorFSM
+from plan.hazard import NO_REACTION, Reaction, ThreatAssessor
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
@@ -126,6 +127,10 @@ class PlanResult:
     plan: Plan
     steer_rad: float
     accel_mps2: float
+    #: The threat layer's answer this tick. Not on the wire -- `Plan` carries
+    #: only its source id -- but `sim/loop.py` draws the trajectory graph's
+    #: `threat` series from it.
+    reaction: Reaction = NO_REACTION
 
 
 @runtime_checkable
@@ -154,10 +159,12 @@ class Planner(Protocol):
 class CenterlineFollower:
     wheelbase_m: float = 2.9
     fsm: BehaviorFSM = field(default_factory=BehaviorFSM)
+    assessor: ThreatAssessor = field(default_factory=ThreatAssessor)
     last_steer: float = 0.0
 
     def reset(self) -> None:
         self.fsm.reset()
+        self.assessor.reset()
         self.last_steer = 0.0
 
     def _away_lane(self, context: PlanContext) -> Lane | None:
@@ -195,6 +202,16 @@ class CenterlineFollower:
         aim_route = route if away is None else away.route
         blend = 0.0 if away is None else self.fsm.lane_change.blend
 
+        # Going out, the strip is drawn toward the new lane gradually (the car
+        # is leaving what is in the old one). Coming back, it is committed to
+        # the destination lane from the first tick: whatever is ahead in that
+        # lane is a threat now, not once the aim point has finished moving.
+        returning = self.fsm.lane_change is not None and self.fsm.lane_change.returning
+        reaction = self.assessor.assess(
+            detections, ego, route, s, context.dt,
+            centre_m=_strip_centre(ego, route, s, aim_route, 1.0 if returning else blend),
+        )
+
         steer = self._pure_pursuit_blended(ego, route, aim_route, s, lookahead, blend)
         steer = _clamp(
             steer,
@@ -231,22 +248,23 @@ class CenterlineFollower:
             target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / kappa_cmd))
         # The behaviour ceiling folds in exactly like the curvature and
         # lead-vehicle caps: another upper bound, not a separate control path.
-        target = min(target, decision.speed_ceiling_mps)
+        # So does the threat layer's: it can only lower the target.
+        target = min(target, decision.speed_ceiling_mps, reaction.speed_ceiling_mps)
         accel = _clamp(
             _SPEED_GAIN * (target - ego.speed_mps), -_MAX_DECEL_MPS2, _MAX_ACCEL_MPS2
         )
 
         lead, _gap = _closest_lead(detections, route, s)
-        reaction = None
+        source_id = None
         if decision.target is not None:
-            reaction = decision.target.id
+            source_id = decision.target.id
         elif self.fsm.lane_change is not None and self.fsm.lane_change.lead_id:
-            reaction = self.fsm.lane_change.lead_id
+            source_id = self.fsm.lane_change.lead_id
         elif decision.maneuver in ("stop", "yield", "arrived", "emergency_brake"):
             # Only attribute a reaction source when the manoeuvre is a rules
             # response — ordinary car-following should not fill the chip.
             if lead is not None:
-                reaction = lead.id
+                source_id = lead.id
 
         return PlanResult(
             plan=Plan(
@@ -254,12 +272,13 @@ class CenterlineFollower:
                     s, length_m=_PLAN_LENGTH_M, step_m=_PLAN_STEP_M
                 ),
                 target_speed_mps=max(0.0, target),
-                maneuver=decision.maneuver or _maneuver(route, s),
+                maneuver=_label(decision.maneuver, reaction, route, s),
                 confidence=1.0 if limits.assist_enabled else 0.35,
-                reaction_source_id=reaction,
+                reaction_source_id=reaction.source_id or source_id,
             ),
             steer_rad=steer,
             accel_mps2=accel,
+            reaction=reaction,
         )
 
     def _pure_pursuit_blended(
@@ -305,6 +324,44 @@ class CenterlineFollower:
         if lead is not None:
             target = min(target, _following_speed(lead, gap, ego, limits))
         return target
+
+
+_LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
+
+
+def _label(
+    decision_maneuver: str | None, reaction: Reaction, route: Route, s: float
+) -> str:
+    """The wire manoeuvre: a lane change in progress keeps its label.
+
+    Everywhere else a firing reaction names the manoeuvre. But a car mid-change
+    is off its lane by definition, and the wire says so with `lane_change_*`;
+    relabelling those frames `emergency_brake` would put a car 2 m off its lane
+    under a label that does not say why (the suite asserts the two never come
+    apart). The braking is still reported -- the target speed, the plan's
+    `reaction_source_id` and the trajectory graph all carry it.
+    """
+    if decision_maneuver in _LANE_CHANGE_LABELS:
+        return decision_maneuver
+    return reaction.maneuver or decision_maneuver or _maneuver(route, s)
+
+
+def _strip_centre(
+    ego: VehicleState, route: Route, s: float, aim_route: Route, blend: float
+) -> float:
+    """Offset from `route` of the line the ego is actually steering along.
+
+    Where the ego is now, drawn toward the lane it is changing into by the same
+    `blend` that interpolates the pure-pursuit aim point. The threat layer's
+    strip is centred here, so a stopped car in the lane being left is not
+    "in the path" of a car that is already on its way round it.
+    """
+    here = route.lateral_offset((ego.x, ego.y), s)
+    if blend <= 0.0:
+        return here
+    ts = aim_route.project((ego.x, ego.y))
+    tx, ty = aim_route.point_at(ts)
+    return here + (route.lateral_offset((tx, ty), s) - here) * blend
 
 
 def _closest_lead(

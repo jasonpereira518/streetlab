@@ -21,7 +21,7 @@ import math
 from typing import Sequence
 
 from perception.visibility import is_visible, visible_fraction
-from schema import Building, CameraParams, Detection
+from schema import Building, CameraParams, Detection, Size
 from sim.vehicle import VehicleState
 
 #: Half-angle of the forward windscreen cone.
@@ -36,6 +36,49 @@ REAR_RANGE_M = 45.0
 _CAMERA_Z_M = 1.33
 
 
+def _camera(ego: VehicleState) -> CameraParams:
+    return CameraParams(
+        x=ego.x,
+        y=ego.y,
+        z=_CAMERA_Z_M,
+        yaw=ego.heading,
+        pitch=0.0,
+        roll=0.0,
+        fov_y_deg=50.0,
+        aspect=16.0 / 9.0,
+    )
+
+
+def can_see(
+    ego: VehicleState,
+    x: float,
+    y: float,
+    heading: float,
+    size: Size,
+    buildings: Sequence[Building] = (),
+    *,
+    forward_half_rad: float = FORWARD_FOV_HALF_RAD,
+    rear_half_rad: float = REAR_FOV_HALF_RAD,
+    rear_range_m: float = REAR_RANGE_M,
+) -> bool:
+    """Whether a body of `size` at `(x, y, heading)` is resolvable from `ego`.
+
+    The one test `visible_to_driver` applies per detection, exposed for callers
+    that have a pose and no `Detection` -- a hazard staging asking "will the ego
+    be able to see this from where it will be?".
+    """
+    if not _in_cabin_view(
+        ego,
+        x,
+        y,
+        forward_half_rad=forward_half_rad,
+        rear_half_rad=rear_half_rad,
+        rear_range_m=rear_range_m,
+    ):
+        return False
+    return is_visible(visible_fraction(x, y, heading, size, _camera(ego), buildings))
+
+
 def visible_to_driver(
     ego: VehicleState,
     detections: Sequence[Detection],
@@ -46,42 +89,21 @@ def visible_to_driver(
     rear_range_m: float = REAR_RANGE_M,
 ) -> list[Detection]:
     """Keep detections the ego could resolve from the cabin."""
-    if not detections:
-        return []
-
-    camera = CameraParams(
-        x=ego.x,
-        y=ego.y,
-        z=_CAMERA_Z_M,
-        yaw=ego.heading,
-        pitch=0.0,
-        roll=0.0,
-        fov_y_deg=50.0,
-        aspect=16.0 / 9.0,
-    )
-    out: list[Detection] = []
-    for det in detections:
-        if not _in_cabin_view(
+    return [
+        det
+        for det in detections
+        if can_see(
             ego,
-            det.pose.x,
-            det.pose.y,
-            forward_half_rad=forward_half_rad,
-            rear_half_rad=rear_half_rad,
-            rear_range_m=rear_range_m,
-        ):
-            continue
-        fraction = visible_fraction(
             det.pose.x,
             det.pose.y,
             det.pose.heading,
             det.size,
-            camera,
             buildings,
+            forward_half_rad=forward_half_rad,
+            rear_half_rad=rear_half_rad,
+            rear_range_m=rear_range_m,
         )
-        if not is_visible(fraction):
-            continue
-        out.append(det)
-    return out
+    ]
 
 
 def _in_cabin_view(

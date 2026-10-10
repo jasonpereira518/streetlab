@@ -198,7 +198,11 @@ def test_a_larger_follow_distance_yields_a_lower_target(built, ctx):
     route = built.ego_route
     s = straight_s(route)
     ego = start_state(route, speed=9.0, s=s)
-    lead = [stopped_lead_at(route, s, 18.0)]
+    # 30 m, not the 18 m this used to be: at 9 m/s the tracker needs 11.4 m to
+    # stop, and 18 m leaves only 11.35 m after emergency braking's 2 m margin,
+    # so `aeb` takes over and zeroes BOTH targets. This test is about the
+    # following law, which a lead this far out leaves in charge.
+    lead = [stopped_lead_at(route, s, 30.0)]
 
     def target(follow_s):
         limits = PlanLimits(
@@ -606,3 +610,106 @@ def test_planner_reports_arrived_and_holds_at_an_open_routes_end():
         t += dt
         assert result.plan.maneuver == "arrived"
         assert result.plan.target_speed_mps == 0.0
+
+
+# --- the threat layer, wired in (Cycle 6 Phase 2) --------------------------- #
+
+
+def crossing_pedestrian(route, ego_s, ahead_m, off_m, vy):
+    """A pedestrian `ahead_m` along the route and `off_m` to its left, walking at
+    `vy` m/s across it (negative = toward the right)."""
+    from schema import Detection, Pose, Size
+
+    x, y = route.point_at(ego_s + ahead_m)
+    h = route.heading_at(ego_s + ahead_m)
+    nx, ny = -math.sin(h), math.cos(h)
+    return Detection(
+        id="ped",
+        cls="pedestrian",
+        pose=Pose(x=x + nx * off_m, y=y + ny * off_m, heading=h),
+        size=Size(length=0.6, width=0.6, height=1.7),
+        velocity=(nx * vy, ny * vy),
+        speed_mps=abs(vy),
+        confidence=1.0,
+        hazard=False,
+        hazard_label=None,
+        ttc_s=None,
+        lane_offset=round(off_m / 3.6),
+        emergency=False,
+    )
+
+
+def test_a_stopped_car_in_the_strip_brakes_at_the_cap_and_says_so(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=8.0, s=s)
+    result = CenterlineFollower().plan(ego, route, [stopped_lead_at(route, s, 14.0)], limits, ctx)
+    assert result.plan.maneuver == "emergency_brake"
+    assert result.plan.reaction_source_id == "lead"
+    assert result.plan.target_speed_mps == 0.0
+    assert result.accel_mps2 == pytest.approx(-4.5)
+    assert result.reaction.kind == "aeb"
+    Plan.model_validate(result.plan.model_dump())
+
+
+def test_a_pedestrian_stepping_out_makes_the_ego_yield(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=10.0, s=s)
+    ped = crossing_pedestrian(route, s, ahead_m=30.0, off_m=5.0, vy=-1.4)
+    result = CenterlineFollower().plan(ego, route, [ped], limits, ctx)
+    assert result.plan.maneuver == "yield"
+    assert result.plan.reaction_source_id == "ped"
+    assert 0.0 < result.plan.target_speed_mps < 10.0
+
+
+def test_a_pedestrian_standing_at_the_kerb_changes_nothing(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=10.0, s=s)
+    ped = crossing_pedestrian(route, s, ahead_m=30.0, off_m=5.0, vy=0.0)
+    result = CenterlineFollower().plan(ego, route, [ped], limits, ctx)
+    assert result.plan.reaction_source_id is None
+    assert result.reaction.kind == "none"
+    assert result.plan.target_speed_mps == pytest.approx(limits.speed_limit_mps)
+
+
+def test_the_reaction_only_ever_lowers_the_target(built, limits, ctx):
+    """Same scene with and without the threat layer: never faster with it."""
+    route = built.ego_route
+    s = straight_s(route)
+    for speed in (4.0, 8.0, 11.0):
+        ego = start_state(route, speed=speed, s=s)
+        for ahead in (8.0, 15.0, 30.0, 60.0):
+            dets = [crossing_pedestrian(route, s, ahead, 4.0, -1.4), stopped_lead_at(route, s, ahead + 5.0)]
+            on = CenterlineFollower()
+            off = CenterlineFollower()
+            off.assessor.rules.clear()
+            a = on.plan(ego, route, dets, limits, ctx).plan.target_speed_mps
+            b = off.plan(ego, route, dets, limits, ctx).plan.target_speed_mps
+            assert a <= b + 1e-9, (speed, ahead)
+
+
+def test_reset_clears_the_assessor_along_with_the_fsm(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    planner = CenterlineFollower()
+    planner.plan(start_state(route, speed=8.0, s=s), route, [stopped_lead_at(route, s, 14.0)], limits, ctx)
+    assert planner.assessor.rules[0].active_id is not None
+    planner.reset()
+    assert planner.assessor.rules[0].active_id is None
+
+
+def test_with_no_detections_the_plan_is_unchanged_by_the_threat_layer(built, limits, ctx):
+    """Hazard-free driving must not move: compare against a planner whose
+    assessor has no rules, over a stretch that includes a turn."""
+    route = built.ego_route
+    on, off = CenterlineFollower(), CenterlineFollower()
+    off.assessor.rules.clear()
+    model = BicycleModel()
+    ego = start_state(route, speed=6.0, s=straight_s(route))
+    for _ in range(1500):
+        a = on.plan(ego, route, [], limits, ctx)
+        b = off.plan(ego, route, [], limits, ctx)
+        assert a.plan == b.plan and a.accel_mps2 == b.accel_mps2 and a.steer_rad == b.steer_rad
+        ego = model.step(ego, accel_mps2=a.accel_mps2, steer_rad=a.steer_rad, dt=1 / 60)
