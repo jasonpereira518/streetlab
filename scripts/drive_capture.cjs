@@ -20,7 +20,7 @@ const { chromium } = require('playwright');
   page.on('console', (msg) => {
     if (msg.type() === 'error') console.error('console error:', msg.text());
   });
-  await page.goto('http://localhost:1420/');
+  await page.goto(process.env.CAPTURE_URL || 'http://localhost:1420/');
   console.log('page loaded, letting the sim run...');
 
   // Keep the process (and page) alive; run_capture.sh polls frames on disk

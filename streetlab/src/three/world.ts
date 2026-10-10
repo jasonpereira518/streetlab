@@ -28,6 +28,7 @@ import {
   subtractIntervals,
 } from './meshBuilder';
 import type { Interval, P3 } from './meshBuilder';
+import { CH, TOGGLE_CHANNEL, assignChannel } from './layers';
 import { speedLimitTexture, stopFaceTexture, streetNameTexture } from './labels';
 import { TerrainField, type HeightFn } from './terrain';
 
@@ -128,7 +129,6 @@ export interface World {
   groundMin: number;
   /** Drive signal lamps from the live frame. */
   updateSignals(states: SignalState[], time: number): void;
-  setLayerVisible(layer: LayerKey, visible: boolean): void;
   dispose(): void;
 }
 
@@ -1120,15 +1120,20 @@ export function buildWorld(scene: SceneDescription): World {
     disposables.push(mesh.geometry, mesh.material as THREE.Material);
   }
 
+  // UI toggles hide a category from the MAIN camera only (layers.ts); the
+  // detector keeps seeing it. Real geometry therefore moves onto a channel of
+  // its own rather than flipping `visible`, which every camera obeys.
+  for (const [layer, nodes] of layerNodes) {
+    const channel = layer === 'reference_path' ? CH.OVERLAY : TOGGLE_CHANNEL[layer];
+    if (channel !== undefined) for (const n of nodes) assignChannel(n, channel);
+  }
+
   return {
     root,
     heightAt,
     groundMin: terrain.min,
     updateSignals(states, time) {
       signals?.update(states, time);
-    },
-    setLayerVisible(layer, visible) {
-      for (const node of layerNodes.get(layer) ?? []) node.visible = visible;
     },
     dispose() {
       for (const d of disposables) d.dispose();

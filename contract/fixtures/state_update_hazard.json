@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 9,
+  "protocol": 10,
   "seq": 288,
   "t": 4.799999999999988,
   "sim_rate_hz": 60.0,
@@ -81,6 +81,98 @@
       "ttc_s": 3.8599243431468215,
       "lane_offset": 0,
       "emergency": false
+    }
+  ],
+  "world_agents": [
+    {
+      "id": "veh_00",
+      "cls": "car",
+      "pose": {
+        "x": 4.479999999999998,
+        "y": 63.59271038848641,
+        "heading": 1.942307685711858
+      },
+      "size": {
+        "length": 4.6,
+        "width": 1.9,
+        "height": 1.45
+      },
+      "speed_mps": 3.080059151323533
+    },
+    {
+      "id": "veh_01",
+      "cls": "car",
+      "pose": {
+        "x": 44.11233617767533,
+        "y": 78.2,
+        "heading": 0.0
+      },
+      "size": {
+        "length": 4.9,
+        "width": 1.95,
+        "height": 1.5
+      },
+      "speed_mps": 6.03440185155966
+    },
+    {
+      "id": "veh_02",
+      "cls": "truck",
+      "pose": {
+        "x": 64.22132389166522,
+        "y": 78.2,
+        "heading": 0.0
+      },
+      "size": {
+        "length": 7.8,
+        "width": 2.4,
+        "height": 3.1
+      },
+      "speed_mps": 1.896976319507882
+    },
+    {
+      "id": "veh_03",
+      "cls": "car",
+      "pose": {
+        "x": 78.2,
+        "y": 14.25444877638013,
+        "heading": -1.5707963267948966
+      },
+      "size": {
+        "length": 4.3,
+        "width": 1.82,
+        "height": 1.42
+      },
+      "speed_mps": 3.5697163239284877
+    },
+    {
+      "id": "veh_04",
+      "cls": "bus",
+      "pose": {
+        "x": 64.28765263542554,
+        "y": 1.799999999999999,
+        "heading": 3.141592653589793
+      },
+      "size": {
+        "length": 11.5,
+        "width": 2.55,
+        "height": 3.3
+      },
+      "speed_mps": 5.596224933900068
+    },
+    {
+      "id": "veh_05",
+      "cls": "motorcycle",
+      "pose": {
+        "x": 3.2399999999999975,
+        "y": 16.08606566534642,
+        "heading": 1.8586168429428005
+      },
+      "size": {
+        "length": 2.1,
+        "width": 0.8,
+        "height": 1.3
+      },
+      "speed_mps": 4.0534959007952285
     }
   ],
   "detections_shadow": null,

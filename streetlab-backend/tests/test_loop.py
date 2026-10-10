@@ -1846,6 +1846,44 @@ def test_detections_shadow_carries_the_non_driving_source_while_ground_truth_dri
         pipeline.shutdown()
 
 
+def test_world_agents_is_every_agent_whatever_perception_reports():
+    """Protocol 10: `world_agents` is ground truth for every agent, not range
+    gated and not tied to the driving source. With ML driving and a marker the
+    only detection, the world still lists the real traffic."""
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        frame = sim.state_update()
+        assert {d.id for d in frame.detections} == {"marker"}
+        truth = {a.id: a for a in sim._traffic.agents}
+        assert truth, "the scene should have traffic"
+        assert {a.id for a in frame.world_agents} == set(truth)
+        for wa in frame.world_agents:
+            ag = truth[wa.id]
+            assert (wa.pose.x, wa.pose.y, wa.speed_mps) == (
+                ag.state.x, ag.state.y, ag.state.speed_mps)
+            assert wa.size.length == ag.size.length
+    finally:
+        pipeline.shutdown()
+
+
+def test_world_agents_ignores_the_ground_truth_range_gate():
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+    from perception.service import MAX_RANGE_M
+
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=3)
+    sim.step()
+    frame = sim.state_update()
+    ego = sim.world.ego
+    far = [a for a in frame.world_agents
+           if math.hypot(a.pose.x - ego.x, a.pose.y - ego.y) > MAX_RANGE_M]
+    assert far, "need an agent beyond the gate for this to mean anything"
+    assert {a.id for a in far}.isdisjoint({d.id for d in frame.detections})
+
+
 def test_detections_shadow_carries_ground_truth_once_ml_drives():
     """Flip `set_perception` to `ml` and the shadow relationship inverts:
     `detections` becomes the ML source's output, and ground truth -- which

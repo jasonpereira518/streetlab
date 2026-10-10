@@ -704,6 +704,13 @@ export class MockSim {
         size: EGO_SIZE,
       },
       detections,
+      world_agents: detections.map((d) => ({
+        id: d.id,
+        cls: d.cls,
+        pose: d.pose,
+        size: d.size,
+        speed_mps: d.speed_mps,
+      })),
       // The mock server has no ML perception path, so there is never a
       // second source to shadow -- null, not [], per the wire contract.
       detections_shadow: null,
