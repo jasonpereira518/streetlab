@@ -44,9 +44,13 @@ touching the cycles before it.
 | 1 | Synthetic grid, scripted traffic, ground-truth perception, centerline planner, real-time WS server, native sidecar | **Built** |
 | 2 | Real OSM map data, in-app address search, offline caching | **Built** |
 | 3 | Traffic-light/stop-sign compliance, lane-level overtaking, reactive IDM/MOBIL traffic, hazard scenarios | **Built** |
-| 4 | Real ONNX object detector wired end-to-end (camera → inference → 2D-to-world tracking → scoring) | **Built** — measured zero vehicle detections; ground truth stays the default driver, ML mode is labelled experimental |
+| 4 | Real ONNX object detector wired end-to-end (camera → inference → 2D-to-world tracking → scoring) | **Built** — measured zero vehicle detections on the Cycle 4 renderer; ground truth stays the default driver, ML mode is labelled experimental |
 | 5 | Sim-generated training data, model fine-tuning, quantization/precision analysis | **Built** — full train/eval pipeline shipped; fine-tuning itself returned a null result (see the README's Results) |
-| 6 | A hazard menu: ten staged hazards selectable from the UI; hazard reactions in the planner | **In progress** — the hazard menu has shipped; planner reactions have not |
+| 6 | A hazard menu: ten staged hazards selectable from the UI; hazard reactions in the planner | **Built** — menu, ten stagings and planner reactions ([measurements](measurements/2026-10-09-hazard-reactions.md)) |
+| Driving realism | Phased driving-quality work against fixed budgets (speed law, lane changes, jerk/stop budgets) | **Built** — phases 0-3 ([measurements](measurements/2026-10-09-driving-after-phase-3.md)) |
+| Location and routing, map render, UI shell | Address search hardening and routing, terrain and render rules, shortcuts/help/toast UI | **Built** |
+| Hosted deploy | Vercel frontend plus Fly backend with a private simulation per WebSocket connection ([design](hosted-sessions.md)) | **Built**, not deployed from this repo's CI |
+| ML driving | Drive on detector output: realistic renderer, three-camera detector, noisy-truth closed-loop gate | **Stopped** — Gate 1 (car recall 0.150 vs 0.70) and Gate S (criteria 1, 3, 4, 5, 7) both failed; ML stays Experimental ([Gate 1](measurements/2026-10-09-ml-gate-1.md), [Gate S](measurements/2026-10-09-ml-gate-s.md)) |
 
 Detailed, dated measurement reports and design docs for every cycle live
 under [`measurements/`](measurements/) and [`superpowers/specs/`](superpowers/specs/).

@@ -92,9 +92,12 @@ export function HelpDialog() {
       </dl>
       <h3 className="help-sub">Perception</h3>
       <p className="help-note">
-        Ground truth hands the planner the simulator's exact world. ML runs a real detector on
-        rendered frames and drives from what it sees. It is experimental and needs the backend
-        started with <code>--perception</code>.
+        Ground truth hands the planner the simulator's exact world and is the default driver. ML
+        runs a real detector on rendered frames and drives from what it sees. It is experimental
+        and needs the backend started with <code>--perception</code>. Measured, it does not meet
+        its gates: car recall 0.150 against 0.70 required, and the closed-loop gate failed
+        criteria 1, 3, 4, 5 and 7. Three-camera ML needs about 1.5 to 2.1 times the 100 ms frame
+        interval on one CPU worker.
       </p>
     </div>
   );

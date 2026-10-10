@@ -235,11 +235,31 @@ backend's `/health` endpoint at 1 Hz — the backend's own sim-step time
 (p50/p95) and resident memory. All six numbers come from the real running
 processes, not fixture data.
 
-## See the ML detector — and what it doesn't see
+## See the ML detector — and what it doesn't do
 
-Cycle 4 added a real RT-DETR ONNX detector running on rendered camera
-frames. It's worth seeing run, and worth seeing what it actually finds,
-which is nothing — a genuine result, not a placeholder.
+A real RT-DETR ONNX detector runs on rendered camera frames. It is worth
+seeing run, and worth seeing the measured result: it does not meet its
+gates, and the ML track has been stopped. Ground truth stays the default
+driver and ML mode stays labelled **Experimental**.
+
+What was measured (details in `docs/measurements/2026-10-09-ml-gate-1.md`
+and `2026-10-09-ml-gate-s.md`, including its Amendments 1 and 2):
+
+- **Gate 1 (detector on the realistic renderer, int8, threshold 0.5): FAIL
+  on every scored criterion.** Car recall 0.150 against 0.70 required;
+  truck/bus/motorcycle recall 0.119 against 0.50; pedestrian and cyclist
+  recall 0.000. On the older renderer's frozen sets it detects nothing.
+- **Gate S (driving on a noisy sensor against ground truth, 660 runs): FAIL
+  on criteria 1, 3, 4, 5 and 7** (collisions, hazard-free emergency braking,
+  budgets, time gap, route progress); criteria 2 and 6 pass.
+- **Cost:** three cameras (front plus two 100 degree sides) need roughly 1.5
+  to 2.1 times the 100 ms frame interval on one CPU worker (a ratio; no
+  absolute milliseconds are claimed).
+
+The walkthrough below was written against the Cycle 4 renderer, where the
+detector scored zero matched vehicles; on the newer renderer it finds some
+(car recall 0.150) but still far below the gate, so expect low, non-zero
+precision and recall rather than exact zeros.
 
 ```bash
 cd streetlab-backend
@@ -298,15 +318,12 @@ yet.
   — a loaded address still drives a single, fixed-radius extract, and every
   intersection uses the same fixed-timing signal controller as the synthetic
   grid regardless of what the real signals actually do.
-- A perception model that works (Cycle 5) — Cycle 4's detector is real and
-  runs real inference (see above), but it's COCO-pretrained and untuned for
-  this renderer's geometry, and it detects zero vehicles here. That
-  zero-detections result survives every configuration Cycle 5 Phase 2
-  tested; the *causal* half of the sentence is what narrowed. The shipped
-  weights are **int8-quantized**, and unquantized fp32 weights of the same
-  architecture more than double the peak car score on a 60-frame benchmark
-  — so "untuned for this geometry" was, for two cycles, measured only on
-  quantized weights nobody had compared against. Fine-tuning on
-  sim-generated data is Cycle 5's job, not this one's.
+- A perception model that works — it does not. Cycle 4's detector is real
+  and runs real inference (see above), but it is COCO-pretrained and
+  int8-quantized: it detected zero vehicles on the Cycle 4/5 renderer, fine-tuning
+  on sim-generated data returned a null result (Cycle 5), and on the later
+  realistic renderer Gate 1 measured car recall 0.150 against 0.70 required.
+  The closed-loop Gate S also failed. The ML track is stopped; ground truth
+  stays the default driver.
 - Code signing or notarization — the built `.app` is unsigned, fine for local
   use but not for distributing to another machine.

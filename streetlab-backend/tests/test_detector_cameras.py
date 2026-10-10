@@ -31,3 +31,16 @@ def test_the_schema_literal_names_exactly_the_pinned_layouts():
     from schema import CameraSet
 
     assert set(get_args(CameraSet)) == set(PIN)
+
+
+def test_default_ground_truth_app_builds_no_detector_pipeline_so_no_extra_cameras():
+    """`--cameras` defaults to front+sides100 (3 captures per frame time), but that only
+    reaches the client through `PerceptionStats.camera_set`, and the client renders and sends
+    detector frames only while stats exist. Ground truth (the default) builds no pipeline, so
+    the default app pays for zero detector captures, not three."""
+    from server.cli import build_parser, perception_pipeline_for
+
+    for cmd in ("serve", "run"):
+        args = build_parser().parse_args([cmd])
+        assert args.perception == "ground-truth"
+        assert perception_pipeline_for(args) is None
