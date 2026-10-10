@@ -283,6 +283,12 @@ export async function createTransportFromLocation(
     return createWebSocketTransport({ url: backend });
   }
 
+  // The hosted demo is a static site with no backend to reach: built with
+  // VITE_DEMO=1, it runs the in-process mock by default. An explicit
+  // ?backend= (handled above) still wins, so a visitor can point it at a
+  // simulator of their own.
+  if (import.meta.env.VITE_DEMO === '1') return createMockTransport();
+
   if (isTauri()) {
     let handshake: unknown;
     try {

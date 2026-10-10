@@ -460,14 +460,20 @@ def _resolve_port(requested: int | None) -> int:
 
 
 def _bind(host: str, port: int) -> socket.socket:
-    """Bind (but do not listen on) a socket the way uvicorn's own
-    ``Config.bind_socket`` does, so ``--port 0`` resolves to a real ephemeral
-    port before anything is printed. Listening is left to uvicorn's own
-    ``asyncio.loop.create_server``, which is handed this socket directly.
+    """Bind and listen on a socket the way uvicorn's own ``Config.bind_socket``
+    does, so ``--port 0`` resolves to a real ephemeral port before anything is
+    printed. uvicorn's ``asyncio.loop.create_server`` is then handed this
+    socket directly.
+
+    It must already be *listening*, not just bound: ``STREETLAB_READY`` is
+    printed well before uvicorn starts, and a bound-only socket refuses a
+    client that connects in that gap. Connections now queue in the backlog
+    until uvicorn begins accepting them.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
+    sock.listen(socket.SOMAXCONN)
     sock.set_inheritable(True)
     return sock
 

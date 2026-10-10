@@ -125,6 +125,16 @@ describe('transport selection', () => {
     expect(t2.label).toBe('ws://127.0.0.1:8765');
   });
 
+  it('defaults to the mock in a VITE_DEMO build, but an explicit ?backend= still wins', async () => {
+    vi.stubEnv('VITE_DEMO', '1');
+    try {
+      expect((await createTransportFromLocation('')).kind).toBe('mock');
+      expect((await createTransportFromLocation('?backend=ws://localhost:8765')).kind).toBe('ws');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('?mock=1 wins even when Tauri IPC is present', async () => {
     (globalThis as { isTauri?: boolean }).isTauri = true;
     mockIPC(() => ({

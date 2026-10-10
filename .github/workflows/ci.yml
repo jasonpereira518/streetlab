@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    # TEMPORARY: the feature branch is listed so CI can be trialled before the
+    # workflow exists on main (workflow_dispatch needs it on the default branch).
+    # Remove the second entry before merging.
+    branches: [main, claude/portfolio-credibility-plan-cbca8d]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: streetlab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: streetlab/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: streetlab-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: streetlab-backend/uv.lock
+      - run: uv sync --frozen
+      # The contract tests take under a second; running them first surfaces a
+      # wire-contract break in about a minute instead of after the full suite.
+      - name: Contract tests
+        run: uv run pytest -q ../contract
+      - name: Backend tests
+        run: uv run pytest -q tests

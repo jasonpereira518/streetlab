@@ -1749,3 +1749,19 @@ canvas {
 .help-swatch--hazard { background: #ff7a1a; }
 .help-swatch--det { background: #5f6e80; }
 .help-note { margin: 0; color: var(--c-text-muted, #5f6e80); line-height: 1.4; }
+.demo-banner {
+  position: fixed;
+  top: 64px; /* just below the toolbar, whose centre holds the status readouts */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(20, 24, 32, 0.92);
+  color: #e8ecf2;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.demo-banner a {
+  color: #8fc2ff;
+}

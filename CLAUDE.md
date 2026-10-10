@@ -38,3 +38,7 @@ Self-driving simulator: Python backend (sim + perception + WebSocket server), Re
 - Shell `grep` is ugrep with `--ignore-files`: it silently skips gitignored files. For sweeps use the Grep tool or `command grep`.
 - Visibility/occlusion checks (`perception/visibility.py`) go through a per-scene spatial grid; keep calls passing the scene's own `buildings` list so the cache hits. `tests/test_visibility.py` pins it against the brute-force scan.
 - Perf budget: `test_sim_step_stays_well_inside_the_60_hz_budget_on_a_real_osm_scene` (p95 < 8 ms on Nob Hill's 2,224 buildings). Profile before adding per-tick scans over scene geometry.
+- Pytest runs with `filterwarnings = ["error"]` and `asyncio_mode = "auto"`: a new warning fails the suite.
+- `?mock=1` on the dev URL selects the in-process mock transport (`src/net/mockServer.ts`); without it the app connects to a backend on `ws://127.0.0.1:8765`.
+- `server/cli.py` has a stdin watchdog: if stdin closes the server exits within about a second. When backgrounding it keep stdin open, e.g. `tail -f /dev/null | uv run streetlab serve --source osm` (see `scripts/run_capture.sh`).
+- Do not claim CI status, performance numbers or detection results in the README that have not been measured or run. Do not hard-code a test count in prose without re-measuring it.
