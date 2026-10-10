@@ -1,6 +1,6 @@
 {
   "type": "scene_description",
-  "protocol": 9,
+  "protocol": 11,
   "scene_id": "osm:osm-nob-hill",
   "scenario_id": "osm-nob-hill",
   "name": "Nob Hill",

@@ -32,6 +32,11 @@ from map.lanes import ARRIVAL_CONTROL_ID
 from map.osm_source import describe_build_failure
 from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.capture import CaptureSink
+from perception.health import (
+    DEGRADED_EXTRA_HEADWAY_S,
+    DEGRADED_SPEED_CAP_MPS,
+    DegradedMonitor,
+)
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
@@ -51,6 +56,7 @@ from schema import (
     LaneNeighbor,
     LaneState,
     PerceptionMode,
+    PerceptionStats,
     Plan,
     Pose,
     RadarPoint,
@@ -64,6 +70,7 @@ from schema import (
     TrajectoryPrediction,
     TrajectorySample,
     VehicleStatus,
+    WorldAgent,
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
@@ -252,6 +259,10 @@ class Simulation:
         # `perception/history.py`.
         self.pose_history = PoseHistory()
         self.perception_score: ScoreResult | None = None
+        # Whether the car is driving in degraded-perception mode (spec 5d): only
+        # ever true while it is driving on ML. Updated once per plan, read by
+        # `_limits` (speed cap, headway) and the wire's `perception.health`.
+        self._degraded = DegradedMonitor()
         # The frame_t last folded into `perception_score`, so `_observe` scores
         # a frame once -- at 60 Hz stepping and ~10 Hz frames the same
         # `last_frame_t` is seen roughly six times in a row.
@@ -324,6 +335,7 @@ class Simulation:
         self._record_truth()
         self.perception_score = None
         self._scored_frame_t = None
+        self._degraded.reset()
         # `runtime_checkable` cannot enforce `reset`, and a user-supplied
         # planner predating it must not crash a scene swap.
         reset = getattr(self._planner, "reset", None)
@@ -338,6 +350,11 @@ class Simulation:
             reset = getattr(source, "reset", None)
             if reset is not None:
                 reset()
+        # The sources that project through the scene's terrain (or occlude by its
+        # buildings) are told which scene they are in. Duck-typed like `reset`.
+        bind = getattr(self._ml_perception, "bind_scene", None)
+        if bind is not None:
+            bind(self.scene.description.buildings, _ground_fn(self.scene.description.terrain))
 
     # -- convenience accessors --------------------------------------------- #
 
@@ -487,6 +504,9 @@ class Simulation:
         # shadow. The driving feed is what the cabin can resolve: FOV plus
         # building occlusion, with a short rear mirror cone so lane-change
         # still sees approaching traffic behind.
+        advance = getattr(self._ml_perception, "advance_to", None)
+        if advance is not None:
+            advance(self.world.t)
         ground_truth = self._perception.observe(ego, agents, route)
         driving = visible_to_driver(
             ego, ground_truth, self.scene.description.buildings
@@ -558,6 +578,13 @@ class Simulation:
         """
         dt = self.dt if dt is None else dt
         detections, detections_shadow = self._observe()
+        pipeline = self.perception_pipeline
+        self._degraded.update(
+            self.world.t,
+            driving_on_ml=self.perception_mode == "ml" and self._ml_perception is not None,
+            pipeline_healthy=pipeline is None or pipeline.stats(self.perception_mode).health == "ok",
+            last_frame_t=getattr(self._ml_perception, "last_frame_t", None),
+        )
         signals = self._signals.state(self.world.t)
         truth = {s.id: s for s in signals}
         desc = self.scene.description
@@ -618,12 +645,23 @@ class Simulation:
         s = route.project((self.world.ego.x, self.world.ego.y))
         return route.limit_at(s) or self.scene.speed_limit_mps
 
+    @property
+    def perception_degraded(self) -> bool:
+        """Driving on ML with perception that is stale or failing (spec 5d)."""
+        return self._degraded.degraded
+
     def _limits(self) -> PlanLimits:
         p = self.world.params
+        cap = float(p["ego_speed_cap_mph"]) * MPH
+        follow = float(p["follow_distance_s"])
+        if self._degraded.degraded:
+            # Slower and further back until perception has been healthy for a while.
+            cap = min(cap, DEGRADED_SPEED_CAP_MPS)
+            follow += DEGRADED_EXTRA_HEADWAY_S
         return PlanLimits(
             speed_limit_mps=self.posted_limit(),
-            speed_cap_mps=float(p["ego_speed_cap_mph"]) * MPH,
-            follow_distance_s=float(p["follow_distance_s"]),
+            speed_cap_mps=cap,
+            follow_distance_s=follow,
             assist_enabled=bool(p["assist_enabled"]),
         )
 
@@ -748,6 +786,19 @@ class Simulation:
 
     # -- frame assembly ---------------------------------------------------- #
 
+    def _world_agents(self) -> list[WorldAgent]:
+        """Ground truth for every agent: not range-gated, not perception-gated."""
+        return [
+            WorldAgent(
+                id=a.id,
+                cls=a.cls,
+                pose=Pose(x=a.state.x, y=a.state.y, heading=a.state.heading),
+                size=Size(length=a.size.length, width=a.size.width, height=a.size.height),
+                speed_mps=a.state.speed_mps,
+            )
+            for a in self._traffic.agents
+        ]
+
     def state_update(self) -> StateUpdate:
         self._guard_world()
         # Reuse this tick's plan rather than computing a second one. The frame
@@ -765,6 +816,7 @@ class Simulation:
             world=self.world,
             scene=self.scene,
             detections=detections,
+            world_agents=self._world_agents(),
             detections_shadow=self.world.detections_shadow,
             plan=plan.plan,
             # Reused from `_plan()` rather than recomputed, for the same
@@ -781,6 +833,7 @@ class Simulation:
             perception_pipeline=self.perception_pipeline,
             perception_mode=self.perception_mode,
             perception_quality=self.perception_score,
+            perception_degraded=self._degraded.degraded,
         )
         self.world.events = []
         return frame
@@ -927,6 +980,20 @@ class Simulation:
 # --------------------------------------------------------------------------- #
 
 
+def _stats_with_health(stats: PerceptionStats, degraded: bool) -> PerceptionStats:
+    """The pipeline's own health, escalated when the planner is in degraded mode."""
+    return stats.model_copy(update={"health": "degraded"}) if degraded else stats
+
+
+def _ground_fn(terrain):
+    """Absolute terrain height at a world point, or None for flat ground."""
+    if terrain is None:
+        return None
+    from map.terrain import from_wire
+
+    return from_wire(terrain).sample
+
+
 def _lane_from_the_right(off: float, lo: float, count: int) -> int:
     """Which of `count` forward lanes contains `off`, counting 0 from the kerb.
 
@@ -1037,6 +1104,7 @@ def assemble_state_update(
     world: WorldState,
     scene: BuiltScene,
     detections: Sequence[Detection],
+    world_agents: Sequence[WorldAgent],
     detections_shadow: Sequence[Detection] | None,
     plan: Plan,
     signals: Sequence[SignalState],
@@ -1045,6 +1113,7 @@ def assemble_state_update(
     perception_pipeline: PerceptionPipeline | None = None,
     perception_mode: PerceptionMode = "ground-truth",
     perception_quality: ScoreResult | None = None,
+    perception_degraded: bool = False,
 ) -> StateUpdate:
     """Build the one message the frontend consumes at frame rate.
 
@@ -1113,6 +1182,7 @@ def assemble_state_update(
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
         detections=list(detections),
+        world_agents=list(world_agents),
         # Null when there is no second source at all; a real (possibly
         # empty) list whenever both sources ran -- see `_observe`'s
         # docstring. Never collapse `None` into `[]` here.
@@ -1134,7 +1204,10 @@ def assemble_state_update(
         perception=(
             None
             if perception_pipeline is None
-            else perception_pipeline.stats(perception_mode, quality=perception_quality)
+            else _stats_with_health(
+                perception_pipeline.stats(perception_mode, quality=perception_quality),
+                perception_degraded,
+            )
         ),
     )
 

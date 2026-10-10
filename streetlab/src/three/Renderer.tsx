@@ -35,12 +35,15 @@ import { HazardOverlay } from './hazardOverlay';
 import { RenderTimeline } from './renderTimeline';
 import type { RenderSample } from './renderTimeline';
 import { createShadowBoxes } from './shadowBoxes';
-import { createDetectorCamera, DETECTOR_FRAME } from './detectorCamera';
-import type { Backend } from './detectorCamera';
+import { CH, applyMainLayers, assignChannel } from './layers';
+import { createDetectorCamera, DETECTOR_CAMERA_SETS, DETECTOR_FRAME } from './detectorCamera';
+import type { Backend, CameraSet, DetectorCamera } from './detectorCamera';
 
 const SKY_RADIUS = 900;
 const GROUND_SIZE = 3000;
 const SHADOW_EXTENT = 80;
+/** Outline tint for the driving source's detections; shadow boxes stay purple. */
+const PERCEIVED_OUTLINE = '#2DD4BF';
 
 export type { Backend };
 
@@ -351,7 +354,22 @@ function mount(
   // Deliberately a separate camera from `cam`: switching the user's view
   // between chase/overhead/cockpit/free must never change what perception
   // sees, nor the rate frames are emitted at.
-  const detectorCamera = createDetectorCamera(scene, renderer, backend);
+  // The cameras the backend asked for (`perception.camera_set`). Rebuilt only when the set
+  // changes; all of them share the renderer's one render-target slot, so they capture one
+  // after another and the main view waits on any of them being busy.
+  let detectorSet: CameraSet | null = null;
+  let detectorCameras: DetectorCamera[] = [];
+  const detectorsFor = (set: CameraSet): DetectorCamera[] => {
+    if (set !== detectorSet) {
+      for (const d of detectorCameras) d.dispose();
+      detectorCameras = DETECTOR_CAMERA_SETS[set].map((spec) =>
+        createDetectorCamera(scene, renderer, backend, spec),
+      );
+      detectorSet = set;
+    }
+    return detectorCameras;
+  };
+  let captureInFlight = false;
   const ego = new EgoVehicle({ length: 4.9, width: 1.96, height: 1.44 });
   const fleet = new TrafficFleet();
   const ribbon = new PathRibbon();
@@ -360,7 +378,13 @@ function mount(
   // off the newest arrival; see renderTimeline.ts for why.
   const timeline = new RenderTimeline();
   const shadowBoxes = createShadowBoxes(scene);
+  const perceivedBoxes = createShadowBoxes(scene, PERCEIVED_OUTLINE, 'perceived-detections');
   ego.group.add(radar.mesh);
+  // Channels, not `visible`: see layers.ts. The ego is invisible to the detector
+  // (it sits inside it); the radar fan and plan ribbon are annotations.
+  assignChannel(ego.group, CH.EGO);
+  assignChannel(radar.mesh, CH.OVERLAY);
+  assignChannel(ribbon.mesh, CH.OVERLAY);
   scene.add(ego.group, fleet.group, ribbon.mesh, hazards.group);
 
   let world: World | null = null;
@@ -395,16 +419,14 @@ function mount(
   };
 
   const applyLayers = (layers: Record<LayerKey, boolean>) => {
-    world?.setLayerVisible('lane_markings', layers.lane_markings);
-    world?.setLayerVisible('crosswalks', layers.crosswalks);
-    world?.setLayerVisible('buildings', layers.buildings);
-    world?.setLayerVisible('trees', layers.trees);
-    world?.setLayerVisible('traffic_lights', layers.traffic_lights);
-    world?.setLayerVisible('labels', layers.labels);
-    fleet.setVisible(layers.detections);
+    // World categories: hidden from the user's camera only. The traffic fleet
+    // is world geometry too, so no toggle touches it -- `detections` governs
+    // the annotations drawn over it.
+    applyMainLayers(cam.camera, layers);
     hazards.setVisible(layers.detections);
     hazards.setLabelsVisible(layers.labels);
     shadowBoxes.setVisible(layers.detections);
+    perceivedBoxes.setVisible(layers.detections);
     ribbon.setVisible(layers.plan_path);
     radar.mesh.visible = layers.radar_cone;
   };
@@ -531,11 +553,12 @@ function mount(
   const applyFrame = (frame: StateUpdate, sample: RenderSample, dt: number) => {
     ego.setPose(sample.pose, ground_);
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
-    fleet.update(frame.detections, dt, ground_);
+    fleet.update(frame.world_agents, dt, ground_);
     ribbon.update(sample.plan, ground_);
     ribbon.setIntent(frame.plan.maneuver);
     hazards.update(frame.detections, cam.camera, ground_);
     shadowBoxes.update(frame.detections_shadow, ground_);
+    perceivedBoxes.update(frame.detections, ground_);
     world?.updateSignals(frame.signals, frame.t);
 
     // Keep the shadow frustum centred on the car so a 160 m box is enough.
@@ -578,7 +601,7 @@ function mount(
     // into the wrong place is checking `renderTargetBusy()` first, every
     // tick, rather than trusting that a capture never outlives one frame. See
     // detectorCamera.ts's `capture()` for the timing this is guarding.
-    if (!detectorCamera.renderTargetBusy()) {
+    if (!detectorCameras.some((d) => d.renderTargetBusy())) {
       renderer.render(scene, cam.camera);
     }
 
@@ -589,7 +612,8 @@ function mount(
     // JPEG encode and ~0.5 MB/s over the socket, all of which `_ingest_frame`
     // (ws_server.py) discards the instant it arrives because there is no
     // pipeline to hand it to.
-    if (frame && useSimStore.getState().perception !== null) {
+    const perceptionStats = useSimStore.getState().perception;
+    if (frame && perceptionStats !== null) {
       // Detector capture: driven off the ego pose directly, never off `cam`
       // (the user's view camera) or `cameraView`, so this is unaffected by
       // which view the user has selected. Triggered only after the main
@@ -597,9 +621,10 @@ function mount(
       // target switch race that render, which is exactly the bug this
       // ordering (plus the renderTargetBusy() gate above) exists to prevent.
       sinceCaptureMs += dt * 1000;
-      if (sinceCaptureMs >= DETECTOR_FRAME.intervalMs) {
+      if (sinceCaptureMs >= DETECTOR_FRAME.intervalMs && !captureInFlight) {
         sinceCaptureMs -= DETECTOR_FRAME.intervalMs;
-        detectorCamera.update({
+        const cameras = detectorsFor(perceptionStats.camera_set);
+        const pose = {
           x: frame.ego.pose.x,
           // Three.js is Y-up with +z south; the wire pose is +y north. See
           // detectorCamera.ts's own conversion, and the identical z = -y used
@@ -607,29 +632,36 @@ function mount(
           z: -frame.ego.pose.y,
           heading: frame.ego.pose.heading,
           ground: ground_ ? ground_(frame.ego.pose.x, frame.ego.pose.y) : 0,
-        });
+        };
         const capturedAtT = frame.t;
-        const seq = captureSeq++;
-        void detectorCamera
-          .capture()
-          .then((captured) => {
-            if (!captured) return;
-            useSimStore.getState().send({
-              cmd: 'camera_frame',
-              seq,
-              t: capturedAtT,
-              width: DETECTOR_FRAME.width,
-              height: DETECTOR_FRAME.height,
-              format: 'jpeg',
-              data: captured.data,
-              camera: captured.camera,
-            });
-          })
-          .catch((err) => {
+        captureInFlight = true;
+        // One frame time = one `camera_frame` per camera, all stamped with the same `t` (the
+        // backend groups by it) and captured from the same pose, one after another.
+        void (async () => {
+          try {
+            for (const detector of cameras) {
+              detector.update(pose);
+              const captured = await detector.capture();
+              if (!captured) continue;
+              useSimStore.getState().send({
+                cmd: 'camera_frame',
+                seq: captureSeq++,
+                t: capturedAtT,
+                width: detector.spec.width,
+                height: detector.spec.height,
+                format: 'jpeg',
+                data: captured.data,
+                camera: captured.camera,
+              });
+            }
+          } catch (err) {
             // GPU readback can fail transiently (e.g. context loss); never let
             // that become an unhandled rejection that takes down the loop.
             console.warn('[streetlab] detector camera capture failed', err);
-          });
+          } finally {
+            captureInFlight = false;
+          }
+        })();
       }
     }
 
@@ -668,10 +700,11 @@ function mount(
     ribbon.dispose();
     hazards.dispose();
     shadowBoxes.dispose();
+    perceivedBoxes.dispose();
     sky.dispose();
     ground.dispose();
     radar.dispose();
-    detectorCamera.dispose();
+    for (const d of detectorCameras) d.dispose();
     renderer.dispose();
     canvas.remove();
   };

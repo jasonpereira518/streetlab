@@ -13,6 +13,7 @@ import { HazardOverlay } from '../src/three/hazardOverlay';
 import { PathRibbon } from '../src/three/pathRibbon';
 import { ChaseCamera } from '../src/three/chaseCam';
 import { TrafficFleet } from '../src/three/agents';
+import { CH } from '../src/three/layers';
 import { EgoVehicle } from '../src/three/ego';
 import { Polyline, subtractIntervals, worldToThree } from '../src/three/meshBuilder';
 import type { Detection, StateUpdate } from '../src/schema';
@@ -204,14 +205,11 @@ describe('buildWorld', () => {
     expect(trees).toBeTruthy();
   });
 
-  it('toggles a layer without disturbing the rest', () => {
+  it('puts a toggleable layer on its own channel, leaving the rest on WORLD', () => {
     const buildings = world.root.getObjectByName('buildings')!;
     const roads = world.root.getObjectByName('roads')!;
-    world.setLayerVisible('buildings', false);
-    expect(buildings.visible).toBe(false);
-    expect(roads.visible).toBe(true);
-    world.setLayerVisible('buildings', true);
-    expect(buildings.visible).toBe(true);
+    expect(buildings.layers.mask).toBe(1 << CH.BUILDINGS);
+    expect(roads.layers.mask).toBe(1 << CH.WORLD);
   });
 
   it('lights the signal head that matches the reported phase', () => {
@@ -623,15 +621,15 @@ describe('TrafficFleet', () => {
     for (let i = 0; i < 120; i++) sim.step();
     const frame = sim.frame();
 
-    fleet.update(frame.detections, 1 / 60);
+    fleet.update(frame.world_agents, 1 / 60);
     expect(fleet.group.children.filter((c) => c.visible)).toHaveLength(3);
     // One draw call per vehicle: the whole car is a single merged mesh.
     expect(drawables(fleet.group)).toHaveLength(3);
 
-    fleet.update(frame.detections.slice(0, 1), 1 / 60);
+    fleet.update(frame.world_agents.slice(0, 1), 1 / 60);
     expect(fleet.group.children.filter((c) => c.visible)).toHaveLength(1);
 
-    fleet.update(frame.detections, 1 / 60);
+    fleet.update(frame.world_agents, 1 / 60);
     expect(fleet.group.children.filter((c) => c.visible)).toHaveLength(3);
     fleet.dispose();
   });
@@ -641,10 +639,10 @@ describe('TrafficFleet', () => {
     const sim = new MockSim();
     for (let i = 0; i < 120; i++) sim.step();
     const frame = sim.frame();
-    for (let i = 0; i < 30; i++) fleet.update(frame.detections, 1 / 60);
+    for (let i = 0; i < 30; i++) fleet.update(frame.world_agents, 1 / 60);
 
     const holder = fleet.group.children.find((c) => c.visible)!;
-    const d = frame.detections[0];
+    const d = frame.world_agents[0];
     expect(holder.position.x).toBeCloseTo(d.pose.x, 2);
     expect(holder.position.z).toBeCloseTo(-d.pose.y, 2);
     fleet.dispose();

@@ -33,6 +33,11 @@ REAR_FOV_HALF_RAD = math.radians(40.0)
 #: Mirrors are useful closer than the forward horizon.
 REAR_RANGE_M = 45.0
 
+#: Shoulder check / side mirrors: anything this close is seen at any bearing. Without it a car
+#: alongside (75-140 degrees off the nose) is in neither cone, and the ego changes lane into it
+#: (grid-merge seed 11: 0.68 m overlap, a car 6 m back and one lane over).
+SIDE_RANGE_M = 15.0
+
 _CAMERA_Z_M = 1.33
 
 
@@ -60,6 +65,7 @@ def can_see(
     forward_half_rad: float = FORWARD_FOV_HALF_RAD,
     rear_half_rad: float = REAR_FOV_HALF_RAD,
     rear_range_m: float = REAR_RANGE_M,
+    side_range_m: float = SIDE_RANGE_M,
 ) -> bool:
     """Whether a body of `size` at `(x, y, heading)` is resolvable from `ego`.
 
@@ -74,6 +80,7 @@ def can_see(
         forward_half_rad=forward_half_rad,
         rear_half_rad=rear_half_rad,
         rear_range_m=rear_range_m,
+        side_range_m=side_range_m,
     ):
         return False
     return is_visible(visible_fraction(x, y, heading, size, _camera(ego), buildings))
@@ -87,6 +94,7 @@ def visible_to_driver(
     forward_half_rad: float = FORWARD_FOV_HALF_RAD,
     rear_half_rad: float = REAR_FOV_HALF_RAD,
     rear_range_m: float = REAR_RANGE_M,
+    side_range_m: float = SIDE_RANGE_M,
 ) -> list[Detection]:
     """Keep detections the ego could resolve from the cabin."""
     return [
@@ -102,6 +110,7 @@ def visible_to_driver(
             forward_half_rad=forward_half_rad,
             rear_half_rad=rear_half_rad,
             rear_range_m=rear_range_m,
+            side_range_m=side_range_m,
         )
     ]
 
@@ -114,10 +123,11 @@ def _in_cabin_view(
     forward_half_rad: float,
     rear_half_rad: float,
     rear_range_m: float,
+    side_range_m: float,
 ) -> bool:
     dx, dy = x - ego.x, y - ego.y
     dist = math.hypot(dx, dy)
-    if dist < 1e-3:
+    if dist < 1e-3 or dist <= side_range_m:
         return True
     bearing = math.atan2(dy, dx)
     forward = abs(math.remainder(bearing - ego.heading, math.tau))

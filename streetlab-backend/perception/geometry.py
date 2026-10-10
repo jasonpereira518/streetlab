@@ -66,25 +66,23 @@ CLASS_SIZE: dict[DetectionClass, Size] = {
 }
 
 
-def project_to_ground(
-    box: Box2D, camera: CameraParams, frame_w: int, frame_h: int
-) -> tuple[float, float] | None:
-    """Where the box's bottom edge touches the ground, in world (x, y).
+def pixel_ray(
+    px: float, py: float, camera: CameraParams, frame_w: int, frame_h: int
+) -> tuple[float, float, float]:
+    """The world-frame direction `(x, y, z)` of the ray through pixel `(px, py)`.
 
-    Returns `None` if the ray never meets the ground plane -- the box's
-    bottom edge is at or above the horizon.
+    Not normalised. Factored out of `project_to_ground` so the fusion in
+    `perception/localize.py` casts the box's top edge through exactly the same
+    conventions the bottom edge goes through.
     """
-    bottom_x = (box.x0 + box.x1) / 2.0
-    bottom_y = box.y1
-
     # Normalised device coordinates: vertical half-extent is tan(fov_y/2),
     # horizontal is that scaled by aspect. Positive ndc_x is the right half
     # of the image, positive ndc_y is the top half (image rows grow
     # downward, NDC grows upward, hence the flip).
     tan_half_v = math.tan(math.radians(camera.fov_y_deg) / 2.0)
     tan_half_h = tan_half_v * camera.aspect
-    ndc_x = ((bottom_x / frame_w) * 2.0 - 1.0) * tan_half_h
-    ndc_y = (1.0 - (bottom_y / frame_h) * 2.0) * tan_half_v
+    ndc_x = ((px / frame_w) * 2.0 - 1.0) * tan_half_h
+    ndc_y = (1.0 - (py / frame_h) * 2.0) * tan_half_v
 
     # Ray in camera-local frame at pitch = 0: forward + right*ndc_x + up*ndc_y,
     # with forward = (1, 0, 0), right = (0, -1, 0), up = (0, 0, 1).
@@ -104,7 +102,20 @@ def project_to_ground(
     cos_y, sin_y = math.cos(yaw), math.sin(yaw)
     ray_x = pitched_x * cos_y - pitched_y * sin_y
     ray_y = pitched_x * sin_y + pitched_y * cos_y
-    ray_z = pitched_z
+    return ray_x, ray_y, pitched_z
+
+
+def project_to_ground(
+    box: Box2D, camera: CameraParams, frame_w: int, frame_h: int
+) -> tuple[float, float] | None:
+    """Where the box's bottom edge touches the ground, in world (x, y).
+
+    Returns `None` if the ray never meets the ground plane -- the box's
+    bottom edge is at or above the horizon.
+    """
+    ray_x, ray_y, ray_z = pixel_ray(
+        (box.x0 + box.x1) / 2.0, box.y1, camera, frame_w, frame_h
+    )
 
     if ray_z > -_MIN_DOWNWARD_Z:
         return None  # at or above the horizon -- never reaches z = 0

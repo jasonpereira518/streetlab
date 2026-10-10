@@ -47,6 +47,22 @@ def test_a_car_beside_outside_forward_and_rear_cones_is_dropped():
     assert kept == []
 
 
+def test_a_car_alongside_is_seen_in_the_blind_spot():
+    """grid-merge seed 11: the ego started a lane change into a car 6 m back and one lane
+    over. At that bearing it was in neither the windscreen (75) nor the mirror (180 +- 40)
+    cone, so the gap check never saw it. A shoulder check covers it."""
+    ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=5.0)
+    for x, y in ((0.0, 3.6), (-6.0, -3.6), (-4.0, 5.4), (3.0, -5.4)):
+        assert [d.id for d in visible_to_driver(ego, [_det(x, y, "beside")])] == ["beside"]
+
+
+def test_the_shoulder_check_has_a_range_and_does_not_see_through_walls():
+    ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=5.0)
+    assert visible_to_driver(ego, [_det(0.0, 25.0, "far")]) == []
+    wall = _wall(-2.0, 2.0, 1.0, 2.0)
+    assert visible_to_driver(ego, [_det(0.0, 6.0, "hidden")], buildings=[wall]) == []
+
+
 def test_a_car_behind_within_mirror_range_is_kept():
     ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=5.0)
     kept = visible_to_driver(ego, [_det(-20.0, 0.0, "rear")])

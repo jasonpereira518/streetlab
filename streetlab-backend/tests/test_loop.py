@@ -371,7 +371,13 @@ def test_time_to_change_counts_down(sim):
 
 
 def test_detections_appear_for_nearby_traffic(sim):
-    advance(sim, 1.0)
+    # Not "at t=1.0 s": the nearest car starts 73 m away at -74..-78 deg, which is the edge of the
+    # 75 deg windscreen cone, so whether it is in the feed that exact second depends on where the
+    # jerk-limited start has put the ego (1.9 m/s then, 1.2 m/s now). It is in the feed by 5 s.
+    for _ in range(5):
+        advance(sim, 1.0)
+        if sim.state_update().detections:
+            break
     assert sim.state_update().detections
 
 
@@ -509,8 +515,10 @@ def test_the_kerb_marking_tracks_the_kerbside_lane_where_there_is_another_one():
     """
     sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+    # 180 s, not 120: since the Phase 3 speed law the first overtake in this scenario starts at
+    # t=136.7 s (it was 46.5 s), so 120 s never drives the kerbside lane at all.
     kerbside_of_many, inner = 0, 0
-    for _ in range(int(120.0 / DT)):
+    for _ in range(int(180.0 / DT)):
         sim.step()
         lane = sim.state_update().telemetry.lane
         kerbside = lane.lane_index == lane.lane_count - 1
@@ -1844,6 +1852,44 @@ def test_detections_shadow_carries_the_non_driving_source_while_ground_truth_dri
         assert {d.id for d in frame.detections_shadow} == {"marker"}
     finally:
         pipeline.shutdown()
+
+
+def test_world_agents_is_every_agent_whatever_perception_reports():
+    """Protocol 10: `world_agents` is ground truth for every agent, not range
+    gated and not tied to the driving source. With ML driving and a marker the
+    only detection, the world still lists the real traffic."""
+    ml = _MarkerPerception()
+    sim, pipeline = _ml_sim(ml)
+    try:
+        assert sim.apply_dict({"id": "p1", "cmd": "set_perception", "mode": "ml"}).ok
+        sim.step()
+        frame = sim.state_update()
+        assert {d.id for d in frame.detections} == {"marker"}
+        truth = {a.id: a for a in sim._traffic.agents}
+        assert truth, "the scene should have traffic"
+        assert {a.id for a in frame.world_agents} == set(truth)
+        for wa in frame.world_agents:
+            ag = truth[wa.id]
+            assert (wa.pose.x, wa.pose.y, wa.speed_mps) == (
+                ag.state.x, ag.state.y, ag.state.speed_mps)
+            assert wa.size.length == ag.size.length
+    finally:
+        pipeline.shutdown()
+
+
+def test_world_agents_ignores_the_ground_truth_range_gate():
+    from map.scene_build import SyntheticGrid
+    from sim.loop import Simulation
+    from perception.service import MAX_RANGE_M
+
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=3)
+    sim.step()
+    frame = sim.state_update()
+    ego = sim.world.ego
+    far = [a for a in frame.world_agents
+           if math.hypot(a.pose.x - ego.x, a.pose.y - ego.y) > MAX_RANGE_M]
+    assert far, "need an agent beyond the gate for this to mean anything"
+    assert {a.id for a in far}.isdisjoint({d.id for d in frame.detections})
 
 
 def test_detections_shadow_carries_ground_truth_once_ml_drives():

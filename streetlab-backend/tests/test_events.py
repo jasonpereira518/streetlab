@@ -578,7 +578,10 @@ def test_nothing_behind_the_ego_is_recruited_from_a_hazard_it_passed(sim, staged
     assert inject(sim, staged).ok
     (thing,) = _spawned(sim, staged)
     route = sim.scene.ego_route
-    for _ in range(int(30.0 / DT)):
+    # A precondition wait, not a measured budget: the ego has to get past the thing before the
+    # recruiters are asked. 30 s was enough when it did not queue at the signal ahead of it; with
+    # the Phase 3 speed law it reaches that signal on red and passes at t=56 s (stalled_vehicle).
+    for _ in range(int(90.0 / DT)):
         if route.signed_gap(thing.s, _ego_s(sim)) > 0:
             break
         sim.step()
