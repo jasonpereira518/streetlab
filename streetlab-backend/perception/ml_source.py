@@ -38,6 +38,12 @@ from sim.vehicle import VehicleState
 #: 2 hits reports half its detector confidence; at 6 (0.5 s of evidence) all of it.
 MATURE_HITS = 6
 
+#: Tracks matched in fewer frames than this are not published at all. Birth is 2 hits in 3
+#: frames (spec 5b); a ghost chain of 2-3 consistent false positives passes it, and with three
+#: cameras (each its own detector run) the false-positive rate triples. Real objects pay (as far as the planner is concerned) nothing extra: its reactions already need 4 matched frames of confidence. Real objects pay one or
+#: two frames (0.1-0.2 s) of delay once, at first sight.
+MIN_PUBLISH_HITS = 4
+
 # Under this speed a track's velocity vector is mostly estimator noise, and
 # the direction of a near-zero vector is essentially random. Heading falls
 # back to ego's rather than pointing a parked car down a bearing invented by
@@ -72,10 +78,12 @@ class MlPerception:
         pipeline: LatestResult,
         tracker: Tracker,
         max_range_m: float = MAX_RANGE_M,
+        min_publish_hits: int | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._tracker = tracker
         self.max_range_m = max_range_m
+        self.min_publish_hits = MIN_PUBLISH_HITS if min_publish_hits is None else min_publish_hits
         self._processed: PipelineResult | None = None
         self._tracks: list[Track] = []
         #: Sim time the next `observe` publishes for. Set by the loop each step;
@@ -182,6 +190,7 @@ class MlPerception:
             _detection(track, frame, ego)
             for track in self._tracks
             if frame.range_to(track.x, track.y) <= self.max_range_m
+            and track.total_hits >= self.min_publish_hits
         ]
 
 

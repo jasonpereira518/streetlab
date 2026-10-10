@@ -110,8 +110,8 @@ def test_nothing_is_published_before_the_observation_latency_has_elapsed(built):
         if src.observe(ego, agents, route):
             first = t
         t += DT
-    # Latency 0.5 s, then a second frame (birth needs 2 hits) 0.1 s later.
-    assert first is not None and 0.55 <= first <= 0.75
+    # Latency 0.5 s, then a track must be matched in `MIN_PUBLISH_HITS` (4) frames, 0.1 s apart.
+    assert first is not None and 0.75 <= first <= 1.05
 
 
 def test_the_same_seed_gives_the_same_detections_and_another_seed_does_not(built):
@@ -147,12 +147,13 @@ def test_an_agents_noise_does_not_depend_on_which_other_agents_exist(built):
     assert alone and all(b in with_other for b in alone)
 
 
-@pytest.mark.parametrize("cameras,bound", [("front", 0.10), ("front+sides100", 0.25)])
+@pytest.mark.parametrize("cameras,bound", [("front", 0.05), ("front+sides100", 0.05)])
 def test_false_positives_rarely_survive_the_birth_rule(built, cameras, bound):
     """Birth needs 2 hits in 3 frames. At the nominal 0.2 false positives per frame PER CAMERA an
-    empty road still shows a ghost on some frames: measured 3.9 % of frames over 120 s with the
-    front camera, 14.3 % with three (each camera is its own detector run, so the false-positive
-    rate triples); stress doubles the per-frame rate. A clear majority of frames stay clean."""
+    empty road still shows a ghost on some frames. Before tracks had to be matched in 4 frames to be
+    published (`MIN_PUBLISH_HITS`): 3.9 % of frames over 120 s with the front camera, 14.3 % with
+    three (each camera is its own detector run, so the false-positive rate triples). With it: 0.0 %
+    and 2.1 % (3 matched frames: 5.9 %; 5: 0.4 %). Stress doubles the per-frame rate."""
     route = built.ego_route
     src = NoisyTruthPerception(NOMINAL, seed=5, cameras=cameras)
     frames = ghosts = 0
@@ -185,7 +186,7 @@ def test_ml_perception_ignores_the_agent_list():
     ego = ego_at(route)
 
     def run_with(agents):
-        src = MlPerception(pipe, Tracker(birth_hits=1))
+        src = MlPerception(pipe, Tracker(birth_hits=1), min_publish_hits=1)
         return [d.model_dump() for d in src.observe(ego, agents, route)]
 
     assert run_with([]) == run_with([agent_at(route, S0 + 10.0), agent_at(route, S0 + 20.0)])

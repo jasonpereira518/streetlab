@@ -67,16 +67,16 @@ def a_car_low_in_frame() -> Box2D:
 
 
 def test_it_satisfies_the_perception_source_protocol():
-    assert isinstance(MlPerception(EmptyPipeline(), Tracker()), PerceptionSource)
+    assert isinstance(MlPerception(EmptyPipeline(), Tracker(), min_publish_hits=1), PerceptionSource)
 
 
 def test_no_result_yields_no_detections(ego, traffic, built):
-    src = MlPerception(EmptyPipeline(), Tracker(birth_hits=1))
+    src = MlPerception(EmptyPipeline(), Tracker(birth_hits=1), min_publish_hits=1)
     assert src.observe(ego, traffic.agents, built.ego_route) == []
 
 
 def test_a_box_becomes_a_detection_with_a_stable_id(ego, traffic, built):
-    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1))
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1), min_publish_hits=1)
     first = src.observe(ego, traffic.agents, built.ego_route)
     assert len(first) == 1
     d = first[0]
@@ -90,7 +90,7 @@ def test_a_box_becomes_a_detection_with_a_stable_id(ego, traffic, built):
 
 def test_detections_carry_finite_numbers_only(ego, traffic, built):
     """Every wire field is finite by contract; one NaN freezes the frontend."""
-    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1))
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1), min_publish_hits=1)
     for d in src.observe(ego, traffic.agents, built.ego_route):
         for value in (d.pose.x, d.pose.y, d.pose.heading, d.speed_mps,
                       d.velocity[0], d.velocity[1]):
@@ -105,7 +105,7 @@ def test_last_frame_t_reports_the_published_frames_instant(ego, traffic, built):
     attribute, so deleting the real property would stop production scoring
     dead with the whole suite still green. This is the test that goes red.
     """
-    src = MlPerception(CannedPipeline([a_car_low_in_frame()], t=3.25), Tracker(birth_hits=1))
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()], t=3.25), Tracker(birth_hits=1), min_publish_hits=1)
     assert src.last_frame_t is None, "nothing published yet is None, not 0.0"
 
     src.observe(ego, traffic.agents, built.ego_route)
@@ -114,7 +114,7 @@ def test_last_frame_t_reports_the_published_frames_instant(ego, traffic, built):
 
 def test_a_box_above_the_horizon_is_discarded_rather_than_projected(ego, traffic, built):
     sky = Box2D(x0=300.0, y0=10.0, x1=340.0, y1=60.0, cls="car", confidence=0.9)
-    src = MlPerception(CannedPipeline([sky]), Tracker(birth_hits=1))
+    src = MlPerception(CannedPipeline([sky]), Tracker(birth_hits=1), min_publish_hits=1)
     assert src.observe(ego, traffic.agents, built.ego_route) == []
 
 
@@ -157,7 +157,7 @@ def test_a_stationary_track_takes_the_ego_heading(ego, traffic, built):
     """A near-zero velocity vector points nowhere in particular. Emitting
     `atan2` of it would dress up detector jitter as a bearing.
     """
-    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1))
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1), min_publish_hits=1)
     d = src.observe(ego, traffic.agents, built.ego_route)[0]
     assert d.speed_mps == 0.0
     assert d.pose.heading == ego.heading
@@ -165,7 +165,7 @@ def test_a_stationary_track_takes_the_ego_heading(ego, traffic, built):
 
 def test_a_moving_track_takes_the_heading_of_its_velocity(ego, traffic, built):
     pipeline = ReplayPipeline()
-    src = MlPerception(pipeline, Tracker(birth_hits=1))
+    src = MlPerception(pipeline, Tracker(birth_hits=1), min_publish_hits=1)
 
     pipeline.frame([a_car_low_in_frame()], seq=0, t=0.0)
     src.observe(ego, traffic.agents, built.ego_route)
@@ -185,7 +185,7 @@ def test_a_reset_forgets_the_tracks_a_scene_swap_invalidated(ego, traffic, built
     world coordinates still land on the new ego route -- and the planner
     would brake for a car that no longer exists.
     """
-    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1))
+    src = MlPerception(CannedPipeline([a_car_low_in_frame()]), Tracker(birth_hits=1), min_publish_hits=1)
     first = src.observe(ego, traffic.agents, built.ego_route)[0]
 
     src.reset()
@@ -211,7 +211,7 @@ def test_a_box_grazing_the_horizon_is_out_of_range_rather_than_kilometres_away(
     assert projected is not None, "this box does reach the ground, just absurdly far"
     assert math.hypot(*projected) > MAX_RANGE_M
 
-    src = MlPerception(CannedPipeline([far]), Tracker(birth_hits=1))
+    src = MlPerception(CannedPipeline([far]), Tracker(birth_hits=1), min_publish_hits=1)
     assert src.observe(ego, traffic.agents, built.ego_route) == []
 
 
