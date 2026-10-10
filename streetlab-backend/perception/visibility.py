@@ -22,6 +22,7 @@ can re-threshold committed labels without re-capturing anything.
 
 from __future__ import annotations
 
+import math
 from typing import Sequence
 
 from perception.projection import box_corners
@@ -75,6 +76,65 @@ def _blocked_at(
     return False
 
 
+# Spatial index over building footprints. `_blocked_at` walks every edge of a
+# building, and every caller used to run it against *all* buildings per sample
+# point per tick (~92% of tick time on Nob Hill's 2,224 buildings). A building
+# whose padded bbox misses the sight line's bbox cannot be crossed by it, so
+# skipping those is exact, not approximate. Built once per buildings list and
+# cached by identity (the list is the scene's, fixed for its lifetime).
+_CELL_M = 40.0
+_PAD_M = 1e-3  # absorbs float error in the crossing point; never shrinks a bbox
+
+
+class _BuildingGrid:
+    def __init__(self, buildings: Sequence[Building]) -> None:
+        self.n = len(buildings)
+        self.cells: dict[tuple[int, int], list[Building]] = {}
+        for b in buildings:
+            xs = [p[0] for p in b.footprint]
+            ys = [p[1] for p in b.footprint]
+            for cx in range(self._c(min(xs) - _PAD_M), self._c(max(xs) + _PAD_M) + 1):
+                for cy in range(self._c(min(ys) - _PAD_M), self._c(max(ys) + _PAD_M) + 1):
+                    self.cells.setdefault((cx, cy), []).append(b)
+
+    @staticmethod
+    def _c(v: float) -> int:
+        return math.floor(v / _CELL_M)
+
+    def near(self, x0: float, y0: float, x1: float, y1: float) -> list[Building]:
+        """Buildings sharing a grid cell with the bbox of the given points."""
+        seen: dict[int, Building] = {}
+        for cx in range(self._c(min(x0, x1) - _PAD_M), self._c(max(x0, x1) + _PAD_M) + 1):
+            for cy in range(self._c(min(y0, y1) - _PAD_M), self._c(max(y0, y1) + _PAD_M) + 1):
+                for b in self.cells.get((cx, cy), ()):
+                    seen[id(b)] = b
+        return list(seen.values())
+
+
+# id -> (the list itself, so the id can't be recycled under us, grid). Tiny cap:
+# a process holds one or two scenes at a time.
+_grid_cache: dict[int, tuple[Sequence[Building], _BuildingGrid]] = {}
+
+
+def _grid(buildings: Sequence[Building]) -> _BuildingGrid:
+    c = _grid_cache.get(id(buildings))
+    if c is None or c[0] is not buildings or c[1].n != len(buildings):
+        if len(_grid_cache) >= 4:
+            _grid_cache.pop(next(iter(_grid_cache)))
+        c = _grid_cache[id(buildings)] = (buildings, _BuildingGrid(buildings))
+    return c[1]
+
+
+def _candidates(
+    camera: CameraParams, pts: Sequence[tuple[float, float]], buildings: Sequence[Building]
+) -> Sequence[Building]:
+    if len(buildings) < 16:  # not worth indexing; also keeps tiny test sets trivial
+        return buildings
+    xs = [camera.x, *(p[0] for p in pts)]
+    ys = [camera.y, *(p[1] for p in pts)]
+    return _grid(buildings).near(min(xs), min(ys), max(xs), max(ys))
+
+
 def visible_fraction(
     x: float,
     y: float,
@@ -98,10 +158,11 @@ def visible_fraction(
     """
     samples = box_corners(x, y, heading, size)
     samples.append((x, y, size.height / 2.0))
+    near = _candidates(camera, [(s[0], s[1]) for s in samples], buildings)
     unblocked = sum(
         1
         for (sx, sy, sz) in samples
-        if not any(_blocked_at(camera, sx, sy, sz, b) for b in buildings)
+        if not any(_blocked_at(camera, sx, sy, sz, b) for b in near)
     )
     return unblocked / len(samples)
 
@@ -124,4 +185,5 @@ def line_of_sight_clear(
     rather than the 9-point vehicle fraction above. Empty `buildings` means
     clear — same contract as `visible_fraction`.
     """
-    return not any(_blocked_at(camera, x, y, z, b) for b in buildings)
+    near = _candidates(camera, [(x, y)], buildings)
+    return not any(_blocked_at(camera, x, y, z, b) for b in near)
