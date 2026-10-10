@@ -6,6 +6,7 @@ import {
   cameraParamsFromThree,
   encodeBase64,
   flipRowsInPlace,
+  DETECTOR_FRAME,
   MOUNT_PITCH_RAD,
   shouldFlipRows,
 } from '../src/three/detectorCamera';
@@ -19,7 +20,10 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MOUNT_PITCH_FIXTURE = JSON.parse(
   readFileSync(join(HERE, '..', '..', 'contract', 'mount_pitch_rad.json'), 'utf8'),
-) as { mount_pitch_rad: number };
+) as {
+  mount_pitch_rad: number;
+  detector_frame: { width: number; height: number; fov_y_deg: number; aspect: number };
+};
 
 describe('cameraParamsFromThree', () => {
   it('converts Three.js Y-up into wire world coordinates', () => {
@@ -35,7 +39,18 @@ describe('cameraParamsFromThree', () => {
   it('reports the configured field of view and aspect', () => {
     const p = cameraParamsFromThree({ x: 0, y: 0, z: 0 }, 0, 0);
     expect(p.fov_y_deg).toBeGreaterThan(0);
-    expect(p.aspect).toBeCloseTo(640 / 384, 6);
+    expect(p.aspect).toBe(1);
+  });
+
+  it('is the native square frame the model takes, pinned in the contract', () => {
+    // No stretch left: 640x640 in, 640x640 to the network. The fovY is the
+    // horizontal FOV of the old 640x384 / 50 deg frame, so coverage is unchanged.
+    const pin = MOUNT_PITCH_FIXTURE.detector_frame;
+    expect(DETECTOR_FRAME.width).toBe(pin.width);
+    expect(DETECTOR_FRAME.height).toBe(pin.height);
+    expect(DETECTOR_FRAME.fovYDeg).toBeCloseTo(pin.fov_y_deg, 9);
+    expect(pin.fov_y_deg).toBeCloseTo(75.7072, 3);
+    expect(DETECTOR_FRAME.width / DETECTOR_FRAME.height).toBe(pin.aspect);
   });
 });
 

@@ -23,9 +23,10 @@ label came from, not a nominal one.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
 from uuid import uuid4
@@ -99,6 +100,13 @@ class LabelBox:
     # the decision irreversible; filtering is the training consumer's job.
     visible_fraction: float
     visible: bool
+    # Share of this box's area covered by the boxes of agents NEARER the camera.
+    # `visible_fraction` above models buildings only, so a car hidden behind a
+    # bus was `visible`; this is the other half (M2: the D1 benchmarks score
+    # recall over `visible` objects, and in dense traffic a lead vehicle often
+    # hides the one behind it). Box-vs-box, summed over nearer agents and
+    # capped at 1, so it over-states when two nearer boxes overlap each other.
+    agent_occlusion: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +176,7 @@ def label_frame(
     """
     sizes = sizes or {}
     boxes: list[LabelBox] = []
+    ranges: list[float] = []
     for obj in truth:
         truth_size = sizes.get(obj.id)
         size = truth_size if truth_size is not None else CLASS_SIZE[obj.cls]
@@ -190,11 +199,29 @@ def label_frame(
             visible_fraction=fraction,
             visible=is_visible(fraction),
         ))
+        ranges.append(math.hypot(obj.x - camera.x, obj.y - camera.y))
 
+    boxes = _with_agent_occlusion(boxes, ranges)
     return LabelledFrame(
         seq=seq, t=t, width=width, height=height, jpeg=jpeg, boxes=boxes, camera=camera,
         n_occluders=len(buildings),
     )
+
+
+def _with_agent_occlusion(boxes: list[LabelBox], ranges: list[float]) -> list[LabelBox]:
+    """Fill `agent_occlusion`: the share of each box covered by nearer agents' boxes."""
+    out = []
+    for i, b in enumerate(boxes):
+        area = (b.x1 - b.x0) * (b.y1 - b.y0)
+        covered = 0.0
+        for j, o in enumerate(boxes):
+            if j == i or ranges[j] >= ranges[i]:
+                continue
+            ix = max(0.0, min(b.x1, o.x1) - max(b.x0, o.x0))
+            iy = max(0.0, min(b.y1, o.y1) - max(b.y0, o.y0))
+            covered += ix * iy
+        out.append(replace(b, agent_occlusion=min(1.0, covered / area) if area > 0 else 0.0))
+    return out
 
 
 def _camera_record(camera: CameraParams) -> dict[str, float]:
@@ -313,6 +340,8 @@ class CaptureSink:
                 # is derived at `visibility.MIN_VISIBLE_FRACTION`.
                 "visible": box.visible,
                 "visible_fraction": box.visible_fraction,
+                # Not a COCO field: share covered by nearer agents' boxes (see `LabelBox`).
+                "agent_occlusion": box.agent_occlusion,
             })
             self._next_annotation_id += 1
 

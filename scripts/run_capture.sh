@@ -82,6 +82,8 @@ TRAFFIC="${3:?traffic required}"
 CAPTURE_DIR="${4:?out_dir required}"
 TARGET="${5:-150}"
 MAXWAIT="${6:-480}"
+# traffic "-" omits --traffic (required for `--source osm`, which builds its own agents).
+TRAFFIC_ARG="--traffic $TRAFFIC"; [ "$TRAFFIC" = "-" ] && TRAFFIC_ARG=""
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$REPO_ROOT/streetlab-backend"
@@ -104,7 +106,7 @@ echo "=== starting backend: scenario=$SCENARIO seed=$SEED traffic=$TRAFFIC -> $C
 cd "$BACKEND_DIR"
 # stdin held open by a long-lived `sleep` -- see header. Never plain
 # background / </dev/null, or the stdin watchdog kills this within ~1s.
-uv run streetlab serve --port "$STREETLAB_PORT" --scenario "$SCENARIO" --seed "$SEED" --traffic "$TRAFFIC" \
+uv run streetlab serve --port "$STREETLAB_PORT" --scenario "$SCENARIO" --seed "$SEED" $TRAFFIC_ARG \
   --perception ml ${EXTRA_SERVE_ARGS:-} \
   --detector-model "$DETECTOR_MODEL" \
   --capture "$CAPTURE_DIR" < <(sleep 99999) > "$LOGDIR/backend.log" 2>&1 &
