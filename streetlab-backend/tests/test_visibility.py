@@ -94,3 +94,44 @@ def test_is_visible_thresholds_at_the_named_constant():
     assert is_visible(MIN_VISIBLE_FRACTION - 1e-9) is False
     assert is_visible(0.0) is False
     assert is_visible(1.0) is True
+
+
+def _random_camera(rng, xs, ys) -> CameraParams:
+    return CameraParams(
+        x=rng.uniform(min(xs), max(xs)), y=rng.uniform(min(ys), max(ys)), z=1.33,
+        yaw=0.0, pitch=0.0, roll=0.0, fov_y_deg=50.0, aspect=W / H,
+    )
+
+
+def test_indexed_visibility_is_identical_to_the_brute_force_scan_on_nob_hill():
+    """The spatial index must be exact, not approximate: compare against the
+    original all-buildings scan on thousands of random sight lines and boxes."""
+    import random
+
+    from perception.projection import box_corners
+    from perception.visibility import _blocked_at, line_of_sight_clear
+    from tests.test_loop import _osm_sim
+
+    buildings = _osm_sim().scene.description.buildings
+    assert len(buildings) > 1000
+    xs = [p[0] for b in buildings for p in b.footprint]
+    ys = [p[1] for b in buildings for p in b.footprint]
+    rng = random.Random(7)
+    blocked = clear = 0
+    for _ in range(2000):
+        cam = _random_camera(rng, xs, ys)
+        x, y, z = cam.x + rng.uniform(-80, 80), cam.y + rng.uniform(-80, 80), rng.uniform(0.0, 8.0)
+        want = not any(_blocked_at(cam, x, y, z, b) for b in buildings)
+        assert line_of_sight_clear(cam, x, y, z, buildings) is want
+        blocked += not want
+        clear += want
+    assert blocked > 100 and clear > 100  # the sample exercises both outcomes
+    for _ in range(200):
+        cam = _random_camera(rng, xs, ys)
+        ox, oy, hd = cam.x + rng.uniform(-60, 60), cam.y + rng.uniform(-60, 60), rng.uniform(-3, 3)
+        samples = box_corners(ox, oy, hd, CAR) + [(ox, oy, CAR.height / 2.0)]
+        want = sum(
+            1 for (sx, sy, sz) in samples
+            if not any(_blocked_at(cam, sx, sy, sz, b) for b in buildings)
+        ) / len(samples)
+        assert visible_fraction(ox, oy, hd, CAR, cam, buildings) == want
