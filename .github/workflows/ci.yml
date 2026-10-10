@@ -2,10 +2,7 @@ name: CI
 
 on:
   push:
-    # TEMPORARY: the feature branch is listed so CI can be trialled before the
-    # workflow exists on main (workflow_dispatch needs it on the default branch).
-    # Remove the second entry before merging.
-    branches: [main, claude/portfolio-credibility-plan-cbca8d]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
