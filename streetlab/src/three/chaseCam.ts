@@ -94,7 +94,13 @@ export class ChaseCamera {
   /** Where `pullback` is heading, as of the last cast, and the time since it. */
   private targetPullback = 0;
   private sinceCast = 0;
-  private readonly raycaster = new THREE.Raycaster();
+  // Blockers (buildings, trees) sit on their own layer channels (layers.ts); a default Raycaster
+  // only tests channel 0 and would see through them.
+  private readonly raycaster = (() => {
+    const r = new THREE.Raycaster();
+    r.layers.enableAll();
+    return r;
+  })();
   private readonly rayOrigin = new THREE.Vector3();
   private readonly rayDir = new THREE.Vector3();
 

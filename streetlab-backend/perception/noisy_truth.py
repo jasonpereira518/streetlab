@@ -53,8 +53,10 @@ from sim.route import Route
 from sim.vehicle import VehicleState
 
 #: Mirrors `DETECTOR_FRAME` and the mount constants in detectorCamera.ts.
-FRAME_W, FRAME_H = 640, 384
-FOV_Y_DEG = 50.0
+# The renderer's native 640x640 detector frame (M2/D1): fovY is the old 640x384 / fovY 50 frame's
+# horizontal FOV, so f_px (411.7 px) and the +-37.9 deg coverage are unchanged; only the rows grew.
+FRAME_W, FRAME_H = 640, 640
+FOV_Y_DEG = math.degrees(2.0 * math.atan(math.tan(math.radians(25.0)) * 640 / 384))
 MOUNT_HEIGHT_M = 1.33
 MOUNT_FORWARD_M = 0.15
 MOUNT_PITCH_RAD = -math.atan2(0.18, 40.0 - MOUNT_FORWARD_M)
@@ -117,7 +119,7 @@ def _spec(name: str, yaw_deg: float, hfov_deg: float, width: int, height: int) -
     return CameraSpec(name, math.radians(yaw_deg), math.degrees(2.0 * math.atan(tan_v)), width, height)
 
 
-#: The shipped camera (`DETECTOR_FRAME`): 640x384, fovY 50 => hFOV 75.7.
+#: The shipped camera (`DETECTOR_FRAME`): 640x640, fovY 75.7 => hFOV 75.7.
 FRONT = CameraSpec("front", 0.0, FOV_Y_DEG, FRAME_W, FRAME_H)
 #: Pixels per radian the p(detect) table was written for; other cameras are scaled to it.
 REFERENCE_F_PX = FRONT.f_px

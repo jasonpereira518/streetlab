@@ -26,9 +26,7 @@ const LOCAL_DEFAULT_URL = 'ws://127.0.0.1:8765';
 
 /** A hosted build (e.g. Vercel) sets `VITE_BACKEND_WS_URL` at build time to the
  * externally hosted simulator; unset, the local CLI default applies. */
-const BROWSER_DEV_DEFAULT_URL =
-  (import.meta as unknown as { env?: Record<string, string | undefined> }).env
-    ?.VITE_BACKEND_WS_URL || LOCAL_DEFAULT_URL;
+const BROWSER_DEV_DEFAULT_URL = import.meta.env.VITE_BACKEND_WS_URL || LOCAL_DEFAULT_URL;
 
 interface BackendHandshake {
   ws: string;

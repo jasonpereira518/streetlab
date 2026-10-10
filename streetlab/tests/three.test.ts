@@ -869,6 +869,7 @@ describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
       const cam = new ChaseCamera(16 / 9);
       cam.setGround(world.heightAt);
       const ray = new THREE.Raycaster();
+      ray.layers.enableAll(); // trees live on their own layer channel
       const dir = new THREE.Vector3();
       let blocked = 0;
       let first = true;
