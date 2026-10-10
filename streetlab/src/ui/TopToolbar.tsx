@@ -192,7 +192,9 @@ export function TopToolbar() {
 
       <div className="toolbar-group toolbar-group--right">
         <span className={`link-chip link-chip--${status}`} title={`Source: ${sourceLabel}`}>
-          {sourceLabel}
+          {status === 'connecting' || status === 'reconnecting'
+            ? 'Connecting to backend…'
+            : sourceLabel}
         </span>
         <IconButton
           label="Toggle performance overlay"
