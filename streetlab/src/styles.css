@@ -370,13 +370,6 @@ canvas {
   gap: 8px;
 }
 
-.toolbar-sep {
-  width: 1px;
-  height: 22px;
-  margin: 0 4px;
-  background: var(--c-border, #e4e9f0);
-}
-
 .brand {
   display: flex;
   align-items: center;
@@ -1036,34 +1029,6 @@ canvas {
   cursor: default;
 }
 
-.sidebar-foot {
-  display: flex;
-  gap: 8px;
-  padding: 10px var(--pad-panel);
-  border-top: 1px solid var(--c-border, #e4e9f0);
-}
-
-.foot-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 32px;
-  border-radius: var(--r-sm, 6px);
-  border: 1px dashed var(--c-border-strong, #d2dae5);
-  color: var(--c-text-muted, #5f6e80);
-  font-size: 11.5px;
-  font-weight: 600;
-  transition: border-color 130ms ease, color 130ms ease, background 130ms ease;
-}
-
-.foot-btn:hover {
-  border-color: var(--c-accent, #0fb5c9);
-  color: var(--c-accent-dark, #0a8da0);
-  background: var(--c-accent-soft, #e1f6f9);
-}
-
 /* ------------------------------------------------------------------ */
 /* Right panel                                                         */
 /* ------------------------------------------------------------------ */
@@ -1690,8 +1655,97 @@ canvas {
   z-index: 0;
 }
 
-/* A disabled foot button reads the same way a disabled icon button does. */
-.foot-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
+/* ------------------------------------------------------------------ */
+/* Hazard limits, ack toast, help dialog                               */
+/* ------------------------------------------------------------------ */
+
+.hazard-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.hazard-item .panel-action { width: 100%; }
+.hazard-limit {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--c-text-muted, #5f6e80);
 }
+
+.ack-toast-region {
+  position: fixed;
+  top: calc(var(--toolbar-h) + var(--gutter) + 13px);
+  left: calc(var(--sidebar-w) + var(--gutter) + 13px);
+  z-index: 40;
+  pointer-events: none;
+}
+.ack-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  max-width: 360px;
+  padding: 8px 12px;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--c-border, #e4e9f0);
+  background: var(--c-surface, #fff);
+  box-shadow: 0 4px 14px rgba(22, 25, 29, 0.14);
+  font-size: 12px;
+  color: var(--c-text, #16191d);
+}
+.ack-toast code {
+  font: 600 10px/1 var(--font-mono, monospace);
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--c-surface-sunken, #edf1f6);
+  color: var(--c-text-muted, #5f6e80);
+}
+.ack-toast--error { border-color: #e5484d; }
+.ack-toast--error code { background: var(--c-danger-soft, #fdecec); color: #b3363a; }
+
+.help-dialog {
+  position: fixed;
+  top: calc(var(--toolbar-h) + var(--gutter) + 13px);
+  right: calc(var(--panel-w) + var(--gutter) + 13px);
+  z-index: 45;
+  width: 320px;
+  max-height: calc(100vh - var(--toolbar-h) - 2 * var(--gutter) - 26px);
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: var(--r-md, 8px);
+  border: 1px solid var(--c-border, #e4e9f0);
+  background: var(--c-surface, #fff);
+  box-shadow: 0 8px 28px rgba(22, 25, 29, 0.2);
+  font-size: 12px;
+  color: var(--c-text, #16191d);
+}
+.help-head { display: flex; align-items: center; justify-content: space-between; }
+.help-head h2 { margin: 0; font-size: 14px; }
+.help-close {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--c-border-strong, #d2dae5);
+  color: var(--c-text-muted, #5f6e80);
+}
+.help-sub {
+  margin: 12px 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-text-faint, #9aa7b6);
+}
+.help-list { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.help-list > div { display: grid; grid-template-columns: 96px 1fr; gap: 8px; align-items: baseline; }
+.help-list dt { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.help-list dd { margin: 0; color: var(--c-text-muted, #5f6e80); }
+.help-list kbd {
+  font: 600 11px/1 var(--font-mono, monospace);
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--c-border-strong, #d2dae5);
+  background: var(--c-surface-sunken, #edf1f6);
+}
+.help-swatch { width: 14px; height: 4px; border-radius: 2px; flex: none; }
+.help-swatch--plan { background: #2f80ed; }
+.help-swatch--ref { background: #16191d; }
+.help-swatch--hazard { background: #ff7a1a; }
+.help-swatch--det { background: #5f6e80; }
+.help-note { margin: 0; color: var(--c-text-muted, #5f6e80); line-height: 1.4; }

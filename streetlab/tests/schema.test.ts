@@ -325,7 +325,7 @@ describe('Command', () => {
         radius_m: 400,
         destination: "Fisherman's Wharf",
       },
-      { id: 'c5', cmd: 'set_param', key: 'cutin_period_s', value: 12 },
+      { id: 'c5', cmd: 'set_param', key: 'ego_speed_cap_mph', value: 35 },
       { id: 'c6', cmd: 'toggle_layer', layer: 'detections', visible: false },
       { id: 'c7', cmd: 'set_camera', view: 'overhead' },
       { id: 'c8', cmd: 'inject_hazard', kind: 'cutin' },

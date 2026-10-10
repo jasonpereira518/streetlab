@@ -101,7 +101,6 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "follow_distance_s": 1.5,
     "assist_enabled": True,
     "traffic_speed_scale": 1.0,
-    "cutin_period_s": 22.0,
 }
 
 

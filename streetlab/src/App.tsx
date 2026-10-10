@@ -3,6 +3,8 @@ import { createMockTransport } from './net/mockServer';
 import { createTransportFromLocation } from './net/wsClient';
 import { useSimStore } from './store/simStore';
 import { Renderer } from './three/Renderer';
+import { AckToast } from './ui/AckToast';
+import { HelpDialog, useShortcuts } from './ui/HelpDialog';
 import { LeftScenarioSidebar } from './ui/LeftScenarioSidebar';
 import { PanelHandle } from './ui/PanelHandle';
 import { PerfOverlay } from './ui/PerfOverlay';
@@ -19,6 +21,7 @@ export default function App() {
   const collapsed = useSimStore((s) => s.collapsed);
   const failure = useSimStore((s) => s.failure);
   const retryConnection = useSimStore((s) => s.retryConnection);
+  useShortcuts();
   const [boot, setBoot] = useState<BootPhase>('starting');
   const [bootError, setBootError] = useState('');
   const cleanup = useRef<(() => void) | undefined>(undefined);
@@ -89,6 +92,8 @@ export default function App() {
           onUseMock={useMock}
         />
       )}
+      <AckToast />
+      <HelpDialog />
       {boot !== 'ready' && (
         <StartupOverlay
           phase={boot === 'error' ? 'error' : 'starting'}

@@ -557,6 +557,7 @@ class StateUpdate(Wire):
 LayerKey = Literal[
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",
@@ -787,6 +788,7 @@ def parse_command(raw: Any) -> ParseResult:
 LAYER_KEYS: tuple[str, ...] = (
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",
