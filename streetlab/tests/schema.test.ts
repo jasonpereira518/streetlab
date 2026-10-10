@@ -28,7 +28,7 @@ it('is protocol 9', () => {
   // old client, matching the reasoning above. Then 8 for the required
   // `SceneDescription.reference_path`, and 9 for the required-nullable
   // `terrain`: an old client would drop it and draw a hilly scene flat.
-  expect(PROTOCOL_VERSION).toBe(10);
+  expect(PROTOCOL_VERSION).toBe(11);
 });
 
 it('accepts load_location with and without a radius', () => {
@@ -264,6 +264,7 @@ describe('StateUpdate', () => {
     const stats = {
       mode: 'ml', detector_ms: null, server_e2e_ms: null, frames_received: 0,
       frames_dropped: 0, precision: null, recall: null, mean_pos_err_m: null,
+      camera_set: 'front',
     };
     const withHealth = (health: unknown) =>
       StateUpdateSchema.safeParse({ ...sample, perception: { ...stats, health } }).success;
@@ -272,6 +273,20 @@ describe('StateUpdate', () => {
     expect(withHealth(null)).toBe(false);
     expect(withHealth(undefined)).toBe(false);
     expect(withHealth('meh')).toBe(false);
+  });
+
+  it('requires perception.camera_set, never null, and only the known layouts (protocol 11)', () => {
+    const stats = {
+      mode: 'ml', detector_ms: null, server_e2e_ms: null, frames_received: 0,
+      frames_dropped: 0, precision: null, recall: null, mean_pos_err_m: null, health: 'ok',
+    };
+    const withSet = (camera_set: unknown) =>
+      StateUpdateSchema.safeParse({ ...sample, perception: { ...stats, camera_set } }).success;
+    expect(withSet('front')).toBe(true);
+    expect(withSet('front+sides100')).toBe(true);
+    expect(withSet(null)).toBe(false);
+    expect(withSet(undefined)).toBe(false);
+    expect(withSet('front+sides76')).toBe(false);
   });
 
   it('requires the protocol 7 fields rather than defaulting them', () => {
@@ -283,7 +298,7 @@ describe('StateUpdate', () => {
     delete noSource.plan.reaction_source_id;
     expect(StateUpdateSchema.safeParse(noSource).success).toBe(false);
 
-    expect(PROTOCOL_VERSION).toBe(10);
+    expect(PROTOCOL_VERSION).toBe(11);
   });
 });
 

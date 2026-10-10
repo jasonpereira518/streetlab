@@ -1,6 +1,6 @@
 {
   "type": "ack",
-  "protocol": 10,
+  "protocol": 11,
   "id": "a2",
   "cmd": "load_scenario",
   "ok": false,

@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 10,
+  "protocol": 11,
   "seq": 0,
   "t": 0.0,
   "sim_rate_hz": 60.0,
@@ -112,7 +112,7 @@
         "width": 1.95,
         "height": 1.5
       },
-      "speed_mps": 9.55061419910662
+      "speed_mps": 3.774946739452228
     },
     {
       "id": "veh_02",
@@ -157,7 +157,7 @@
         "width": 2.55,
         "height": 3.3
       },
-      "speed_mps": 7.796610009476339
+      "speed_mps": 3.535350349355194
     },
     {
       "id": "veh_05",

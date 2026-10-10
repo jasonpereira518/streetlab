@@ -1,38 +1,77 @@
-"""Stable ids and velocity, which a per-frame detector cannot supply.
+"""Stable ids, velocity and a state the planner can lean on, from per-frame positions.
 
-The wire's `Detection` needs a stable `id` and a world-frame velocity for
-every object. A detector only ever looks at one frame: it returns boxes,
-with no notion that the car it sees now is the car it saw 100 ms ago. This
-module supplies that continuity -- associating `perception.geometry`'s
-ground-plane positions across frames, holding an id steady while an object
-is tracked, and estimating velocity from the position history.
+A detector only ever looks at one frame: it returns boxes, with no notion that
+the car it sees now is the car it saw 100 ms ago, and its positions jitter by
+metres at range. This module turns them into tracks.
 
-Deliberately not a Kalman filter: the world here is flat-ground and
-constant-velocity, association is greedy nearest-neighbour rather than a
-full assignment solver, and the whole thing is a small, readable state
-machine. That is easier to reason about -- and to keep boring under a
-misbehaving detector -- than a heavier estimator would be.
+Each track is a constant-velocity Kalman filter over (x, y, vx, vy):
+
+* **Measurement covariance is the localizer's** (`perception.localize`): it is
+  anisotropic -- long along the line of sight, short across it -- and grows with
+  range, so a far car is trusted less than a near one and a range error does not
+  smear into a lane error. Association uses the Mahalanobis distance against the
+  predicted innovation covariance, not a fixed number of metres.
+* **Birth on 2 hits in the last 3 frames.** A one-frame false positive never
+  publishes.
+* **Death by coast time, not by missed frames.** A published track survives
+  `coast_s` (0.6 s) without a matching box, its covariance growing as it goes,
+  and is published throughout, flagged `coasting`. A car that drops out of the
+  detector for two frames therefore does not vanish from the planner's lead
+  search and let the ego accelerate into it.
+* **Class is a decaying vote**, not an identity: vehicle <-> vehicle confusions
+  flip the label without losing the id.
+* **`snapshot(t)` predicts every published track to `t`.** The frame is 100-200 ms
+  old by the time it is published; the track's state is advanced to the time the
+  planner is planning, rather than reporting where things were.
+
+Association is still greedy nearest-first (by Mahalanobis distance), not a
+global assignment: with a handful of tracks the difference is invisible, and the
+state machine stays small enough to reason about.
 """
 
 from __future__ import annotations
 
 import itertools
 import math
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
+from typing import NamedTuple
+
+import numpy as np
 
 from schema import DetectionClass
 
-# One frame's worth of detector output, upstream of any tracking: the class
-# and confidence a detector reports, plus the ground-plane position
-# `perception.geometry.project_to_ground` computed for it.
-Observation = tuple[DetectionClass, float, float, float]  # cls, x, y, confidence
 
-# Exponential-smoothing weight applied to each new velocity sample: how much
-# a fresh position delta overrides the previous estimate. High enough that a
-# real speed change shows up within a couple of frames (see
-# test_velocity_is_estimated_from_successive_positions), low enough that one
-# noisy detection does not swing the estimate on its own.
-_VELOCITY_SMOOTHING = 0.6
+class Observation(NamedTuple):
+    """One box's ground-plane position and how far to trust it.
+
+    The first four fields are the original shape, so a bare
+    `(cls, x, y, confidence)` is still accepted by `Tracker.update`; the rest
+    default to a metre of isotropic noise.
+    """
+
+    cls: DetectionClass
+    x: float
+    y: float
+    confidence: float
+    #: Camera -> object bearing (rad), the axis `sigma_r` is measured along.
+    bearing: float = 0.0
+    sigma_r: float = 1.0
+    sigma_t: float = 1.0
+
+
+#: 99.9 % point of chi-squared with 2 degrees of freedom.
+GATE_CHI2 = 13.82
+#: Per-axis white acceleration noise of the constant-velocity model, m/s^2.
+ACCEL_SIGMA = 2.0
+#: Prior speed uncertainty of a track with one sighting, m/s.
+BIRTH_SPEED_SIGMA = 5.0
+#: Floor on a measurement sigma, metres (never trust a box to the millimetre).
+MIN_SIGMA_M = 0.3
+#: Innovations beyond this squared Mahalanobis distance (2 sigma) are down-weighted, not trusted.
+HUBER_D2 = 4.0
+#: How much of the old class vote survives one more hit.
+VOTE_DECAY = 0.8
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,104 +84,102 @@ class Track:
     y: float
     vx: float
     vy: float
-    # Current *consecutive* streak, not a lifetime count: `hits` resets to 0
-    # on any miss, `misses` resets to 0 on any hit. A track that has missed
-    # once after ten hits reports `hits=0`, not `hits=10`.
+    #: Current *consecutive* streak, not a lifetime count: `hits` resets to 0
+    #: on any miss, `misses` resets to 0 on any hit.
     hits: int
     misses: int
     confidence: float
+    #: Frames this track has been matched in over its whole life (not a streak).
+    #: Defaults to "mature" so a hand-built Track is not discounted.
+    total_hits: int = 1_000_000
+    #: No box matched on the latest frame: the state is a prediction.
+    coasting: bool = False
+    #: Seconds from the last matched box to the time this track is reported for.
+    age_s: float = 0.0
+    #: One standard deviation of position, metres (sqrt of the larger eigenvalue).
+    sigma_m: float = 0.0
 
 
 @dataclass
 class _TrackState:
-    """Mutable per-track bookkeeping the tracker owns between `update` calls.
-
-    Not exposed outside this module -- callers see only the `Track` snapshots
-    `to_track` produces.
-    """
-
     id: str
-    cls: DetectionClass
-    x: float
-    y: float
     t: float
-    vx: float = 0.0
-    vy: float = 0.0
+    x: np.ndarray
+    p: np.ndarray
+    cls_votes: dict[str, float]
+    confidence: float
+    last_hit_t: float
+    history: deque = field(default_factory=lambda: deque(maxlen=3))
     hit_streak: int = 0
+    total_hits: int = 1
     misses: int = 0
-    confidence: float = 0.0
     published: bool = False
 
-    def predict(self, t: float) -> tuple[float, float]:
-        """Where this track should be at `t`, assuming constant velocity.
+    @property
+    def cls(self) -> DetectionClass:
+        return max(self.cls_votes, key=self.cls_votes.get)  # type: ignore[return-value]
 
-        A non-positive `dt` -- a repeated or non-monotonic timestamp -- holds
-        position rather than extrapolating; nothing about "the frame before
-        this one" is trustworthy enough to divide by.
-        """
+    def predict(self, t: float) -> None:
         dt = t - self.t
         if dt <= 0:
-            return self.x, self.y
-        return self.x + self.vx * dt, self.y + self.vy * dt
-
-    def apply_hit(self, x: float, y: float, confidence: float, t: float) -> None:
-        """Record a matched observation: commit its position, blend velocity."""
-        dt = t - self.t
-        if dt > 0:
-            raw_vx = (x - self.x) / dt
-            raw_vy = (y - self.y) / dt
-            self.vx = _VELOCITY_SMOOTHING * raw_vx + (1 - _VELOCITY_SMOOTHING) * self.vx
-            self.vy = _VELOCITY_SMOOTHING * raw_vy + (1 - _VELOCITY_SMOOTHING) * self.vy
-        self.x, self.y, self.t = x, y, t
-        self.confidence = confidence
-        self.hit_streak += 1
-        self.misses = 0
-
-    def apply_miss(self, t: float) -> None:
-        """No observation matched this frame: coast on the prediction."""
-        self.x, self.y = self.predict(t)
+            return
+        f = np.eye(4)
+        f[0, 2] = f[1, 3] = dt
+        q = ACCEL_SIGMA**2
+        qb = np.array([[dt**4 / 4, dt**3 / 2], [dt**3 / 2, dt**2]]) * q
+        qm = np.zeros((4, 4))
+        qm[np.ix_([0, 2], [0, 2])] = qb
+        qm[np.ix_([1, 3], [1, 3])] = qb
+        self.x = f @ self.x
+        self.p = f @ self.p @ f.T + qm
         self.t = t
-        self.hit_streak = 0
-        self.misses += 1
 
-    def to_track(self) -> Track:
-        return Track(
-            id=self.id,
-            cls=self.cls,
-            x=self.x,
-            y=self.y,
-            vx=self.vx,
-            vy=self.vy,
-            hits=self.hit_streak,
-            misses=self.misses,
-            confidence=self.confidence,
-        )
+    def innovation(self, z: np.ndarray, r: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        s = self.p[:2, :2] + r
+        return z - self.x[:2], s
+
+    def update(self, z: np.ndarray, r: np.ndarray) -> None:
+        nu, s = self.innovation(z, r)
+        # Huber-style: an innovation beyond HUBER_D2 (2 sigma) is more likely a pose jump of the
+        # estimator (a box cut by a frame edge, a heading flip) than the object moving that far in
+        # 0.1 s, so its covariance is inflated in proportion rather than followed in full.
+        d2 = float(nu @ np.linalg.solve(s, nu))
+        if d2 > HUBER_D2:
+            r = r * (d2 / HUBER_D2)
+            nu, s = self.innovation(z, r)
+        k = self.p[:, :2] @ np.linalg.inv(s)
+        self.x = self.x + k @ nu
+        i_kh = np.eye(4)
+        i_kh[:, :2] -= k
+        # Joseph form: stays symmetric positive-definite under rounding.
+        self.p = i_kh @ self.p @ i_kh.T + k @ r @ k.T
+
+
+def _cov(obs: Observation) -> np.ndarray:
+    sr = max(obs.sigma_r, MIN_SIGMA_M)
+    st = max(obs.sigma_t, MIN_SIGMA_M)
+    c, s = math.cos(obs.bearing), math.sin(obs.bearing)
+    rot = np.array([[c, -s], [s, c]])
+    return rot @ np.diag([sr * sr, st * st]) @ rot.T
 
 
 class Tracker:
-    """Turns per-frame ground-plane detections into stable, velocity-bearing tracks.
-
-    Association is greedy nearest-neighbour: candidate (track, observation)
-    pairs are gated by class -- a detection never steals another class's
-    track, no matter how close -- and by distance from the track's
-    constant-velocity prediction to the observation. The closest pair is
-    assigned first, then the next, and neither side is reused once matched.
-
-    A track is only returned once it has matched `birth_hits` frames in a
-    row; that streak resets on any miss, but once a track has been published
-    it keeps being reported (subject to `max_misses`) even through a later
-    gap -- flicker should not make an already-trusted track disappear. A
-    track is dropped after `max_misses` consecutive misses.
-    """
+    """Turns per-frame ground-plane observations into stable, velocity-bearing tracks."""
 
     def __init__(
-        self, gate_m: float = 3.0, birth_hits: int = 2, max_misses: int = 2
+        self,
+        birth_hits: int = 2,
+        birth_window: int = 3,
+        coast_s: float = 0.6,
+        gate_chi2: float = GATE_CHI2,
     ) -> None:
-        self.gate_m = gate_m
         self.birth_hits = birth_hits
-        self.max_misses = max_misses
+        self.birth_window = birth_window
+        self.coast_s = coast_s
+        self.gate_chi2 = gate_chi2
         self._tracks: list[_TrackState] = []
         self._next_id = itertools.count(1)
+        self._t = 0.0
 
     def reset(self) -> None:
         """Forget every track. For a scene swap, which invalidates all of them.
@@ -153,67 +190,108 @@ class Tracker:
         """
         self._tracks = []
 
-    def update(self, observations: list[Observation], t: float) -> list[Track]:
-        predicted = [tr.predict(t) for tr in self._tracks]
+    def update(self, observations: list, t: float) -> list[Track]:
+        """Fold one frame (taken at `t`) in; return the published tracks as of `t`."""
+        obs = [o if isinstance(o, Observation) else Observation(*o) for o in observations]
+        for tr in self._tracks:
+            tr.predict(t)
 
-        candidates: list[tuple[float, int, int]] = []
+        cands: list[tuple[float, int, int]] = []
+        covs = [_cov(o) for o in obs]
         for ti, tr in enumerate(self._tracks):
-            px, py = predicted[ti]
-            for oi, (cls, x, y, _confidence) in enumerate(observations):
-                if cls != tr.cls:
-                    continue
-                dist = math.hypot(x - px, y - py)
-                if dist <= self.gate_m:
-                    candidates.append((dist, ti, oi))
-        candidates.sort(key=lambda c: (c[0], c[1], c[2]))
+            for oi, o in enumerate(obs):
+                nu, s = tr.innovation(np.array([o.x, o.y]), covs[oi])
+                d2 = float(nu @ np.linalg.solve(s, nu))
+                if d2 <= self.gate_chi2:
+                    cands.append((d2, ti, oi))
+        cands.sort()
 
-        matched_tracks: set[int] = set()
-        matched_obs: set[int] = set()
-        pairs: list[tuple[int, int]] = []
-        for _dist, ti, oi in candidates:
-            if ti in matched_tracks or oi in matched_obs:
+        used_t: set[int] = set()
+        used_o: set[int] = set()
+        for _d2, ti, oi in cands:
+            if ti in used_t or oi in used_o:
                 continue
-            matched_tracks.add(ti)
-            matched_obs.add(oi)
-            pairs.append((ti, oi))
-
-        # Tracks touched this frame -- matched or newly born -- are reported
-        # ahead of tracks merely carried over from a previous frame's miss.
-        touched: list[_TrackState] = []
-
-        for ti, oi in pairs:
-            _cls, x, y, confidence = observations[oi]
-            tr = self._tracks[ti]
-            tr.apply_hit(x, y, confidence, t)
-            if tr.hit_streak >= self.birth_hits:
+            used_t.add(ti)
+            used_o.add(oi)
+            tr, o = self._tracks[ti], obs[oi]
+            tr.update(np.array([o.x, o.y]), covs[oi])
+            tr.cls_votes = {k: v * VOTE_DECAY for k, v in tr.cls_votes.items()}
+            tr.cls_votes[o.cls] = tr.cls_votes.get(o.cls, 0.0) + max(o.confidence, 0.05)
+            tr.confidence = o.confidence
+            tr.last_hit_t = t
+            tr.history.append(True)
+            tr.hit_streak += 1
+            tr.total_hits += 1
+            tr.misses = 0
+            if sum(tr.history) >= self.birth_hits:
                 tr.published = True
-            touched.append(tr)
 
         for ti, tr in enumerate(self._tracks):
-            if ti not in matched_tracks:
-                tr.apply_miss(t)
+            if ti not in used_t:
+                tr.history.append(False)
+                tr.hit_streak = 0
+                tr.misses += 1
 
-        for oi, (cls, x, y, confidence) in enumerate(observations):
-            if oi in matched_obs:
+        for oi, o in enumerate(obs):
+            if oi in used_o:
                 continue
+            p = np.zeros((4, 4))
+            p[:2, :2] = covs[oi]
+            p[2, 2] = p[3, 3] = BIRTH_SPEED_SIGMA**2
             tr = _TrackState(
                 id=f"trk-{next(self._next_id)}",
-                cls=cls,
-                x=x,
-                y=y,
                 t=t,
+                x=np.array([o.x, o.y, 0.0, 0.0]),
+                p=p,
+                cls_votes={o.cls: max(o.confidence, 0.05)},
+                confidence=o.confidence,
+                last_hit_t=t,
                 hit_streak=1,
-                confidence=confidence,
             )
-            tr.published = tr.hit_streak >= self.birth_hits
+            tr.history = deque([True], maxlen=self.birth_window)
+            tr.published = self.birth_hits <= 1
             self._tracks.append(tr)
-            touched.append(tr)
 
-        self._tracks = [tr for tr in self._tracks if tr.misses <= self.max_misses]
+        keep = []
+        for tr in self._tracks:
+            if tr.published:
+                alive = t - tr.last_hit_t <= self.coast_s
+            else:
+                # A tentative track that can no longer reach `birth_hits` in its window is noise.
+                alive = not (len(tr.history) >= self.birth_window and sum(tr.history) < self.birth_hits)
+            if alive:
+                keep.append(tr)
+        self._tracks = keep
+        self._t = t
+        return self.snapshot(t)
 
-        touched_ids = {id(tr) for tr in touched}
-        carried = [tr for tr in self._tracks if id(tr) not in touched_ids]
-
-        return [tr.to_track() for tr in touched if tr.published] + [
-            tr.to_track() for tr in carried if tr.published
-        ]
+    def snapshot(self, t: float | None = None) -> list[Track]:
+        """The published tracks, each advanced to time `t` (default: the last frame)."""
+        t = self._t if t is None else t
+        out = []
+        for tr in self._tracks:
+            # Past its coast budget a track is gone even if no frame has arrived
+            # to say so: a stalled detector must not leave a frozen car published.
+            if not tr.published or t - tr.last_hit_t > self.coast_s:
+                continue
+            dt = max(0.0, t - tr.t)
+            x, y = tr.x[0] + tr.x[2] * dt, tr.x[1] + tr.x[3] * dt
+            sigma = math.sqrt(float(np.linalg.eigvalsh(tr.p[:2, :2])[-1]) + (ACCEL_SIGMA * dt) ** 2)
+            out.append(
+                Track(
+                    id=tr.id,
+                    cls=tr.cls,
+                    x=float(x),
+                    y=float(y),
+                    vx=float(tr.x[2]),
+                    vy=float(tr.x[3]),
+                    hits=tr.hit_streak,
+                    total_hits=tr.total_hits,
+                    misses=tr.misses,
+                    confidence=tr.confidence,
+                    coasting=tr.misses > 0,
+                    age_s=max(0.0, t - tr.last_hit_t),
+                    sigma_m=sigma,
+                )
+            )
+        return out

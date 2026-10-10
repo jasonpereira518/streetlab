@@ -1,6 +1,6 @@
 {
   "type": "ack",
-  "protocol": 10,
+  "protocol": 11,
   "id": "a1",
   "cmd": "set_paused",
   "ok": true,

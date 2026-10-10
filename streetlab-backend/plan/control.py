@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from plan.behavior import BehaviorFSM
-from plan.hazard import NO_REACTION, Reaction, ThreatAssessor
+from plan.hazard import NO_REACTION, REACTION_MIN_CONFIDENCE, Reaction, ThreatAssessor
 from plan.profile import Cap, braking_ceiling, braking_horizon, curvature_caps
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Lane, LaneSet, Route
@@ -252,11 +252,12 @@ class CenterlineFollower:
         lead, gap = _closest_lead(detections, route, s, home_lane=returning_home)
         too_close = False
         if lead is not None:
-            lead_caps, clear = _lead_caps(lead, gap, ego, limits)
+            lead_mps = lead_speed_along_route(lead, route)
+            lead_caps, clear = _lead_caps(lead, gap, ego, limits, lead_mps)
             caps += lead_caps
             # Urgent: the brake that matches the lead's speed by the standstill gap is already
             # harder than ordinary driving may ask, so the slewed one would be late.
-            closing = ego.speed_mps - lead.speed_mps
+            closing = ego.speed_mps - lead_mps
             room = max(clear - _STANDSTILL_GAP_M, 0.5)
             too_close = closing > 0.0 and closing * closing / (2.0 * room) > _COMFORT_DECEL_MPS2
         ceiling, feed_forward = braking_ceiling(caps, ego.speed_mps)
@@ -415,9 +416,16 @@ def _closest_lead(
     Distance rather than time-to-collision: TTC is undefined at zero closing
     speed, so a TTC-ranked lead vanishes the moment ego matches a stopped car's
     speed — and the car then accelerates into it.
+
+    A detection under `REACTION_MIN_CONFIDENCE` (a track seen in only two or
+    three frames) is not a lead: the following law's hard cap would brake the car
+    at the limit for a ghost. Seen in noisy-truth driving as 4.5 m/s^2 stops for
+    a 0.28-confidence "truck" 10 m ahead of an empty road. Ground truth is 1.0.
     """
     best, best_gap = None, math.inf
     for d in detections:
+        if d.confidence < REACTION_MIN_CONFIDENCE:
+            continue
         if d.lane_offset != 0 and not (
             home_lane and abs(route.lateral_offset((d.pose.x, d.pose.y))) <= _HOME_LANE_HALF_M
         ):
@@ -428,7 +436,30 @@ def _closest_lead(
     return best, best_gap
 
 
-def _lead_caps(lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits) -> tuple[list[Cap], float]:
+def lead_clearance(lead: Detection, gap: float) -> float:
+    """Body-to-body distance to the lead: the ONE definition of clearance.
+
+    `gap` is centre-to-centre along the route; the lead's rear face is half its length nearer
+    and the ego's nose half of ITS length ahead of its centre. Only correct if `lead.pose` is the
+    lead's body CENTRE: ground truth's is, an ML source's is centred in `perception/localize.py`
+    -- otherwise half a length is taken off twice (the ~2.3 m double subtraction the ML audit found).
+    """
+    return gap - lead.size.length / 2 - _EGO_HALF_LENGTH_M
+
+
+def lead_speed_along_route(lead: Detection, route: Route) -> float:
+    """The lead's velocity projected on the route tangent at its own position (signed).
+
+    `Detection.speed_mps` is a magnitude: a crossing pedestrian has a speed and no progress along
+    the ego's path; a lead coming toward the ego reads negative and is braked for harder.
+    """
+    h = route.heading_at(route.project((lead.pose.x, lead.pose.y)))
+    return lead.velocity[0] * math.cos(h) + lead.velocity[1] * math.sin(h)
+
+
+def _lead_caps(
+    lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits, lead_mps: float | None = None
+) -> tuple[list[Cap], float]:
     """The lead as caps on the braking profile, and the body-to-body gap to it.
 
     Two of them. The hard one: never closer than `_STANDSTILL_GAP_M`, matching the lead's speed by
@@ -441,14 +472,15 @@ def _lead_caps(lead: Detection, gap: float, ego: VehicleState, limits: PlanLimit
 
     Body to body, so a long lead vehicle is accounted for and the ego's own half-length is too.
     """
-    clear = gap - lead.size.length / 2 - _EGO_HALF_LENGTH_M
+    clear = lead_clearance(lead, gap)
+    lead_mps = lead.speed_mps if lead_mps is None else lead_mps
     desired = _STANDSTILL_GAP_M + max(limits.follow_distance_s, 0.6) * ego.speed_mps
     room = clear - desired
-    caps: list[Cap] = [(max(clear - _STANDSTILL_GAP_M, 0.0), lead.speed_mps, lead.speed_mps)]
+    caps: list[Cap] = [(max(clear - _STANDSTILL_GAP_M, 0.0), lead_mps, lead_mps)]
     if room > 0.0:
-        caps.append((room, lead.speed_mps, lead.speed_mps))
+        caps.append((room, lead_mps, lead_mps))
     else:
-        caps.append((0.0, max(0.0, lead.speed_mps + _GAP_GAIN * room), 0.0))
+        caps.append((0.0, max(0.0, lead_mps + _GAP_GAIN * room), 0.0))
     return caps, clear
 
 

@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -331,6 +331,11 @@ export const PerceptionStatsSchema = z.object({
   mean_pos_err_m: z.number().nonnegative().nullable(),
   /** Required, never null. "degraded" while the detector is a stub or its latest frame failed. */
   health: z.enum(['ok', 'degraded']),
+  /**
+   * Required, never null (protocol 11): which detector cameras to render and send, one
+   * `camera_frame` each per frame time. Layouts are pinned by `contract/detector_cameras.json`.
+   */
+  camera_set: z.enum(['front', 'front+sides100']),
 });
 
 export const RadarPointSchema = z.object({

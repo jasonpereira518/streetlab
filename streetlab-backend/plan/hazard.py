@@ -339,12 +339,23 @@ def windows(
 AEB_TRIGGER_MPS2 = 3.0
 AEB_RELEASE_MPS2 = 1.0
 AEB_RELEASE_S = 0.5
+#: Below this ego speed `aeb` has nothing to brake: it cannot help a car that is already
+#: stopped (or creeping to one), and a perceived closing speed of half a metre per second
+#: toward a car standing 5 m away is estimator noise, not an emergency. Seen in noisy-truth
+#: driving as repeated emergency brakes at 0.0 m/s behind a stopped car.
+AEB_MIN_EGO_MPS = 0.5
 #: Clearance `aeb` tries to keep when it stops, bumper to bumper.
 AEB_MARGIN_M = 2.0
 
 #: `yield_to_entry` stays on this long after the conflict has gone, so one
 #: noisy tick at the edge of the window cannot release and re-fire it.
 YIELD_RELEASE_S = 0.3
+
+#: A detection below this confidence cannot trigger a threat reaction. A perception source
+#: lowers a track's confidence until it has been seen enough times to trust
+#: (`perception/ml_source.py`): a two-frame ghost 9 m ahead is a reason to ease off, through
+#: the car-following law, not to brake at the cap. Ground truth reports 1.0.
+REACTION_MIN_CONFIDENCE = 0.5
 
 #: Speed ceiling meaning "no reaction".
 _NO_CEILING = math.inf
@@ -427,6 +438,8 @@ class AebRule:
     def step(self, inp: RuleInput) -> Reaction | None:
         demands = {}
         for w in inp.windows:
+            if inp.ego.speed_mps < AEB_MIN_EGO_MPS:
+                break
             if conflict_time(w) is not None:
                 demands[w.detection_id] = (required_decel(w, inp.ego.speed_mps), w)
 
@@ -543,8 +556,9 @@ class ThreatAssessor:
         dt: float,
         centre_m: float = 0.0,
     ) -> Reaction:
+        trusted = [d for d in detections if d.confidence >= REACTION_MIN_CONFIDENCE]
         inp = RuleInput(
-            windows(detections, ego, route, ego_s, centre_m), ego, route, ego_s, dt
+            windows(trusted, ego, route, ego_s, centre_m), ego, route, ego_s, dt
         )
         # Every rule steps every tick, fired or not: a rule's dwell timers and
         # latches must keep running while another rule is the one reported.

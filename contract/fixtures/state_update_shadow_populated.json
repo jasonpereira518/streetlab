@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 10,
+  "protocol": 11,
   "seq": 180,
   "t": 2.9999999999999942,
   "sim_rate_hz": 60.0,
@@ -1228,6 +1228,7 @@
     "precision": 0.5,
     "recall": 0.4,
     "mean_pos_err_m": 1.2,
-    "health": "ok"
+    "health": "ok",
+    "camera_set": "front"
   }
 }
