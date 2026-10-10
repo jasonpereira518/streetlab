@@ -160,3 +160,27 @@ def test_a_repeated_timestamp_does_not_blow_up_or_advance_time():
     tr.update([obs(10.0, 0.0)], t=1.0)
     out = tr.update([obs(10.0, 0.0)], t=1.0)
     assert len(out) == 1 and math.isfinite(out[0].x)
+
+
+def test_a_pose_jump_does_not_become_a_velocity():
+    """A stationary car whose estimate jumps 1.8 m (3.6 sigma, inside the gate) for two frames,
+    as a box cut by a frame edge does, must not be tracked as moving. Measured peak speed:
+    1.11 m/s without the Huber down-weighting of large innovations, 0.74 m/s with it. (A jump
+    beyond the gate never reaches the filter: it starts a second track instead.)"""
+    tr = Tracker()
+    peak = 0.0
+    for i in range(30):
+        x = 10.0 + (1.8 if i in (15, 16) else 0.0)
+        out = tr.update([obs(x, 0.0, sr=0.5, st=0.5)], t=0.1 * i)
+        if out and i >= 5:
+            peak = max(peak, math.hypot(out[0].vx, out[0].vy))
+    assert peak < 0.9, peak
+
+
+def test_a_real_steady_mover_is_still_followed_after_the_down_weighting():
+    tr = Tracker()
+    track = None
+    for i in range(30):
+        out = tr.update([obs(10.0 + 0.8 * i, 0.0, sr=0.5, st=0.5)], t=0.1 * i)
+        track = out[0] if out else track
+    assert track.vx == pytest.approx(8.0, abs=1.0)

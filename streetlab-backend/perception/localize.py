@@ -161,12 +161,40 @@ def locate(
         # so terrain is too: relative to where the camera stands.
         base, abs_ground = ground(camera.x, camera.y), ground
         ground = lambda x, y: abs_ground(x, y) - base  # noqa: E731
+    size = CLASS_SIZE[box.cls]
+    f_px = (frame_h / 2.0) / math.tan(math.radians(camera.fov_y_deg) / 2.0)
     cx = (box.x0 + box.x1) / 2.0
     rx, ry, rz = pixel_ray(cx, box.y1, camera, frame_w, frame_h)
     d_ground = ground_distance(camera, rx, ry, rz, ground)
     if d_ground is None:
         return None
     bearing = math.atan2(ry, rx)
+
+    # A box cut by ONE side of the frame is a censored measurement: the edge that is inside the
+    # frame is real, the edge at the frame border only says "at least this far out". The centre
+    # of the visible part is then biased toward the interior by up to half the hidden width, and
+    # that bias is what put a car alongside the ego 1-3 m off. So: the true width lies between
+    # what is visible (or the class's narrowest face) and the class's widest span; take the
+    # middle, place the centre that half-width in from the REAL edge, and carry the spread of
+    # the interval as covariance instead of trusting the midpoint.
+    left_cut = box.x0 <= _EDGE_PX
+    right_cut = box.x1 >= frame_w - _EDGE_PX
+    cropped_side = left_cut or right_cut
+    censored_w: tuple[float, float] | None = None  # (width estimate m, its sigma m)
+    if left_cut != right_cut and d_ground > 1.0:
+        z_m = d_ground * max(math.cos(bearing - camera.yaw), 0.2)
+        vis_w = (box.x1 - box.x0) * z_m / f_px
+        longest_c = min(size.length, _UNMATCHED_EXTENT_CAP_M)
+        w_lo = max(vis_w, size.width)
+        w_hi = max(vis_w, math.hypot(longest_c, size.width))
+        w_mid = (w_lo + w_hi) / 2.0
+        censored_w = (w_mid, max((w_hi - w_lo) / 2.0, 0.1))
+        half_px = (w_mid / 2.0) * f_px / z_m
+        cx = box.x1 - half_px if left_cut else box.x0 + half_px
+        rx, ry, rz = pixel_ray(cx, box.y1, camera, frame_w, frame_h)
+        redo = ground_distance(camera, rx, ry, rz, ground)
+        if redo is not None:
+            d_ground, bearing = redo, math.atan2(ry, rx)
 
     # Sensitivity of the ground-contact range to the bottom edge, by differencing.
     rx2, ry2, rz2 = pixel_ray(cx, box.y1 + sigma_px, camera, frame_w, frame_h)
@@ -178,7 +206,6 @@ def locate(
     if cropped_bottom:
         sigma_g *= _CROPPED_INFLATION
 
-    size = CLASS_SIZE[box.cls]
     d, sigma_r, source = d_ground, sigma_g, "ground-cropped" if cropped_bottom else "ground"
     if not cropped_bottom and not cropped_top:
         s_b = _slope(camera, cx, box.y1, frame_w, frame_h)
@@ -203,8 +230,6 @@ def locate(
     # metres (pixels x depth / focal length) pins the heading up to a mirror ambiguity,
     # and with it the depth extent L|cos t| + W|sin t|. Falls back to "aligned with the
     # sight line" (half the length) when the width cannot be trusted (cropped sideways).
-    f_px = (frame_h / 2.0) / math.tan(math.radians(camera.fov_y_deg) / 2.0)
-    cropped_side = box.x0 <= _EDGE_PX or box.x1 >= frame_w - _EDGE_PX
     # The prior length is capped at a car's: a box whose width fits no heading of the
     # detected class is as likely a mislabelled car as a cropped bus, and a 12 m bus prior
     # moved a mislabelled car's centre 6 m.
@@ -217,23 +242,30 @@ def locate(
     longest = min(size.length, _UNMATCHED_EXTENT_CAP_M)
     extent = (longest + size.width) / 2.0
     extent_sigma = max(0.4 * (longest - size.width), 0.3)
-    if not cropped_side and d > 1.0:
+    if d > 1.0 and (not cropped_side or censored_w is not None):
         depth = d * max(math.cos(bearing - camera.yaw), 0.2)
-        width_m = (box.x1 - box.x0) * depth / f_px
-        found = _depth_extent(width_m, size.length, size.width, 2.0 * sigma_px * depth / f_px)
+        if censored_w is None:
+            width_m = (box.x1 - box.x0) * depth / f_px
+            tol = 2.0 * sigma_px * depth / f_px
+        else:
+            width_m, tol = censored_w[0], 1.5 * censored_w[1]
+        found = _depth_extent(width_m, size.length, size.width, tol)
         if found is not None:
             extent, extent_sigma = found
     d += extent / 2.0
     sigma_r = math.hypot(sigma_r, extent_sigma / 2.0)
-    if cropped_side:
+    if cropped_side and censored_w is None:
         # A body straddling the frame edge (the hand-off between two cameras) shows only part
         # of itself, so its depth extent is a guess: say so, or the tracker's tight gate
         # rejects the next frame's estimate from the other camera and the object gets a new id.
         sigma_r = math.hypot(sigma_r, 0.5 * extent)
 
     sigma_t = max(d * sigma_px / f_px / math.sqrt(2.0), 0.05)
-    if cropped_side:
-        # Part of the body is outside the frame, so the box centre sits inboard of the body
+    if censored_w is not None:
+        sigma_t = math.hypot(sigma_t, censored_w[1] / 2.0)
+        sigma_r = math.hypot(sigma_r, censored_w[1] / 2.0)
+    elif cropped_side:
+        # Cut by both sides: no real edge to anchor on. The box centre sits inboard of the body
         # centre by up to half its width across the line of sight.
         sigma_t = math.hypot(sigma_t, 0.5 * max(size.width, 0.5 * size.length))
     ux, uy = math.cos(bearing), math.sin(bearing)

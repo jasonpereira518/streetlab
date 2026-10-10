@@ -68,6 +68,8 @@ ACCEL_SIGMA = 2.0
 BIRTH_SPEED_SIGMA = 5.0
 #: Floor on a measurement sigma, metres (never trust a box to the millimetre).
 MIN_SIGMA_M = 0.3
+#: Innovations beyond this squared Mahalanobis distance (2 sigma) are down-weighted, not trusted.
+HUBER_D2 = 4.0
 #: How much of the old class vote survives one more hit.
 VOTE_DECAY = 0.8
 
@@ -138,6 +140,13 @@ class _TrackState:
 
     def update(self, z: np.ndarray, r: np.ndarray) -> None:
         nu, s = self.innovation(z, r)
+        # Huber-style: an innovation beyond HUBER_D2 (2 sigma) is more likely a pose jump of the
+        # estimator (a box cut by a frame edge, a heading flip) than the object moving that far in
+        # 0.1 s, so its covariance is inflated in proportion rather than followed in full.
+        d2 = float(nu @ np.linalg.solve(s, nu))
+        if d2 > HUBER_D2:
+            r = r * (d2 / HUBER_D2)
+            nu, s = self.innovation(z, r)
         k = self.p[:, :2] @ np.linalg.inv(s)
         self.x = self.x + k @ nu
         i_kh = np.eye(4)
