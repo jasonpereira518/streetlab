@@ -51,7 +51,7 @@ address to load it live. Dev setups and a walkthrough are in [`DEMO.md`](DEMO.md
 - **Real-world maps**: live geocoding and OpenStreetMap ingest, cached for offline use and built off the render thread so the car never stutters while a block loads.
 - **ML inference in the loop, measured**: camera frames → RT-DETR (ONNX) → 2D-to-3D tracking → scoring against ground truth. It runs in shadow and is labelled Experimental because it failed its gates (see Results).
 - **Schema-enforced contract**: fixtures generated from the real simulation are validated by the zod and pydantic schemas.
-- **1,400+ automated tests**: 1,198 backend (pytest), 276 frontend (vitest), 21 end-to-end (Playwright); counts as of 2026-10-04.
+- **2,100+ automated tests**: 1,744 backend (pytest, includes the contract), 344 frontend (vitest), 34 end-to-end (Playwright, 2 of them need a hosted-mode backend); measured 2026-10-10 on the integration branch.
 
 ## Results
 
@@ -85,12 +85,12 @@ private simulation, capped by `STREETLAB_MAX_SESSIONS`, with browser origins res
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q tests ../contract   # 1198 passed, 1 skipped (~9 min)
-cd streetlab && npx vitest run                    # 276 tests in 17 files, includes ../contract
-cd streetlab && npm run test:e2e                  # 21 Playwright tests in 5 specs
+cd streetlab-backend && uv run pytest -q tests ../contract   # 1744 passed, 1 skipped, 3 xfailed (~17 min under load)
+cd streetlab && npx vitest run                    # 344 tests in 26 files, includes ../contract
+cd streetlab && npm run test:e2e                  # 34 Playwright tests in 8 specs (32 run; 2 need STREETLAB_E2E_BACKEND)
 ```
 
-CI runs typecheck, vitest, pytest and the contract tests on every push ([Actions](https://github.com/jasonpereira518/streetlab/actions)). Playwright runs there as an advisory job: on GPU-less hosted runners a few canvas-screenshot specs time out ([measurements](docs/measurements/2026-10-04-e2e-flake-rate.md)), and the suite passes on a developer machine. Counts measured 2026-10-04.
+CI runs typecheck, vitest, pytest and the contract tests on every push ([Actions](https://github.com/jasonpereira518/streetlab/actions)). Playwright runs there as an advisory job: on GPU-less hosted runners a few canvas-screenshot specs time out ([measurements](docs/measurements/2026-10-04-e2e-flake-rate.md)), and the suite passes on a developer machine. Counts measured 2026-10-10 on `claude/integration-all`. The pytest suite has no slow marker: CI runs the whole default suite (the workflows use no secrets).
 
 ## More
 
