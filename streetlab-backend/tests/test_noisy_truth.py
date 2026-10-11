@@ -113,3 +113,66 @@ def test_switching_back_to_noisy_truth_serves_no_stale_tracks():
     sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "noisy-truth"})
     sim.step()
     assert sim.world.detections == []
+
+
+class _BlindMl:
+    """An ML double that sees nothing, so every reference object is a miss."""
+
+    last_frame_t = None
+
+    def observe(self, ego, agents, route):
+        return []
+
+    def reset(self):
+        pass
+
+
+def _expected_reference(sim, t):
+    """Recorded in-range truth at `t`, split into forward-visible and the rest."""
+    from perception.driver_view import forward_visible
+
+    ego = sim.pose_history.ego_at(t)
+    headings, sizes = sim.pose_history.headings_at(t), sim.pose_history.sizes_at(t)
+    seen = [
+        o
+        for o in sim.pose_history.at(t)
+        if forward_visible(ego, o.x, o.y, headings[o.id], sizes[o.id], sim.scene.description.buildings)
+    ]
+    behind = [
+        o
+        for o in sim.pose_history.at(t)
+        if math.cos(math.atan2(o.y - ego.y, o.x - ego.x) - ego.heading) < -0.5
+    ]
+    return seen, behind
+
+
+def test_ml_and_noisy_truth_are_scored_against_the_same_forward_visible_truth():
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    ml = _BlindMl()
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline, ml_perception=ml
+        )
+        for _ in range(30):
+            sim.step()
+
+        # ML: sees nothing, so its misses are exactly the reference.
+        ml.last_frame_t = sim.world.t
+        seen, behind = _expected_reference(sim, sim.world.t)
+        sim.step()
+        assert behind, "grid-merge seed 4 must have an agent behind the ego"
+        assert sim.perception_score.false_negatives == len(seen)
+        assert not {o.id for o in behind} & {o.id for o in seen}
+
+        # Noisy-truth, same sim: its matches plus misses are the same reference.
+        assert sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "noisy-truth"}).ok
+        sim.step()
+        frame_t = sim._noisy.last_frame_t
+        seen, behind = _expected_reference(sim, frame_t)
+        score = sim.perception_score
+        assert behind
+        assert score.true_positives + score.false_negatives == len(seen)
+    finally:
+        pipeline.shutdown()

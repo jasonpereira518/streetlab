@@ -37,7 +37,7 @@ from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.noisy_truth import NoisyTruthPerception
 from perception.pipeline import PerceptionPipeline
-from perception.driver_view import visible_to_driver
+from perception.driver_view import forward_visible, visible_to_driver
 from perception.road_rules import RoadRulesObserver
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
@@ -597,7 +597,7 @@ class Simulation:
             # Run only while driving: it is not a shadow of anything, and
             # ground truth is the reference the scorecard measures it against.
             noisy = self._noisy.observe(ego, agents, route, self.world.t)
-            self._score_shadow(noisy, self._noisy.last_frame_t, self._noisy.last_truth)
+            self._score_shadow(noisy, self._noisy.last_frame_t)
             return noisy, driving
         if ml is None:
             return driving, None
@@ -607,10 +607,7 @@ class Simulation:
         return driving, ml
 
     def _score_shadow(
-        self,
-        detections: Sequence[Detection],
-        frame_t: float | None,
-        truth: Sequence[TruthObject] | None = None,
+        self, detections: Sequence[Detection], frame_t: float | None
     ) -> None:
         """Score a non-ground-truth source's latest published frame (ML, or
         noisy-truth while it drives) against the truth recorded for that same
@@ -639,18 +636,30 @@ class Simulation:
         scene swap cleared it -- `perception_score` is left as it was rather
         than scored against the wrong world.
 
-        Noisy-truth passes its own `truth` instead: its frame has no latency
-        (the observation and the reference come from the same step), and the
-        reference is what its forward cabin view could see -- see
-        `perception/noisy_truth.py` for why not all-around in-range truth.
+        One reference for every source, so the ladder's rungs compare: the
+        recorded truth within `MAX_RANGE_M` that a forward-only camera at the
+        recorded ego could resolve (`driver_view.forward_visible`, buildings
+        occluding). Neither ML nor noisy-truth has a rear camera, and charging
+        them for the blind spot measured scene geometry, not sensing -- recall
+        0.14 for noisy-truth on grid-merge against all-around truth.
         """
         if frame_t is None or frame_t == self._scored_frame_t:
             return
         self._scored_frame_t = frame_t
-        if truth is None:
-            truth = self.pose_history.at(frame_t)
-        if truth is None:
+        recorded = self.pose_history.at(frame_t)
+        ego = self.pose_history.ego_at(frame_t)
+        if recorded is None or ego is None:
             return
+        headings = self.pose_history.headings_at(frame_t) or {}
+        sizes = self.pose_history.sizes_at(frame_t) or {}
+        buildings = self.scene.description.buildings
+        truth = [
+            o
+            for o in recorded
+            if o.id in sizes
+            and math.hypot(o.x - ego.x, o.y - ego.y) <= MAX_RANGE_M
+            and forward_visible(ego, o.x, o.y, headings.get(o.id, 0.0), sizes[o.id], buildings)
+        ]
         predictions = [
             Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in detections
         ]
@@ -840,7 +849,11 @@ class Simulation:
         egos are metres apart, not the scene-spanning miss this method
         fixes.
         """
-        if self._ml_perception is None and not self._capture:
+        if (
+            self._ml_perception is None
+            and not self._capture
+            and self.perception_mode != "noisy-truth"
+        ):
             return
         if self._capture:
             agents = self._traffic.agents
@@ -863,7 +876,7 @@ class Simulation:
         ]
         headings = {a.id: a.state.heading for a in agents}
         sizes = {a.id: a.size for a in agents}
-        self.pose_history.record(self.world.t, objects, headings, sizes)
+        self.pose_history.record(self.world.t, objects, headings, sizes, self.world.ego)
 
     # -- frame assembly ---------------------------------------------------- #
 
@@ -1002,8 +1015,15 @@ class Simulation:
         available = self.perception_modes()
         if mode not in available:
             mode = "noisy-truth" if "noisy-truth" in available else "ground-truth"
-        self.perception_mode = mode
+        self._set_mode(mode)
         return mode
+
+    def _set_mode(self, mode: PerceptionMode) -> None:
+        # Entering noisy-truth starts it cold: tracks left from an earlier
+        # stint are stale world coordinates the planner could brake for.
+        if mode == "noisy-truth" and self.perception_mode != mode:
+            self._noisy.reset()
+        self.perception_mode = mode
 
     def _cmd_run_summary(self, command) -> CommandOutcome:
         s = self._emit_summary(complete=False)
@@ -1090,7 +1110,7 @@ class Simulation:
             )
         if command.mode not in self.perception_modes():
             return CommandOutcome(ok=False, message=f"{command.mode} perception is unavailable")
-        self.perception_mode = command.mode
+        self._set_mode(command.mode)
         self._emit("perception_mode", f"perception: {command.mode}")
         return CommandOutcome(ok=True, message=f"perception: {command.mode}")
 

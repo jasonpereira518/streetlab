@@ -10,10 +10,9 @@ vehicle, and runs the result through the same `Tracker` and `_detection` the
 ML source uses -- so a dropout costs a real track, and the planner cannot
 tell this source from the detector by shape.
 
-Scored against `last_truth` -- what the forward cabin view could resolve at
-the frame instant -- not against all-around in-range truth: on grid-merge
-only ~19% of in-range agents are forward and unoccluded, so the wider
-reference measures the blind spot (recall ~0.14), not the sensing model.
+Scored, like ML, against forward-visible truth (`Simulation._score_shadow`):
+on grid-merge only ~19% of in-range agents are forward and unoccluded, so
+all-around truth would measure the blind spot (recall ~0.14), not sensing.
 
 The numbers below are the ASSUMED table from the unmerged ML-driving spec
 (section 5a), not measured: the shipped detector has no positive-detection
@@ -27,9 +26,8 @@ import math
 from random import Random
 from typing import Sequence
 
-from perception.driver_view import visible_to_driver
+from perception.driver_view import forward_visible
 from perception.ml_source import _detection
-from perception.scoring import TruthObject
 from perception.service import _LANE_W, MAX_RANGE_M, EgoFrame, GroundTruthPerception
 from perception.tracker import Observation, Track, Tracker
 from schema import Building, Detection, DetectionClass
@@ -67,9 +65,6 @@ class NoisyTruthPerception:
         self._truth = GroundTruthPerception()
         self._frame_t: float | None = None
         self._tracks: list[Track] = []
-        # What the cabin could see at the last frame, before dropout and
-        # noise: the reference this source is scored against (see `observe`).
-        self.last_truth: tuple[TruthObject, ...] = ()
 
     @property
     def last_frame_t(self) -> float | None:
@@ -78,18 +73,12 @@ class NoisyTruthPerception:
     def reset(self) -> None:
         self._frame_t = None
         self._tracks = []
-        self.last_truth = ()
         self._tracker.reset()
 
     def observe(
         self, ego: VehicleState, agents: Sequence[Agent], route: Route, t: float
     ) -> list[Detection]:
         frame = EgoFrame.of(ego, route)
-        # A gap of more than a couple of frames means nobody was observing
-        # (another mode was driving): the tracks are stale world coordinates
-        # the planner could brake for, so start cold, as a scene swap does.
-        if self._frame_t is not None and t - self._frame_t > 2 * FRAME_PERIOD_S:
-            self.reset()
         if self._frame_t is None or t >= self._frame_t + FRAME_PERIOD_S - 1e-9:
             self._tracks = self._tracker.update(self._observations(ego, agents, route, frame), t)
             self._frame_t = t
@@ -105,16 +94,11 @@ class NoisyTruthPerception:
         self, ego: VehicleState, agents: Sequence[Agent], route: Route, frame: EgoFrame
     ) -> list[Observation]:
         rng = self._rng
-        seen = visible_to_driver(
-            ego,
-            self._truth.observe(ego, agents, route),
-            self._buildings,
-            rear_half_rad=0.0,
-            rear_range_m=0.0,
-        )
-        self.last_truth = tuple(
-            TruthObject(id=d.id, cls=d.cls, x=d.pose.x, y=d.pose.y) for d in seen
-        )
+        seen = [
+            d
+            for d in self._truth.observe(ego, agents, route)
+            if forward_visible(ego, d.pose.x, d.pose.y, d.pose.heading, d.size, self._buildings)
+        ]
         out: list[Observation] = []
         for det in seen:
             r = frame.range_to(det.pose.x, det.pose.y)
@@ -127,7 +111,7 @@ class NoisyTruthPerception:
             )
         if rng.random() < P_GHOST:
             r = rng.uniform(GHOST_MIN_M, MAX_RANGE_M)
-            lateral = rng.uniform(-_LANE_W, _LANE_W)
+            lateral = rng.uniform(-_LANE_W / 2, _LANE_W / 2)  # within the ego lane
             cls = rng.choice(GHOST_CLASSES)
             c, s = math.cos(ego.heading), math.sin(ego.heading)
             out.append(

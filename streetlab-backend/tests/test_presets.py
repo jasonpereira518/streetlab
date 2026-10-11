@@ -297,3 +297,10 @@ def test_a_preset_run_emits_one_complete_summary_at_its_duration(monkeypatch):
     # The latch resets on reset: the replay summarises again.
     sim.apply_dict({"id": "r", "cmd": "reset"})
     assert len(_summaries(run(sim, 13))) == 1
+
+
+def test_every_noisy_truth_preset_warns_about_velocity_noise():
+    noisy = {"vulnerable-road-users", "ladder-noisy-truth", "ladder-ml", "dense-arterial-behind"}
+    for preset in PRESETS.values():
+        warned = "velocity from noisy positions" in preset.what_varies
+        assert warned == (preset.id in noisy), preset.id

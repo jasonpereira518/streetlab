@@ -114,6 +114,11 @@ _LADDER_VARIES = (
     "so the three ladder rungs differ only in what the planner is told."
 )
 
+_NOISY_VARIES = (
+    " Noisy truth's tracker estimates velocity from noisy positions, so expect TTC "
+    "chatter, extra hard brakes and occasional creep into a stopped lead."
+)
+
 
 def _ladder(mode: PerceptionMode, title: str, blurb: str, varies: str) -> Preset:
     return Preset(
@@ -184,7 +189,8 @@ PRESETS: dict[str, Preset] = {
             title="Vulnerable road users",
             blurb="Cyclists drifting in and pedestrians crossing, seen through noisy perception.",
             what_to_watch="Late track births, mid-crossing dropouts and reaction latency.",
-            what_varies="Hazard times, drift rates and crossing margins, plus the perception noise.",
+            what_varies="Hazard times, drift rates and crossing margins, plus the perception noise."
+            + _NOISY_VARIES,
             scene="loop",
             seed=None,
             perception="noisy-truth",
@@ -227,7 +233,7 @@ PRESETS: dict[str, Preset] = {
             "noisy-truth",
             "Perception ladder: noisy truth",
             "The same run with seeded dropout and position noise on every object.",
-            _LADDER_VARIES,
+            _LADDER_VARIES + _NOISY_VARIES,
         ),
         _ladder(
             "ml",
@@ -235,14 +241,14 @@ PRESETS: dict[str, Preset] = {
             "The same run driven by the real ONNX detector, where it is available.",
             _LADDER_VARIES
             + " The ML rung's frames arrive on wall-clock time, so it is not bit-replayable;"
-            " without a detector it falls back to noisy truth.",
+            " without a detector it falls back to noisy truth." + _NOISY_VARIES,
         ),
         Preset(
             id="dense-arterial-behind",
             title="Dense arterial, threats behind",
             blurb="Fast traffic with a tailgater and an emergency vehicle coming up from behind.",
             what_to_watch="Behind-hazards a forward-only sensor cannot see; the ego does not pull over.",
-            what_varies="Hazard times and the perception noise.",
+            what_varies="Hazard times and the perception noise." + _NOISY_VARIES,
             scene="arterial",
             seed=None,
             perception="noisy-truth",
