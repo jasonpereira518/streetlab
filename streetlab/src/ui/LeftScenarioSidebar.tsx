@@ -4,9 +4,10 @@
  * from the server, so the sidebar has no knowledge of the mock.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { AddressSuggestion, ScenarioSummary } from '../schema';
+import type { AddressSuggestion, PresetSummary, ScenarioSummary } from '../schema';
 import { useSimStore } from '../store/simStore';
-import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon, SearchIcon } from './Icons';
+import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon, ResetIcon, SearchIcon } from './Icons';
+import { PERCEPTION_LABELS } from './TopToolbar';
 import { alpha, color } from './theme';
 
 /** Debounce before an as-you-type address fires a `suggest_address` request.
@@ -16,6 +17,9 @@ const SUGGEST_DEBOUNCE_MS = 250;
 /** Below this length a query is either empty or too short to narrow down
  * real candidates — Nominatim's own results get noisy well before this. */
 const MIN_SUGGEST_LENGTH = 3;
+
+/** Stable empty list: a selector returning a fresh `[]` re-renders forever. */
+const NO_PRESETS: PresetSummary[] = [];
 
 /**
  * A text input with an as-you-type dropdown of address candidates.
@@ -149,6 +153,10 @@ export function LeftScenarioSidebar() {
   const locationProgress = useSimStore((s) => s.locationProgress);
   const locationError = useSimStore((s) => s.locationError);
   const tripComplete = useSimStore((s) => s.tripComplete);
+  const presets = useSimStore((s) => s.scene?.presets ?? NO_PRESETS);
+  const activePresetId = useSimStore((s) => s.activePresetId);
+  const lastSeedByPreset = useSimStore((s) => s.lastSeedByPreset);
+  const loadPreset = useSimStore((s) => s.loadPreset);
   const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
   const [destQuery, setDestQuery] = useState('');
@@ -249,75 +257,135 @@ export function LeftScenarioSidebar() {
         )}
       </form>
 
-      <div className="scenario-list" role="list">
-        {catalog.length === 0 && (
-          <p className="sidebar-empty">Waiting for the scenario catalog…</p>
+      <div className="scenario-list">
+        {presets.length > 0 && (
+          <>
+            <span className="sidebar-eyebrow">Walkthrough</span>
+            <div className="scenario-group" role="list" aria-label="Walkthrough presets">
+              {presets.map((p) => {
+                const seed = lastSeedByPreset[p.id];
+                return (
+                  <article
+                    key={p.id}
+                    role="listitem"
+                    className={`scenario scenario--preset${p.id === activePresetId ? ' is-active' : ''}`}
+                  >
+                    <div className="scenario-body">
+                      <h3 className="scenario-name" title={p.title}>
+                        {p.title}
+                      </h3>
+                      <p className="scenario-desc" title={p.blurb}>
+                        {p.blurb}
+                      </p>
+                      <div className="scenario-meta">
+                        <span className="tbadge tbadge--neutral">{PERCEPTION_LABELS[p.perception]}</span>
+                        <span className="tbadge tbadge--accent">
+                          {p.seed === null ? 'fresh seed' : 'fixed seed'}
+                        </span>
+                        <span className="scenario-dur" data-testid="preset-duration">
+                          {p.duration_s} s
+                        </span>
+                      </div>
+                    </div>
+                    <div className="scenario-actions">
+                      <button
+                        type="button"
+                        className="play-btn"
+                        onClick={() => loadPreset(p.id)}
+                        disabled={locationPending !== null}
+                        aria-label={`Run ${p.title}`}
+                        title={p.seed === null ? 'Run on a fresh seed' : `Run on seed ${p.seed}`}
+                      >
+                        <PlayIcon size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={() => loadPreset(p.id, seed)}
+                        disabled={seed === undefined || locationPending !== null}
+                        aria-label={`Replay ${p.title}`}
+                        title={seed === undefined ? 'Run once to replay its seed' : `Replay seed ${seed}`}
+                      >
+                        <ResetIcon size={14} />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            <span className="sidebar-eyebrow">Saved scenarios</span>
+          </>
         )}
-        {catalog.map((s) => (
-          <article
-            key={s.id}
-            role="listitem"
-            className={`scenario${s.id === activeId ? ' is-active' : ''}`}
-          >
-            <ScenarioThumb scenario={s} active={s.id === activeId} />
-            <div className="scenario-body">
-              <div className="scenario-line">
-                <span className="scenario-index">
-                  {String(s.index).padStart(2, '0')}
-                </span>
-                <h3 className="scenario-name" title={s.name}>
-                  {s.name}
-                </h3>
+        <div className="scenario-group" role="list" aria-label="Saved scenarios">
+          {catalog.length === 0 && (
+            <p className="sidebar-empty">Waiting for the scenario catalog…</p>
+          )}
+          {catalog.map((s) => (
+            <article
+              key={s.id}
+              role="listitem"
+              className={`scenario${s.id === activeId ? ' is-active' : ''}`}
+            >
+              <ScenarioThumb scenario={s} active={s.id === activeId} />
+              <div className="scenario-body">
+                <div className="scenario-line">
+                  <span className="scenario-index">
+                    {String(s.index).padStart(2, '0')}
+                  </span>
+                  <h3 className="scenario-name" title={s.name}>
+                    {s.name}
+                  </h3>
+                </div>
+                <p className="scenario-desc" title={s.description}>
+                  {s.description}
+                </p>
+                <div className="scenario-meta">
+                  <span className={`difficulty difficulty--${s.difficulty}`}>
+                    {s.difficulty}
+                  </span>
+                  <span className="scenario-dur">
+                    {Math.round(s.duration_s / 60)} min
+                  </span>
+                </div>
               </div>
-              <p className="scenario-desc" title={s.description}>
-                {s.description}
-              </p>
-              <div className="scenario-meta">
-                <span className={`difficulty difficulty--${s.difficulty}`}>
-                  {s.difficulty}
-                </span>
-                <span className="scenario-dur">
-                  {Math.round(s.duration_s / 60)} min
-                </span>
+              <div className="scenario-actions">
+                <button
+                  type="button"
+                  className={`ghost-btn${isBookmarked(s) ? ' is-marked' : ''}`}
+                  onClick={() =>
+                    setBookmarks((b) => ({ ...b, [s.id]: !isBookmarked(s) }))
+                  }
+                  aria-label={`${isBookmarked(s) ? 'Remove' : 'Add'} bookmark for ${s.name}`}
+                  aria-pressed={isBookmarked(s)}
+                  title="Bookmark"
+                >
+                  <BookmarkIcon size={15} filled={isBookmarked(s)} />
+                </button>
+                <button
+                  type="button"
+                  className="play-btn"
+                  onClick={() => loadScenario(s.id)}
+                  // Unlike the search input above — where a disabled single
+                  // field still lets a form submit (jsdom's fireEvent.submit
+                  // proves it, and it's real spec behavior too) — a disabled
+                  // button blocks its own click dispatch outright, in jsdom
+                  // and in real browsers alike. So `disabled` alone is the
+                  // complete guard here; no onClick-level re-check is needed
+                  // or, in this repo's test environment, even provable.
+                  disabled={locationPending !== null}
+                  aria-label={`Load ${s.name}`}
+                  title={
+                    locationPending !== null
+                      ? `Wait for "${locationPending}" to finish loading`
+                      : 'Load scenario'
+                  }
+                >
+                  <PlayIcon size={13} />
+                </button>
               </div>
-            </div>
-            <div className="scenario-actions">
-              <button
-                type="button"
-                className={`ghost-btn${isBookmarked(s) ? ' is-marked' : ''}`}
-                onClick={() =>
-                  setBookmarks((b) => ({ ...b, [s.id]: !isBookmarked(s) }))
-                }
-                aria-label={`${isBookmarked(s) ? 'Remove' : 'Add'} bookmark for ${s.name}`}
-                aria-pressed={isBookmarked(s)}
-                title="Bookmark"
-              >
-                <BookmarkIcon size={15} filled={isBookmarked(s)} />
-              </button>
-              <button
-                type="button"
-                className="play-btn"
-                onClick={() => loadScenario(s.id)}
-                // Unlike the search input above — where a disabled single
-                // field still lets a form submit (jsdom's fireEvent.submit
-                // proves it, and it's real spec behavior too) — a disabled
-                // button blocks its own click dispatch outright, in jsdom
-                // and in real browsers alike. So `disabled` alone is the
-                // complete guard here; no onClick-level re-check is needed
-                // or, in this repo's test environment, even provable.
-                disabled={locationPending !== null}
-                aria-label={`Load ${s.name}`}
-                title={
-                  locationPending !== null
-                    ? `Wait for "${locationPending}" to finish loading`
-                    : 'Load scenario'
-                }
-              >
-                <PlayIcon size={13} />
-              </button>
-            </div>
-          </article>
-        ))}
+            </article>
+          ))}
+        </div>
       </div>
 
       <footer className="sidebar-foot">

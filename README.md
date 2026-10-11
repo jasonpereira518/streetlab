@@ -171,13 +171,15 @@ anyone who wants to see the actual process, not just the summary.
 
 See [`DEMO.md`](DEMO.md) for the full walkthrough (packaged `.app`, or
 frontend + backend as two dev processes).
+[`docs/walkthrough.md`](docs/walkthrough.md) covers the walkthrough presets:
+curated runs with a scorecard you can compare from seed to seed.
 
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q tests ../contract   # 1198 passing (1193 + 5 contract), 1 skipped
-cd streetlab && npx vitest run                    # 276 tests, includes ../contract
-cd streetlab && npm run test:e2e                  # 21 Playwright tests in 4 specs
+cd streetlab-backend && uv run pytest -q tests ../contract
+cd streetlab && npx vitest run                    # 324 tests, includes ../contract
+cd streetlab && npm run test:e2e                  # 23 Playwright tests in 7 specs
 ```
 
 ## Roadmap

@@ -21,7 +21,7 @@ import math
 from typing import Sequence
 
 from perception.visibility import is_visible, visible_fraction
-from schema import Building, CameraParams, Detection
+from schema import Building, CameraParams, Detection, Size
 from sim.vehicle import VehicleState
 
 #: Half-angle of the forward windscreen cone.
@@ -48,8 +48,51 @@ def visible_to_driver(
     """Keep detections the ego could resolve from the cabin."""
     if not detections:
         return []
+    camera = _cabin_camera(ego)
+    return [
+        det
+        for det in detections
+        if _resolvable(
+            ego,
+            camera,
+            det.pose.x,
+            det.pose.y,
+            det.pose.heading,
+            det.size,
+            buildings,
+            forward_half_rad=forward_half_rad,
+            rear_half_rad=rear_half_rad,
+            rear_range_m=rear_range_m,
+        )
+    ]
 
-    camera = CameraParams(
+
+def forward_visible(
+    ego: VehicleState,
+    x: float,
+    y: float,
+    heading: float,
+    size: Size,
+    buildings: Sequence[Building] = (),
+) -> bool:
+    """Could a forward-only camera (no rear cone) resolve this object? The
+    one test both perception scoring and noisy-truth's own frames apply."""
+    return _resolvable(
+        ego,
+        _cabin_camera(ego),
+        x,
+        y,
+        heading,
+        size,
+        buildings,
+        forward_half_rad=FORWARD_FOV_HALF_RAD,
+        rear_half_rad=0.0,
+        rear_range_m=0.0,
+    )
+
+
+def _cabin_camera(ego: VehicleState) -> CameraParams:
+    return CameraParams(
         x=ego.x,
         y=ego.y,
         z=_CAMERA_Z_M,
@@ -59,29 +102,31 @@ def visible_to_driver(
         fov_y_deg=50.0,
         aspect=16.0 / 9.0,
     )
-    out: list[Detection] = []
-    for det in detections:
-        if not _in_cabin_view(
-            ego,
-            det.pose.x,
-            det.pose.y,
-            forward_half_rad=forward_half_rad,
-            rear_half_rad=rear_half_rad,
-            rear_range_m=rear_range_m,
-        ):
-            continue
-        fraction = visible_fraction(
-            det.pose.x,
-            det.pose.y,
-            det.pose.heading,
-            det.size,
-            camera,
-            buildings,
-        )
-        if not is_visible(fraction):
-            continue
-        out.append(det)
-    return out
+
+
+def _resolvable(
+    ego: VehicleState,
+    camera: CameraParams,
+    x: float,
+    y: float,
+    heading: float,
+    size: Size,
+    buildings: Sequence[Building],
+    *,
+    forward_half_rad: float,
+    rear_half_rad: float,
+    rear_range_m: float,
+) -> bool:
+    if not _in_cabin_view(
+        ego,
+        x,
+        y,
+        forward_half_rad=forward_half_rad,
+        rear_half_rad=rear_half_rad,
+        rear_range_m=rear_range_m,
+    ):
+        return False
+    return is_visible(visible_fraction(x, y, heading, size, camera, buildings))
 
 
 def _in_cabin_view(

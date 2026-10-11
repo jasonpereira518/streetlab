@@ -338,3 +338,96 @@ describe('Ack', () => {
     expect(res.ok && res.value.type).toBe('ack');
   });
 });
+
+describe('Walkthrough presets wire', () => {
+  const summary = {
+    preset_id: 'control',
+    scenario_id: 'grid-loop',
+    seed: 7,
+    perception_mode: 'noisy-truth' as const,
+    complete: true,
+    t_s: 90,
+    distance_m: 512.3,
+    min_ttc_s: 2.4,
+    min_clearance_m: null,
+    hard_brakes: 1,
+    collisions: 0,
+    stop_overshoots: 0,
+    worst_overshoot_m: 0,
+    hazards_fired: 1,
+    hazards_declined: 1,
+    reactions: [{ kind: 'cut_in', t: 10.2, reaction_s: null }],
+    precision: null,
+    recall: 0.8,
+  };
+
+  it('accepts load_preset with and without a seed, and run_summary', () => {
+    expect(parseCommand({ id: 'p1', cmd: 'load_preset', preset_id: 'control' }).ok).toBe(true);
+    expect(
+      parseCommand({ id: 'p2', cmd: 'load_preset', preset_id: 'control', seed: 41 }).ok,
+    ).toBe(true);
+    expect(parseCommand({ id: 'p3', cmd: 'run_summary' }).ok).toBe(true);
+    expect(
+      parseCommand({ id: 'p4', cmd: 'load_scenario', scenario_id: 'grid-loop', seed: 3 }).ok,
+    ).toBe(true);
+  });
+
+  it('bounds a command seed to 0..2**31-1, as the backend does', () => {
+    for (const cmd of [
+      { cmd: 'load_preset', preset_id: 'control' },
+      { cmd: 'load_scenario', scenario_id: 'grid-loop' },
+    ]) {
+      expect(parseCommand({ id: 's', ...cmd, seed: 2 ** 31 - 1 }).ok).toBe(true);
+      expect(parseCommand({ id: 's', ...cmd, seed: 2 ** 31 }).ok).toBe(false);
+      expect(parseCommand({ id: 's', ...cmd, seed: -1 }).ok).toBe(false);
+    }
+  });
+
+  it('accepts noisy-truth as a perception mode on set_perception and on the wire', () => {
+    expect(parseCommand({ id: 'n1', cmd: 'set_perception', mode: 'noisy-truth' }).ok).toBe(true);
+    const frame = {
+      ...sample,
+      perception: {
+        mode: 'noisy-truth',
+        pipeline: false,
+        detector_ms: null,
+        server_e2e_ms: null,
+        frames_received: 0,
+        frames_dropped: 0,
+        precision: 0.9,
+        recall: 0.7,
+        mean_pos_err_m: 0.4,
+      },
+    };
+    expect(StateUpdateSchema.safeParse(frame).success).toBe(true);
+  });
+
+  it('accepts SimEvent.summary as explicit null (pydantic emits it on every event)', () => {
+    const frame = {
+      ...sample,
+      events: [{ t: 1, level: 'info', code: 'tick', message: 'x', progress: null, summary: null }],
+    };
+    expect(parseServerMessage(frame).ok).toBe(true);
+  });
+
+  it('parses a full run_summary payload without loss', () => {
+    const frame = {
+      ...sample,
+      events: [
+        { t: 90, level: 'info', code: 'run_summary', message: 'run summary', progress: null, summary },
+      ],
+    };
+    const parsed = StateUpdateSchema.parse(frame);
+    expect(parsed.events[0].summary).toEqual(summary);
+  });
+
+  it('requires presets, preset_id and seed on the scene', () => {
+    const scene = buildScene('nob-hill-loop');
+    for (const key of ['presets', 'preset_id', 'seed']) {
+      const bad = structuredClone(scene) as Record<string, unknown>;
+      delete bad[key];
+      expect(SceneDescriptionSchema.safeParse(bad).success, key).toBe(false);
+    }
+    expect(SceneDescriptionSchema.safeParse({ ...scene, preset_id: null }).success).toBe(true);
+  });
+});

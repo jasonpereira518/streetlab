@@ -26,7 +26,8 @@ import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Sequence
+from random import Random, SystemRandom
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from map.lanes import ARRIVAL_CONTROL_ID
 from map.osm_source import describe_build_failure
@@ -34,8 +35,9 @@ from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.capture import CaptureSink
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
+from perception.noisy_truth import NoisyTruthPerception
 from perception.pipeline import PerceptionPipeline
-from perception.driver_view import visible_to_driver
+from perception.driver_view import forward_visible, visible_to_driver
 from perception.road_rules import RoadRulesObserver
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
@@ -50,9 +52,11 @@ from schema import (
     LaneNeighbor,
     LaneState,
     PerceptionMode,
+    PerceptionStats,
     Plan,
     Pose,
     RadarPoint,
+    RunSummary,
     SceneDescription,
     SignalState,
     SimEvent,
@@ -66,7 +70,11 @@ from schema import (
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
+from sim.scorecard import Scorecard
 from sim.vehicle import BicycleModel, VehicleState
+
+if TYPE_CHECKING:  # pragma: no cover - `sim.presets` is imported lazily below
+    from sim.presets import Preset
 
 log = logging.getLogger("streetlab.sim")
 
@@ -99,8 +107,16 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "follow_distance_s": 1.5,
     "assist_enabled": True,
     "traffic_speed_scale": 1.0,
-    "cutin_period_s": 22.0,
+    # Mean seconds between spontaneous cut-ins; 0 is off, so no scene gains
+    # them unasked. Floored at `_CUTIN_MIN_PERIOD_S` when on.
+    "cutin_period_s": 0.0,
 }
+
+#: Trust-boundary floor on `cutin_period_s`: a wire param must not be able to
+#: ask for a cut-in every frame.
+_CUTIN_MIN_PERIOD_S = 5.0
+#: How often a scheduled hazard the scene declined is retried in its window.
+_HAZARD_RETRY_S = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +258,10 @@ class Simulation:
         # see `_record_truth`'s docstring for the two consumers this now
         # serves and why their gating differs.
         self._capture = capture
+        # One tracker for the simulation's life, so noisy-truth track ids never
+        # repeat across scenes (see `Tracker.reset`); the source around it is
+        # rebuilt per scene in `adopt_scene`, reseeding its own `Random`.
+        self._noisy_tracker = Tracker()
         # Shadow is the default: the ML path runs and is measured, but ground
         # truth is what the planner drives on until someone asks otherwise.
         self.perception_mode: PerceptionMode = "ground-truth"
@@ -269,6 +289,10 @@ class Simulation:
         self._trip_complete_emitted = False
         self._load(scenario_id or source.scenarios()[0].id)
 
+    @property
+    def seed(self) -> int:
+        return self._seed
+
     # -- lifecycle --------------------------------------------------------- #
 
     def _load(self, scenario_id: str) -> None:
@@ -287,6 +311,19 @@ class Simulation:
             ego_route=self.scene.ego_route,
         )
         self._signals = SignalController(self.scene.signal_groups)
+        # Every scene-scoped draw -- hazard schedule, placement jitter,
+        # spontaneous cut-ins -- comes from this one stream, reseeded here so a
+        # reset replays. A scene installed by anything but `_cmd_load_preset`
+        # is not a preset's, which sets these back after `_load`.
+        self.rng = Random(self._seed)
+        # Its own stream, never `self.rng`: switching perception mode must not
+        # shift a single hazard draw (the perception ladder depends on that).
+        self._noisy = NoisyTruthPerception(
+            self._seed, self.scene.description.buildings, self._noisy_tracker
+        )
+        self._preset: Preset | None = None
+        self._timeline: list[tuple[float, float, str]] = []
+        self._next_cutin_at: float | None = None
         self._reset_dynamics()
 
     def set_build_sink(self, sink: Callable[[SceneBuilder], None]) -> None:
@@ -312,6 +349,8 @@ class Simulation:
         # genuinely new one.
         self.pose_history.clear()
         self._trip_complete_emitted = False
+        # Preset-less; `_load_preset` swaps in one carrying its id and duration.
+        self.scorecard = Scorecard()
         self._road_rules.reset()
         # Seeded at t = 0.0 right after the clear, because `state_update()` is
         # legitimately callable before any `step()` -- and because `world.t`
@@ -333,7 +372,7 @@ class Simulation:
         # coordinates sitting on the new ego route -- close enough to be
         # picked as the lead and braked for. `GroundTruthPerception` has no
         # state and so no `reset`; `MlPerception` has both.
-        for source in (self._perception, self._ml_perception):
+        for source in (self._perception, self._ml_perception, self._noisy):
             reset = getattr(source, "reset", None)
             if reset is not None:
                 reset()
@@ -358,11 +397,19 @@ class Simulation:
         Scene sources build `hazards=[]`: what can be injected is the
         simulation's business, not the map's. Attached here rather than in
         `adopt_scene`, which installs the scene exactly as built. Imported
-        here for the reason `_cmd_inject_hazard` gives.
+        here for the reason `inject_hazard` gives. The preset menu, active
+        preset and seed are the simulation's too, for the same reason.
         """
-        from sim import events
+        from sim import events, presets
 
-        return self.scene.description.model_copy(update={"hazards": events.catalog()})
+        return self.scene.description.model_copy(
+            update={
+                "hazards": events.catalog(),
+                "presets": presets.catalog(),
+                "preset_id": None if self._preset is None else self._preset.id,
+                "seed": self._seed,
+            }
+        )
 
     # -- stepping ---------------------------------------------------------- #
 
@@ -373,6 +420,7 @@ class Simulation:
                 return
             self.world.pending_steps -= 1
 
+        self._fire_due_hazards()
         self._traffic.step(
             dt,
             TrafficWorld(
@@ -409,6 +457,57 @@ class Simulation:
         # has always had this order right; the two now agree.
         self._record_truth()
         self._record_history()
+
+        self.scorecard.step(
+            self.world,
+            self._traffic.agents,
+            getattr(self._planner, "fsm", None),
+            self.scene.control_points,
+            self.scene.ego_route,
+            dt,
+        )
+        card = self.scorecard
+        # A hair of slack: 5400 steps of 1/60 s sum to 89.999999999996, and
+        # `streetlab run` steps exactly `duration * hz` times.
+        if (
+            card.duration_s is not None
+            and not card.summarised
+            and self.world.t >= card.duration_s - 1e-6
+        ):
+            card.summarised = True
+            self._emit_summary(complete=True)
+
+    def _fire_due_hazards(self) -> None:
+        """Stage the preset's scheduled hazards that are due, then the
+        spontaneous cut-in timer.
+
+        A scheduled hazard the scene declines is retried every
+        `_HAZARD_RETRY_S` until its window closes, then reported as
+        `hazard_declined` -- a runner can only stage on a green, and the window
+        is what lets it wait for one.
+        """
+        t = self.world.t
+        while self._timeline and self._timeline[0][0] <= t:
+            _, window_end, kind = self._timeline.pop(0)
+            outcome = self.inject_hazard(kind)
+            if outcome.ok:
+                continue
+            if t + _HAZARD_RETRY_S <= window_end:
+                self._timeline.append((t + _HAZARD_RETRY_S, window_end, kind))
+                self._timeline.sort()
+            else:
+                self._emit("hazard_declined", outcome.message or kind, "warn")
+
+        period = float(self.world.params["cutin_period_s"])
+        if period <= 0:
+            self._next_cutin_at = None
+            return
+        if self._next_cutin_at is not None and t >= self._next_cutin_at:
+            self.inject_hazard("cut_in")
+            self._next_cutin_at = None
+        if self._next_cutin_at is None:
+            rate = 1.0 / max(period, _CUTIN_MIN_PERIOD_S)
+            self._next_cutin_at = t + self.rng.expovariate(rate)
 
     def _guard_world(self) -> None:
         """Repair a non-finite ego state before anything downstream reads it.
@@ -490,18 +589,30 @@ class Simulation:
         driving = visible_to_driver(
             ego, ground_truth, self.scene.description.buildings
         )
-        if self._ml_perception is None:
+        ml = None
+        if self._ml_perception is not None:
+            # Still run in noisy-truth mode, so its tracker stays warm.
+            ml = self._ml_perception.observe(ego, agents, route)
+        if self.perception_mode == "noisy-truth":
+            # Run only while driving: it is not a shadow of anything, and
+            # ground truth is the reference the scorecard measures it against.
+            noisy = self._noisy.observe(ego, agents, route, self.world.t)
+            self._score_shadow(noisy, self._noisy.last_frame_t)
+            return noisy, driving
+        if ml is None:
             return driving, None
-        ml = self._ml_perception.observe(ego, agents, route)
-        self._score_ml(ml)
+        self._score_shadow(ml, getattr(self._ml_perception, "last_frame_t", None))
         if self.perception_mode == "ml":
             return ml, ground_truth
         return driving, ml
 
-    def _score_ml(self, ml_detections: Sequence[Detection]) -> None:
-        """Score the ML source's latest published frame against the truth
-        recorded for that same instant, and cache the result on
-        `perception_score` for `state_update` to thread onto the wire.
+    def _score_shadow(
+        self, detections: Sequence[Detection], frame_t: float | None
+    ) -> None:
+        """Score a non-ground-truth source's latest published frame (ML, or
+        noisy-truth while it drives) against the truth recorded for that same
+        instant, and cache the result on `perception_score` for
+        `state_update` to thread onto the wire.
 
         Scored once per *frame*, mirroring the `_processed` guard in
         `MlPerception.observe`: `last_frame_t` is a plain read of the
@@ -524,18 +635,36 @@ class Simulation:
         When the lookup misses -- the frame has aged out of the buffer, or a
         scene swap cleared it -- `perception_score` is left as it was rather
         than scored against the wrong world.
+
+        One reference for every source, so the ladder's rungs compare: the
+        recorded truth within `MAX_RANGE_M` that a forward-only camera at the
+        recorded ego could resolve (`driver_view.forward_visible`, buildings
+        occluding). Neither ML nor noisy-truth has a rear camera, and charging
+        them for the blind spot measured scene geometry, not sensing -- recall
+        0.14 for noisy-truth on grid-merge against all-around truth.
         """
-        frame_t = getattr(self._ml_perception, "last_frame_t", None)
         if frame_t is None or frame_t == self._scored_frame_t:
             return
         self._scored_frame_t = frame_t
-        truth = self.pose_history.at(frame_t)
-        if truth is None:
+        recorded = self.pose_history.at(frame_t)
+        ego = self.pose_history.ego_at(frame_t)
+        if recorded is None or ego is None:
             return
+        headings = self.pose_history.headings_at(frame_t) or {}
+        sizes = self.pose_history.sizes_at(frame_t) or {}
+        buildings = self.scene.description.buildings
+        truth = [
+            o
+            for o in recorded
+            if o.id in sizes
+            and math.hypot(o.x - ego.x, o.y - ego.y) <= MAX_RANGE_M
+            and forward_visible(ego, o.x, o.y, headings.get(o.id, 0.0), sizes[o.id], buildings)
+        ]
         predictions = [
-            Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in ml_detections
+            Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in detections
         ]
         self.perception_score = score(predictions, truth)
+        self.scorecard.on_score(self.perception_score)
 
     def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
@@ -720,7 +849,11 @@ class Simulation:
         egos are metres apart, not the scene-spanning miss this method
         fixes.
         """
-        if self._ml_perception is None and not self._capture:
+        if (
+            self._ml_perception is None
+            and not self._capture
+            and self.perception_mode != "noisy-truth"
+        ):
             return
         if self._capture:
             agents = self._traffic.agents
@@ -743,7 +876,7 @@ class Simulation:
         ]
         headings = {a.id: a.state.heading for a in agents}
         sizes = {a.id: a.size for a in agents}
-        self.pose_history.record(self.world.t, objects, headings, sizes)
+        self.pose_history.record(self.world.t, objects, headings, sizes, self.world.ego)
 
     # -- frame assembly ---------------------------------------------------- #
 
@@ -810,19 +943,122 @@ class Simulation:
         return CommandOutcome(ok=True, message=f"stepping {command.frames} frames")
 
     def _cmd_reset(self, command) -> CommandOutcome:
-        self._load(self.scene.description.scenario_id)
+        if self._preset is not None:
+            # The whole preset load, on the same seed, so the params and the
+            # hazard timeline replay along with the traffic.
+            self._load_preset(self._preset, self._seed)
+        else:
+            self._load(self.scene.description.scenario_id)
         self._emit("reset", "scenario reset")
         return CommandOutcome(ok=True, message="reset")
 
     def _cmd_load_scenario(self, command) -> CommandOutcome:
+        previous_seed = self._seed
+        if command.seed is not None:
+            self._seed = command.seed
         try:
             self._load(command.scenario_id)
         except KeyError:
+            self._seed = previous_seed
             return CommandOutcome(
                 ok=False, message=f"unknown scenario: {command.scenario_id}"
             )
         self._emit("scenario_loaded", f"loaded {command.scenario_id}")
         return CommandOutcome(ok=True, message="loaded", scene=self.scene_description())
+
+    def _cmd_load_preset(self, command) -> CommandOutcome:
+        """Load a walkthrough preset (`sim/presets.py`). The seed is the
+        command's, else the preset's pinned one, else fresh -- so a fresh-seed
+        preset differs on every load and still replays on `reset`."""
+        from sim import presets
+
+        preset = presets.PRESETS.get(command.preset_id)
+        if preset is None:
+            return CommandOutcome(ok=False, message=f"unknown preset: {command.preset_id}")
+        seed = command.seed
+        if seed is None:
+            seed = preset.seed if preset.seed is not None else SystemRandom().randrange(1, 2**31)
+        self._load_preset(preset, seed)
+        return CommandOutcome(ok=True, message=f"loaded {preset.id}", scene=self.scene_description())
+
+    def _load_preset(self, preset: Preset, seed: int) -> None:
+        from sim import presets
+
+        self._seed = seed
+        # Before `_load`: traffic reads `traffic_speed_scale` at construction.
+        # The recipe replaces every backend param, so an earlier preset's
+        # override (say cut-in-gauntlet's `cutin_period_s`) cannot leak into
+        # this one; `adopt_scene` then restarts the cut-in timer from it.
+        self.world.params.update({**DEFAULT_PARAMS, **preset.params})
+        # Also before `_load`: its t = 0 truth record and noisy reset depend on
+        # the mode, so a first load from ground truth must already be noisy to
+        # replay exactly like a Reset or Replay of the same seed.
+        mode = self.select_perception(preset.perception)
+        self._load(presets.resolve_scene(preset, self._source))
+        self._preset = preset
+        self.scorecard = Scorecard(preset.id, preset.duration_s)
+        self._timeline = presets.schedule(preset, self.rng)
+        if mode != preset.perception:
+            self._emit(
+                "preset_note",
+                f"{preset.perception} perception is unavailable here; running on {mode}",
+            )
+        self._emit("preset_loaded", f"{preset.id}: seed {seed}")
+
+    def perception_modes(self) -> set[str]:
+        """The perception modes this simulation can drive on right now."""
+        modes = {"ground-truth", "noisy-truth"}
+        if self._ml_perception is not None:
+            modes.add("ml")
+        return modes
+
+    def select_perception(self, mode: PerceptionMode) -> PerceptionMode:
+        """Drive on `mode`, or on the best available stand-in, and say which.
+
+        One fallback for every unavailable mode: `noisy-truth` where it exists
+        (the nearest thing to a detector), otherwise ground truth.
+        """
+        available = self.perception_modes()
+        if mode not in available:
+            mode = "noisy-truth" if "noisy-truth" in available else "ground-truth"
+        self._set_mode(mode)
+        return mode
+
+    def _set_mode(self, mode: PerceptionMode) -> None:
+        # Entering noisy-truth starts it cold: tracks left from an earlier
+        # stint are stale world coordinates the planner could brake for.
+        if mode == "noisy-truth" and self.perception_mode != mode:
+            self._noisy.reset()
+        self.perception_mode = mode
+
+    def _cmd_run_summary(self, command) -> CommandOutcome:
+        s = self._emit_summary(complete=False)
+        return CommandOutcome(
+            ok=True,
+            message=(
+                f"run summary at {s.t_s:g}s: {s.distance_m:g} m, "
+                f"{s.collisions} collisions, {s.hard_brakes} hard brakes"
+            ),
+        )
+
+    def _emit_summary(self, *, complete: bool) -> RunSummary:
+        summary = self.scorecard.summary(
+            scenario_id=self.scene.description.scenario_id,
+            seed=self._seed,
+            t=self.world.t,
+            perception_mode=self.perception_mode,
+            complete=complete,
+        )
+        self.world.events.append(
+            SimEvent(
+                t=round(self.world.t, 3),
+                level="info",
+                code="run_summary",
+                message="run complete" if complete else "run summary",
+                summary=summary,
+            )
+        )
+        return summary
 
     def _cmd_load_location(self, command) -> CommandOutcome:
         """Ack now, build later.
@@ -855,21 +1091,39 @@ class Simulation:
             # Render-only and unknown keys are accepted and ignored, so a newer
             # frontend cannot break an older backend.
             return CommandOutcome(ok=True, message=f"{command.key} ignored by the backend")
+        if command.key == "cutin_period_s":
+            # Read every tick by `_fire_due_hazards`, on the sim thread: a
+            # string or a non-finite float would raise there and stop the
+            # world. Zero or negative is a valid "off".
+            value = command.value
+            try:
+                finite = math.isfinite(float(value))
+            except (OverflowError, ValueError):  # a huge int, or a string
+                finite = False
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not finite:
+                return CommandOutcome(
+                    ok=False, message=f"cutin_period_s must be a finite number, not {value!r}"
+                )
         self.world.params[command.key] = command.value
         if command.key == "traffic_speed_scale":
             self._traffic.set_speed_scale(float(command.value))
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
 
     def _cmd_set_perception(self, command) -> CommandOutcome:
-        if self.perception_pipeline is None:
+        if command.mode == "ml" and self.perception_pipeline is None:
             return CommandOutcome(
-                ok=False, message="no perception pipeline: start with --perception"
+                ok=False, message="no perception pipeline: start with --perception ml"
             )
-        self.perception_mode = command.mode
+        if command.mode not in self.perception_modes():
+            return CommandOutcome(ok=False, message=f"{command.mode} perception is unavailable")
+        self._set_mode(command.mode)
         self._emit("perception_mode", f"perception: {command.mode}")
         return CommandOutcome(ok=True, message=f"perception: {command.mode}")
 
     def _cmd_inject_hazard(self, command) -> CommandOutcome:
+        return self.inject_hazard(command.kind)
+
+    def inject_hazard(self, kind: str) -> CommandOutcome:
         """Stage one of `sim/events.py`'s scenarios.
 
         This method used to BE the hazard set: one branch, and whatever `kind`
@@ -884,14 +1138,12 @@ class Simulation:
         """
         from sim import events
 
-        scenario = events.resolve(command.kind)
+        scenario = events.resolve(kind)
         if scenario is None:
-            return CommandOutcome(
-                ok=False, message=f"unknown hazard kind: {command.kind}"
-            )
+            return CommandOutcome(ok=False, message=f"unknown hazard kind: {kind}")
         result = scenario.stage(self)
         if isinstance(result, events.Declined):
-            return CommandOutcome(ok=False, message=f"{command.kind}: {result.reason}")
+            return CommandOutcome(ok=False, message=f"{kind}: {result.reason}")
         self._emit(scenario.code, f"{scenario.code}: {result}", scenario.level)
         return CommandOutcome(ok=True, message=f"injected {scenario.code}: {result}")
 
@@ -899,6 +1151,7 @@ class Simulation:
         self.world.events.append(
             SimEvent(t=round(self.world.t, 3), level=level, code=code, message=message)
         )
+        self.scorecard.on_event(code, self.world.t)
 
     def _check_trip_complete(self) -> None:
         """Emit `trip_complete` once the ego actually settles into STOP at an
@@ -1128,12 +1381,15 @@ def assemble_state_update(
         ),
         signals=list(signals),
         events=list(world.events),
-        # Null distinguishes "no ML perception running" from "measured, and
-        # zero" -- there is no pipeline unless `--perception ml` started one.
+        # Null distinguishes "no scored perception running" from "measured,
+        # and zero": there is none unless `--perception ml` started a pipeline
+        # or noisy-truth is driving.
         perception=(
-            None
-            if perception_pipeline is None
-            else perception_pipeline.stats(perception_mode, quality=perception_quality)
+            perception_pipeline.stats(perception_mode, quality=perception_quality)
+            if perception_pipeline is not None
+            else _noisy_stats(perception_quality)
+            if perception_mode == "noisy-truth"
+            else None
         ),
     )
 
@@ -1237,6 +1493,28 @@ def _radar(ego: VehicleState, detections: Sequence[Detection]) -> list[RadarPoin
     return points
 
 
+def _noisy_stats(quality: ScoreResult | None) -> PerceptionStats:
+    """Noisy-truth's wire stats when no pipeline exists: no detector, no frames."""
+    return PerceptionStats(
+        mode="noisy-truth",
+        pipeline=False,
+        detector_ms=None,
+        server_e2e_ms=None,
+        frames_received=0,
+        frames_dropped=0,
+        precision=None if quality is None else quality.precision,
+        recall=None if quality is None else quality.recall,
+        mean_pos_err_m=None if quality is None else quality.mean_pos_err_m,
+    )
+
+
+_PERCEPTION_DETAIL: dict[str, str] = {
+    "ground-truth": "ground truth",
+    "noisy-truth": "noisy truth",
+    "ml": "ml detector",
+}
+
+
 def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
     # Battery drains slowly with distance so the readout is not frozen.
     battery = max(4.0, 92.0 - world.t * 0.02)
@@ -1253,7 +1531,7 @@ def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
                 key="perception",
                 label="Perception",
                 status="ok",
-                detail="ground truth" if mode == "ground-truth" else "ml detector",
+                detail=_PERCEPTION_DETAIL[mode],
             ),
             Subsystem(key="planner", label="Planner", status="ok", detail="centerline"),
             Subsystem(key="control", label="Control", status="ok", detail=None),

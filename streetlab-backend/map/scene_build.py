@@ -339,6 +339,9 @@ class SyntheticGrid:
             terrain=None,
             catalog=self.scenarios(),
             hazards=[],
+            presets=[],
+            preset_id=None,
+            seed=0,
         )
 
         return BuiltScene(

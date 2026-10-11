@@ -39,6 +39,16 @@ export const SizeSchema = z.object({
 
 const HexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'expected #rrggbb');
 
+export const ParamValueSchema = z.union([
+  z.number(),
+  z.string(),
+  z.boolean(),
+]);
+
+/** Which source the planner drives on. `noisy-truth` is ground truth degraded
+ * by a seeded dropout/noise model, so a run's perception replays by seed. */
+export const PerceptionModeSchema = z.enum(['ground-truth', 'noisy-truth', 'ml']);
+
 /* ------------------------------------------------------------------ */
 /* SceneDescription — static world, sent once per scenario load        */
 /* ------------------------------------------------------------------ */
@@ -179,6 +189,28 @@ export const HazardSummarySchema = z.object({
 });
 
 /**
+ * One walkthrough preset: a recipe over a base scene, a seed policy, a
+ * perception mode, parameter overrides and a hazard timeline.
+ */
+export const PresetSummarySchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  blurb: z.string(),
+  what_to_watch: z.string(),
+  what_varies: z.string(),
+  /** Scene family: "loop" | "merge" | "arterial" | "signals". */
+  scene: z.string(),
+  /** Null means a fresh seed on every load. */
+  seed: z.number().int().nullable(),
+  perception: PerceptionModeSchema,
+  /** `set_param` overrides applied at load. */
+  params: z.record(z.string(), ParamValueSchema),
+  /** Hazard kinds in timeline order, for display. */
+  hazards: z.array(z.string()),
+  duration_s: z.number().positive(),
+});
+
+/**
  * Ground height over the scene, as a regular grid in local metres. Sample
  * `(r, c)` sits at `origin + (c, r) * cell_m`: row 0 is the SOUTH edge, column
  * 0 the WEST. Heights are `base_m + q * step_m`, `q` being the row-major
@@ -235,6 +267,12 @@ export const SceneDescriptionSchema = z.object({
   catalog: z.array(ScenarioSummarySchema),
   /** Hazards `inject_hazard` can stage; drives the hazard menu. */
   hazards: z.array(HazardSummarySchema),
+  /** Walkthrough presets `load_preset` takes. */
+  presets: z.array(PresetSummarySchema),
+  /** The preset this scene was loaded by. Required-nullable, like `terrain`. */
+  preset_id: z.string().nullable(),
+  /** The seed this scene is running on. */
+  seed: z.number().int(),
 });
 
 /* ------------------------------------------------------------------ */
@@ -270,7 +308,6 @@ export const DetectionSchema = z.object({
   emergency: z.boolean(),
 });
 
-export const PerceptionModeSchema = z.enum(['ground-truth', 'ml']);
 
 /**
  * The camera that produced one frame, in WIRE world coordinates:
@@ -298,6 +335,10 @@ export const CameraParamsSchema = z.object({
 /** Transport and quality numbers for the ML perception path. */
 export const PerceptionStatsSchema = z.object({
   mode: PerceptionModeSchema,
+  /** True iff an ML perception pipeline exists on the server. Stats also
+   * arrive without one while noisy truth drives, so presence alone no longer
+   * implies a pipeline — gate camera frames and the ML option on this. */
+  pipeline: z.boolean(),
   /** Model inference time. Null until Phase 2 lands a model. */
   detector_ms: z.number().nonnegative().nullable(),
   /**
@@ -451,6 +492,36 @@ export const SignalStateSchema = z.object({
   time_to_change_s: z.number().nullable(),
 });
 
+export const HazardReactionSchema = z.object({
+  kind: z.string(),
+  t: z.number().nonnegative(),
+  /** Seconds from the hazard firing to the ego's reaction; null if it never reacted. */
+  reaction_s: z.number().nonnegative().nullable(),
+});
+
+/** A run's scorecard, carried on a `run_summary` event. */
+export const RunSummarySchema = z.object({
+  preset_id: z.string().nullable(),
+  scenario_id: z.string(),
+  seed: z.number().int(),
+  perception_mode: PerceptionModeSchema,
+  complete: z.boolean(),
+  t_s: z.number().nonnegative(),
+  distance_m: z.number().nonnegative(),
+  min_ttc_s: z.number().nullable(),
+  min_clearance_m: z.number().nullable(),
+  hard_brakes: z.number().int(),
+  collisions: z.number().int(),
+  stop_overshoots: z.number().int(),
+  worst_overshoot_m: z.number().nonnegative(),
+  hazards_fired: z.number().int(),
+  hazards_declined: z.number().int(),
+  reactions: z.array(HazardReactionSchema),
+  /** Null when no detections were scored, as in `PerceptionStats`. */
+  precision: z.number().min(0).max(1).nullable(),
+  recall: z.number().min(0).max(1).nullable(),
+});
+
 export const SimEventSchema = z.object({
   t: z.number(),
   level: z.enum(['info', 'warn', 'critical']),
@@ -470,6 +541,9 @@ export const SimEventSchema = z.object({
    * arrived. `.nullable()` is how every other optional-on-the-wire field here
    * is spelled (`ttc_s`, `hazard_label`, `precision`, `perception`). */
   progress: z.number().min(0).max(1).nullable().optional(),
+  /** The scorecard, on a `run_summary` event only. `null` on every other
+   * event for the reason `progress` is — never `.optional()` alone. */
+  summary: RunSummarySchema.nullable().optional(),
 });
 
 export const StateUpdateSchema = z.object({
@@ -519,11 +593,8 @@ export const LayerKeySchema = z.enum([
 
 export const CameraViewSchema = z.enum(['chase', 'overhead', 'cockpit', 'free']);
 
-export const ParamValueSchema = z.union([
-  z.number(),
-  z.string(),
-  z.boolean(),
-]);
+/** A client-chosen seed: mirrors the backend's `schema.Seed` (0..2**31-1). */
+const Seed = z.number().int().min(0).max(2147483647);
 
 /** Every command carries a client-generated id so an Ack can be correlated. */
 const cmd = <S extends z.ZodRawShape>(shape: S) =>
@@ -533,7 +604,20 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('set_paused'), paused: z.boolean() }),
   cmd({ cmd: z.literal('step'), frames: z.number().int().positive() }),
   cmd({ cmd: z.literal('reset') }),
-  cmd({ cmd: z.literal('load_scenario'), scenario_id: z.string() }),
+  cmd({
+    cmd: z.literal('load_scenario'),
+    scenario_id: z.string(),
+    /** Absent keeps the simulation's current seed. */
+    seed: Seed.optional(),
+  }),
+  cmd({
+    cmd: z.literal('load_preset'),
+    preset_id: z.string(),
+    /** Absent follows the preset's own seed policy (pinned, or fresh per load). */
+    seed: Seed.optional(),
+  }),
+  /** Emit the current run's scorecard as a `run_summary` event now. */
+  cmd({ cmd: z.literal('run_summary') }),
   cmd({
     cmd: z.literal('load_location'),
     query: z.string().min(1),
@@ -631,6 +715,7 @@ export type Tree = z.infer<typeof TreeSchema>;
 export type StreetSign = z.infer<typeof StreetSignSchema>;
 export type ScenarioSummary = z.infer<typeof ScenarioSummarySchema>;
 export type HazardSummary = z.infer<typeof HazardSummarySchema>;
+export type PresetSummary = z.infer<typeof PresetSummarySchema>;
 export type Terrain = z.infer<typeof TerrainSchema>;
 export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
 
@@ -652,6 +737,8 @@ export type Plan = z.infer<typeof PlanSchema>;
 export type CruiseMode = z.infer<typeof CruiseModeSchema>;
 export type Ego = z.infer<typeof EgoSchema>;
 export type SignalState = z.infer<typeof SignalStateSchema>;
+export type HazardReaction = z.infer<typeof HazardReactionSchema>;
+export type RunSummary = z.infer<typeof RunSummarySchema>;
 export type SimEvent = z.infer<typeof SimEventSchema>;
 export type StateUpdate = z.infer<typeof StateUpdateSchema>;
 

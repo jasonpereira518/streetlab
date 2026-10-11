@@ -15,7 +15,7 @@ describe('PerceptionPanel', () => {
     render(
       <PerceptionPanel
         stats={{
-          mode: 'ground-truth', detector_ms: 4.5, server_e2e_ms: 31.2,
+          mode: 'ground-truth', pipeline: true, detector_ms: 4.5, server_e2e_ms: 31.2,
           frames_received: 120, frames_dropped: 3,
           precision: null, recall: null, mean_pos_err_m: null,
         }}
@@ -33,7 +33,7 @@ describe('PerceptionPanel', () => {
     render(
       <PerceptionPanel
         stats={{
-          mode: 'ml', detector_ms: 4.5, server_e2e_ms: 31.2,
+          mode: 'ml', pipeline: true, detector_ms: 4.5, server_e2e_ms: 31.2,
           frames_received: 120, frames_dropped: 3,
           precision: 0.91, recall: 0.83, mean_pos_err_m: 1.234,
         }}
@@ -49,7 +49,7 @@ describe('PerceptionPanel', () => {
     render(
       <PerceptionPanel
         stats={{
-          mode: 'ml', detector_ms: 4.5, server_e2e_ms: 31.2,
+          mode: 'ml', pipeline: true, detector_ms: 4.5, server_e2e_ms: 31.2,
           frames_received: 120, frames_dropped: 3,
           precision: 0, recall: 0, mean_pos_err_m: 0,
         }}

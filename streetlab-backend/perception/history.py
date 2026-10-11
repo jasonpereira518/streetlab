@@ -32,10 +32,13 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from perception.scoring import TruthObject
 from schema import Size
+
+if TYPE_CHECKING:  # pragma: no cover
+    from sim.vehicle import VehicleState
 
 # Tolerance for matching a query time to a recorded one, in seconds. Frame
 # times are echoed back verbatim by the frontend, so any mismatch is float
@@ -45,7 +48,11 @@ from schema import Size
 _TOL: float = 1e-6
 
 _Entry = tuple[
-    float, tuple[TruthObject, ...], Mapping[str, float], Mapping[str, Size]
+    float,
+    tuple[TruthObject, ...],
+    Mapping[str, float],
+    Mapping[str, Size],
+    "VehicleState | None",
 ]
 
 
@@ -68,6 +75,7 @@ class PoseHistory:
         objects: Sequence[TruthObject],
         headings: Mapping[str, float] | None = None,
         sizes: Mapping[str, Size] | None = None,
+        ego: "VehicleState | None" = None,
     ) -> None:
         """Snapshot `objects` (and, optionally, their headings and sizes) as
         the truth at time `t`.
@@ -92,7 +100,7 @@ class PoseHistory:
         """
         with self._lock:
             self._entries.append(
-                (t, tuple(objects), dict(headings or {}), dict(sizes or {}))
+                (t, tuple(objects), dict(headings or {}), dict(sizes or {}), ego)
             )
 
     def at(self, t: float) -> tuple[TruthObject, ...] | None:
@@ -105,7 +113,7 @@ class PoseHistory:
         and score every detection as a false positive.
         """
         with self._lock:
-            for entry_t, objects, _headings, _sizes in reversed(self._entries):
+            for entry_t, objects, _headings, _sizes, _ego in reversed(self._entries):
                 if abs(entry_t - t) <= _TOL:
                     return objects
         return None
@@ -126,7 +134,7 @@ class PoseHistory:
         `mean_pos_err_m` -- the whole reason this module exists.
         """
         with self._lock:
-            for entry_t, _objects, headings, _sizes in reversed(self._entries):
+            for entry_t, _objects, headings, _sizes, _ego in reversed(self._entries):
                 if abs(entry_t - t) <= _TOL:
                     return headings
         return None
@@ -145,9 +153,19 @@ class PoseHistory:
         successful lookup and silently fall the whole frame back to priors.
         """
         with self._lock:
-            for entry_t, _objects, _headings, sizes in reversed(self._entries):
+            for entry_t, _objects, _headings, sizes, _ego in reversed(self._entries):
                 if abs(entry_t - t) <= _TOL:
                     return sizes
+        return None
+
+    def ego_at(self, t: float) -> "VehicleState | None":
+        """The ego recorded at time `t` -- where the camera was when the
+        shutter fired, which is what forward visibility is judged from.
+        `None` for no record, or a record made without an ego."""
+        with self._lock:
+            for entry_t, _objects, _headings, _sizes, ego in reversed(self._entries):
+                if abs(entry_t - t) <= _TOL:
+                    return ego
         return None
 
     def clear(self) -> None:

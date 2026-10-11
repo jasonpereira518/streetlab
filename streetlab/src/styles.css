@@ -889,6 +889,16 @@ canvas {
   transition: border-color 130ms ease, box-shadow 130ms ease, background 130ms ease;
 }
 
+/* Groups inside the scroll container (walkthrough presets, saved scenarios). */
+.scenario-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* No thumbnail: body and actions only. */
+.scenario--preset { grid-template-columns: minmax(0, 1fr) auto; }
+
 .scenario:hover {
   border-color: var(--c-border-strong, #d2dae5);
   box-shadow: var(--sh-card, 0 4px 14px rgba(20, 29, 40, 0.06));
@@ -1067,7 +1077,10 @@ canvas {
   display: grid;
   /* minmax(0, …) not 1fr: "Parameters" min-content would otherwise stretch
      its column and push the last tab out past the panel's right edge. */
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* Content-sized columns: five labels only fit when "Run" and "Map" give
+     their slack to "Params" and "Layers" — equal columns clip at 1600px. */
+  grid-auto-flow: column;
+  grid-auto-columns: auto;
   gap: 3px;
   padding: 8px var(--pad-panel);
   border-bottom: 1px solid var(--c-border, #e4e9f0);
@@ -1080,8 +1093,9 @@ canvas {
   gap: 4px;
   height: 30px;
   /* Explicit, because a button's UA padding is 6px a side — a fifth of the
-     tab at this width, and enough on its own to truncate the label. */
-  padding: 0 4px;
+     tab at this width, and enough on its own to truncate the label. 3px, not
+     4px: with five tabs that is the margin the strip has at 1600px. */
+  padding: 0 3px;
   border-radius: var(--r-sm, 6px);
   color: var(--c-text-faint, #9aa7b6);
   font-size: 11px;
@@ -1489,6 +1503,53 @@ canvas {
 }
 
 .event-critical .event-code { color: #b3363a; }
+
+/* Walkthrough tones: a left bar on top of the level colouring. */
+.event--fired { border-left: 3px solid #b4520d; }
+.event--declined { border-left: 3px dashed var(--c-text-faint, #9aa7b6); opacity: 0.8; }
+.event--summary { border-left: 3px solid var(--c-accent, #0fb5c9); }
+
+.menu-item:disabled { opacity: 0.45; cursor: default; }
+
+/* Run tab */
+.run-blurb { margin: 0 0 8px; font-size: 12px; line-height: 1.4; }
+.run-notes { margin: 0; font-size: 11.5px; line-height: 1.4; }
+.run-notes dt {
+  margin-top: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-text-faint, #9aa7b6);
+}
+.run-notes dd { margin: 1px 0 0; color: var(--c-text-muted, #5f6e80); }
+.scorecard-wrap { overflow-x: auto; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.scorecard {
+  width: 100%;
+  border-collapse: collapse;
+  font: 600 11px/1.3 var(--font-mono, monospace);
+}
+.scorecard th,
+.scorecard td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--c-border, #e4e9f0);
+  text-align: right;
+  white-space: nowrap;
+}
+.scorecard th[scope='row'],
+.scorecard thead th:first-child {
+  text-align: left;
+  font-family: inherit;
+  color: var(--c-text-faint, #9aa7b6);
+}
 
 /* ------------------------------------------------------------------ */
 /* Telemetry row                                                       */

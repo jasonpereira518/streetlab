@@ -11,7 +11,8 @@
  *    `Object.keys(patch).length` change-gate for every user not running ML.
  */
 import { describe, expect, it } from 'vitest';
-import { useSimStore } from '../src/store/simStore';
+import { hasPipeline, useSimStore } from '../src/store/simStore';
+import type { PerceptionStats, RunSummary, StateUpdate } from '../src/schema';
 import { createHarness, resetStore } from './harness';
 
 const CAMERA_FRAME_CMD = {
@@ -80,6 +81,7 @@ describe('perception change-gate', () => {
       events: [],
       perception: {
         mode: 'ml',
+        pipeline: true,
         detector_ms: 1.2,
         server_e2e_ms: 5.6,
         frames_received: 1,
@@ -365,5 +367,164 @@ describe('suggestAddress', () => {
     // The most recent request must have survived eviction.
     expect(stored[ids[ids.length - 1]]).toBeDefined();
     expect(stored[ids[0]]).toBeUndefined();
+  });
+});
+
+describe('walkthrough presets', () => {
+  const summary = (seed: number, preset_id: string | null = 'mock-cutin-20s'): RunSummary => ({
+    preset_id,
+    scenario_id: 'nob-hill-loop',
+    seed,
+    perception_mode: 'ground-truth',
+    complete: true,
+    t_s: 20,
+    distance_m: 50,
+    min_ttc_s: null,
+    min_clearance_m: 4,
+    hard_brakes: 0,
+    collisions: 0,
+    stop_overshoots: 0,
+    worst_overshoot_m: 0,
+    hazards_fired: 1,
+    hazards_declined: 1,
+    reactions: [],
+    precision: null,
+    recall: null,
+  });
+  const withSummary = (base: StateUpdate, s: RunSummary): StateUpdate => ({
+    ...base,
+    seq: base.seq + 1,
+    events: [{ t: s.t_s, level: 'info', code: 'run_summary', message: 'run summary', summary: s }],
+  });
+
+  it('loadPreset sends load_preset, opens the Run tab, and records the scene seed', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().loadPreset('mock-cutin-20s');
+    const s = useSimStore.getState();
+    expect(h.sent.at(-1)).toEqual({ id: expect.any(String), cmd: 'load_preset', preset_id: 'mock-cutin-20s' });
+    expect(s.rightTab).toBe('run');
+    expect(s.activePresetId).toBe('mock-cutin-20s');
+    expect(s.runSeed).toBe(20);
+    expect(s.lastSeedByPreset).toEqual({ 'mock-cutin-20s': 20 });
+  });
+
+  it('mirrors the preset params and perception into the store on scene load', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().loadPreset('mock-cutin-fresh', 3);
+    const s = useSimStore.getState();
+    expect(s.params.cutin_period_s).toBe(12);
+    expect(s.perceptionMode).toBe('ground-truth');
+    expect(s.lastSeedByPreset['mock-cutin-fresh']).toBe(3);
+    // Mirrored, not re-sent: the server already applied them.
+    expect(h.sent.some((c) => c.cmd === 'set_param')).toBe(false);
+  });
+
+  it('resets backend params to defaults under the next preset, leaving client-only ones', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.setState((s) => ({ params: { ...s.params, plan_opacity: 0.9, follow_distance_s: 2.5 } }));
+    useSimStore.getState().loadPreset('mock-cutin-fresh', 3);
+    expect(useSimStore.getState().params.cutin_period_s).toBe(12);
+    useSimStore.getState().loadPreset('mock-cutin-20s');
+    const p = useSimStore.getState().params;
+    expect(p.cutin_period_s).toBe(0);
+    expect(p.follow_distance_s).toBe(1.5);
+    expect(p.plan_opacity).toBe(0.9);
+  });
+
+  it('harvests run summaries into runHistory, newest first, capped at five', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    for (let seed = 1; seed <= 7; seed++) h.emit(withSummary(base, summary(seed)));
+    h.emit(withSummary(base, summary(99, null)));
+    const history = useSimStore.getState().runHistory;
+    expect(history['mock-cutin-20s'].map((x) => x.seed)).toEqual([7, 6, 5, 4, 3]);
+    expect(history['ad-hoc'].map((x) => x.seed)).toEqual([99]);
+  });
+
+  it('keeps runHistory across a new scene_description', () => {
+    const h = createHarness();
+    h.emitScene();
+    h.emit(withSummary(h.emitFrame(), summary(1)));
+    h.emitScene();
+    expect(useSimStore.getState().runHistory['mock-cutin-20s']).toHaveLength(1);
+  });
+
+  it('loadScenario and loadLocation clear activePresetId', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().loadPreset('mock-cutin-20s');
+    useSimStore.getState().loadScenario('hyde-descent');
+    expect(useSimStore.getState().activePresetId).toBeNull();
+    useSimStore.setState({ activePresetId: 'mock-cutin-20s' });
+    useSimStore.getState().loadLocation('Nob Hill');
+    expect(useSimStore.getState().activePresetId).toBeNull();
+  });
+
+  it('takes perceptionMode from the wire when perception is present', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    h.emit({
+      ...base,
+      seq: base.seq + 1,
+      perception: {
+        mode: 'noisy-truth',
+        pipeline: false,
+        detector_ms: null,
+        server_e2e_ms: null,
+        frames_received: 0,
+        frames_dropped: 0,
+        precision: null,
+        recall: null,
+        mean_pos_err_m: null,
+      },
+    });
+    expect(useSimStore.getState().perceptionMode).toBe('noisy-truth');
+  });
+});
+
+describe('perception fix round', () => {
+  const stats = (mode: PerceptionStats['mode'], pipeline: boolean): PerceptionStats => ({
+    mode,
+    pipeline,
+    detector_ms: null,
+    server_e2e_ms: null,
+    frames_received: 0,
+    frames_dropped: 0,
+    precision: null,
+    recall: null,
+    mean_pos_err_m: null,
+  });
+
+  it('hasPipeline (the camera-frame gate and the ML option) reads the explicit flag', () => {
+    expect(hasPipeline(null)).toBe(false);
+    expect(hasPipeline(stats('noisy-truth', false))).toBe(false);
+    expect(hasPipeline(stats('noisy-truth', true))).toBe(true);
+    expect(hasPipeline(stats('ground-truth', true))).toBe(true);
+  });
+
+  it('a null perception on the wire means ground truth', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    h.emit({ ...base, seq: base.seq + 1, perception: stats('noisy-truth', false) });
+    expect(useSimStore.getState().perceptionMode).toBe('noisy-truth');
+    h.emit({ ...base, seq: base.seq + 2, perception: null });
+    expect(useSimStore.getState().perceptionMode).toBe('ground-truth');
+  });
+
+  it('a refused load_preset restores the previous activePresetId', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().loadPreset('mock-cutin-20s');
+    expect(useSimStore.getState().activePresetId).toBe('mock-cutin-20s');
+    // The harness acks synchronously; the mock refuses an unknown id.
+    useSimStore.getState().loadPreset('nope');
+    expect(useSimStore.getState().lastAck?.ok).toBe(false);
+    expect(useSimStore.getState().activePresetId).toBe('mock-cutin-20s');
   });
 });

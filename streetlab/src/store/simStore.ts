@@ -27,6 +27,7 @@ import type {
   ParamValue,
   PerceptionMode,
   PerceptionStats,
+  RunSummary,
   SceneDescription,
   ScenarioSummary,
   ServerMessage,
@@ -36,6 +37,11 @@ import type {
 import { LAYER_KEYS } from '../schema';
 import type { ConnectionStatus, Transport } from '../net/transport';
 import { httpUrlForWsLabel, perfMetrics } from '../perf/perfMetrics';
+
+/** Whether the server has an ML perception pipeline. Not `perception !==
+ * null`: noisy truth sends stats without one. Gates camera-frame uploads
+ * (Renderer) and the ML perception option (TopToolbar). */
+export const hasPipeline = (p: PerceptionStats | null): boolean => p?.pipeline === true;
 
 /* ------------------------------------------------------------------ */
 /* Frame bus                                                           */
@@ -136,14 +142,15 @@ export const PARAM_DEFS: ParamDef[] = [
   },
   {
     key: 'cutin_period_s',
-    label: 'Cut-in interval',
+    label: 'Mean cut-in interval',
     kind: 'slider',
     group: 'traffic',
-    default: 22,
-    min: 6,
+    default: 0,
+    min: 0,
     max: 60,
     step: 1,
     unit: 's',
+    hint: '0 = off; Poisson mean seconds between spontaneous cut-ins',
   },
   {
     key: 'plan_opacity',
@@ -195,6 +202,12 @@ const DEFAULT_PARAMS: Record<string, ParamValue> = Object.fromEntries(
   PARAM_DEFS.map((d) => [d.key, d.default]),
 );
 
+/** The params the backend honours (its `DEFAULT_PARAMS`): a preset load
+ * resets exactly these to their defaults before applying its recipe. */
+const BACKEND_DEFAULTS: Record<string, ParamValue> = Object.fromEntries(
+  PARAM_DEFS.filter((d) => !d.clientOnly).map((d) => [d.key, d.default]),
+);
+
 const DEFAULT_LAYERS = Object.fromEntries(
   LAYER_KEYS.map((k) => [k, true]),
 ) as Record<LayerKey, boolean>;
@@ -232,7 +245,10 @@ export const DEFAULT_RELOAD_PAGE = (): void => {
  * runtime surprise (`setRightTab('events')` compiling while the panel has
  * nothing registered for it, or vice versa).
  */
-export type RightTab = 'parameters' | 'map' | 'layers' | 'events';
+export type RightTab = 'parameters' | 'run' | 'map' | 'layers' | 'events';
+
+/** Scorecards kept per preset (newest first) — what the Run tab compares. */
+export const RUN_HISTORY_CAP = 5;
 
 /**
  * The three shell surfaces the user can fold away to give the viewport more
@@ -304,6 +320,22 @@ export interface SimStoreState {
    * zero"; see PerceptionPanel. Updated on every frame, unlike the fields
    * above, since its counters are expected to change every tick. */
   perception: PerceptionStats | null;
+  /** What the planner drives on. Optimistic on `setPerceptionMode`; corrected
+   * from `perception.mode` whenever a frame carries it, and from the preset's
+   * own mode when a preset's scene arrives. */
+  perceptionMode: PerceptionMode;
+
+  /* walkthrough presets */
+  /** The preset the current scene was loaded by; server-authoritative. */
+  activePresetId: string | null;
+  /** The seed the current scene is running on, from `scene.seed`. */
+  runSeed: number | null;
+  /** Last seed each preset ran on, so Replay can re-run it exactly. */
+  lastSeedByPreset: Record<string, number>;
+  /** Scorecards by `preset_id ?? 'ad-hoc'`, newest first, capped. Harvested
+   * the frame they arrive so the 40-entry `events` cap can never evict one,
+   * and kept across scene loads so runs can be compared. */
+  runHistory: Record<string, RunSummary[]>;
 
   /* UI state */
   layers: Record<LayerKey, boolean>;
@@ -332,6 +364,8 @@ export interface SimStoreState {
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
   loadLocation(query: string, destination?: string): void;
+  /** Run a preset: no seed follows its policy; a seed replays that run. */
+  loadPreset(presetId: string, seed?: number): void;
   /** Fire off a `suggest_address` request and return its command id, so the
    * caller can look its result up in `addressSuggestions` once it arrives. */
   suggestAddress(query: string): string;
@@ -374,6 +408,12 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   assistActive: false,
   hasFrames: false,
   perception: null,
+  perceptionMode: 'ground-truth',
+
+  activePresetId: null,
+  runSeed: null,
+  lastSeedByPreset: {},
+  runHistory: {},
 
   layers: { ...DEFAULT_LAYERS },
   params: { ...DEFAULT_PARAMS },
@@ -467,6 +507,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   loadScenario(scenarioId) {
     set({
       activeScenarioId: scenarioId,
+      activePresetId: null,
       locationProgress: null,
       locationError: null,
       tripComplete: false,
@@ -480,6 +521,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     const trimmedDest = destination?.trim() || undefined;
     set({
       locationPending: trimmedDest ? `${trimmedQuery} → ${trimmedDest}` : trimmedQuery,
+      activePresetId: null,
       locationProgress: null,
       locationError: null,
       tripComplete: false,
@@ -488,6 +530,15 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       cmd: 'load_location',
       query: trimmedQuery,
       ...(trimmedDest ? { destination: trimmedDest } : {}),
+    });
+  },
+
+  loadPreset(presetId, seed) {
+    set({ activePresetId: presetId, rightTab: 'run' });
+    get().send({
+      cmd: 'load_preset',
+      preset_id: presetId,
+      ...(seed === undefined ? {} : { seed }),
     });
   },
 
@@ -514,11 +565,12 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
 
   setPerceptionMode(mode) {
     // Optimistic local update, same shape as setCameraView above: the
-    // backend's next frame carries the confirmed `perception.mode`, so a
-    // refused switch (no pipeline running) corrects itself on the next
-    // tick. There's nothing to update locally if no pipeline exists yet —
-    // the control is disabled in that case, so this branch is defensive.
-    set((s) => (s.perception ? { perception: { ...s.perception, mode } } : {}));
+    // backend's next frame carries the confirmed `perception.mode` (non-null
+    // whenever noisy-truth or ML is driving), which corrects a refused switch.
+    set((s) => ({
+      perceptionMode: mode,
+      ...(s.perception ? { perception: { ...s.perception, mode } } : {}),
+    }));
     get().send({ cmd: 'set_perception', mode });
   },
 
@@ -605,18 +657,37 @@ function applyServerMessage(
   switch (msg.type) {
     case 'scene_description':
       frameBus.reset();
-      set((s) => ({
-        scene: msg,
-        sceneEpoch: s.sceneEpoch + 1,
-        catalog: msg.catalog,
-        activeScenarioId: msg.scenario_id,
-        hasFrames: false,
-        events: [],
-        locationPending: null,
-        locationProgress: null,
-        locationError: null,
-        tripComplete: false,
-      }));
+      set((s) => {
+        // Server-authoritative: on the shared hosted world another client's
+        // load_preset swaps this scene too, and preset_id says so.
+        const preset = msg.presets.find((p) => p.id === msg.preset_id);
+        return {
+          scene: msg,
+          sceneEpoch: s.sceneEpoch + 1,
+          catalog: msg.catalog,
+          activeScenarioId: msg.scenario_id,
+          hasFrames: false,
+          events: [],
+          locationPending: null,
+          locationProgress: null,
+          locationError: null,
+          tripComplete: false,
+          activePresetId: msg.preset_id,
+          runSeed: msg.seed,
+          // runHistory is deliberately untouched: comparing runs is the point.
+          ...(msg.preset_id !== null
+            ? { lastSeedByPreset: { ...s.lastSeedByPreset, [msg.preset_id]: msg.seed } }
+            : {}),
+          // Mirror what the server applied, so the sliders and the perception
+          // control stay honest. Not re-sent: the server already has them.
+          ...(preset
+            ? {
+                params: { ...s.params, ...BACKEND_DEFAULTS, ...preset.params },
+                perceptionMode: preset.perception,
+              }
+            : {}),
+        };
+      });
       return;
 
     case 'state_update': {
@@ -637,6 +708,10 @@ function applyServerMessage(
       if (s.perception !== null || msg.perception !== null) {
         patch.perception = msg.perception;
       }
+      // Null perception happens in exactly one backend state: ground truth
+      // with no pipeline (a pipeline always sends stats; so does noisy truth).
+      const wireMode = msg.perception?.mode ?? 'ground-truth';
+      if (wireMode !== s.perceptionMode) patch.perceptionMode = wireMode;
       if (s.paused !== msg.paused) patch.paused = msg.paused;
       if (s.assistActive !== msg.assist_active) {
         patch.assistActive = msg.assist_active;
@@ -647,6 +722,15 @@ function applyServerMessage(
       }
       if (msg.events.length) {
         patch.events = [...s.events, ...msg.events].slice(-40);
+        const summaries = msg.events.flatMap((e) => (e.summary ? [e.summary] : []));
+        if (summaries.length) {
+          const history = { ...s.runHistory };
+          for (const summary of summaries) {
+            const key = summary.preset_id ?? 'ad-hoc';
+            history[key] = [summary, ...(history[key] ?? [])].slice(0, RUN_HISTORY_CAP);
+          }
+          patch.runHistory = history;
+        }
         // A geocode/Overpass failure (or a query with no drivable roads)
         // never produces a new scene — it surfaces here instead, per
         // sim/loop.py's `submit_scene`. Without this the box would stay
@@ -696,6 +780,12 @@ function applyServerMessage(
           locationProgress: null,
           locationError: msg.message,
         });
+        return;
+      }
+      // A refused load_preset never swaps the scene, so the optimistic
+      // activePresetId from `loadPreset` falls back to what is running.
+      if (msg.cmd === 'load_preset' && !msg.ok) {
+        set((s) => ({ lastAck: msg, activePresetId: s.scene?.preset_id ?? null }));
         return;
       }
       set({ lastAck: msg });

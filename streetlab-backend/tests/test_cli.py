@@ -162,3 +162,61 @@ def test_run_reports_a_slowdown_the_car_actually_made(capsys):
     )
     assert code == 0
     assert "hazard response: slowed" in out, out[-400:]
+
+
+def test_a_pinned_preset_replays_identically(capsys):
+    _, first = run(capsys, "run", "--preset", "replay-twin", "--duration", "15")
+    _, second = run(capsys, "run", "--preset", "replay-twin", "--duration", "15")
+    assert "replay-twin: seed 7" in first
+    assert first == second
+
+
+def test_a_preset_on_another_seed_diverges(capsys):
+    _, pinned = run(capsys, "run", "--preset", "replay-twin", "--duration", "15")
+    _, other = run(capsys, "run", "--preset", "replay-twin", "--duration", "15", "--seed", "8")
+    assert "replay-twin: seed 8" in other
+    assert pinned != other
+
+
+def test_an_unknown_preset_exits_1_listing_the_ids(capsys):
+    code, out = run(capsys, "run", "--preset", "atlantis")
+    assert code == 1
+    assert "atlantis" in out and "replay-twin" in out
+
+
+def test_run_accepts_noisy_truth_perception(capsys):
+    code, out = run(capsys, "run", "--perception", "noisy-truth", "--duration", "2")
+    assert code == 0
+    assert "distance" in out.lower()
+    assert "unavailable" not in out
+
+
+def test_serve_accepts_noisy_truth_perception():
+    from server.cli import build_parser, perception_pipeline_for
+
+    args = build_parser().parse_args(["serve", "--perception", "noisy-truth"])
+    assert perception_pipeline_for(args) is None
+
+
+def test_an_explicit_perception_overrides_the_presets(capsys):
+    code, out = run(capsys, "run", "--preset", "control", "--perception", "noisy-truth", "--duration", "1")
+    assert code == 0
+    assert "perception noisy-truth" in out
+
+
+def test_a_preset_keeps_its_own_perception_without_the_flag(capsys):
+    code, out = run(capsys, "run", "--preset", "ladder-noisy-truth", "--duration", "1")
+    assert code == 0
+    assert "perception noisy-truth" in out
+
+
+@pytest.mark.parametrize("seed", ["-1", str(2**31)])
+def test_run_refuses_an_out_of_range_seed(capsys, seed):
+    with pytest.raises(SystemExit):
+        main(["run", "--seed", seed, "--duration", "1"])
+
+
+def test_run_accepts_the_largest_seed(capsys):
+    code, out = run(capsys, "run", "--seed", str(2**31 - 1), "--duration", "1")
+    assert code == 0
+    assert f"seed {2**31 - 1}" in out

@@ -475,3 +475,75 @@ describe('route geometry', () => {
     expect(route.gap(20, 10)).toBeCloseTo(-10, 6);
   });
 });
+
+describe('mock walkthrough presets', () => {
+  /** Step until the 20 s preset's scorecard lands, collecting every event. */
+  function runPreset(seed?: number) {
+    const sim = new MockSim();
+    const res = sim.apply({
+      id: 'p',
+      cmd: 'load_preset',
+      preset_id: 'mock-cutin-20s',
+      ...(seed === undefined ? {} : { seed }),
+    });
+    const events: StateUpdate['events'] = [];
+    for (let i = 0; i < 60 * 22; i++) {
+      sim.step();
+      const f = sim.frame();
+      expect(StateUpdateSchema.safeParse(f).success).toBe(true);
+      events.push(...f.events);
+    }
+    return { res, events };
+  }
+
+  it('lists the presets on every scene, with no preset loaded at first', () => {
+    const scene = new MockSim().scene;
+    expect(scene.presets.map((p) => p.id)).toEqual(['mock-cutin-20s', 'mock-cutin-fresh']);
+    expect(scene.preset_id).toBeNull();
+    expect(scene.seed).toBe(0);
+  });
+
+  it('acks load_preset with a scene carrying the seed and preset_id', () => {
+    const sim = new MockSim();
+    const res = sim.apply({ id: 'p', cmd: 'load_preset', preset_id: 'mock-cutin-20s' });
+    expect(res.ok).toBe(true);
+    expect(res.scene?.preset_id).toBe('mock-cutin-20s');
+    expect(res.scene?.seed).toBe(20);
+    const fresh = sim.apply({ id: 'q', cmd: 'load_preset', preset_id: 'mock-cutin-fresh', seed: 9 });
+    expect(fresh.scene?.seed).toBe(9);
+    expect(parseServerMessage(fresh.scene).ok).toBe(true);
+  });
+
+  it('refuses an unknown preset', () => {
+    expect(new MockSim().apply({ id: 'p', cmd: 'load_preset', preset_id: 'nope' }).ok).toBe(false);
+  });
+
+  it('fires the 20 s timeline and emits exactly one run_summary', () => {
+    const { events } = runPreset();
+    const summaries = events.filter((e) => e.code === 'run_summary');
+    expect(summaries).toHaveLength(1);
+    const s = summaries[0].summary!;
+    expect(s.hazards_fired).toBe(1);
+    expect(s.hazards_declined).toBe(1);
+    expect(s.complete).toBe(true);
+    expect(s.preset_id).toBe('mock-cutin-20s');
+    expect(events.some((e) => e.code === 'hazard_declined')).toBe(true);
+    expect(events.some((e) => e.code === 'cut_in')).toBe(true);
+  });
+
+  it('reproduces the scorecard (min_ttc_s included) for an explicit seed', () => {
+    const scorecard = (seed: number) =>
+      runPreset(seed).events.find((e) => e.code === 'run_summary')!.summary!;
+    const a = scorecard(5);
+    expect(a.seed).toBe(5);
+    expect(scorecard(5)).toEqual(a);
+    // A different seed jitters the timeline, so the run is not the same one.
+    expect(scorecard(6).reactions[0].t).not.toBe(a.reactions[0].t);
+  });
+
+  it('acks set_perception noisy-truth but still refuses ml', () => {
+    const sim = new MockSim();
+    expect(sim.apply({ id: 'n', cmd: 'set_perception', mode: 'noisy-truth' }).ok).toBe(true);
+    expect(sim.apply({ id: 'm', cmd: 'set_perception', mode: 'ml' }).ok).toBe(false);
+  });
+});
