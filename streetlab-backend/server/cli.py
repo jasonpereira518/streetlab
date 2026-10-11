@@ -39,7 +39,7 @@ from perception.capture import CaptureSink
 from perception.detector import OnnxDetector, build_session
 from perception.model_cache import DEFAULT_MODEL, ModelCache
 from perception.pipeline import Detector, PerceptionPipeline, StubDetector
-from schema import PROTOCOL_VERSION
+from schema import PROTOCOL_VERSION, SEED_MAX
 from sim.loop import DEFAULT_DT, SimLoop, Simulation
 from sim.presets import PRESETS
 
@@ -178,6 +178,14 @@ def build_detector(model_path: str | None) -> Detector:
     )
 
 
+def _seed(text: str) -> int:
+    """`--seed`, held to the range the wire accepts (`schema.SEED_MAX`)."""
+    value = int(text)
+    if not 0 <= value <= SEED_MAX:
+        raise argparse.ArgumentTypeError(f"seed must be 0..{SEED_MAX}, not {value}")
+    return value
+
+
 def perception_pipeline_for(args) -> PerceptionPipeline | None:
     """The pipeline `--perception ml` asks for, or None for ground truth.
 
@@ -242,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="0 for an ephemeral port; omit to use STREETLAB_PORT or 8765",
     )
     serve.add_argument("--scenario", default=None)
-    serve.add_argument("--seed", type=int, default=0)
+    serve.add_argument("--seed", type=_seed, default=0)
     serve.add_argument(
         "--traffic",
         type=int,
@@ -296,7 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_.add_argument(
         "--seed",
-        type=int,
+        type=_seed,
         default=None,
         help="omit for 0, or for a preset's own seed policy",
     )
@@ -319,10 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_.add_argument(
         "--perception",
         choices=("ground-truth", "noisy-truth", "ml"),
-        default="ground-truth",
-        help="ground-truth drives on perfect sensing; noisy-truth on seeded "
-        "degraded sensing; ml additionally runs the detector pipeline and "
-        "reports it (shadow mode)",
+        default=None,
+        help="ground-truth (the default) drives on perfect sensing; noisy-truth "
+        "on seeded degraded sensing; ml additionally runs the detector pipeline "
+        "and reports it (shadow mode). Overrides a --preset's own perception",
     )
     run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
 
@@ -623,7 +631,8 @@ def _run(args) -> int:
     if preset is not None:
         raw = {"id": "cli", "cmd": "load_preset", "preset_id": preset.id, "seed": args.seed}
         sim.apply_dict(raw)
-    elif args.perception != "ground-truth":
+    # After the preset load, so an explicit flag wins over the preset's mode.
+    if args.perception is not None and args.perception != sim.perception_mode:
         mode = sim.select_perception(args.perception)
         if mode != args.perception:
             print(f"note: {args.perception} perception is unavailable; running on {mode}")
@@ -640,7 +649,10 @@ def _run(args) -> int:
 
 def _run_loop(args, sim: Simulation) -> int:
     scene = sim.scene.description
-    print(f"scenario {scene.scenario_id}  seed {sim.seed}  {args.duration:g}s @ {args.hz:g} Hz")
+    print(
+        f"scenario {scene.scenario_id}  seed {sim.seed}  perception {sim.perception_mode}  "
+        f"{args.duration:g}s @ {args.hz:g} Hz"
+    )
     print(f"route {sim.scene.ego_route.length_m:.0f} m, limit {sim.scene.speed_limit_mps * MPS_TO_MPH:.0f} mph")
     print("-" * 72)
 

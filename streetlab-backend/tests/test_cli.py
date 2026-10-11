@@ -196,3 +196,27 @@ def test_serve_accepts_noisy_truth_perception():
 
     args = build_parser().parse_args(["serve", "--perception", "noisy-truth"])
     assert perception_pipeline_for(args) is None
+
+
+def test_an_explicit_perception_overrides_the_presets(capsys):
+    code, out = run(capsys, "run", "--preset", "control", "--perception", "noisy-truth", "--duration", "1")
+    assert code == 0
+    assert "perception noisy-truth" in out
+
+
+def test_a_preset_keeps_its_own_perception_without_the_flag(capsys):
+    code, out = run(capsys, "run", "--preset", "ladder-noisy-truth", "--duration", "1")
+    assert code == 0
+    assert "perception noisy-truth" in out
+
+
+@pytest.mark.parametrize("seed", ["-1", str(2**31)])
+def test_run_refuses_an_out_of_range_seed(capsys, seed):
+    with pytest.raises(SystemExit):
+        main(["run", "--seed", seed, "--duration", "1"])
+
+
+def test_run_accepts_the_largest_seed(capsys):
+    code, out = run(capsys, "run", "--seed", str(2**31 - 1), "--duration", "1")
+    assert code == 0
+    assert f"seed {2**31 - 1}" in out
