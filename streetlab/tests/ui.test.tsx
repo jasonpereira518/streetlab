@@ -6,7 +6,7 @@ import { LeftScenarioSidebar } from '../src/ui/LeftScenarioSidebar';
 import { RightPanel } from '../src/ui/RightPanel';
 import { TelemetryRow } from '../src/ui/TelemetryRow';
 import { RESET_ACK_TIMEOUT_MS, useSimStore } from '../src/store/simStore';
-import { toMph } from '../src/units';
+import { formatKm, toMph } from '../src/units';
 import { createHarness, resetStore } from './harness';
 import type { Harness } from './harness';
 import { canvasText, clearCanvasCalls, canvasCalls, flushFrames } from './setup';
@@ -83,6 +83,21 @@ describe('TopToolbar', () => {
     expect(screen.getByText('mph').previousSibling?.textContent).toBe(expected);
     expect(screen.getByText('Assist active')).toBeTruthy();
     expect(screen.getByText('Full Self-Driving')).toBeTruthy();
+  });
+
+  it('shows how far is left of the lap, from the trip on the wire', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+
+    const frame = harness.emitFrame(240);
+    tick();
+
+    const trip = frame.telemetry.trip;
+    const readout = screen.getByTestId('trip-readout');
+    expect(readout.textContent).toContain(formatKm(trip.distance_remaining_m));
+    // The mock drives a closed loop, so it reports the lap, not an ETA.
+    expect(readout.textContent).toContain(`lap ${trip.laps + 1}`);
   });
 
   it('updates the speed readout as the simulator advances', () => {
@@ -321,6 +336,18 @@ describe('LeftScenarioSidebar', () => {
     expect(screen.getByText('01')).toBeTruthy();
     expect(screen.getByText('05')).toBeTruthy();
     expect(screen.getByText('Hyde St Descent')).toBeTruthy();
+  });
+
+  it('shows each route\'s length and expected time, not a typed-in duration', () => {
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    const scene = harness.emitScene();
+
+    const first = scene.catalog[0];
+    const card = within(screen.getByRole('list', { name: 'Saved scenarios' })).getAllByRole('listitem')[0];
+    expect(card.textContent).toContain(
+      `${formatKm(first.route_length_m)} km · ${Math.max(1, Math.round(first.duration_s / 60))} min`,
+    );
   });
 
   it("a card's play button emits load_scenario", () => {

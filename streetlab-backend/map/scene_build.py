@@ -43,7 +43,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import ControlPoint, LaneSet, Route
+from sim.route import ControlPoint, LaneSet, Route, estimate_travel_s
 
 # --------------------------------------------------------------------------- #
 # The seam                                                                     #
@@ -196,7 +196,6 @@ class _Scenario:
     name: str
     description: str
     difficulty: str
-    duration_s: float
     # Rectangle of street centrelines the ego loops around, as (x0, x1, y0, y1).
     block: tuple[float, float, float, float]
     traffic: int
@@ -209,7 +208,6 @@ SCENARIOS: tuple[_Scenario, ...] = (
         "Nob Hill Loop",
         "A single block circuit with two signalised corners. The gentlest way in.",
         "easy",
-        180.0,
         (0.0, 80.0, 0.0, 80.0),
         3,
         bookmarked=True,
@@ -219,7 +217,6 @@ SCENARIOS: tuple[_Scenario, ...] = (
         "California Arterial",
         "The long way round on the two arterials, at 35 mph with cross traffic.",
         "moderate",
-        300.0,
         (-80.0, 80.0, -80.0, 80.0),
         5,
     ),
@@ -228,7 +225,6 @@ SCENARIOS: tuple[_Scenario, ...] = (
         "Signal Ladder",
         "North-west block: every corner is signalised, so the light cycle drives.",
         "moderate",
-        240.0,
         (-80.0, 0.0, 0.0, 80.0),
         4,
     ),
@@ -237,7 +233,6 @@ SCENARIOS: tuple[_Scenario, ...] = (
         "Hyde Street Merge",
         "The tight block with heavy traffic — lead vehicles cut in without warning.",
         "hard",
-        210.0,
         (0.0, 80.0, 0.0, 80.0),
         6,
         bookmarked=True,
@@ -247,7 +242,6 @@ SCENARIOS: tuple[_Scenario, ...] = (
         "Outer Circuit",
         "The full perimeter. Long straights, four-way stops at the quiet corners.",
         "moderate",
-        360.0,
         (-80.0, 80.0, -80.0, 80.0),
         4,
     ),
@@ -365,13 +359,21 @@ class SyntheticGrid:
 
     def _summary(self, scenario: _Scenario) -> ScenarioSummary:
         index = SCENARIOS.index(scenario) + 1
+        # One lap, timed the way the HUD's ETA is: from route length and the
+        # posted limit, not a number typed in by hand.
+        # Not `self.build`: a built scene embeds this catalog.
+        route = self._block_route(scenario.block)
+        limit = self._route_speed_limit(scenario.block)
         return ScenarioSummary(
             id=scenario.id,
             index=index,
             name=scenario.name,
             location="Synthetic Grid",
             description=scenario.description,
-            duration_s=scenario.duration_s,
+            duration_s=estimate_travel_s(
+                route, 0.0, route.length_m, limit, control_points=self._control_points(route)
+            ),
+            route_length_m=route.length_m,
             bookmarked=scenario.bookmarked,
             difficulty=scenario.difficulty,
             preview_paths=self._preview_paths(),

@@ -187,7 +187,11 @@ class ScenarioSummary(Wire):
     name: str
     location: str
     description: str
+    # Expected time for one lap or the whole trip, from route length and the
+    # posted limits (`sim.route.estimate_travel_s`). 0 until the route exists.
     duration_s: NonNeg
+    # One lap or the whole trip, metres. 0 until the route exists.
+    route_length_m: NonNeg
     bookmarked: bool
     difficulty: Literal["easy", "moderate", "hard"]
     # Road skeleton for the minimap thumbnail, in thumbnail-local units.
@@ -464,6 +468,23 @@ class TrajectoryPrediction(Wire):
     threat_label: str | None
 
 
+class Trip(Wire):
+    """Where the ego is on its route. Always present: an open route is a trip
+    to a destination, a closed one a lap that repeats."""
+
+    # One lap for a closed route, the whole trip for an open one.
+    route_length_m: NonNeg
+    # Odometer since the scene was loaded or reset.
+    distance_driven_m: NonNeg
+    # To the destination (open) or the end of this lap (closed).
+    distance_remaining_m: NonNeg
+    # Expected seconds to cover `distance_remaining_m`.
+    eta_s: NonNeg
+    # Completed laps; always 0 on an open route.
+    laps: Annotated[int, Field(ge=0)]
+    closed: bool
+
+
 class Telemetry(Wire):
     radar: list[RadarPoint]
     lane: LaneState
@@ -471,6 +492,7 @@ class Telemetry(Wire):
     ttc_s: Num | None
     vehicle: VehicleStatus
     trajectory: TrajectoryPrediction
+    trip: Trip
 
 
 Maneuver = Literal[

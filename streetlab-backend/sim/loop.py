@@ -66,10 +66,12 @@ from schema import (
     Telemetry,
     TrajectoryPrediction,
     TrajectorySample,
+    Trip,
     VehicleStatus,
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
+from sim.route import estimate_travel_s
 from sim.scorecard import Scorecard
 from sim.vehicle import BicycleModel, VehicleState
 
@@ -147,6 +149,8 @@ class WorldState:
     events: list[SimEvent] = field(default_factory=list)
     # Frames still owed to a `step` command while paused.
     pending_steps: int = 0
+    # Metres the ego has driven since the scene was loaded or reset.
+    odometer_m: float = 0.0
     # Rolling history of lateral offsets, for the trajectory graph.
     history: list[tuple[float, float]] = field(default_factory=list)
     # The last fully finite ego state, used to repair a poisoned one.
@@ -339,6 +343,7 @@ class Simulation:
         )
         self.world.history = []
         self.world.pending_steps = 0
+        self.world.odometer_m = 0.0
         self.world.plan_result = None
         self.world.detections = []
         self.world.detections_shadow = None
@@ -443,6 +448,7 @@ class Simulation:
             dt=dt,
         )
         self._guard_world()
+        self.world.odometer_m += self.world.ego.speed_mps * dt
 
         self.world.t += dt
         self.world.seq += 1
@@ -1284,6 +1290,32 @@ def _lane_state(
     )
 
 
+def _trip(world: WorldState, scene: BuiltScene, ego_s: float, bad: list[str]) -> Trip:
+    """The ego's place on its route, for the HUD.
+
+    The ETA uses the same speed the planner is held to -- the posted limit
+    where the route carries one, the scene-wide figure where not, never more
+    than the Max speed cap -- through `estimate_travel_s`, the one estimate
+    the catalog's durations use too.
+    """
+    route = scene.ego_route
+    length = route.length_m
+    remaining = max(0.0, length - ego_s)
+    cap = float(world.params["ego_speed_cap_mph"]) * MPH
+    eta = estimate_travel_s(
+        route, ego_s, remaining, scene.speed_limit_mps, cap, scene.control_points
+    )
+    driven = max(0.0, _finite("trip.distance_driven_m", world.odometer_m, bad))
+    return Trip(
+        route_length_m=length,
+        distance_driven_m=driven,
+        distance_remaining_m=remaining,
+        eta_s=max(0.0, _finite("trip.eta_s", eta, bad)),
+        laps=int(driven // length) if route.closed else 0,
+        closed=route.closed,
+    )
+
+
 def assemble_state_update(
     *,
     world: WorldState,
@@ -1378,6 +1410,7 @@ def assemble_state_update(
             ttc_s=ttc,
             vehicle=_vehicle_status(world, perception_mode),
             trajectory=_trajectory(world, offset, detections),
+            trip=_trip(world, scene, ego_s, bad),
         ),
         signals=list(signals),
         events=list(world.events),
