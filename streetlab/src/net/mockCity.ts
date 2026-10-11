@@ -18,6 +18,7 @@ import type {
   Building,
   Crosswalk,
   HazardSummary,
+  PresetSummary,
   Road,
   SceneDescription,
   ScenarioSummary,
@@ -576,6 +577,46 @@ export const HAZARDS: HazardSummary[] = [
   { code: 'red_light_runner', label: 'Red-light runner', level: 'critical', group: 'crossing', ml_limitation: null },
 ];
 
+/**
+ * Walkthrough presets, minimal: the backend's catalog (`sim/presets.py`) runs
+ * on its own scenario ids, so the mock carries two of its own on
+ * `nob-hill-loop`. `timeline` is mock-internal `[at_s, kind]`; only `cut_in`
+ * stages, so `jaywalker` exercises the declined path.
+ */
+export const PRESETS: Array<PresetSummary & { timeline: Array<[number, string]> }> = [
+  {
+    id: 'mock-cutin-20s',
+    title: 'Mock cut-in, pinned',
+    blurb: 'A staged cut-in and a jaywalker the mock declines, on a pinned seed.',
+    what_to_watch: 'Min TTC and the reaction to the 4 s cut-in.',
+    what_varies: 'Nothing: the seed is pinned, so Run and Replay match.',
+    scene: 'loop',
+    seed: 20,
+    perception: 'ground-truth',
+    params: {},
+    hazards: ['cut_in', 'jaywalker'],
+    duration_s: 20,
+    timeline: [
+      [4, 'cut_in'],
+      [10, 'jaywalker'],
+    ],
+  },
+  {
+    id: 'mock-cutin-fresh',
+    title: 'Mock cut-ins, fresh seed',
+    blurb: 'Spontaneous cut-ins at a Poisson mean of 12 s, on a fresh seed per run.',
+    what_to_watch: 'How min TTC and hard brakes move from run to run.',
+    what_varies: 'The seed, and with it every cut-in interval.',
+    scene: 'loop',
+    seed: null,
+    perception: 'ground-truth',
+    params: { cutin_period_s: 12 },
+    hazards: [],
+    duration_s: 45,
+    timeline: [],
+  },
+];
+
 /** Build the full static scene for a scenario. */
 export function buildScene(scenarioId: string): SceneDescription {
   const scenario =
@@ -609,6 +650,9 @@ export function buildScene(scenarioId: string): SceneDescription {
     terrain: null,
     catalog: SCENARIOS,
     hazards: HAZARDS,
+    presets: PRESETS.map(({ timeline: _timeline, ...summary }) => summary),
+    preset_id: null,
+    seed: 0,
   };
 }
 

@@ -19,7 +19,9 @@ import type {
   Command,
   Detection,
   LaneNeighbor,
+  PerceptionMode,
   RadarPoint,
+  RunSummary,
   SceneDescription,
   SignalPhase,
   SignalState,
@@ -37,6 +39,7 @@ import {
   LANE_W,
   LOOP_BLOCK,
   makeEgoRoute,
+  PRESETS,
   SCENARIOS,
   STREETS,
   buildScene,
@@ -69,8 +72,13 @@ const EW_GREEN_START = 16;
 const EW_GREEN_END = 28;
 const EW_YELLOW_END = 31;
 
-/** How often the scripted cut-in fires, seconds. */
+/** Mean interval between spontaneous cut-ins, seconds (Poisson). */
 const DEFAULT_CUTIN_PERIOD = 22;
+/** Floor on a drawn cut-in interval, mirroring the backend's. */
+const CUTIN_FLOOR_S = 5;
+/** A deceleration harder than this counts as a hard brake / a reaction. */
+const HARD_BRAKE_MPS2 = -3;
+const REACTION_MPS2 = -1.5;
 
 /* ------------------------------------------------------------------ */
 
@@ -158,6 +166,13 @@ export class MockSim {
   private latHistory: Array<{ t: number; ego: number; cutin: number | null }> = [];
   private rng = makeRng(0x2f81b3);
 
+  /** Walkthrough run state; see `load_preset`. */
+  private seed = 0;
+  private preset: (typeof PRESETS)[number] | null = null;
+  private perceptionMode: PerceptionMode = 'ground-truth';
+  private timeline: Array<[number, string]> = [];
+  private run = this.freshRun();
+
   constructor(scenarioId = SCENARIOS[0].id) {
     this.scene = buildScene(scenarioId);
     this.route = makeEgoRoute();
@@ -185,6 +200,13 @@ export class MockSim {
     this.stopHold = 0;
     this.latHistory = [];
     this.pendingEvents = [];
+    // Reset replays the seed, as the backend's does.
+    this.rng = makeRng(0x2f81b3 ^ this.seed);
+    this.timeline = (this.preset?.timeline ?? []).map(([at, kind]) => [
+      Math.max(0, at + (this.rng() - 0.5)),
+      kind,
+    ]);
+    this.run = this.freshRun();
 
     const oncoming = makeRectRoute(
       LOOP_BLOCK.x0 - EGO_LANE_INSET,
@@ -319,9 +341,12 @@ export class MockSim {
     this.t += dt;
     this.seq++;
 
+    this.stepTimeline();
     this.stepCutinScript(dt);
     this.stepAgents(dt);
+    const braking = this.egoAccel < HARD_BRAKE_MPS2;
     this.stepEgo(dt);
+    this.trackRun(dt, braking);
 
     this.battery = Math.max(4, this.battery - dt * 0.0055);
 
@@ -382,7 +407,12 @@ export class MockSim {
         this.cutinTimer += dt;
         if (this.cutinTimer > 4.5) {
           this.cutinPhase = 'idle';
-          this.nextCutinAt = this.t + this.params.cutin_period_s;
+          // Poisson: exponential intervals with a floor; 0 (or less) is off.
+          const mean = this.params.cutin_period_s;
+          this.nextCutinAt =
+            mean > 0
+              ? this.t + Math.max(CUTIN_FLOOR_S, -Math.log(1 - this.rng()) * mean)
+              : Infinity;
           cutin.targetLateral = kerb;
           this.pushEvent('info', 'CUTIN_CLEARED', 'Cut-in vehicle settled');
         }
@@ -531,6 +561,82 @@ export class MockSim {
     return limit;
   }
 
+  private freshRun() {
+    return {
+      distance: 0,
+      minTtc: null as number | null,
+      minClearance: null as number | null,
+      hardBrakes: 0,
+      fired: 0,
+      declined: 0,
+      reactions: [] as RunSummary['reactions'],
+      summarised: false,
+    };
+  }
+
+  /** Fire due timeline entries: `cut_in` stages, anything else is declined. */
+  private stepTimeline(): void {
+    while (this.timeline.length && this.timeline[0][0] <= this.t) {
+      const [, kind] = this.timeline.shift()!;
+      if (kind === 'cut_in') {
+        this.nextCutinAt = this.t;
+        this.cutinPhase = 'idle';
+        this.run.fired++;
+        this.run.reactions.push({ kind, t: Math.round(this.t * 100) / 100, reaction_s: null });
+        this.pushEvent('warn', 'cut_in', 'Cut-in staged');
+      } else {
+        this.run.declined++;
+        this.pushEvent('info', 'hazard_declined', `${kind}: the in-process mock only stages cut_in`);
+      }
+    }
+  }
+
+  private trackRun(dt: number, wasBraking: boolean): void {
+    const r = this.run;
+    r.distance += this.egoSpeed * dt;
+    if (this.egoAccel < HARD_BRAKE_MPS2 && !wasBraking) r.hardBrakes++;
+    const lead = this.nearestLead();
+    if (lead) {
+      r.minClearance = Math.min(r.minClearance ?? Infinity, Math.max(0, lead.gap));
+      const closing = this.egoSpeed - lead.speed;
+      if (closing > 0.3) r.minTtc = Math.min(r.minTtc ?? Infinity, Math.max(0, lead.gap) / closing);
+    }
+    for (const reaction of r.reactions) {
+      if (reaction.reaction_s === null && this.egoAccel < REACTION_MPS2) {
+        reaction.reaction_s = Math.round((this.t - reaction.t) * 100) / 100;
+      }
+    }
+    if (this.preset && !r.summarised && this.t >= this.preset.duration_s) {
+      r.summarised = true;
+      this.pushSummary(true);
+    }
+  }
+
+  private pushSummary(complete: boolean): void {
+    const r = this.run;
+    const round = (v: number | null) => (v === null ? null : Math.round(v * 100) / 100);
+    this.pushEvent('info', 'run_summary', 'run summary', {
+      preset_id: this.preset?.id ?? null,
+      scenario_id: this.scene.scenario_id,
+      seed: this.seed,
+      perception_mode: this.perceptionMode,
+      complete,
+      t_s: Math.round(this.t * 100) / 100,
+      distance_m: Math.round(r.distance * 100) / 100,
+      min_ttc_s: round(r.minTtc),
+      min_clearance_m: round(r.minClearance),
+      hard_brakes: r.hardBrakes,
+      collisions: 0,
+      stop_overshoots: 0,
+      worst_overshoot_m: 0,
+      hazards_fired: r.fired,
+      hazards_declined: r.declined,
+      reactions: r.reactions.map((x) => ({ ...x })),
+      precision: null,
+      recall: null,
+    });
+  }
+
   private nearestLead(): { speed: number; gap: number } | null {
     let best: { speed: number; gap: number } | null = null;
     for (const a of this.agents) {
@@ -551,12 +657,14 @@ export class MockSim {
     level: SimEvent['level'],
     code: string,
     message: string,
+    summary?: RunSummary,
   ): void {
     this.pendingEvents.push({
       t: Math.round(this.t * 100) / 100,
       level,
       code,
       message,
+      ...(summary ? { summary } : {}),
     });
     if (this.pendingEvents.length > 8) this.pendingEvents.shift();
   }
@@ -863,10 +971,34 @@ export class MockSim {
         if (!found) {
           return { ok: false, message: `unknown scenario ${command.scenario_id}` };
         }
-        this.scene = buildScene(found.id);
+        this.preset = null;
+        this.seed = command.seed ?? this.seed;
+        this.scene = { ...buildScene(found.id), seed: this.seed };
         this.resetDynamics();
         return { ok: true, message: found.name, scene: this.scene };
       }
+      case 'load_preset': {
+        const preset = PRESETS.find((p) => p.id === command.preset_id);
+        if (!preset) return { ok: false, message: `unknown preset ${command.preset_id}` };
+        this.preset = preset;
+        this.seed = command.seed ?? preset.seed ?? Math.floor(Math.random() * 2 ** 31);
+        this.perceptionMode = preset.perception;
+        this.params = { ...DEFAULT_PARAMS };
+        for (const [key, value] of Object.entries(preset.params)) {
+          if (key in DEFAULT_PARAMS) (this.params as unknown as Record<string, unknown>)[key] = value;
+        }
+        this.scene = {
+          ...buildScene('nob-hill-loop'),
+          preset_id: preset.id,
+          seed: this.seed,
+        };
+        this.resetDynamics();
+        this.pushEvent('info', 'preset_loaded', `${preset.title} (seed ${this.seed})`);
+        return { ok: true, message: preset.title, scene: this.scene };
+      }
+      case 'run_summary':
+        this.pushSummary(false);
+        return { ok: true, message: 'run summary queued' };
       case 'set_param': {
         const { key, value } = command;
         if (key in DEFAULT_PARAMS) {
@@ -884,10 +1016,14 @@ export class MockSim {
       case 'set_camera':
         return { ok: true, message: command.view };
       case 'set_perception':
-        // The mock never builds a perception pipeline, so this always
-        // refuses — mirroring `sim/loop.py`'s `_cmd_set_perception`, which
-        // refuses the same way when `self.perception_pipeline is None`.
-        return { ok: false, message: 'no perception pipeline: start with --perception' };
+        // The mock never builds an ONNX pipeline, so `ml` refuses — as
+        // `sim/loop.py`'s `_cmd_set_perception` does without one. The truth
+        // modes need no pipeline and are acked, as the backend acks them.
+        if (command.mode === 'ml') {
+          return { ok: false, message: 'no perception pipeline: start with --perception' };
+        }
+        this.perceptionMode = command.mode;
+        return { ok: true, message: command.mode };
       case 'inject_hazard':
         // The mock scripts one hazard. The rest of the menu is the backend's
         // (`sim/events.py`), so decline them by name, the way the backend

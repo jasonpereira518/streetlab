@@ -35,8 +35,9 @@ const CAMERA_LABELS: Record<CameraView, string> = {
 
 // 'Ground truth' names the default (safe) state plainly; the ML state is
 // additionally flagged experimental at the point of use — see PerceptionMenu.
-const PERCEPTION_LABELS: Record<PerceptionMode, string> = {
+export const PERCEPTION_LABELS: Record<PerceptionMode, string> = {
   'ground-truth': 'Ground truth',
+  'noisy-truth': 'Noisy truth',
   ml: 'ML',
 };
 
