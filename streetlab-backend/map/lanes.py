@@ -521,7 +521,9 @@ def _astar(rg: RouteGraph, start: Junction, goal: Junction) -> list[tuple[float,
     return None
 
 
-def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
+def select_ego_route(
+    rg: RouteGraph, origin_xy: tuple[float, float], roads: list[Road] | None = None
+) -> Route:
     """A drivable loop near the origin, offset into the right-hand lane."""
     start = nearest_junction(rg, origin_xy)
     points = _find_loop(rg, start)
@@ -547,11 +549,14 @@ def select_ego_route(rg: RouteGraph, origin_xy: tuple[float, float]) -> Route:
     if len(deduped) < 3:
         raise NoDrivableRoad("route degenerated to fewer than three points")
 
-    return _right_hand_lane(deduped, closed=True)
+    return _right_hand_lane(deduped, closed=True, roads=roads)
 
 
 def select_route_to_destination(
-    rg: RouteGraph, origin_xy: tuple[float, float], dest_xy: tuple[float, float]
+    rg: RouteGraph,
+    origin_xy: tuple[float, float],
+    dest_xy: tuple[float, float],
+    roads: list[Road] | None = None,
 ) -> Route:
     """A drivable path from `origin_xy` to `dest_xy`, offset into the right-hand lane.
 
@@ -576,7 +581,7 @@ def select_route_to_destination(
     if len(deduped) < 2:
         raise NoDrivableRoad("route degenerated to fewer than two points")
 
-    return _right_hand_lane(deduped, closed=False)
+    return _right_hand_lane(deduped, closed=False, roads=roads)
 
 
 #: Shortest segment the finished ego route may contain. Well under a
@@ -708,14 +713,104 @@ def _collapse_short_legs(
     return pts
 
 
-def _right_hand_lane(points: list[tuple[float, float]], *, closed: bool) -> Route:
-    """The lane the ego drives along a loop or path of junction-to-junction points."""
+def lane_inset(road: Road) -> float:
+    """How far right of `road`'s centreline the ego's lane centre sits.
+
+    Half a lane -- the leftmost forward lane on a two-way street, where the
+    centreline is the divider -- but never past the carriageway: on a oneway
+    the centreline is the middle of the road, so a one-lane oneway is driven
+    down its centre and a two-lane one in its right lane. A fixed half-lane
+    inset put the lane centre ON the kerb of every one-lane oneway (Clay and
+    Washington Streets: 250 m of the Nob Hill loop driven with one side on
+    the pavement).
+    """
+    half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+    return min(road.lane_width_m / 2, max(0.0, half - road.lane_width_m / 2))
+
+
+def _right_hand_lane(
+    points: list[tuple[float, float]], *, closed: bool, roads: list[Road] | None = None
+) -> Route:
+    """The lane the ego drives along a loop or path of junction-to-junction points.
+
+    With `roads`, each leg is inset by `lane_inset` of the road it runs along
+    (`Route.offset_by_leg`), so the car turns out of a two-way street's lane
+    straight into the centre of a one-lane oneway.
+    """
     if closed:
         points = _strip_closing_vertex(points)
     points = _collapse_short_legs(points, closed=closed, min_leg_m=MIN_LOOP_LEG_M)
-    lane = Route(points, closed=closed).offset(-EGO_LANE_INSET)
+    raw = Route(points, closed=closed)
+    if roads:
+        by_leg = [
+            EGO_LANE_INSET if i is None else lane_inset(roads[i])
+            for i in nearest_road_along(raw, roads)
+        ]
+    else:
+        by_leg = [EGO_LANE_INSET] * (len(points) if closed else len(points) - 1)
+    points, by_leg = _merge_straight_legs(points, by_leg, closed=closed)
+    lane = Route(points, closed=closed).offset_by_leg([-v for v in by_leg])
     route = lane.fillet(radius_m=TURN_RADIUS_M)
     return _drop_micro_segments(remove_self_intersections(route))
+
+
+#: Below this a vertex is not a corner, and `_merge_straight_legs` may remove it.
+STRAIGHT_TURN_RAD = math.radians(3.0)
+#: A straight vertex closer than this to a corner is absorbed into the corner.
+#: Twice `TURN_RADIUS_M`: the fillet of a right angle wants `TURN_RADIUS_M` of
+#: leg on each side, and the trim is half the leg.
+MERGE_NEAR_CORNER_M = 2 * TURN_RADIUS_M
+
+
+def _merge_straight_legs(
+    points: list[tuple[float, float]], insets: list[float], *, closed: bool
+) -> tuple[list[tuple[float, float]], list[float]]:
+    """Drop straight vertices that crowd a corner, so it gets its full radius.
+
+    `Route.fillet` trims each corner's arc to half the shorter adjoining leg,
+    and OSM puts junction nodes 6-10 m either side of a corner (the crossing
+    node, the way split). Measured on Nob Hill: six of the loop's corners
+    rounded at 3.0-4.3 m instead of `TURN_RADIUS_M`, which a 7.8 m truck
+    took with one corner a metre over the kerb.
+
+    Only vertices within `MERGE_NEAR_CORNER_M` of a corner go. Straight
+    vertices further along a leg are junction nodes the lane tables need:
+    `nearest_road_along` matches a segment to the one way that runs its whole
+    length, and OSM ways are a block long. A vertex is also kept where the
+    inset changes across it, since that is where a lane moves.
+    """
+    n = len(points)
+    if n < 3:
+        return points, insets
+    legs = len(insets)
+
+    def interior(i: int) -> bool:
+        return (closed or i > 0) and (closed or i + 1 < n)
+
+    def turn(i: int) -> float:
+        a, b, c = points[i - 1], points[i], points[(i + 1) % n]
+        h_in = math.atan2(b[1] - a[1], b[0] - a[0])
+        h_out = math.atan2(c[1] - b[1], c[0] - b[0])
+        return abs(math.remainder(h_out - h_in, math.tau))
+
+    corner = [interior(i) and turn(i) >= STRAIGHT_TURN_RAD for i in range(n)]
+    keep = []
+    for i in range(n):
+        if not interior(i) or corner[i]:
+            keep.append(True)
+            continue
+        same_inset = insets[(i - 1) % legs] == insets[i % legs]
+        crowds = (
+            corner[(i - 1) % n] and math.dist(points[i - 1], points[i]) <= MERGE_NEAR_CORNER_M
+        ) or (
+            corner[(i + 1) % n] and math.dist(points[i], points[(i + 1) % n]) <= MERGE_NEAR_CORNER_M
+        )
+        keep.append(not (same_inset and crowds))
+    kept_points = [p for p, k in zip(points, keep) if k]
+    # A leg's inset is carried by the vertex it starts at.
+    starts = range(n) if closed else range(n - 1)
+    kept_insets = [insets[i] for i in starts if keep[i]]
+    return kept_points, kept_insets
 
 
 # --------------------------------------------------------------------------- #
@@ -980,6 +1075,8 @@ _LIMIT_CELL_M = 25.0
 #: match is metres away; tens of metres means the nearest road is a different
 #: street entirely.
 _LIMIT_MAX_MATCH_M = 35.0
+#: Below this a route segment has no direction worth matching a road to.
+_MICRO_SEGMENT_M = 0.5
 
 
 def _segment_distance(
@@ -1031,36 +1128,46 @@ def nearest_road_along(route: Route, roads: list[Road]) -> list[int | None]:
             if not bucket or bucket[-1] != idx:
                 bucket.append(idx)
 
+    reach = int(math.ceil(_LIMIT_MAX_MATCH_M / _LIMIT_CELL_M)) + 1
+
+    def roads_near(p: tuple[float, float]) -> dict[int, float]:
+        """Every road within `_LIMIT_MAX_MATCH_M` of `p`, with its distance."""
+        cx = int(math.floor(p[0] / _LIMIT_CELL_M))
+        cy = int(math.floor(p[1] / _LIMIT_CELL_M))
+        best: dict[int, float] = {}
+        for dx in range(-reach, reach + 1):
+            for dy in range(-reach, reach + 1):
+                for idx in grid.get((cx + dx, cy + dy), ()):
+                    sa, sb, road_idx = segments[idx]
+                    d = _segment_distance(p, sa, sb)
+                    if d <= _LIMIT_MAX_MATCH_M and d < best.get(road_idx, math.inf):
+                        best[road_idx] = d
+        return best
+
     ring = route.points + [route.points[0]] if route.closed else route.points
     out: list[int | None] = []
     for a, b in zip(ring, ring[1:]):
+        if math.dist(a, b) < _MICRO_SEGMENT_M:
+            # Too short to run along anything: a fillet of a 0.3 degree bend
+            # is nine points inside 3 cm, and at a junction node those sit
+            # on the cross street. Unmatched, so it inherits its predecessor.
+            out.append(None)
+            continue
+        # The road governing a segment is the one that runs ALONG it, so it is
+        # scored by its distance from the whole segment -- the furthest of
+        # both ends and the middle -- not from one point. A leg through a
+        # junction has its midpoint ON the cross street's centreline, and a
+        # single-point match hands the whole leg to the street it crosses.
         mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
-        cx = int(math.floor(mid[0] / _LIMIT_CELL_M))
-        cy = int(math.floor(mid[1] / _LIMIT_CELL_M))
-        best_d, best_road = math.inf, None
-        r = 0
-        while True:
-            # Stop once no unexamined ring could beat what we already have: the
-            # nearest point of ring r is at least (r - 1) cells away.
-            if best_road is not None and (r - 1) * _LIMIT_CELL_M > best_d:
-                break
-            if (r - 1) * _LIMIT_CELL_M > _LIMIT_MAX_MATCH_M:
-                break
-            seen: set[int] = set()
-            for dx in range(-r, r + 1):
-                for dy in range(-r, r + 1):
-                    if r > 0 and max(abs(dx), abs(dy)) != r:
-                        continue  # interior cells were covered by smaller rings
-                    for idx in grid.get((cx + dx, cy + dy), ()):
-                        if idx in seen:
-                            continue
-                        seen.add(idx)
-                        sa, sb, road_idx = segments[idx]
-                        d = _segment_distance(mid, sa, sb)
-                        if d < best_d:
-                            best_d, best_road = d, road_idx
-            r += 1
-        out.append(best_road if best_d <= _LIMIT_MAX_MATCH_M else None)
+        samples = [roads_near(a), roads_near(mid), roads_near(b)]
+        common = set(samples[0]) & set(samples[1]) & set(samples[2])
+        if common:
+            out.append(min(common, key=lambda r: max(sample[r] for sample in samples)))
+        elif samples[1]:
+            # Nothing spans the segment: fall back to the nearest at the middle.
+            out.append(min(samples[1], key=samples[1].__getitem__))
+        else:
+            out.append(None)
     return out
 
 
@@ -1236,10 +1343,51 @@ def _ego_offsets_along(
     return out
 
 
+#: Bends tighter than this radius are junction turns, not road curves, and
+#: no lane change is legal through one: the neighbour lanes are built by
+#: offsetting the ego route, which on the inside of a `TURN_RADIUS_M` corner
+#: leaves a 2.4 m radius no vehicle can follow -- measured, a bus turning
+#: from the kerb lane swept across the junction into the next lane.
+TURN_CURVATURE_RADIUS_M = 20.0
+_CURVATURE_BASE_M = 2.0
+
+
+def _turn_segments(route: Route) -> list[bool]:
+    """Which segments of `route` are part of a turn (see `TURN_CURVATURE_RADIUS_M`).
+
+    A segment turns when the heading change at either of its ends, spread
+    over the mean length of the two legs meeting there, exceeds the
+    threshold curvature. A long straight leg ending at a corner is not a
+    turn: its heading change is spread over half its own length.
+    """
+    pts = route.points
+    n = len(pts)
+    segs = n if route.closed else n - 1
+    lengths = [math.dist(pts[k], pts[(k + 1) % n]) for k in range(segs)]
+    headings = [math.atan2(pts[(k + 1) % n][1] - pts[k][1], pts[(k + 1) % n][0] - pts[k][0]) for k in range(segs)]
+    limit = 1.0 / TURN_CURVATURE_RADIUS_M
+
+    def curvature_at(a: int, b: int) -> float:
+        # Measured over at least `_CURVATURE_BASE_M`: a 0.3 degree bend
+        # filleted into nine points 3 mm apart is not a turn.
+        mean = max((lengths[a] + lengths[b]) / 2, _CURVATURE_BASE_M)
+        return abs(math.remainder(headings[b] - headings[a], math.tau)) / mean
+
+    out = []
+    for k in range(segs):
+        start = curvature_at(k - 1, k) if (route.closed or k > 0) else 0.0
+        end = curvature_at(k, (k + 1) % segs) if (route.closed or k + 1 < segs) else 0.0
+        out.append(max(start, end) > limit)
+    return out
+
+
 def _legal_directions_along(
-    roads: list[Road], idx: list[int | None], offsets: list[float | None]
+    route: Route, roads: list[Road], idx: list[int | None], offsets: list[float | None]
 ) -> list[tuple[int, ...]]:
     """Which directions a change is legal in, on each segment of a route.
+
+    No change is legal on a turn segment (`_turn_segments`), whatever the
+    carriageway: lanes end at a corner and continue after it.
 
     An unmatched segment inherits its predecessor's answer, the same
     fill-forward `speed_limits_along` uses -- but a LEADING unmatched run gets
@@ -1267,10 +1415,14 @@ def _legal_directions_along(
     up it and the match is the cross street -- a worse answer than the one
     containment already gives there, which is to refuse both directions.
     """
+    turning = _turn_segments(route)
     out: list[tuple[int, ...]] = []
-    for i, ego_off in zip(idx, offsets):
+    for k, (i, ego_off) in enumerate(zip(idx, offsets)):
         if i is None or ego_off is None:
             out.append(out[-1] if out else ())
+            continue
+        if turning[k]:
+            out.append(())
             continue
         road = roads[i]
         out.append(
@@ -1358,7 +1510,7 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
     return LaneSet(
         lanes=lanes,
         count_along=tuple(counts or (1,)),
-        legal_along=tuple(_legal_directions_along(roads, idx, offsets)),
+        legal_along=tuple(_legal_directions_along(ego_route, roads, idx, offsets)),
         road_along=tuple(_governing_roads_from(idx, roads) or ()),
         ego_offset_along=tuple(_fill_forward(offsets) or ()),
     )

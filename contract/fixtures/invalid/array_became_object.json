@@ -36,9 +36,9 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 5.380000000000002,
-        "y": 57.62858371158709,
-        "heading": 1.3684683365455763
+        "x": 1.7999999999999992,
+        "y": 61.949517363789774,
+        "heading": 1.5707963267948966
       },
       "size": {
         "length": 4.6,
@@ -46,15 +46,15 @@
         "height": 1.45
       },
       "velocity": [
-        1.175521706689131,
-        5.73048311569412
+        4.2215343429555775e-16,
+        6.894288779254189
       ],
-      "speed_mps": 5.849810939009286,
+      "speed_mps": 6.894288779254189,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": -1,
+      "lane_offset": 0,
       "emergency": false
     }
   ],
@@ -145,10 +145,10 @@
         {
           "id": "veh_00",
           "cls": "car",
-          "lane_offset": -1,
-          "longitudinal_m": 52.66,
-          "lateral_m": -3.6,
-          "speed_mps": 5.849810939009286,
+          "lane_offset": 0,
+          "longitudinal_m": 56.98,
+          "lateral_m": 0.0,
+          "speed_mps": 6.894288779254189,
           "hazard": false
         }
       ]
