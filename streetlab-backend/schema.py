@@ -53,6 +53,16 @@ Vec2 = tuple[Num, Num]
 
 HexColor = Annotated[str, Field(pattern=r"^#[0-9a-fA-F]{6}$")]
 
+# `z.union([z.number(), z.string(), z.boolean()])`. `bool` precedes the numeric
+# types because Python's bool is a subclass of int; pydantic's smart union
+# matches exact types first, and `int` precedes `float` so an integral value
+# survives the round trip as an integer rather than becoming 35.0.
+ParamValue = Union[bool, int, float, str]
+
+# Which source the planner drives on. `noisy-truth` is ground truth degraded by
+# a seeded dropout/noise model, so a run's perception is replayable by seed.
+PerceptionMode = Literal["ground-truth", "noisy-truth", "ml"]
+
 
 class Wire(BaseModel):
     """Base for every wire model. Unknown keys are ignored, matching zod's strip."""
@@ -235,6 +245,27 @@ class Terrain(Wire):
     heights_b64: str
 
 
+class PresetSummary(Wire):
+    """One walkthrough preset: a recipe over a base scene, a seed policy, a
+    perception mode, parameter overrides and a hazard timeline."""
+
+    id: str
+    title: str
+    blurb: str
+    what_to_watch: str
+    what_varies: str
+    # Scene family: "loop" | "merge" | "arterial" | "signals".
+    scene: str
+    # Null means a fresh seed on every load.
+    seed: int | None
+    perception: PerceptionMode
+    # `set_param` overrides applied at load.
+    params: dict[str, ParamValue]
+    # Hazard kinds in timeline order, for display.
+    hazards: list[str]
+    duration_s: Pos
+
+
 class SceneDescription(Wire):
     type: Literal["scene_description"] = "scene_description"
     protocol: int = PROTOCOL_VERSION
@@ -272,6 +303,15 @@ class SceneDescription(Wire):
     # `Simulation.scene_description()` -- scene sources build `[]`, because what
     # can be injected is the simulation's business, not the map's.
     hazards: list[HazardSummary]
+    # Walkthrough presets `load_preset` takes. Attached by
+    # `Simulation.scene_description()` like `hazards`; sources build `[]`.
+    presets: list[PresetSummary]
+    # The preset this scene was loaded by, or null. Required-nullable, like
+    # `terrain`: a missing key must fail validation, not default.
+    preset_id: str | None
+    # The seed this scene is running on. Sources build 0; the simulation
+    # overwrites it with its own.
+    seed: int
 
 
 # --------------------------------------------------------------------------- #
@@ -301,9 +341,6 @@ class Detection(Wire):
     # Lights and siren on. Ground truth reads it off the agent; the ML source
     # cannot perceive it and always says false.
     emergency: bool
-
-
-PerceptionMode = Literal["ground-truth", "ml"]
 
 
 class CameraParams(Wire):
@@ -485,6 +522,38 @@ class SignalState(Wire):
     time_to_change_s: Num | None
 
 
+class HazardReaction(Wire):
+    kind: str
+    t: NonNeg
+    # Seconds from the hazard firing to the ego's reaction, or null if it never
+    # reacted.
+    reaction_s: NonNeg | None
+
+
+class RunSummary(Wire):
+    """A run's scorecard, carried on a `run_summary` event."""
+
+    preset_id: str | None
+    scenario_id: str
+    seed: int
+    perception_mode: PerceptionMode
+    complete: bool
+    t_s: NonNeg
+    distance_m: NonNeg
+    min_ttc_s: Num | None
+    min_clearance_m: Num | None
+    hard_brakes: int
+    collisions: int
+    stop_overshoots: int
+    worst_overshoot_m: NonNeg
+    hazards_fired: int
+    hazards_declined: int
+    reactions: list[HazardReaction]
+    # Null when no detections were scored, as in `PerceptionStats`.
+    precision: Unit | None
+    recall: Unit | None
+
+
 class SimEvent(Wire):
     t: Num
     level: Literal["info", "warn", "critical"]
@@ -495,6 +564,9 @@ class SimEvent(Wire):
     # one thing a live-updating build progress bar needs alongside `message`'s
     # stage label. `None` is the default so no other event code has to name it.
     progress: Unit | None = None
+    # The scorecard, on a `run_summary` event only; defaulted for the reason
+    # `progress` is.
+    summary: RunSummary | None = None
 
 
 class StateUpdate(Wire):
@@ -549,13 +621,6 @@ LayerKey = Literal[
 
 CameraView = Literal["chase", "overhead", "cockpit", "free"]
 
-# `z.union([z.number(), z.string(), z.boolean()])`. `bool` precedes the numeric
-# types because Python's bool is a subclass of int; pydantic's smart union
-# matches exact types first, and `int` precedes `float` so an integral value
-# survives the round trip as an integer rather than becoming 35.0.
-ParamValue = Union[bool, int, float, str]
-
-
 class _Cmd(Wire):
     """Every command carries a client-generated id so an Ack can be correlated."""
 
@@ -579,6 +644,21 @@ class Reset(_Cmd):
 class LoadScenario(_Cmd):
     cmd: Literal["load_scenario"] = "load_scenario"
     scenario_id: str
+    # Absent keeps the simulation's current seed.
+    seed: int | None = None
+
+
+class LoadPreset(_Cmd):
+    cmd: Literal["load_preset"] = "load_preset"
+    preset_id: str
+    # Absent follows the preset's own seed policy (pinned, or fresh per load).
+    seed: int | None = None
+
+
+class RunSummaryCmd(_Cmd):
+    """Emit the current run's scorecard as a `run_summary` event now."""
+
+    cmd: Literal["run_summary"] = "run_summary"
 
 
 class LoadLocation(_Cmd):
@@ -648,6 +728,8 @@ Command = Annotated[
         Step,
         Reset,
         LoadScenario,
+        LoadPreset,
+        RunSummaryCmd,
         LoadLocation,
         SuggestAddress,
         SetParam,

@@ -565,6 +565,9 @@ class OsmSceneSource:
             # inline without the builder re-entering itself.
             catalog=[],
             hazards=[],
+            presets=[],
+            preset_id=None,
+            seed=0,
         )
 
         # Posted limits per route segment, so the ego obeys the street it is on

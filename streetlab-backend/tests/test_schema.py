@@ -94,6 +94,8 @@ def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
     assert len(scene.reference_path) > 20, "the driven line is empty"
     # Protocol 9: the synthetic grid is flat by construction.
     assert scene.terrain is None
+    assert scene.presets, "the preset menu is empty"
+    assert scene.preset_id is None
     frame = StateUpdate.model_validate(load_fixture("state_update_hazard"))
     assert frame.detections and all(d.emergency is False for d in frame.detections)
     assert frame.plan.reaction_source_id is None
@@ -107,6 +109,9 @@ def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
         ("scene_description", ("hazards",)),
         ("scene_description", ("reference_path",)),
         ("scene_description", ("terrain",)),
+        ("scene_description", ("presets",)),
+        ("scene_description", ("preset_id",)),
+        ("scene_description", ("seed",)),
         ("state_update_hazard", ("plan", "reaction_source_id")),
         ("state_update_hazard", ("detections", 0, "emergency")),
         ("state_update_hazard", ("telemetry", "trajectory", "threat")),
@@ -254,7 +259,7 @@ COMMANDS = [
     {"id": "c1", "cmd": "set_paused", "paused": True},
     {"id": "c2", "cmd": "step", "frames": 4},
     {"id": "c3", "cmd": "reset"},
-    {"id": "c4", "cmd": "load_scenario", "scenario_id": "nob-hill-loop"},
+    {"id": "c4", "cmd": "load_scenario", "scenario_id": "nob-hill-loop", "seed": None},
     {"id": "c4b", "cmd": "load_location", "query": "Nob Hill", "radius_m": 400.0, "destination": None},
     {
         "id": "c4c",
@@ -269,6 +274,10 @@ COMMANDS = [
     {"id": "c8", "cmd": "toggle_layer", "layer": "detections", "visible": False},
     {"id": "c9", "cmd": "set_camera", "view": "overhead"},
     {"id": "c10", "cmd": "inject_hazard", "kind": "cut_in"},
+    {"id": "c11", "cmd": "load_scenario", "scenario_id": "grid-loop", "seed": 5},
+    {"id": "c12", "cmd": "load_preset", "preset_id": "replay-twin", "seed": None},
+    {"id": "c13", "cmd": "load_preset", "preset_id": "control", "seed": 12},
+    {"id": "c14", "cmd": "run_summary"},
 ]
 
 
@@ -277,6 +286,11 @@ def test_every_command_variant_round_trips(raw):
     parsed = parse_command(raw)
     assert parsed.ok, parsed.error
     assert parsed.value.model_dump(mode="json") == raw
+
+
+def test_load_preset_seed_is_optional():
+    parsed = parse_command({"id": "p", "cmd": "load_preset", "preset_id": "control"})
+    assert parsed.ok and parsed.value.seed is None
 
 
 def test_command_union_discriminates_on_cmd():
