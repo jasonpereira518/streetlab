@@ -149,6 +149,8 @@ export class MockSim {
   private params: Params = { ...DEFAULT_PARAMS };
 
   private egoS = 0;
+  /** Metres driven since the scene was loaded or reset. */
+  private odometer = 0;
   private egoSpeed = 0;
   private egoAccel = 0;
   private egoLatOffset = 0;
@@ -186,6 +188,7 @@ export class MockSim {
     this.t = 0;
     this.seq = 0;
     this.egoS = 20;
+    this.odometer = 0;
     this.egoSpeed = 8;
     this.egoAccel = 0;
     this.egoLatOffset = 0;
@@ -488,6 +491,7 @@ export class MockSim {
     this.egoAccel = clamp(raw, MAX_DECEL, MAX_ACCEL);
     this.egoSpeed = Math.max(0, this.egoSpeed + this.egoAccel * dt);
     this.egoS = this.route.wrap(this.egoS + this.egoSpeed * dt);
+    this.odometer += this.egoSpeed * dt;
 
     // Lane keeping: a slow wander plus an evasive nudge away from a cut-in.
     const evade = this.cutinPhase === 'merging' ? 0.55 : 0;
@@ -854,6 +858,7 @@ export class MockSim {
           overall: this.battery < 15 ? 'warn' : 'ok',
         },
         trajectory,
+        trip: this.trip(),
       },
       signals: this.signalStates(),
       events,
@@ -863,6 +868,20 @@ export class MockSim {
     };
 
     return frame;
+  }
+
+  /** The mock's loop, timed at the posted limit like the backend's free-flow ETA. */
+  private trip(): StateUpdate['telemetry']['trip'] {
+    const length = this.route.length;
+    const remaining = Math.max(0, length - this.egoS);
+    return {
+      route_length_m: length,
+      distance_driven_m: this.odometer,
+      distance_remaining_m: remaining,
+      eta_s: remaining / Math.max(this.currentSpeedLimit(), 0.1),
+      laps: Math.floor(this.odometer / length),
+      closed: true,
+    };
   }
 
   private currentManeuver(): StateUpdate['plan']['maneuver'] {

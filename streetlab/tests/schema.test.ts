@@ -184,6 +184,14 @@ const sample: StateUpdate = {
       ],
       threat_label: 'Cut-in vehicle',
     },
+    trip: {
+      route_length_m: 1849.5,
+      distance_driven_m: 412.3,
+      distance_remaining_m: 1437.2,
+      eta_s: 250.4,
+      laps: 0,
+      closed: false,
+    },
   },
   signals: [{ id: 'tl_0_0_e', phase: 'green', time_to_change_s: 6.2 }],
   events: [

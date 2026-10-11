@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { CameraView, Maneuver, PerceptionMode } from '../schema';
 import { useFrameValue } from '../store/hooks';
 import { hasPipeline, useSimStore } from '../store/simStore';
-import { formatTtc, toMph } from '../units';
+import { formatClock, formatKm, formatTtc, toMph } from '../units';
 import {
   ActivityIcon,
   BrandMark,
@@ -87,6 +87,12 @@ export function TopToolbar() {
   const togglePerfOverlay = useSimStore((s) => s.togglePerfOverlay);
 
   const mph = useFrameValue((f) => Math.round(toMph(f.ego.speed_mps)), 12);
+  // Primitives, not the trip object, so the toolbar re-renders only when a
+  // shown figure changes: tenths of a km, whole seconds, the lap number.
+  const tripLeft = useFrameValue((f) => formatKm(f.telemetry.trip.distance_remaining_m), 4);
+  const tripEta = useFrameValue((f) => formatClock(f.telemetry.trip.eta_s), 4);
+  const tripClosed = useFrameValue((f) => f.telemetry.trip.closed, 4);
+  const tripLap = useFrameValue((f) => f.telemetry.trip.laps + 1, 4);
   const ttc = useFrameValue(
     (f) => (f.telemetry.ttc_s == null ? null : Math.round(f.telemetry.ttc_s * 10) / 10),
     8,
@@ -167,6 +173,17 @@ export function TopToolbar() {
         <div className="readout">
           <span className="readout-value">{mph ?? '—'}</span>
           <span className="readout-unit">mph</span>
+        </div>
+
+        <div
+          className="readout readout--trip"
+          data-testid="trip-readout"
+          title={tripClosed ? 'Distance left on this lap' : 'Distance and time to the destination'}
+        >
+          <span className="readout-value">{tripLeft ?? '—'}</span>
+          <span className="readout-unit">
+            {tripClosed ? `km · lap ${tripLap ?? 1}` : `km · ETA ${tripEta ?? '—'}`}
+          </span>
         </div>
 
         <div className={`readout readout--ttc${ttcCritical ? ' is-critical' : ''}`}>

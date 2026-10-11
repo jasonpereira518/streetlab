@@ -169,7 +169,10 @@ export const ScenarioSummarySchema = z.object({
   name: z.string(),
   location: z.string(),
   description: z.string(),
+  /** Expected time for one lap or the whole trip. 0 until the route exists. */
   duration_s: z.number().nonnegative(),
+  /** One lap or the whole trip, metres. 0 until the route exists. */
+  route_length_m: z.number().nonnegative(),
   bookmarked: z.boolean(),
   difficulty: z.enum(['easy', 'moderate', 'hard']),
   /** Road skeleton for the minimap thumbnail, in thumbnail-local units. */
@@ -434,6 +437,22 @@ export const TrajectoryPredictionSchema = z.object({
   threat_label: z.string().nullable(),
 });
 
+/** Where the ego is on its route. Always present. */
+export const TripSchema = z.object({
+  /** One lap for a closed route, the whole trip for an open one. */
+  route_length_m: z.number().nonnegative(),
+  /** Odometer since the scene was loaded or reset. */
+  distance_driven_m: z.number().nonnegative(),
+  /** To the destination (open) or the end of this lap (closed). */
+  distance_remaining_m: z.number().nonnegative(),
+  /** Expected seconds to cover `distance_remaining_m`. */
+  eta_s: z.number().nonnegative(),
+  /** Completed laps; always 0 on an open route. */
+  laps: z.number().int().nonnegative(),
+  closed: z.boolean(),
+});
+export type Trip = z.infer<typeof TripSchema>;
+
 export const TelemetrySchema = z.object({
   radar: z.array(RadarPointSchema),
   lane: LaneStateSchema,
@@ -441,6 +460,7 @@ export const TelemetrySchema = z.object({
   ttc_s: z.number().nullable(),
   vehicle: VehicleStatusSchema,
   trajectory: TrajectoryPredictionSchema,
+  trip: TripSchema,
 });
 
 export const ManeuverSchema = z.enum([

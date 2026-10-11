@@ -84,7 +84,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import Route
+from sim.route import Route, estimate_travel_s
 
 log = logging.getLogger("streetlab.map")
 
@@ -936,7 +936,10 @@ class OsmSceneSource:
                 name=spec.name,
                 location=ATTRIBUTION,
                 description=f"Real street geometry around {spec.name}, from OpenStreetMap.",
-                duration_s=240.0,
+                # No route until it is built: 0 says "unknown", the sidebar
+                # shows no duration rather than a made-up one.
+                duration_s=0.0,
+                route_length_m=0.0,
                 bookmarked=index == 1,
                 difficulty="moderate",
                 preview_paths=[],
@@ -959,7 +962,11 @@ class OsmSceneSource:
             name=spec.name,
             location=ATTRIBUTION,
             description=f"Real street geometry around {spec.name}, from OpenStreetMap.",
-            duration_s=240.0,
+            duration_s=estimate_travel_s(
+                route, 0.0, route.length_m, scene.speed_limit_mps,
+                control_points=scene.control_points,
+            ),
+            route_length_m=route.length_m,
             bookmarked=index == 1,
             difficulty="moderate",
             preview_paths=[[thumb(p) for p in r.centerline] for r in scene.description.roads],

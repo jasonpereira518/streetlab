@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_right
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Callable, Sequence
 
 from schema import Road
 
@@ -110,6 +110,34 @@ class Route:
         i = bisect_right(self._cum, s) - 1
         i = min(max(i, 0), len(self.segment_limits) - 1)
         return self.segment_limits[i]
+
+    def travel_time_s(
+        self, s_from: float, distance_m: float, speed_for: Callable[[float | None], float]
+    ) -> float:
+        """Seconds to drive `distance_m` forward from `s_from`, segment by segment.
+
+        `speed_for` maps a segment's posted limit (None when the route carries
+        none) to the speed driven there, so the caller decides the fallback
+        and any cap. A closed route wraps through its start; an open one stops
+        at its end. Distance rather than an end point, because on a closed
+        route "to the end of the lap" and "nowhere" are the same arc length.
+        """
+        s = self.normalise(s_from)
+        remaining = max(0.0, distance_m)
+        if not self.closed:
+            remaining = min(remaining, self.length_m - s)
+        last = len(self._cum) - 2
+        total = 0.0
+        while remaining > 1e-9:
+            if s >= self.length_m:
+                s = 0.0  # only reachable on a closed route
+            i = min(max(bisect_right(self._cum, s) - 1, 0), last)
+            step = min(self._cum[i + 1] - s, remaining)
+            limit = self.segment_limits[i] if self.segment_limits else None
+            total += step / speed_for(limit)
+            remaining -= step
+            s += step
+        return total
 
     def _locate(self, s: float) -> tuple[int, float]:
         """Return the leg index and the fraction along it for arc length `s`."""
@@ -400,6 +428,45 @@ class Route:
                 out.append((cx + math.cos(a) * radius, cy + math.sin(a) * radius))
 
         return Route(out, closed=self.closed)
+
+
+#: How long a lap really takes, as a model fitted to measured laps: free-flow
+#: time at the posted limits times `ETA_FREE_FLOW_FACTOR` (cornering and
+#: pulling away), plus a fixed cost per signal and per stop sign ahead.
+#: Least-squares fit on one seed-1 lap of every grid scenario and Nob Hill,
+#: 2026-10-11; residuals in `tests/test_trip.py`. Traffic is NOT in the model
+#: and is the error left: grid-loop and grid-merge are the same block with
+#: the same stops, 56 s and 83 s, because one has 3 cars and the other 6.
+#: Correcting live from the pace driven so far was measured too and did no
+#: better (it reads the pull-away from standstill as the trip's pace).
+ETA_FREE_FLOW_FACTOR = 1.16
+ETA_SIGNAL_S = 7.8
+ETA_STOP_SIGN_S = 12.2
+
+
+def estimate_travel_s(
+    route: "Route",
+    s_from: float,
+    distance_m: float,
+    fallback_mps: float,
+    cap_mps: float = math.inf,
+    control_points: Sequence["ControlPoint"] = (),
+) -> float:
+    """Expected seconds to drive `distance_m` from `s_from`.
+
+    Free-flow at each segment's limit (the scene-wide `fallback_mps` where
+    unknown), capped, scaled by `ETA_FREE_FLOW_FACTOR`, plus the measured
+    cost of each signal and stop sign in the span. The one estimate the HUD's
+    ETA and the catalog's durations both use.
+    """
+    speed = lambda limit: max(min(limit or fallback_mps, cap_mps), 0.1)  # noqa: E731
+    total = route.travel_time_s(s_from, distance_m, speed) * ETA_FREE_FLOW_FACTOR
+    length = route.length_m
+    for cp in control_points:
+        ahead = (cp.s - s_from) % length if route.closed else cp.s - s_from
+        if 0.0 <= ahead < distance_m:
+            total += ETA_SIGNAL_S if cp.kind == "signal" else ETA_STOP_SIGN_S if cp.kind == "stop_sign" else 0.0
+    return total
 
 
 #: Below this |sin(turn)| two legs are "in line" for `Route.offset_by_leg`:

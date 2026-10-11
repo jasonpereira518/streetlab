@@ -9,6 +9,7 @@ import { useSimStore } from '../store/simStore';
 import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon, ResetIcon, SearchIcon } from './Icons';
 import { PERCEPTION_LABELS } from './TopToolbar';
 import { alpha, color } from './theme';
+import { formatKm } from '../units';
 
 /** Debounce before an as-you-type address fires a `suggest_address` request.
  * Short enough to feel responsive, long enough that a fast typist doesn't
@@ -344,7 +345,9 @@ export function LeftScenarioSidebar() {
                     {s.difficulty}
                   </span>
                   <span className="scenario-dur">
-                    {Math.round(s.duration_s / 60)} min
+                    {s.route_length_m > 0
+                      ? `${formatKm(s.route_length_m)} km · ${Math.max(1, Math.round(s.duration_s / 60))} min`
+                      : 'Not built yet'}
                   </span>
                 </div>
               </div>

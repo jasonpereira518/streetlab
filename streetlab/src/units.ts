@@ -18,6 +18,18 @@ export function formatTtc(ttc: number | null | undefined): string {
   return `${ttc.toFixed(1)}s`;
 }
 
+/** "1.8" — kilometres to one decimal, for trip distances. */
+export const formatKm = (m: number): string => (Math.max(0, m) / 1000).toFixed(1);
+
+/** "4:10", or "1:02:05" past an hour — an ETA as a clock reading. */
+export function formatClock(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const ss = String(total % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
 export const clamp = (v: number, lo: number, hi: number): number =>
   v < lo ? lo : v > hi ? hi : v;
 

@@ -494,6 +494,11 @@ canvas {
   letter-spacing: 0.02em;
 }
 
+/* "km · lap 2" / "km · ETA 4:10" must read as one line, never stack. */
+.readout--trip .readout-unit {
+  white-space: nowrap;
+}
+
 .readout--ttc .readout-value {
   color: var(--c-text-muted, #5f6e80);
   min-width: 44px;

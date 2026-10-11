@@ -361,6 +361,14 @@
       ],
       "threat": null,
       "threat_label": null
+    },
+    "trip": {
+      "route_length_m": 295.2385818865513,
+      "distance_driven_m": 0.0,
+      "distance_remaining_m": 295.2385818865513,
+      "eta_s": 66.24394729674297,
+      "laps": 0,
+      "closed": true
     }
   },
   "signals": [

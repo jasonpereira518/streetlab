@@ -4200,7 +4200,8 @@
       "name": "Nob Hill Loop",
       "location": "Synthetic Grid",
       "description": "A single block circuit with two signalised corners. The gentlest way in.",
-      "duration_s": 180.0,
+      "duration_s": 66.24394729674297,
+      "route_length_m": 295.2385818865513,
       "bookmarked": true,
       "difficulty": "easy",
       "preview_paths": [
@@ -4470,7 +4471,8 @@
       "name": "California Arterial",
       "location": "Synthetic Grid",
       "description": "The long way round on the two arterials, at 35 mph with cross traffic.",
-      "duration_s": 300.0,
+      "duration_s": 143.8579773611667,
+      "route_length_m": 615.2385818865512,
       "bookmarked": false,
       "difficulty": "moderate",
       "preview_paths": [
@@ -4740,7 +4742,8 @@
       "name": "Signal Ladder",
       "location": "Synthetic Grid",
       "description": "North-west block: every corner is signalised, so the light cycle drives.",
-      "duration_s": 240.0,
+      "duration_s": 66.24394729674296,
+      "route_length_m": 295.2385818865512,
       "bookmarked": false,
       "difficulty": "moderate",
       "preview_paths": [
@@ -5010,7 +5013,8 @@
       "name": "Hyde Street Merge",
       "location": "Synthetic Grid",
       "description": "The tight block with heavy traffic \u2014 lead vehicles cut in without warning.",
-      "duration_s": 210.0,
+      "duration_s": 66.24394729674297,
+      "route_length_m": 295.2385818865513,
       "bookmarked": true,
       "difficulty": "hard",
       "preview_paths": [
@@ -5280,7 +5284,8 @@
       "name": "Outer Circuit",
       "location": "Synthetic Grid",
       "description": "The full perimeter. Long straights, four-way stops at the quiet corners.",
-      "duration_s": 360.0,
+      "duration_s": 143.8579773611667,
+      "route_length_m": 615.2385818865512,
       "bookmarked": false,
       "difficulty": "moderate",
       "preview_paths": [

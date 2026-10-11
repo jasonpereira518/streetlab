@@ -914,6 +914,14 @@
         }
       ],
       "threat_label": "Closing on lead vehicle"
+    },
+    "trip": {
+      "route_length_m": 295.2385818865513,
+      "distance_driven_m": 16.66835374381847,
+      "distance_remaining_m": 278.5156550014974,
+      "eta_s": 64.50821043322628,
+      "laps": 0,
+      "closed": true
     }
   },
   "signals": [
