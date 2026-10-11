@@ -171,6 +171,8 @@ anyone who wants to see the actual process, not just the summary.
 
 See [`DEMO.md`](DEMO.md) for the full walkthrough (packaged `.app`, or
 frontend + backend as two dev processes).
+[`docs/walkthrough.md`](docs/walkthrough.md) covers the walkthrough presets:
+curated runs with a scorecard you can compare from seed to seed.
 
 ## Testing
 
