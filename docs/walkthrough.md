@@ -46,7 +46,7 @@ cd streetlab-backend
 uv run streetlab run --preset control
 uv run streetlab run --preset ladder-noisy-truth --seed 41
 uv run streetlab run --preset lead-pressure --source osm             # the hosted scene
-uv run streetlab run --preset control --perception noisy-truth
+uv run streetlab run --preset control --perception noisy-truth   # --perception overrides the preset's
 ```
 
 ## The controls
@@ -239,8 +239,12 @@ Lead-vehicle pressure on a pinned seed.
   not as a prediction of any real sensor.
 - **The hosted world is shared.** The Fly backend runs one simulation for
   every visitor.
-  - Another visitor's Run replaces your scene mid-run. The seed then shown
-    is theirs, and the scorecard that lands belongs to their run.
+  - Another visitor's Run swaps the shared simulation under you mid-run, but
+    your page is not sent their scene description until you reconnect or
+    reload. Until then your Run tab keeps showing your own preset and seed,
+    which no longer describe what is driving, and their scorecard is filed
+    under their preset, not yours. The `preset_loaded` entry in the Events
+    tab is the only sign it happened.
   - On the hosted backend every preset runs on the Nob Hill scene
     (`--source osm`).
   - If numbers look wrong there, run locally.
