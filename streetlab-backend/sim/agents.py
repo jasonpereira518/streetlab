@@ -445,6 +445,31 @@ _STANDSTILL_MPS = 0.5
 #: 1.2 m/s puts a 3.6 m traverse at 3.0 s, which is an unhurried real-world
 #: lane change and slower than the ego's own.
 _MOBIL_TRAVERSE_MPS = 1.2
+#: The most a sliding body may point away from its lane. The slide rate is
+#: capped at `speed * tan` of this, so the heading `_advance` derives from it
+#: (`atan2(lateral_rate, speed)`) can never exceed it. 15 degrees is a brisk
+#: lane change; at 1.2 m/s the cap only binds below 4.5 m/s. Long vehicles
+#: get less -- see `_crab_tan`.
+_MAX_CRAB_RAD = math.radians(15.0)
+_MAX_CRAB_TAN = math.tan(_MAX_CRAB_RAD)
+#: A standard lane, restated from `map.lanes.LANE_W` for the reason
+#: `_SAME_LANE_M` is. Only `_crab_tan` reads it.
+_LANE_W_M = 3.6
+
+
+def _crab_tan(agent: Agent) -> float:
+    """tan of the steepest angle `agent` may slide across its lane at.
+
+    When a body turns toward the next lane its REAR corner swings the other
+    way, toward the kerb, by half its length times the sine of the angle.
+    The angle is bounded so that swing fits in the room the lane leaves
+    beside the body: a 4.6 m car in a 3.6 m lane has 0.85 m and may use the
+    full 15 degrees; an 11.5 m bus has 0.5 m and gets 5 degrees, which is
+    the slow, shallow lane change a bus actually makes. Measured before this:
+    a bus pulling out of a kerbside lane put its tail 0.9 m onto the pavement.
+    """
+    room = max(0.0, (_LANE_W_M - agent.size.width) / 2)
+    return min(_MAX_CRAB_TAN, room / max(agent.size.length / 2, 1e-6))
 
 # Traffic control. Restated from `plan/behavior.py` rather than imported for
 # the same reason `_SAME_LANE_M` is: `sim` does not depend on `plan`.
@@ -544,6 +569,10 @@ class IdmTraffic(ScriptedTraffic):
             rate = (
                 _MOBIL_TRAVERSE_MPS if agent.lateral_rate_mps is None else agent.lateral_rate_mps
             )
+            # A car only moves sideways by moving forward at an angle, so the
+            # slide is bounded by the forward speed: standing still it stays
+            # put, and creeping it crabs no more than `_MAX_CRAB_RAD`.
+            rate = min(rate, speed * _crab_tan(agent))
             agent.lateral_m = _approach(was, 0.0, rate * dt)
             if not agent.lateral_m:
                 agent.from_route = None
@@ -753,6 +782,14 @@ class IdmTraffic(ScriptedTraffic):
         lanes = self._lanes
         if lanes is None or agent.lane_id is None or agent.lane_id == lanes.ego.id:
             return math.inf
+        if agent.lateral_m:
+            # Still sliding in. The room to get in and out again was checked
+            # before the change (`_candidates`), and a car cannot slide while
+            # stopped (`_crab_tan`): braking it for the lane's end now would
+            # leave it standing across both lanes for good -- measured on
+            # grid-signals, with the ego queued behind it for the rest of
+            # the run.
+            return math.inf
         current = lanes.by_id(agent.lane_id)
         if current is None:
             return math.inf
@@ -760,7 +797,13 @@ class IdmTraffic(ScriptedTraffic):
         left = lanes.legal_for(here_s, _sign(current.offset_m), _IDM_HORIZON_M)
         if left >= _IDM_HORIZON_M:
             return math.inf
-        return left - agent.size.length / 2 - _LANE_END_MARGIN_M
+        # The slide home takes forward distance -- a lane width at the crab
+        # angle, or three seconds of travel at speed, whichever is longer --
+        # and it has to be finished where the lane finishes, not begun there.
+        # Measured before this: a bus held at the end of a kerbside lane set
+        # off home AND into the corner fillet together, sweeping 3.8 m off
+        # the carriageway through a building.
+        return left - agent.size.length / 2 - _LANE_END_MARGIN_M - self._merge_runout(agent)
 
     # -- MOBIL ------------------------------------------------------------- #
 
@@ -831,14 +874,33 @@ class IdmTraffic(ScriptedTraffic):
             self._move(agent, best)
 
     def _candidates(self, agent: Agent, lanes: LaneSet, here_s: float) -> list[Lane]:
-        """The lanes `agent` could legally be in at `here_s`, minus its own."""
+        """The lanes `agent` could legally be in at `here_s`, minus its own.
+
+        A neighbour lane has to run far enough to slide in AND back out
+        before it ends (`_merge_runout`, twice). Measured without this: a car
+        pulled into the kerb lane 40 m before its end, the merge run-out
+        braked it to a stop on the spot, and a stopped car cannot slide, so
+        it stood across both lanes for good with the ego queued behind it.
+        """
         out = []
         for lane in lanes.lanes:
             if lane.id == agent.lane_id:
                 continue
-            if lane.id == EGO_LANE_ID or lanes.may_change_at(here_s, _sign(lane.offset_m)):
+            if lane.id == EGO_LANE_ID:
+                out.append(lane)
+                continue
+            direction = _sign(lane.offset_m)
+            needed = 2 * self._merge_runout(agent)
+            if lanes.legal_for(here_s, direction, needed) >= needed:
                 out.append(lane)
         return out
+
+    @staticmethod
+    def _merge_runout(agent: Agent) -> float:
+        """Forward distance a lane-width slide takes: at the crab angle, or
+        at `_MOBIL_TRAVERSE_MPS` while moving, whichever is longer."""
+        speed = agent.state.speed_mps
+        return _LANE_W_M * max(1.0 / _crab_tan(agent), speed / _MOBIL_TRAVERSE_MPS)
 
     def _move(self, agent: Agent, lane: Lane) -> None:
         """Put `agent` in `lane` without moving it an inch.

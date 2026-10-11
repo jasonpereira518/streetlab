@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_right
 from dataclasses import dataclass, field
+from typing import Sequence
 
 from schema import Road
 
@@ -236,6 +237,70 @@ class Route:
         return Route(moved, closed=self.closed)
 
 
+    def offset_by_leg(self, distances: Sequence[float], *, taper_m: float = 8.0) -> Route:
+        """`offset`, with one distance per LEG rather than one for the route.
+
+        Each leg stays parallel to itself at its own distance; the vertex
+        between two legs is where their offset lines cross. Where that
+        crossing is not a corner -- two legs nearly in line, with different
+        distances -- there is no crossing to speak of, so the vertex becomes
+        a short taper: the first leg ends at its distance `taper_m` short
+        of the vertex and the next begins at its own `taper_m` past it.
+
+        With every distance equal this is `offset` exactly. It exists for a
+        lane whose inset from the centreline changes street by street: the
+        carriageway centre on a one-lane oneway, half a lane right of the
+        divider on a two-way street.
+        """
+        pts = self.points
+        n = len(pts)
+        legs = n if self.closed else n - 1
+        if len(distances) != legs:
+            raise ValueError(f"{len(distances)} distances for {legs} legs")
+        if all(d == distances[0] for d in distances):
+            return self.offset(distances[0])
+
+        def leg(k: int) -> tuple[float, float, float]:
+            a, b = pts[k % n], pts[(k + 1) % n]
+            length = math.dist(a, b)
+            return ((b[0] - a[0]) / length, (b[1] - a[1]) / length, length)
+
+        moved: list[Point] = []
+        for i, cur in enumerate(pts):
+            has_prev = self.closed or i > 0
+            has_next = self.closed or i + 1 < n
+            if not has_prev or not has_next:
+                ux, uy, _ = leg(0 if not has_prev else legs - 1)
+                d = distances[0 if not has_prev else -1]
+                moved.append((cur[0] - uy * d, cur[1] + ux * d))
+                continue
+            k_in, k_out = (i - 1) % legs, i % legs
+            a, b = distances[k_in], distances[k_out]
+            u1x, u1y, len_in = leg(k_in)
+            u2x, u2y, len_out = leg(k_out)
+            cross = u1x * u2y - u1y * u2x
+            if a == b or abs(cross) >= _TAPER_SIN:
+                if a == b:
+                    # The bisector mitre `offset` uses, so a route offset
+                    # uniformly through here is bit-identical to `offset`.
+                    h_in, h_out = math.atan2(u1y, u1x), math.atan2(u2y, u2x)
+                    half = _wrap(h_out - h_in) / 2
+                    bis = h_in + half
+                    d = a * min(1.0 / max(math.cos(half), 0.2), 5.0)
+                    moved.append((cur[0] - math.sin(bis) * d, cur[1] + math.cos(bis) * d))
+                    continue
+                # Crossing of the two offset lines: P = cur + n1*a + u1*t lies
+                # on line 2 when (n1*a - n2*b + u1*t) x u2 = 0.
+                wx = -u1y * a + u2y * b
+                wy = u1x * a - u2x * b
+                t = -(wx * u2y - wy * u2x) / cross
+                moved.append((cur[0] - u1y * a + u1x * t, cur[1] + u1x * a + u1y * t))
+                continue
+            taper = min(taper_m, len_in / 2, len_out / 2)
+            moved.append((cur[0] - u1x * taper - u1y * a, cur[1] - u1y * taper + u1x * a))
+            moved.append((cur[0] + u2x * taper - u2y * b, cur[1] + u2y * taper + u2x * b))
+        return Route(moved, closed=self.closed)
+
     def signed_gap(self, from_s: float, to_s: float) -> float:
         """Along-route distance from one arc length to another, taking the short way.
 
@@ -336,6 +401,11 @@ class Route:
 
         return Route(out, closed=self.closed)
 
+
+#: Below this |sin(turn)| two legs are "in line" for `Route.offset_by_leg`:
+#: their offset lines barely cross, so a change of distance is tapered
+#: instead of mitred. sin(20 deg).
+_TAPER_SIN = math.sin(math.radians(20.0))
 
 #: The id of the ego's own lane in every `LaneSet` this codebase builds. The
 #: set is anchored on it -- neighbours are named by which side of it they are

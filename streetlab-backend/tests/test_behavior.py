@@ -1084,12 +1084,13 @@ def test_a_junction_interrupting_a_change_keeps_it_labelled_and_turns_it_home(ro
 def test_a_junction_abort_cannot_stay_labelled_indefinitely(road):
     """The abort is bounded, and it is not bounded at one tick either.
 
-    A car held at a red while still off its lane cannot converge -- it is not
-    moving, so no steering brings it home -- and the geometric settle
-    condition can never fire. Without a backstop the manoeuvre would stay
-    labelled for as long as the light stays red, and the phase's lane-holding
-    guard, which excludes labelled frames, would be excused indefinitely by a
-    label that no longer describes anything happening.
+    A car that drives on without ever settling -- the geometry refuses to
+    converge -- would otherwise stay labelled for ever, and the phase's
+    lane-holding guard, which excludes labelled frames, would be excused
+    indefinitely by a label that no longer describes anything happening.
+    The bound is `LANE_CHANGE_RETURN_MAX_M` of driving AND
+    `LANE_CHANGE_RETURN_MAX_S`; a car that is not moving is a different
+    case (next test).
 
     Bounded loop, not a bare `while`: under a regression that never clears
     `lane_change` this would otherwise hang the suite rather than fail it (it
@@ -1105,14 +1106,15 @@ def test_a_junction_abort_cannot_stay_labelled_indefinitely(road):
     )
     assert fsm.lane_change is not None
 
-    held, d = 0.0, None
+    held, d, s = 0.0, None, 1.0
     while fsm.lane_change is not None:
         held += DT
+        s += 12.0 * DT
         assert held < _ABORT_CAP_S, "the junction abort never let go of the label"
-        # At rest, at the line, still a lane width off: never settles.
+        # Driving on at 12 m/s, still a lane width off: never settles.
         d = fsm.step(
-            ego_off_lane_at(1.0, 3.6, 0.0), road, 1.0,
-            light_at(21.0), signal("tl", "red"), DT,
+            ego_off_lane_at(s, 3.6, 12.0), road, s,
+            light_at(s + 20.0), signal("tl", "red"), DT,
             lanes=lanes, detections=[], limit_mps=12.0,
         )
     assert held > _ABORT_FLOOR_S, (
@@ -1121,3 +1123,26 @@ def test_a_junction_abort_cannot_stay_labelled_indefinitely(road):
     )
     assert d.maneuver == "stop", f"the label outlived the manoeuvre: {d.maneuver!r}"
     assert d.target_lane_id is None
+
+
+def test_a_car_held_still_off_its_lane_keeps_the_label(road):
+    """A car stopped at a red a lane width off its lane is still between
+    lanes, and says so. Dropping the label on a clock left a car 3.5 m off
+    its lane with nothing on the wire describing it (measured on grid-loop
+    at 0.45x traffic: the return began at 2 m/s behind the car it had given
+    up passing, the clock ran out, the car rolled home unlabelled)."""
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(
+        ego_at(0.0, 12.0), road, 0.0, [], {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None
+    for _ in range(round(15.0 / DT)):
+        d = fsm.step(
+            ego_off_lane_at(1.0, 3.6, 0.0), road, 1.0,
+            light_at(21.0), signal("tl", "red"), DT,
+            lanes=lanes, detections=[], limit_mps=12.0,
+        )
+    assert fsm.lane_change is not None
+    assert d.target_lane_id is not None
