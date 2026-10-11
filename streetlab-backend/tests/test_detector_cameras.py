@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from perception.noisy_truth import CAMERA_SETS
+from perception.noisy_truth_sensor import CAMERA_SETS
 from perception.pipeline import camera_count
 
 PIN = json.loads((Path(__file__).resolve().parents[2] / "contract" / "detector_cameras.json").read_text())["sets"]
@@ -42,5 +42,5 @@ def test_default_ground_truth_app_builds_no_detector_pipeline_so_no_extra_camera
 
     for cmd in ("serve", "run"):
         args = build_parser().parse_args([cmd])
-        assert args.perception == "ground-truth"
+        assert args.perception in (None, "ground-truth")  # `run` defaults to None: the preset decides
         assert perception_pipeline_for(args) is None

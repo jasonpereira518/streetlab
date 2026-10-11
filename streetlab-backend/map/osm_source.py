@@ -530,9 +530,9 @@ class OsmSceneSource:
                 roads = build_roads(graph, origin)
                 rg = build_route_graph(graph, origin)
                 ego_route = (
-                    select_route_to_destination(rg, (0.0, 0.0), dest_xy)
+                    select_route_to_destination(rg, (0.0, 0.0), dest_xy, roads)
                     if dest_xy is not None
-                    else select_ego_route(rg, (0.0, 0.0))
+                    else select_ego_route(rg, (0.0, 0.0), roads)
                 )
                 break
             except SameJunction:
@@ -634,6 +634,9 @@ class OsmSceneSource:
             # inline without the builder re-entering itself.
             catalog=[],
             hazards=[],
+            presets=[],
+            preset_id=None,
+            seed=0,
         )
 
         # Posted limits per route segment, so the ego obeys the street it is on

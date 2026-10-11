@@ -20,7 +20,7 @@ import {
 } from 'three/tsl';
 import type { CameraView, LayerKey, StateUpdate } from '../schema';
 import { perfMetrics } from '../perf/perfMetrics';
-import { frameBus, useSimStore } from '../store/simStore';
+import { frameBus, hasPipeline, useSimStore } from '../store/simStore';
 import type { SimStoreState } from '../store/simStore';
 import { color as tokens, lighting } from '../ui/theme';
 import type { LightingPreset } from '../ui/theme';
@@ -624,15 +624,16 @@ function mount(
       renderer.render(scene, cam.camera);
     }
 
-    // Gated on `perception !== null`, not just `frame`: that field is null
-    // for exactly one reason — no ML perception pipeline exists on the
-    // backend (plain `streetlab serve`, the default). Without this gate every
-    // such user still pays for an extra offscreen render, GPU readback, flip,
+    // Gated on `perception.pipeline`, not just `frame` — and not on
+    // `perception !== null` either, since noisy truth sends stats with no
+    // ML pipeline behind them (`hasPipeline` in simStore.ts). Without this
+    // gate every user with no pipeline (plain `streetlab serve`, the hosted
+    // deployment) still pays for an extra offscreen render, GPU readback, flip,
     // JPEG encode and ~0.5 MB/s over the socket, all of which `_ingest_frame`
     // (ws_server.py) discards the instant it arrives because there is no
     // pipeline to hand it to.
     const perceptionStats = useSimStore.getState().perception;
-    if (frame && perceptionStats !== null) {
+    if (frame && perceptionStats !== null && hasPipeline(perceptionStats)) {
       // Detector capture: driven off the ego pose directly, never off `cam`
       // (the user's view camera) or `cameraView`, so this is unaffected by
       // which view the user has selected. Triggered only after the main

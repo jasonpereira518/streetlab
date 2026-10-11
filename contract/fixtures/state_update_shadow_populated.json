@@ -1229,6 +1229,7 @@
     "recall": 0.4,
     "mean_pos_err_m": 1.2,
     "health": "ok",
-    "camera_set": "front"
+    "camera_set": "front",
+    "pipeline": true
   }
 }

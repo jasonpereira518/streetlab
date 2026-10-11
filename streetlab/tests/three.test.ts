@@ -853,7 +853,7 @@ describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
     for (let i = 1; i < pts.length; i++) {
       cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
     }
-    const at = (s: number): [number, number] => {
+    const at0 = (s: number): [number, number] => {
       let i = 1;
       while (i < cum.length - 1 && cum[i] < s) i++;
       const f = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
@@ -861,6 +861,19 @@ describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
         pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f,
         pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f,
       ];
+    };
+    // Re-pinned on the integration branch. Since #36 kept vehicles on the carriageway, the
+    // reference path runs 2.7 m from the nearest tree (0.9 m before), and the car is never
+    // behind a canopy on it: measured 0 blocked frames without tree blockers. The camera
+    // problem remains for a car passing on the kerb side, so the route is shifted 2 m toward
+    // the trees (measured on this fixture: 77 blocked frames without, 30 with; 1 m: 43 / 19;
+    // 3 m: 84 / 33).
+    const KERB_PASS_M = -2;
+    const at = (s: number): [number, number] => {
+      const [x, y] = at0(s);
+      const [x2, y2] = at0(s + 0.5);
+      const h = Math.atan2(y2 - y, x2 - x);
+      return [x - Math.sin(h) * KERB_PASS_M, y + Math.cos(h) * KERB_PASS_M];
     };
     const speed = 24 * 0.44704;
     const dt = 1 / 30;

@@ -35,8 +35,11 @@ function Keys() {
 }
 
 describe('no control that does nothing', () => {
-  it('has no cut-in interval slider (the backend has no autonomous cut-ins)', () => {
-    expect(PARAM_DEFS.map((d) => d.key)).not.toContain('cutin_period_s');
+  it('has the cut-in interval slider, off by default (the backend now schedules cut-ins, #37)', () => {
+    // P4 asserted the slider was absent because the backend had no autonomous cut-ins; the
+    // walkthrough presets added them, with 0 = off, so the control is real again.
+    const def = PARAM_DEFS.find((d) => d.key === 'cutin_period_s');
+    expect(def?.default).toBe(0);
   });
 
   it('has no disabled stub buttons in the toolbar or sidebar', () => {
@@ -133,14 +136,20 @@ describe('speedometer', () => {
 });
 
 describe('perception menu', () => {
-  it('says why it is disabled on the wrapper too, where webviews still show tooltips', () => {
+  it('stays live without a pipeline and says why only the ML item is disabled', () => {
+    // Superseded P4 behaviour: the whole trigger used to be disabled with its reason on the
+    // wrapper. Noisy truth needs no pipeline, so only the ML item is disabled, and it carries
+    // the reason on itself.
     harness = createHarness();
     render(<TopToolbar />);
     harness.emitScene();
     harness.emitFrame(1);
     const trigger = screen.getByRole('button', { name: /ground truth/i });
-    expect((trigger as HTMLButtonElement).disabled).toBe(true);
-    expect(trigger.parentElement?.getAttribute('title')).toMatch(/--perception/);
+    expect((trigger as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(trigger);
+    const ml = screen.getByRole('menuitemradio', { name: /ML/ });
+    expect((ml as HTMLButtonElement).disabled).toBe(true);
+    expect(ml.getAttribute('title')).toMatch(/--perception/);
   });
 });
 

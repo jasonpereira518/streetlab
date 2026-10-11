@@ -518,16 +518,20 @@ def test_a_neighbour_lane_route_can_also_be_repaired():
     assert LinearRing(ego_route.points).is_simple  # the premise this test isolates
 
     neighbour_raw = Route(ego_route.points, closed=True).offset(LANE_W)
-    assert not LinearRing(neighbour_raw.points).is_simple  # proves the repair is doing real work
+    assert LinearRing(neighbour_raw.points).is_simple
+    assert remove_self_intersections(neighbour_raw).points == neighbour_raw.points
 
-    neighbour = remove_self_intersections(neighbour_raw)
+    winged = [(0.0, 0.0), (80.0, 0.0), (80.0, 30.0), (25.0, 30.0), (25.0, 6.0), (0.0, 6.0)]
+    folded = Route(winged, closed=True).offset(LANE_W)
+    assert not LinearRing(folded.points).is_simple  # proves the repair is doing real work
+    neighbour = remove_self_intersections(folded)
     assert LinearRing(neighbour.points).is_simple
     assert neighbour.closed is True
     assert all(math.isfinite(x) and math.isfinite(y) for x, y in neighbour.points)
     # Repair should trim a self-crossing artifact, not gut the route -- the
     # real bug this guards against (see `test_splice_keeps_the_long_arc_...`
     # below) collapsed a comparable route to a handful of metres.
-    assert neighbour.length_m > neighbour_raw.length_m * 0.5
+    assert neighbour.length_m > folded.length_m * 0.5
 
 
 def test_splice_keeps_the_long_arc_even_when_the_crossing_sits_near_the_wrap():

@@ -23,11 +23,41 @@
  * user opens this tab. That's an existing property of the buffer (Task 3/4),
  * not something introduced or fixed here.
  */
+import type { HazardSummary, SimEvent } from '../schema';
 import { useSimStore } from '../store/simStore';
 import { Field } from './controls';
 
+export type HazardTone = 'fired' | 'declined' | 'summary' | null;
+
+/** How a walkthrough event reads: a fired hazard keeps its own code (one of
+ * the scene's `hazards` codes); a declined one arrives as `hazard_declined`. */
+export function hazardTone(e: SimEvent, hazardCodes: ReadonlySet<string>): HazardTone {
+  if (e.code === 'hazard_declined') return 'declined';
+  if (e.code === 'run_summary') return 'summary';
+  return hazardCodes.has(e.code) ? 'fired' : null;
+}
+
+export function EventRow({ event: e, tone }: { event: SimEvent; tone: HazardTone }) {
+  return (
+    <li className={`event event-${e.level}${tone ? ` event--${tone}` : ''}`}>
+      <span className="event-t">{e.t.toFixed(1)}s</span>
+      <span className="event-code">{e.code}</span>
+      <span className="event-msg">{e.message}</span>
+    </li>
+  );
+}
+
+/** Stable empty list: a selector returning a fresh `[]` re-renders forever. */
+const NO_HAZARDS: HazardSummary[] = [];
+
+export function useHazardCodes(): ReadonlySet<string> {
+  const hazards = useSimStore((s) => s.scene?.hazards ?? NO_HAZARDS);
+  return new Set(hazards.map((h) => h.code));
+}
+
 export function EventLog() {
   const events = useSimStore((s) => s.events);
+  const hazardCodes = useHazardCodes();
 
   return (
     <Field title="Events">
@@ -36,11 +66,7 @@ export function EventLog() {
       ) : (
         <ul className="event-log" role="list">
           {[...events].reverse().map((e, i) => (
-            <li key={`${e.t}-${e.code}-${i}`} className={`event event-${e.level}`}>
-              <span className="event-t">{e.t.toFixed(1)}s</span>
-              <span className="event-code">{e.code}</span>
-              <span className="event-msg">{e.message}</span>
-            </li>
+            <EventRow key={`${e.t}-${e.code}-${i}`} event={e} tone={hazardTone(e, hazardCodes)} />
           ))}
         </ul>
       )}

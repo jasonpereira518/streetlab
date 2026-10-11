@@ -36,6 +36,7 @@ VALID_NAMES = [
     "state_update_hazard",
     "state_update_events",
     "state_update_reaction",
+    "state_update_run_summary",
     "ack_ok",
     "ack_error",
 ]
@@ -137,6 +138,10 @@ def generate() -> dict[str, dict]:
             break
     assert flagged is not None, "no frame with a TTC and a hazard flag after the stalled vehicle"
     out["state_update_hazard"] = flagged.model_dump(mode="json")
+
+    # A scorecard mid-run, carrying the hazard and its reaction from above.
+    sim.apply_dict({"id": "rs", "cmd": "run_summary"})
+    out["state_update_run_summary"] = sim.state_update().model_dump(mode="json")
 
     outcome = sim.apply_dict({"id": "a1", "cmd": "set_paused", "paused": False})
     out["ack_ok"] = make_ack("a1", "set_paused", outcome, sim.t).model_dump(mode="json")

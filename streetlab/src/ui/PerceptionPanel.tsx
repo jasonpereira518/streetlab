@@ -17,7 +17,7 @@ import type { PerceptionStats } from '../schema';
 
 const dash = '—';
 
-function num(value: number | null, digits = 1, suffix = ''): string {
+export function num(value: number | null, digits = 1, suffix = ''): string {
   return value === null ? dash : `${value.toFixed(digits)}${suffix}`;
 }
 

@@ -52,8 +52,15 @@ def test_a_lateral_rate_override_slows_the_slide_into_the_lane():
 
 
 def test_without_a_lateral_rate_traffic_slides_at_its_own_rate():
+    from dataclasses import replace
+
     sim = loop_sim()
     agent = sim._traffic.agents[0]
+    # Cruising: below ~4.5 m/s the slide is bounded by the forward speed
+    # instead (`sim.agents._crab_tan`), which `test_mobil.py` pins.
+    agent.state = replace(agent.state, speed_mps=10.0)
+    agent.override_speed_mps = 10.0
+    agent.override_until_s = 1e9
     agent.lateral_m = -2.0
     agent.lane_change_cooldown_s = 60.0
     advance(sim, 1.0)

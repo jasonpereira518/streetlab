@@ -94,7 +94,7 @@ FOV_CELLS = [
 
 def run_cell(cell: tuple) -> dict:
     from evaluation.driving_metrics import budget_failures, closed_loop_summary, make_sim, record
-    from perception.noisy_truth import NOMINAL, STRESS, NoisyTruthPerception
+    from perception.noisy_truth_sensor import NOMINAL, STRESS, NoisyTruthPerception
 
     key, seed, hazard, variant = cell[:4]
     cameras = cell[4] if len(cell) > 4 else "front"

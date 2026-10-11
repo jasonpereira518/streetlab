@@ -13,8 +13,10 @@ import pytest
 
 from map.scene_build import SyntheticGrid
 from sim.events import (
+    AHEAD_JITTER,
     ALIASES,
     CYCLIST_DRIFT_MPS,
+    DRIFT_JITTER,
     EGO_LENGTH_M,
     EMERGENCY_SPEED_FACTOR,
     HAZARD_ID_PREFIX,
@@ -295,7 +297,7 @@ def test_a_stalled_vehicle_is_a_stopped_car_in_the_ego_lane(sim):
     assert car.state.speed_mps < 0.1
     route = sim.scene.ego_route
     ego_s = route.project((sim.world.ego.x, sim.world.ego.y))
-    assert 25.0 < route.signed_gap(ego_s, car.s) <= STALLED_AHEAD_M
+    assert 25.0 < route.signed_gap(ego_s, car.s) <= STALLED_AHEAD_M * AHEAD_JITTER[1]
     assert abs(route.lateral_offset((car.state.x, car.state.y))) < 0.5
 
 
@@ -311,9 +313,11 @@ def test_a_cyclist_drifts_in_from_the_kerb_at_its_own_slow_rate(sim):
     assert rider.cls == "cyclist"
     start = rider.lateral_m
     assert start < -1.8, f"it has to start outside the ego's lane, not at {start:.2f} m"
+    rate = rider.lateral_rate_mps
+    assert CYCLIST_DRIFT_MPS * DRIFT_JITTER[0] <= rate <= CYCLIST_DRIFT_MPS * DRIFT_JITTER[1]
     advance(sim, 2.0)
-    assert rider.lateral_m == pytest.approx(start + 2.0 * CYCLIST_DRIFT_MPS, abs=0.05)
-    advance(sim, math.ceil(-start / CYCLIST_DRIFT_MPS))
+    assert rider.lateral_m == pytest.approx(start + 2.0 * rate, abs=0.05)
+    advance(sim, math.ceil(-start / rate))
     assert rider.lateral_m == 0.0, "it never finished drifting into the lane"
 
 
@@ -386,7 +390,10 @@ def test_an_emergency_vehicle_closes_on_the_ego_but_never_drives_through_it(sim)
         )
         if side < 1.5:
             closest_centres = min(closest_centres, math.dist((ego.x, ego.y), (car.state.x, car.state.y)))
-    assert nearest <= start - 20.0, f"closed only {start - nearest:.1f} m"
+    # Re-pinned 20 -> 15 m on the integration branch: measured 18.5 m closed now that the ego
+    # drives the Phase 3 speed law and stays on the carriageway (#36); the point is that it
+    # closes at all, and never overlaps (the next assert).
+    assert nearest <= start - 15.0, f"closed only {start - nearest:.1f} m"
     assert closest_centres >= 3.5, f"drove into the ego: centres {closest_centres:.2f} m apart"
 
 
@@ -689,6 +696,15 @@ def _overlaps(sim, spawned):
     ]
 
 
+def _next_ahead_jitter(sim):
+    """The `AHEAD_JITTER` factor the next obstacle or stalled car will draw,
+    without consuming it."""
+    state = sim.rng.getstate()
+    factor = sim.rng.uniform(*AHEAD_JITTER)
+    sim.rng.setstate(state)
+    return factor
+
+
 def _park_in_the_way(sim, ahead_m):
     """Stand the nearest ego-lane agent exactly where a hazard is about to land."""
     from sim.events import _ego_s, _place
@@ -703,7 +719,7 @@ def _park_in_the_way(sim, ahead_m):
 def test_an_obstacle_is_not_dropped_on_top_of_a_vehicle(sim):
     from sim.events import OBSTACLE_AHEAD_M
 
-    _park_in_the_way(sim, OBSTACLE_AHEAD_M)
+    _park_in_the_way(sim, OBSTACLE_AHEAD_M * _next_ahead_jitter(sim))
     inject(sim, "obstacle")
     obstacle = next(a for a in sim._traffic.agents if a.cls == "unknown")
     assert not _overlaps(sim, obstacle), "the obstacle landed inside a parked car"
@@ -729,7 +745,7 @@ def test_a_cut_in_does_not_land_on_top_of_a_vehicle(sim):
 def test_a_stalled_vehicle_is_not_staged_inside_a_vehicle(sim):
     from sim.events import STALLED_AHEAD_M
 
-    _park_in_the_way(sim, STALLED_AHEAD_M)
+    _park_in_the_way(sim, STALLED_AHEAD_M * _next_ahead_jitter(sim))
     assert inject(sim, "stalled_vehicle").ok
     (car,) = _spawned(sim, "stalled_vehicle")
     assert not _overlaps(sim, car), "the stalled car landed inside a parked car"
@@ -862,3 +878,16 @@ def test_a_red_light_runner_is_timed_and_kept_alive_at_the_pace_it_will_drive(sc
     pace_mps = car.target_speed_mps * scale
     # Alive until it has driven all but its last metre, and not a tick longer.
     assert car.lifetime_s * pace_mps == pytest.approx(car.route.length_m - 1.0, abs=0.1)
+
+
+def test_the_scheduler_and_the_command_share_inject_hazard(monkeypatch):
+    """One staging path: a preset's timeline must not be able to drift from
+    what the hazard button does."""
+    sim = fresh()
+    calls = []
+    real = sim.inject_hazard
+    monkeypatch.setattr(sim, "inject_hazard", lambda kind: calls.append(kind) or real(kind))
+    assert inject(sim, "obstacle").ok
+    sim._timeline = [(sim.t, sim.t, "jaywalker")]
+    sim.step()
+    assert calls == ["obstacle", "jaywalker"]

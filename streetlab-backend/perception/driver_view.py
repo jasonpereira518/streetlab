@@ -41,17 +41,37 @@ SIDE_RANGE_M = 15.0
 _CAMERA_Z_M = 1.33
 
 
-def _camera(ego: VehicleState) -> CameraParams:
-    return CameraParams(
-        x=ego.x,
-        y=ego.y,
-        z=_CAMERA_Z_M,
-        yaw=ego.heading,
-        pitch=0.0,
-        roll=0.0,
-        fov_y_deg=50.0,
-        aspect=16.0 / 9.0,
-    )
+def visible_to_driver(
+    ego: VehicleState,
+    detections: Sequence[Detection],
+    buildings: Sequence[Building] = (),
+    *,
+    forward_half_rad: float = FORWARD_FOV_HALF_RAD,
+    rear_half_rad: float = REAR_FOV_HALF_RAD,
+    rear_range_m: float = REAR_RANGE_M,
+    side_range_m: float = SIDE_RANGE_M,
+) -> list[Detection]:
+    """Keep detections the ego could resolve from the cabin."""
+    if not detections:
+        return []
+    camera = _cabin_camera(ego)
+    return [
+        det
+        for det in detections
+        if _resolvable(
+            ego,
+            camera,
+            det.pose.x,
+            det.pose.y,
+            det.pose.heading,
+            det.size,
+            buildings,
+            forward_half_rad=forward_half_rad,
+            rear_half_rad=rear_half_rad,
+            rear_range_m=rear_range_m,
+            side_range_m=side_range_m,
+        )
+    ]
 
 
 def can_see(
@@ -67,12 +87,75 @@ def can_see(
     rear_range_m: float = REAR_RANGE_M,
     side_range_m: float = SIDE_RANGE_M,
 ) -> bool:
-    """Whether a body of `size` at `(x, y, heading)` is resolvable from `ego`.
+    """Whether a body of `size` at `(x, y, heading)` is resolvable from `ego`: the one test
+    `visible_to_driver` applies per detection, for callers with a pose and no `Detection`."""
+    return _resolvable(
+        ego,
+        _cabin_camera(ego),
+        x,
+        y,
+        heading,
+        size,
+        buildings,
+        forward_half_rad=forward_half_rad,
+        rear_half_rad=rear_half_rad,
+        rear_range_m=rear_range_m,
+        side_range_m=side_range_m,
+    )
 
-    The one test `visible_to_driver` applies per detection, exposed for callers
-    that have a pose and no `Detection` -- a hazard staging asking "will the ego
-    be able to see this from where it will be?".
-    """
+
+def forward_visible(
+    ego: VehicleState,
+    x: float,
+    y: float,
+    heading: float,
+    size: Size,
+    buildings: Sequence[Building] = (),
+) -> bool:
+    """Could a forward-only camera (no rear cone) resolve this object? The
+    one test both perception scoring and noisy-truth's own frames apply."""
+    return _resolvable(
+        ego,
+        _cabin_camera(ego),
+        x,
+        y,
+        heading,
+        size,
+        buildings,
+        forward_half_rad=FORWARD_FOV_HALF_RAD,
+        rear_half_rad=0.0,
+        rear_range_m=0.0,
+        side_range_m=0.0,
+    )
+
+
+def _cabin_camera(ego: VehicleState) -> CameraParams:
+    return CameraParams(
+        x=ego.x,
+        y=ego.y,
+        z=_CAMERA_Z_M,
+        yaw=ego.heading,
+        pitch=0.0,
+        roll=0.0,
+        fov_y_deg=50.0,
+        aspect=16.0 / 9.0,
+    )
+
+
+def _resolvable(
+    ego: VehicleState,
+    camera: CameraParams,
+    x: float,
+    y: float,
+    heading: float,
+    size: Size,
+    buildings: Sequence[Building],
+    *,
+    forward_half_rad: float,
+    rear_half_rad: float,
+    rear_range_m: float,
+    side_range_m: float,
+) -> bool:
     if not _in_cabin_view(
         ego,
         x,
@@ -83,36 +166,7 @@ def can_see(
         side_range_m=side_range_m,
     ):
         return False
-    return is_visible(visible_fraction(x, y, heading, size, _camera(ego), buildings))
-
-
-def visible_to_driver(
-    ego: VehicleState,
-    detections: Sequence[Detection],
-    buildings: Sequence[Building] = (),
-    *,
-    forward_half_rad: float = FORWARD_FOV_HALF_RAD,
-    rear_half_rad: float = REAR_FOV_HALF_RAD,
-    rear_range_m: float = REAR_RANGE_M,
-    side_range_m: float = SIDE_RANGE_M,
-) -> list[Detection]:
-    """Keep detections the ego could resolve from the cabin."""
-    return [
-        det
-        for det in detections
-        if can_see(
-            ego,
-            det.pose.x,
-            det.pose.y,
-            det.pose.heading,
-            det.size,
-            buildings,
-            forward_half_rad=forward_half_rad,
-            rear_half_rad=rear_half_rad,
-            rear_range_m=rear_range_m,
-            side_range_m=side_range_m,
-        )
-    ]
+    return is_visible(visible_fraction(x, y, heading, size, camera, buildings))
 
 
 def _in_cabin_view(

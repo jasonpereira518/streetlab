@@ -42,7 +42,16 @@ describe('mock scene_description parity with the backend', () => {
         .filter(([k, t]) => b.has(k) && b.get(k) !== t)
         .map(([k, t]) => `type differs: ${k} mock=${t} real=${b.get(k)}`),
     ];
-    expect(diff).toEqual([]);
+    // The mock carries presets of its own (mockCity.ts: the backend's run on scenario ids the mock
+    // does not have), so the first preset's element shapes legitimately differ (seed, hazards).
+    // Their key sets are held together below.
+    expect(diff.filter((d) => !d.includes('scene.presets['))).toEqual([]);
+  });
+
+  it('gives its own presets exactly the backend preset keys', () => {
+    for (const p of mock.presets) {
+      expect(Object.keys(p).sort()).toEqual(Object.keys(real.presets[0]).sort());
+    }
   });
 
   it('serves the backend scenario catalog and hazard menu verbatim', () => {

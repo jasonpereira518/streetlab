@@ -16,7 +16,7 @@ from perception.health import (
     STALE_S,
     DegradedMonitor,
 )
-from perception.noisy_truth import NOMINAL, NoisyTruthPerception
+from perception.noisy_truth_sensor import NOMINAL, NoisyTruthPerception
 from perception.service import EgoFrame
 from plan.control import lead_speed_along_route
 from schema import Detection, Pose, Size

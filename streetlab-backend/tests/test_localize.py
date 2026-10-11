@@ -119,7 +119,7 @@ def test_a_box_cropped_at_the_side_is_less_certain_in_range_too():
 def _side_camera_cases():
     """Noise-free boxes of a car 3-8 m beside the ego, seen by the left 100 deg camera, at every
     heading in 45 deg steps: whole boxes and boxes cut by the frame edge."""
-    from perception.noisy_truth import CAMERA_SETS, _clamp, camera_for
+    from perception.noisy_truth_sensor import CAMERA_SETS, _clamp, camera_for
     from sim.vehicle import VehicleState
 
     ego = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=5.0)

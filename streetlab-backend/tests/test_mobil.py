@@ -390,3 +390,97 @@ def test_a_forced_return_waits_for_a_gap_instead_of_merging_into_the_ego(scene):
             assert -1 in scene.lanes.legal_at(here) and front < 75.0 + 1.0, (
                 f"ran past the end of the kerbside lane to s={front:.1f} m"
             )
+
+
+def test_a_lane_change_never_crabs_the_body_faster_than_the_car_is_moving(scene):
+    """A car slides across only as fast as its forward motion allows. The slide
+    used to run at a fixed 1.2 m/s whatever the speed, so a car creeping at
+    0.1 m/s showed a heading 85 degrees off its lane -- a sideways teleport
+    drawn one frame at a time (measured on grid-night at t=84.5 s).
+    """
+    traffic = make(scene)
+    agent = traffic.agents[0]
+    place(traffic, agent, 20.0, speed=0.3)
+    agent.override_speed_mps = 0.3
+    agent.override_until_s = 1e9
+    agent.lateral_m = 3.6
+    dt = 1 / 60
+    for _ in range(120):
+        traffic.step(dt, world(scene))
+        crab = abs(math.remainder(agent.state.heading - agent.route.heading_at(agent.s), math.tau))
+        assert crab <= math.radians(15.0) + 1e-6, f"body crabbed {math.degrees(crab):.1f} deg"
+    # Two seconds at 0.3 m/s forward can only ever buy 0.6 m * tan(15 deg) sideways.
+    assert agent.lateral_m >= 3.6 - 0.6 * math.tan(math.radians(15.0)) - 1e-6
+
+
+def test_a_sliding_body_keeps_its_rear_corner_inside_the_lane():
+    """The crab angle shrinks with length: turning toward the next lane swings
+    the tail the other way by half the length times sin(angle), and that has
+    to fit in the room the lane leaves beside the body."""
+    from schema import Size
+    from sim.agents import _LANE_W_M, _MAX_CRAB_TAN, _PROFILES, Agent, _crab_tan
+    from sim.route import Route
+
+    for cls, length, width, height, _ in _PROFILES:
+        agent = Agent(
+            id=cls, cls=cls, state=VehicleState(0, 0, 0, 0), size=Size(length=length, width=width, height=height),
+            route=Route([(0, 0), (100, 0)], closed=False), s=0.0, target_speed_mps=10.0,
+        )
+        tan = _crab_tan(agent)
+        assert 0.0 < tan <= _MAX_CRAB_TAN
+        swing = (length / 2) * math.sin(math.atan(tan))
+        assert swing <= (_LANE_W_M - width) / 2 + 1e-9, f"{cls} tail swings {swing:.2f} m"
+
+
+def test_a_lane_that_ends_is_left_with_room_to_finish_the_slide(scene):
+    """`_lane_end` is where the merge must be COMPLETE, so the virtual leader
+    stands a run-out short of the kerb: a lane width at the crab angle at
+    least, three seconds of travel at speed."""
+    from sim.agents import _LANE_END_MARGIN_M, _MOBIL_TRAVERSE_MPS, _crab_tan
+
+    traffic = make(scene)
+    lanes = scene.lanes
+    right = lanes.by_id("lane_right")
+    for agent in traffic.agents:
+        # A station on the ego route where the kerbside lane exists but ends
+        # within the horizon.
+        s = next(
+            s for s in range(0, int(lanes.ego.route.length_m), 2)
+            if 0.0 < lanes.legal_for(float(s), -1, 90.0) < 90.0
+        )
+        x, y = lanes.ego.route.point_at(float(s))
+        agent.state = VehicleState(x=x, y=y, heading=lanes.ego.route.heading_at(float(s)), speed_mps=8.0)
+        traffic._move(agent, right)
+        agent.lateral_m = 0.0
+        remaining = lanes.legal_for(lanes.ego.route.project((x, y)), -1, 90.0)
+        slowest = 3.6 / _crab_tan(agent)
+        fastest = 3.6 * 8.0 / _MOBIL_TRAVERSE_MPS
+        expected = remaining - agent.size.length / 2 - _LANE_END_MARGIN_M - max(slowest, fastest)
+        assert traffic._lane_end(agent) == pytest.approx(expected)
+
+
+def test_no_agent_changes_into_a_lane_that_ends_before_it_could_change_back(scene):
+    """The kerb lane is a candidate only where it runs two merge run-outs
+    further: one to slide in, one to be back home before it ends."""
+    from sim.agents import _crab_tan
+
+    traffic = make(scene)
+    lanes = scene.lanes
+    agent = traffic.agents[0]
+    place(traffic, agent, 0.0, speed=0.0)
+    runout = 3.6 / _crab_tan(agent)
+    # Walk the ego route: wherever the kerb lane is legal but ends within two
+    # run-outs, it must not be offered; wherever it runs on, it must be.
+    offered = refused = 0
+    for s in range(0, int(lanes.ego.route.length_m), 2):
+        remaining = lanes.legal_for(float(s), -1, 1000.0)
+        if remaining <= 0.0:
+            continue
+        ids = {lane.id for lane in traffic._candidates(agent, lanes, float(s))}
+        if remaining < 2 * runout:
+            assert "lane_right" not in ids, f"kerb lane offered {remaining:.0f} m before its end at s={s}"
+            refused += 1
+        else:
+            assert "lane_right" in ids
+            offered += 1
+    assert offered and refused

@@ -88,6 +88,17 @@ centerline planner, with a blue plan ribbon ahead of it; the six telemetry
 cards along the bottom (speed, lane position, radar, vehicle status,
 trajectory, steering) update live from the real simulation, not the mock.
 
+## Run a walkthrough preset
+
+Above the scenario catalog, the left sidebar's **Walkthrough** list holds
+curated example runs: a scene, a seed, a perception mode and a hazard
+timeline. Press **Run** on a card. The right panel switches to its **Run**
+tab, and a scorecard lands when the run ends. **Replay** reruns the same
+seed, so you can compare the two columns. What each preset is for, what a
+good scorecard looks like, and the honest limits (shared hosted world,
+assumed noisy-truth parameters, a detector with no vehicle true positives)
+are in [`docs/walkthrough.md`](docs/walkthrough.md).
+
 ## Load any address
 
 The left sidebar's **Start address** box sends a real `load_location`

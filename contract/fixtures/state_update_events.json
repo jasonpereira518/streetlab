@@ -23,7 +23,7 @@
     "speed_limit_mps": 11.176,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 11.007000450826661
+      "set_speed_mps": 11.176
     },
     "size": {
       "length": 4.7,
@@ -36,9 +36,9 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 3.0199999999999965,
-        "y": 67.63920310667538,
-        "heading": 1.9053647548825619
+        "x": 2.007878220760559,
+        "y": 73.67576993748942,
+        "heading": 1.2841259971548276
       },
       "size": {
         "length": 4.6,
@@ -46,14 +46,14 @@
         "height": 1.45
       },
       "velocity": [
-        -1.133462531060822,
-        3.26047430751649
+        1.0013300210023401,
+        3.3967548434923747
       ],
-      "speed_mps": 3.4518734071941197,
+      "speed_mps": 3.541271703463242,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
-      "ttc_s": 14.41226405107175,
+      "ttc_s": 16.545261797280045,
       "lane_offset": 0,
       "emergency": false
     }
@@ -63,16 +63,16 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 3.0199999999999965,
-        "y": 67.63920310667538,
-        "heading": 1.9053647548825619
+        "x": 2.007878220760559,
+        "y": 73.67576993748942,
+        "heading": 1.2841259971548276
       },
       "size": {
         "length": 4.6,
         "width": 1.9,
         "height": 1.45
       },
-      "speed_mps": 3.4518734071941197
+      "speed_mps": 3.541271703463242
     },
     {
       "id": "veh_01",
@@ -218,7 +218,7 @@
         61.72606496043851
       ]
     ],
-    "target_speed_mps": 11.007000450826661,
+    "target_speed_mps": 11.176,
     "maneuver": "keep_lane",
     "confidence": 1.0,
     "reaction_source_id": null
@@ -227,10 +227,10 @@
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": 0.0097,
-        "range_m": 50.81,
-        "range_rate_mps": -3.57,
-        "rcs_db": 7.93,
+        "azimuth": 0.0303,
+        "range_m": 56.83,
+        "range_rate_mps": -3.48,
+        "rcs_db": 7.45,
         "tracked": true
       },
       {
@@ -295,14 +295,14 @@
           "id": "veh_00",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": 50.8,
+          "longitudinal_m": 56.85,
           "lateral_m": 0.0,
-          "speed_mps": 3.4518734071941197,
+          "speed_mps": 3.541271703463242,
           "hazard": false
         }
       ]
     },
-    "ttc_s": 14.412,
+    "ttc_s": 16.545,
     "vehicle": {
       "battery_pct": 91.88,
       "range_km": 404.3,
@@ -1005,7 +1005,8 @@
       "level": "warn",
       "code": "cut_in",
       "message": "cut_in: veh_05 cutting in 11 m ahead",
-      "progress": null
+      "progress": null,
+      "summary": null
     }
   ],
   "perception": null

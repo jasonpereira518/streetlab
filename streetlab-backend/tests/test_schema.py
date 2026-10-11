@@ -101,6 +101,8 @@ def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
     assert len(scene.reference_path) > 20, "the driven line is empty"
     # Protocol 9: the synthetic grid is flat by construction.
     assert scene.terrain is None
+    assert scene.presets, "the preset menu is empty"
+    assert scene.preset_id is None
     frame = StateUpdate.model_validate(load_fixture("state_update_hazard"))
     assert frame.detections and all(d.emergency is False for d in frame.detections)
     reacting = StateUpdate.model_validate(load_fixture("state_update_reaction"))
@@ -115,6 +117,9 @@ def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
         ("scene_description", ("hazards",)),
         ("scene_description", ("reference_path",)),
         ("scene_description", ("terrain",)),
+        ("scene_description", ("presets",)),
+        ("scene_description", ("preset_id",)),
+        ("scene_description", ("seed",)),
         ("state_update_hazard", ("plan", "reaction_source_id")),
         ("state_update_hazard", ("detections", 0, "emergency")),
         ("state_update_reaction", ("plan", "reaction_source_id")),
@@ -277,7 +282,7 @@ def test_perception_health_is_required_and_never_null():
 
     base = dict(
         mode="ml", detector_ms=None, server_e2e_ms=None, frames_received=0,
-        frames_dropped=0, precision=None, recall=None, mean_pos_err_m=None, camera_set="front",
+        frames_dropped=0, precision=None, recall=None, mean_pos_err_m=None, camera_set="front", pipeline=True,
     )
     with pytest.raises(ValueError):
         PerceptionStats(**base)
@@ -293,7 +298,7 @@ def test_perception_camera_set_is_required_never_null_and_one_of_the_known_layou
 
     base = dict(
         mode="ml", detector_ms=None, server_e2e_ms=None, frames_received=0,
-        frames_dropped=0, precision=None, recall=None, mean_pos_err_m=None, health="ok",
+        frames_dropped=0, precision=None, recall=None, mean_pos_err_m=None, health="ok", pipeline=True,
     )
     for bad in (None, "rear", "front+sides76"):
         with pytest.raises(ValueError):
@@ -307,7 +312,7 @@ COMMANDS = [
     {"id": "c1", "cmd": "set_paused", "paused": True},
     {"id": "c2", "cmd": "step", "frames": 4},
     {"id": "c3", "cmd": "reset"},
-    {"id": "c4", "cmd": "load_scenario", "scenario_id": "nob-hill-loop"},
+    {"id": "c4", "cmd": "load_scenario", "scenario_id": "nob-hill-loop", "seed": None},
     {"id": "c4b", "cmd": "load_location", "query": "Nob Hill", "radius_m": 400.0, "destination": None},
     {
         "id": "c4c",
@@ -332,6 +337,10 @@ COMMANDS = [
     {"id": "c8", "cmd": "toggle_layer", "layer": "detections", "visible": False},
     {"id": "c9", "cmd": "set_camera", "view": "overhead"},
     {"id": "c10", "cmd": "inject_hazard", "kind": "cut_in"},
+    {"id": "c11", "cmd": "load_scenario", "scenario_id": "grid-loop", "seed": 5},
+    {"id": "c12", "cmd": "load_preset", "preset_id": "replay-twin", "seed": None},
+    {"id": "c13", "cmd": "load_preset", "preset_id": "control", "seed": 12},
+    {"id": "c14", "cmd": "run_summary"},
 ]
 
 
@@ -342,6 +351,11 @@ def test_every_command_variant_round_trips(raw):
     assert parsed.value.model_dump(mode="json", exclude_none=True) == {
         k: v for k, v in raw.items() if v is not None
     }
+
+
+def test_load_preset_seed_is_optional():
+    parsed = parse_command({"id": "p", "cmd": "load_preset", "preset_id": "control"})
+    assert parsed.ok and parsed.value.seed is None
 
 
 def test_command_union_discriminates_on_cmd():
@@ -454,6 +468,7 @@ def test_state_update_perception_defaults_to_null_and_survives_serialisation():
 
     stats = PerceptionStats(
         mode="ground-truth",
+        pipeline=True,
         detector_ms=None,
         server_e2e_ms=12.5,
         frames_received=3,

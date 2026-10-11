@@ -273,6 +273,33 @@ def test_nearest_road_along_indexes_the_road_governing_each_segment():
     assert nearest_road_along(route, roads) == [0, 0]
 
 
+def test_a_segment_is_governed_by_the_road_it_runs_along_not_the_one_it_crosses():
+    """A long straight leg through a junction. Its midpoint sits ON the cross
+    street's centreline, so a nearest-point match hands the whole leg to the
+    cross street -- measured on every grid scenario: the 144 m legs along the
+    two-lane streets were attributed to the four-lane arterials they cross,
+    which made a kerbside lane "legal" where there is only pavement.
+    """
+    from map.lanes import nearest_road_along
+    from schema import Road
+    from sim.route import Route
+
+    def road(id, a, b, lanes):
+        return Road(
+            id=id, name=id, road_class="residential",
+            centerline=[a, b], lanes_forward=lanes, lanes_backward=lanes,
+            lane_width_m=3.6, speed_limit_mps=11.2, oneway=False,
+            center_marking="solid_white", sidewalk_left=True, sidewalk_right=True,
+        )
+
+    along = road("larkin", (-80.0, -130.0), (-80.0, 130.0), 1)
+    across = road("california", (-130.0, 0.0), (130.0, 0.0), 2)
+    # The leg runs 1.8 m right of Larkin's centreline and straight through
+    # California.
+    route = Route([(-78.2, -72.0), (-78.2, 72.0)], closed=False)
+    assert nearest_road_along(route, [along, across]) == [0]
+
+
 def test_nearest_road_along_reports_none_beyond_the_match_radius():
     from map.lanes import _LIMIT_MAX_MATCH_M, nearest_road_along
     from schema import Road
@@ -384,3 +411,131 @@ def test_speed_limits_and_lane_counts_patch_a_leading_unmatched_run():
     assert nearest_road_along(route, [road]) == [None, None, 0]
     assert speed_limits_along(route, [road]) == [11.2, 11.2, 11.2]
     assert derive_lanes(route, [road]).count_along == (2, 2, 2)
+
+
+def _road(id, a, b, fwd, bwd, oneway, w=3.6):
+    from schema import Road
+
+    return Road(
+        id=id, name=id, road_class="residential", centerline=[a, b],
+        lanes_forward=fwd, lanes_backward=bwd, lane_width_m=w, speed_limit_mps=11.2,
+        oneway=oneway, center_marking="none", sidewalk_left=True, sidewalk_right=True,
+    )
+
+
+def test_a_route_can_be_offset_by_a_different_distance_on_each_leg():
+    from sim.route import Route
+
+    # Two legs in line: a taper, 8 m either side of the join.
+    route = Route([(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)], closed=False)
+    moved = route.offset_by_leg([-1.0, 0.0])
+    assert [(round(x, 6), round(y, 6)) for x, y in moved.points] == [
+        (0.0, -1.0), (42.0, -1.0), (58.0, 0.0), (100.0, 0.0),
+    ]
+    # Two legs at a right angle: the vertex is where the offset lines cross.
+    corner = Route([(0.0, 0.0), (50.0, 0.0), (50.0, 50.0)], closed=False)
+    moved = corner.offset_by_leg([-1.0, 0.0])
+    assert [(round(x, 6), round(y, 6)) for x, y in moved.points] == [
+        (0.0, -1.0), (50.0, -1.0), (50.0, 50.0),
+    ]
+    # Every leg the same: identical to `offset`.
+    assert corner.offset_by_leg([-1.0, -1.0]).points == corner.offset(-1.0).points
+    with pytest.raises(ValueError):
+        route.offset_by_leg([-1.0])
+
+
+def test_the_ego_lane_is_the_centre_of_a_one_lane_oneway_and_half_a_lane_right_elsewhere():
+    """A fixed half-lane inset lands ON the kerb of a one-lane oneway, whose
+    centreline is the middle of its 3.6 m carriageway. Measured on Nob Hill:
+    Clay and Washington Streets, 250 m of the loop with one side of every
+    vehicle on the pavement.
+    """
+    from map.lanes import lane_inset
+
+    assert lane_inset(_road("clay", (0, 0), (100, 0), 1, 0, True)) == 0.0
+    assert lane_inset(_road("sacramento", (0, 0), (100, 0), 2, 0, True)) == pytest.approx(1.8)
+    assert lane_inset(_road("larkin", (0, 0), (100, 0), 1, 1, False)) == pytest.approx(1.8)
+    assert lane_inset(_road("hyde", (0, 0), (100, 0), 2, 2, False)) == pytest.approx(1.8)
+    assert lane_inset(_road("narrow", (0, 0), (100, 0), 1, 1, False, w=3.0)) == pytest.approx(1.5)
+
+
+def test_the_route_moves_into_the_narrow_streets_lane_as_it_turns_into_it():
+    """A loop east along a two-way street, then north up a one-lane oneway:
+    the lane sits 1.8 m right of the first centreline and ON the second."""
+    from map.lanes import _right_hand_lane
+
+    roads = [
+        _road("two_way", (-200.0, 0.0), (200.0, 0.0), 1, 1, False),
+        _road("oneway", (100.0, -200.0), (100.0, 200.0), 1, 0, True),
+        _road("two_way_n", (-200.0, 100.0), (200.0, 100.0), 1, 1, False),
+        _road("two_way_w", (0.0, -200.0), (0.0, 200.0), 1, 1, False),
+    ]
+    # Clockwise: east along y=0, north up x=100, west along y=100, south down x=0.
+    route = _right_hand_lane([(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)], closed=True, roads=roads)
+    east = route.point_at(route.project((50.0, 0.0)))
+    north = route.point_at(route.project((100.0, 50.0)))
+    assert east[1] == pytest.approx(-1.8, abs=0.05), east
+    assert north[0] == pytest.approx(100.0, abs=0.05), north
+
+
+def test_no_lane_change_is_legal_through_a_junction_turn():
+    """The kerbside lane is the ego route offset a lane width; on the inside
+    of a 6 m corner that leaves a 2.4 m radius no vehicle can follow."""
+    from map.lanes import derive_lanes
+    from map.scene_build import SyntheticGrid
+
+    built = SyntheticGrid().build("grid-signals")
+    lanes = built.lanes
+    route = lanes.ego.route
+    turning = legal = 0
+    for i in range(len(route._cum) - 1):
+        length = route._cum[i + 1] - route._cum[i]
+        if length < 3.0:  # a fillet piece
+            turning += 1
+            assert lanes.legal_along[i] == (), f"segment {i} is a turn and allows {lanes.legal_along[i]}"
+        elif lanes.road_along[i].lanes_forward >= 2:
+            legal += 1
+            assert -1 in lanes.legal_along[i]
+    assert turning >= 16 and legal >= 2
+
+
+def test_the_nob_hill_ego_lane_keeps_half_a_lane_from_the_kerb(nob_hill_scene):
+    """Wherever the road is at least a lane wide, the ego's lane centre is at
+    least half a lane inside the carriageway edge."""
+    from map.lanes import _turn_segments
+
+    lanes = nob_hill_scene.lanes
+    turning = _turn_segments(lanes.ego.route)
+    bad = []
+    for i, road in enumerate(lanes.road_along):
+        half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+        if half <= road.lane_width_m or turning[i]:
+            # Narrower than one lane there is nothing to keep inside; on a
+            # turn the governing road is the one being turned across.
+            continue
+        clearance = half - abs(lanes.ego_offset_along[i])
+        if clearance < road.lane_width_m / 2 - 0.25:
+            bad.append((i, road.name, round(clearance, 2)))
+    assert bad == []
+
+
+def test_a_node_on_a_straight_does_not_shrink_the_corner_beyond_it():
+    """OSM puts junction nodes 6-10 m either side of a corner; the fillet is
+    trimmed to half the shorter leg, so the corner came out at 3 m instead of
+    6 m. Measured on Nob Hill: six corners, a truck a metre over the kerb."""
+    from map.lanes import TURN_RADIUS_M, _right_hand_lane
+    from sim.route import _menger_curvature
+
+    roads = [
+        _road("ew", (-200.0, 0.0), (200.0, 0.0), 1, 1, False),
+        _road("ns", (100.0, -200.0), (100.0, 200.0), 1, 1, False),
+        _road("ew_n", (-200.0, 100.0), (200.0, 100.0), 1, 1, False),
+        _road("ns_w", (0.0, -200.0), (0.0, 200.0), 1, 1, False),
+    ]
+    # Clockwise square with a collinear node 7 m before and after the (100,0) corner.
+    loop = [(0.0, 0.0), (0.0, 100.0), (100.0, 100.0), (100.0, 7.0), (100.0, 0.0), (93.0, 0.0)]
+    route = _right_hand_lane(loop, closed=True, roads=roads)
+    pts = route.points
+    near = [i for i, p in enumerate(pts) if math.dist(p, (100.0, 0.0)) < 12.0]
+    radii = [1 / _menger_curvature(pts[i - 1], pts[i], pts[(i + 1) % len(pts)]) for i in near[1:-1]]
+    assert radii and min(radii) > TURN_RADIUS_M - 0.2, radii

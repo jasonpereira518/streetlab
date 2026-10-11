@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CameraView, Maneuver, PerceptionMode } from '../schema';
 import { useFrameValue } from '../store/hooks';
-import { useSimStore } from '../store/simStore';
+import { hasPipeline, useSimStore } from '../store/simStore';
 import { formatTtc, toMph } from '../units';
 import {
   ActivityIcon,
@@ -33,8 +33,9 @@ const CAMERA_LABELS: Record<CameraView, string> = {
 
 // 'Ground truth' names the default (safe) state plainly; the ML state is
 // additionally flagged experimental at the point of use — see PerceptionMenu.
-const PERCEPTION_LABELS: Record<PerceptionMode, string> = {
+export const PERCEPTION_LABELS: Record<PerceptionMode, string> = {
   'ground-truth': 'Ground truth',
+  'noisy-truth': 'Noisy truth',
   ml: 'ML',
 };
 
@@ -69,6 +70,7 @@ export function TopToolbar() {
   const sourceLabel = useSimStore((s) => s.sourceLabel);
   const cameraView = useSimStore((s) => s.cameraView);
   const perception = useSimStore((s) => s.perception);
+  const perceptionMode = useSimStore((s) => s.perceptionMode);
   const scenarioName = useSimStore(
     (s) => s.catalog.find((c) => c.id === s.activeScenarioId)?.name ?? s.scene?.name ?? '—',
   );
@@ -189,8 +191,8 @@ export function TopToolbar() {
         </IconButton>
         <CameraMenu view={cameraView} onSelect={setCameraView} />
         <PerceptionMenu
-          mode={perception?.mode ?? 'ground-truth'}
-          disabled={perception === null}
+          mode={perceptionMode}
+          mlAvailable={hasPipeline(perception)}
           onSelect={setPerceptionMode}
         />
         <IconButton
@@ -282,17 +284,17 @@ function CameraMenu({
  * only in documentation — both on the trigger (visible without opening the
  * menu) and on the menu item.
  *
- * Disabled when no perception pipeline is running (`perception` is null on
- * the wire): the backend refuses `set_perception` in that case, so a live
- * control here would silently do nothing.
+ * The trigger is always live: ground truth and noisy truth need no pipeline.
+ * Only the ML item is disabled without one, since the backend refuses
+ * `set_perception ml` then and a live item would silently do nothing.
  */
 function PerceptionMenu({
   mode,
-  disabled,
+  mlAvailable,
   onSelect,
 }: {
   mode: PerceptionMode;
-  disabled: boolean;
+  mlAvailable: boolean;
   onSelect: (m: PerceptionMode) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -314,21 +316,15 @@ function PerceptionMenu({
     };
   }, [open]);
 
-  const title = disabled
-    ? 'No perception pipeline running — start with --perception'
-    : 'Perception source';
-
   return (
-    <div className="menu" ref={ref} title={disabled ? title : undefined}>
+    <div className="menu" ref={ref}>
       <button
         type="button"
         className={`menu-trigger${open ? ' is-open' : ''}`}
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-description={disabled ? title : undefined}
-        disabled={disabled}
-        title={disabled ? undefined : title}
+        title="Perception source"
       >
         <EyeIcon />
         <span>{PERCEPTION_LABELS[mode]}</span>
@@ -344,6 +340,12 @@ function PerceptionMenu({
               role="menuitemradio"
               aria-checked={m === mode}
               className={`menu-item${m === mode ? ' is-active' : ''}`}
+              disabled={m === 'ml' && !mlAvailable}
+              title={
+                m === 'ml' && !mlAvailable
+                  ? 'No perception pipeline running — start with --perception'
+                  : undefined
+              }
               onClick={() => {
                 onSelect(m);
                 setOpen(false);

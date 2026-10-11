@@ -175,7 +175,7 @@ const SIDE_YAW_RAD = (80 * Math.PI) / 180;
 
 /**
  * The layouts `PerceptionStats.camera_set` names. Pinned to `contract/detector_cameras.json`
- * (tests/detectorCameras.test.ts) and mirrored by the backend's `perception.noisy_truth.CAMERA_SETS`.
+ * (tests/detectorCameras.test.ts) and mirrored by the backend's `perception.noisy_truth_sensor.CAMERA_SETS`.
  * The side cameras exist because the front one sees only +-38 deg while the car must react to
  * traffic out to ~+-110 deg; each camera is one detector inference per frame time.
  */

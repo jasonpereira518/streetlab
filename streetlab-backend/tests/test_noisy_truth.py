@@ -1,268 +1,188 @@
-"""NoisyTruthPerception: the real downstream path behind a pretend detector.
-
-Includes the M1 audit fixes: a published pose is the body CENTRE, so ground truth
-and ML agree on the clearance to the same physical lead; and ML mode never reads
-the ground-truth overlay.
-"""
-
-from __future__ import annotations
+"""Noisy-truth perception: seeded, forward-only, degraded ground truth."""
 
 import math
-from dataclasses import replace
-from types import SimpleNamespace
-
-import pytest
 
 from map.scene_build import SyntheticGrid
-from perception.noisy_truth import NOMINAL, NoisyTruthPerception, NoiseParams
-from perception.service import GroundTruthPerception, PerceptionSource
-from plan.control import lead_clearance
-from schema import Size
+from perception.driver_view import REAR_FOV_HALF_RAD
+from perception.noisy_truth import NoisyTruthPerception
 from sim.loop import Simulation
-from sim.vehicle import VehicleState
-
-DT = 1 / 60
-#: A stretch of the grid-loop ego route that runs straight for 60 m from here.
-S0 = 10.0
-
-#: No noise at all: the pipeline's own error (projection, centring, filter) in isolation.
-CLEAN = NoiseParams(0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, name="clean")
 
 
-@pytest.fixture(scope="module")
-def built():
-    return SyntheticGrid().build("grid-loop")
+def _noisy_sim(seed=4):
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=seed)
+    assert sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "noisy-truth"}).ok
+    return sim
 
 
-def agent_at(route, s, *, speed=0.0, cls="car", size=Size(length=4.6, width=1.9, height=1.5)):
-    x, y = route.point_at(s)
-    return SimpleNamespace(
-        id="lead",
-        cls=cls,
-        size=size,
-        emergency_speed_mps=None,
-        state=SimpleNamespace(x=x, y=y, heading=route.heading_at(s), speed_mps=speed),
-    )
-
-
-def ego_at(route, s=S0, speed=0.0):
-    x, y = route.point_at(s)
-    return VehicleState(x=x, y=y, heading=route.heading_at(s), speed_mps=speed)
-
-
-def run(src, ego, agents, route, seconds=2.0):
-    out, t = [], 0.0
-    for _ in range(int(seconds / DT)):
-        src.advance_to(t)
-        out = src.observe(ego, agents, route)
-        t += DT
+def _stream(sim, steps):
+    out = []
+    for _ in range(steps):
+        sim.step()
+        out.append([d.model_dump(mode="json") for d in sim.world.detections])
     return out
 
 
-def test_it_is_a_perception_source(built):
-    assert isinstance(NoisyTruthPerception(CLEAN), PerceptionSource)
+def test_same_seed_gives_identical_detections():
+    assert _stream(_noisy_sim(4), 300) == _stream(_noisy_sim(4), 300)
 
 
-def test_observing_before_the_clock_is_set_is_an_error(built):
-    with pytest.raises(RuntimeError):
-        NoisyTruthPerception(CLEAN).observe(ego_at(built.ego_route), [], built.ego_route)
+def test_seeds_diverge_on_the_same_world():
+    """Same scene, same ego, same agents: only the perception seed differs."""
+    built = SyntheticGrid().build("grid-merge")
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    a, b = NoisyTruthPerception(1), NoisyTruthPerception(2)
+    seen_a, seen_b = [], []
+    for i in range(60):
+        sim.step()
+        t = i * 0.1
+        args = (sim.ego, sim._traffic.agents, built.ego_route, t)
+        seen_a.append([(d.pose.x, d.pose.y) for d in a.observe(*args)])
+        seen_b.append([(d.pose.x, d.pose.y) for d in b.observe(*args)])
+    assert any(seen_a)
+    assert seen_a != seen_b
 
 
-def test_a_clean_sensor_places_a_lead_on_its_body_centre(built):
-    route = built.ego_route
-    src = NoisyTruthPerception(CLEAN, seed=1)
-    (d,) = run(src, ego_at(route), [agent_at(route, S0 + 30.0)], route)
-    x, y = route.point_at(S0 + 30.0)
-    assert math.hypot(d.pose.x - x, d.pose.y - y) < 1.0
+def test_recall_and_precision_land_in_a_degraded_band():
+    # Re-pinned on the integration branch. One 10 s window on seed 4 now scores recall 1.0:
+    # M1's rewritten tracker coasts through dropouts, so noisy truth is gentler than the
+    # `Tracker` this was calibrated on (measured recall over seeds 4-8: 0.75, 0.79, 0.48, 0.67,
+    # 0.71 before; 1.00, 0.97, 0.92, 0.96, 0.99 after). Pooled over those seeds it must still
+    # be below perfect (the sensor does drop things) and well above chance.
+    recalls, precisions = [], []
+    for seed in (4, 5, 6, 7, 8):
+        sim = _noisy_sim(seed)
+        for _ in range(600):
+            sim.step()
+        sim.apply_dict({"id": "s", "cmd": "run_summary"})
+        summary = next(e.summary for e in sim.state_update().events if e.code == "run_summary")
+        assert summary.perception_mode == "noisy-truth"
+        assert summary.recall is not None and summary.precision is not None
+        recalls.append(summary.recall)
+        precisions.append(summary.precision)
+    assert 0.5 <= sum(recalls) / len(recalls) < 1.0
+    assert sum(precisions) / len(precisions) > 0.6
 
 
-@pytest.mark.parametrize("gap", [12.0, 25.0, 45.0])
-def test_ground_truth_and_ml_agree_on_the_clearance_to_the_same_lead(built, gap):
-    """The audit's double subtraction. `plan.control` takes half the lead's length off a
-    centre-to-centre gap; if the ML pose is the lead's near face that is taken off twice."""
-    route = built.ego_route
-    ego = ego_at(route)
-    lead = agent_at(route, S0 + gap)
-
-    gt_det = GroundTruthPerception().observe(ego, [lead], route)[0]
-    ml_det = run(NoisyTruthPerception(CLEAN, seed=1), ego, [lead], route)[0]
-
-    gt_clear = lead_clearance(gt_det, route.signed_gap(S0, route.project((gt_det.pose.x, gt_det.pose.y))))
-    ml_clear = lead_clearance(ml_det, route.signed_gap(S0, route.project((ml_det.pose.x, ml_det.pose.y))))
-    assert gt_clear == pytest.approx(gap - 2.3 - 2.35)
-    # A near-face pose would be short by 2.3 m (body-to-body clearance); centred, the residual is range error only.
-    assert abs(ml_clear - gt_clear) < 1.0, (gt_clear, ml_clear)
-
-
-def test_the_clearance_is_body_to_body():
-    lead = SimpleNamespace(size=Size(length=4.6, width=1.9, height=1.5))
-    assert lead_clearance(lead, 20.0) == pytest.approx(20.0 - 2.3 - 2.35)
-
-
-def test_nothing_is_published_before_the_observation_latency_has_elapsed(built):
-    route = built.ego_route
-    slow = replace(CLEAN, latency_s=0.5)
-    src = NoisyTruthPerception(slow, seed=1)
-    ego, agents = ego_at(route), [agent_at(route, S0 + 30.0)]
-    t, first = 0.0, None
-    while t < 2.0 and first is None:
-        src.advance_to(t)
-        if src.observe(ego, agents, route):
-            first = t
-        t += DT
-    # Latency 0.5 s, then a track must be matched in `MIN_PUBLISH_HITS` (4) frames, 0.1 s apart.
-    assert first is not None and 0.75 <= first <= 1.05
-
-
-def test_the_same_seed_gives_the_same_detections_and_another_seed_does_not(built):
-    route = built.ego_route
-    ego, agents = ego_at(route), [agent_at(route, S0 + 40.0), agent_at(route, S0 + 55.0, cls="truck")]
-
-    def poses(seed):
-        return [(d.id, round(d.pose.x, 6), round(d.pose.y, 6))
-                for d in run(NoisyTruthPerception(NOMINAL, seed), ego, agents, route, 3.0)]
-
-    assert poses(3) == poses(3)
-    assert poses(3) != poses(4)
-
-
-def test_an_agents_noise_does_not_depend_on_which_other_agents_exist(built):
-    """Paired runs see the same draws for the same agent: another car in view must not
-    shift the stream the first one's box is drawn from."""
-    route = built.ego_route
-    ego, lead = ego_at(route), agent_at(route, S0 + 40.0)
-    other = agent_at(route, S0 + 50.0)
-    other.id = "other"
-
-    def lead_boxes(agents):
-        sensor = NoisyTruthPerception(NOMINAL, seed=9).pipeline
-        out = []
-        for i in range(30):
-            sensor.advance(i * 0.1, ego, agents)
-        for r in [sensor.latest()]:
-            out = sorted((b.x0, b.y0, b.x1, b.y1, b.cls) for b in r.boxes)
-        return out
-
-    alone, with_other = lead_boxes([lead]), lead_boxes([lead, other])
-    assert alone and all(b in with_other for b in alone)
-
-
-@pytest.mark.parametrize("cameras,bound", [("front", 0.05), ("front+sides100", 0.05)])
-def test_false_positives_rarely_survive_the_birth_rule(built, cameras, bound):
-    """Birth needs 2 hits in 3 frames. At the nominal 0.2 false positives per frame PER CAMERA an
-    empty road still shows a ghost on some frames. Before tracks had to be matched in 4 frames to be
-    published (`MIN_PUBLISH_HITS`): 3.9 % of frames over 120 s with the front camera, 14.3 % with
-    three (each camera is its own detector run, so the false-positive rate triples). With it: 0.0 %
-    and 2.1 % (3 matched frames: 5.9 %; 5: 0.4 %). Stress doubles the per-frame rate."""
-    route = built.ego_route
-    src = NoisyTruthPerception(NOMINAL, seed=5, cameras=cameras)
-    frames = ghosts = 0
-    t = 0.0
-    for i in range(60 * 120):
-        src.advance_to(t)
-        out = src.observe(ego_at(route), [], route)
-        if i % 6 == 0:
-            frames += 1
-            ghosts += bool(out)
-        t += DT
-    assert ghosts / frames < bound
-
-
-# -- audit fix: ML mode can never read its own overlay ---------------------- #
-
-
-def test_ml_perception_ignores_the_agent_list():
-    """`MlPerception` is handed the simulation's agents because the protocol carries them,
-    and must not read them. Garbage in that argument changes nothing."""
-    from perception.ml_source import MlPerception
-    from perception.pipeline import Box2D, PipelineResult
-    from perception.tracker import Tracker
-    from schema import CameraParams
-
-    cam = CameraParams(x=0.0, y=0.0, z=1.5, yaw=0.0, pitch=0.0, roll=0.0, fov_y_deg=50.0, aspect=640 / 384)
-    result = PipelineResult([Box2D(300, 300, 340, 350, "car", 0.9)], 0, 0.0, 5.0, 7.0, cam, 640, 384)
-    pipe = SimpleNamespace(latest=lambda: result)
-    route = SyntheticGrid().build("grid-loop").ego_route
-    ego = ego_at(route)
-
-    def run_with(agents):
-        src = MlPerception(pipe, Tracker(birth_hits=1), min_publish_hits=1)
-        return [d.model_dump() for d in src.observe(ego, agents, route)]
-
-    assert run_with([]) == run_with([agent_at(route, S0 + 10.0), agent_at(route, S0 + 20.0)])
-    assert run_with([]), "the canned box did produce a detection"
-
-
-def test_the_world_fleet_is_independent_of_what_ml_perceived():
-    """In ML mode the wire's `world_agents` (what the renderer draws, and so what the
-    detector camera sees) is ground truth regardless of `detections` (ML's output)."""
-    npt = NoisyTruthPerception(replace(CLEAN, p_detect_near=0.0, p_detect_far=0.0, p_detect_occluded=0.0), seed=1)
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=2, perception_pipeline=npt.pipeline, ml_perception=npt)
-    sim.perception_mode = "ml"
+def test_nothing_behind_the_ego_is_reported():
+    sim = _noisy_sim(4)
     for _ in range(600):
         sim.step()
-    frame = sim.state_update()
-    assert frame.detections == [], "a blind detector perceives nothing"
-    assert len(frame.world_agents) > 0, "and the world it failed to see is still drawn"
-    assert frame.detections_shadow, "ground truth stays available as the reference"
+        ego = sim.ego
+        for d in sim.world.detections:
+            bearing = math.atan2(d.pose.y - ego.y, d.pose.x - ego.x)
+            rear = abs(math.remainder(bearing - (ego.heading + math.pi), math.tau))
+            assert rear > REAR_FOV_HALF_RAD, d.id
 
 
-def test_the_sensor_does_not_read_the_driving_feed():
-    """The loop never hands the sensor `world.detections`: poisoning it changes nothing."""
-    def drive(poison):
-        npt = NoisyTruthPerception(NOMINAL, seed=4)
-        sim = Simulation(SyntheticGrid(), "grid-loop", seed=2, perception_pipeline=npt.pipeline, ml_perception=npt)
-        sim.perception_mode = "ml"
-        for _ in range(300):
-            if poison:
-                sim.world.detections = []
+def test_wire_reports_noisy_truth_without_detector_timing():
+    sim = _noisy_sim(4)
+    for _ in range(60):
+        sim.step()
+    stats = sim.state_update().perception
+    assert stats is not None
+    assert stats.mode == "noisy-truth"
+    assert stats.detector_ms is None and stats.server_e2e_ms is None
+    assert stats.precision is not None
+
+
+def test_set_perception_without_a_pipeline_accepts_noisy_truth_but_not_ml():
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    assert not sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "ml"}).ok
+    assert sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "noisy-truth"}).ok
+    assert sim.perception_mode == "noisy-truth"
+    assert sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "ground-truth"}).ok
+    assert sim.state_update().perception is None
+
+
+def test_an_empty_world_never_raises():
+    built = SyntheticGrid().build("grid-merge")
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    noisy = NoisyTruthPerception(0)
+    for i in range(30):
+        noisy.observe(sim.ego, [], built.ego_route, i * 0.1)
+
+
+def test_vehicle_status_names_the_mode():
+    sim = _noisy_sim()
+    perception = next(
+        s for s in sim.state_update().telemetry.vehicle.subsystems if s.key == "perception"
+    )
+    assert perception.detail == "noisy truth"
+
+
+def test_switching_back_to_noisy_truth_serves_no_stale_tracks():
+    """Tracks left from before a switch are world coordinates the planner
+    could brake for; coming back must start cold, like a fresh tracker."""
+    sim = _noisy_sim(4)
+    for _ in range(120):
+        sim.step()
+    assert sim.world.detections
+    sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "ground-truth"})
+    for _ in range(300):
+        sim.step()
+    sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "noisy-truth"})
+    sim.step()
+    assert sim.world.detections == []
+
+
+class _BlindMl:
+    """An ML double that sees nothing, so every reference object is a miss."""
+
+    last_frame_t = None
+
+    def observe(self, ego, agents, route):
+        return []
+
+    def reset(self):
+        pass
+
+
+def _expected_reference(sim, t):
+    """Recorded in-range truth at `t`, split into forward-visible and the rest."""
+    from perception.driver_view import forward_visible
+
+    ego = sim.pose_history.ego_at(t)
+    headings, sizes = sim.pose_history.headings_at(t), sim.pose_history.sizes_at(t)
+    seen = [
+        o
+        for o in sim.pose_history.at(t)
+        if forward_visible(ego, o.x, o.y, headings[o.id], sizes[o.id], sim.scene.description.buildings)
+    ]
+    behind = [
+        o
+        for o in sim.pose_history.at(t)
+        if math.cos(math.atan2(o.y - ego.y, o.x - ego.x) - ego.heading) < -0.5
+    ]
+    return seen, behind
+
+
+def test_ml_and_noisy_truth_are_scored_against_the_same_forward_visible_truth():
+    from perception.pipeline import PerceptionPipeline, StubDetector
+
+    ml = _BlindMl()
+    pipeline = PerceptionPipeline(StubDetector())
+    try:
+        sim = Simulation(
+            SyntheticGrid(), "grid-merge", seed=4, perception_pipeline=pipeline, ml_perception=ml
+        )
+        for _ in range(30):
             sim.step()
-        return [(d.id, round(d.pose.x, 6)) for d in sim.world.detections]
 
-    assert drive(False) == drive(True)
+        # ML: sees nothing, so its misses are exactly the reference.
+        ml.last_frame_t = sim.world.t
+        seen, behind = _expected_reference(sim, sim.world.t)
+        sim.step()
+        assert behind, "grid-merge seed 4 must have an agent behind the ego"
+        assert sim.perception_score.false_negatives == len(seen)
+        assert not {o.id for o in behind} & {o.id for o in seen}
 
-
-# -- camera sets (FOV study) ---------------------------------------------------- #
-
-
-def beside(route, bearing_deg, dist, **kw):
-    """An agent `dist` m from the ego at `bearing_deg` off its heading (positive = left)."""
-    ego = ego_at(route)
-    b = ego.heading + math.radians(bearing_deg)
-    a = agent_at(route, S0, **kw)
-    a.state.x, a.state.y = ego.x + dist * math.cos(b), ego.y + dist * math.sin(b)
-    a.state.heading = b + math.pi / 2
-    return a
-
-
-def seen_by(cameras, agent, route, seconds=2.0):
-    src = NoisyTruthPerception(CLEAN, seed=1, cameras=cameras)
-    return run(src, ego_at(route), [agent], route, seconds)
-
-
-def test_a_car_at_66_degrees_is_invisible_to_the_front_camera_and_seen_by_side_cameras(built):
-    route = built.ego_route
-    car = beside(route, 66.0, 14.0)
-    assert seen_by("front", car, route) == []
-    assert len(seen_by("front+sides76", car, route)) == 1
-    assert len(seen_by("front+sides100", car, route)) == 1
-    assert seen_by("wide110", car, route) == [], "+-55 deg: 66 is outside it"
-    assert seen_by("wide110", beside(route, 50.0, 14.0), route)
-
-
-def test_a_car_in_the_overlap_of_two_cameras_is_one_track_not_two(built):
-    route = built.ego_route
-    car = beside(route, 38.0, 16.0)
-    out = seen_by("front+sides76", car, route, 3.0)
-    assert len(out) == 1
-    assert math.hypot(out[0].pose.x - car.state.x, out[0].pose.y - car.state.y) < 2.0
-
-
-def test_coarser_pixels_cost_focal_length():
-    from perception.noisy_truth import CAMERA_SETS, FRONT, REFERENCE_F_PX
-
-    wide = CAMERA_SETS["wide110"][0]
-    assert wide.f_px < FRONT.f_px == REFERENCE_F_PX
-    assert 108 < wide.hfov_deg < 112 and 75 < FRONT.hfov_deg < 76
-    side = CAMERA_SETS["front+sides100"][1]
-    assert side.width == side.height == 640 and side.f_px < FRONT.f_px
+        # Noisy-truth, same sim: its matches plus misses are the same reference.
+        assert sim.apply_dict({"id": "p", "cmd": "set_perception", "mode": "noisy-truth"}).ok
+        sim.step()
+        frame_t = sim._noisy.last_frame_t
+        seen, behind = _expected_reference(sim, frame_t)
+        score = sim.perception_score
+        assert behind
+        assert score.true_positives + score.false_negatives == len(seen)
+    finally:
+        pipeline.shutdown()

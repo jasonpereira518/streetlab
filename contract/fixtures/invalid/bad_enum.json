@@ -36,9 +36,9 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 5.380000000000002,
-        "y": 57.62067692172593,
-        "heading": 1.3686618866655125
+        "x": 1.7999999999999992,
+        "y": 60.89644077445028,
+        "heading": 1.5707963267948966
       },
       "size": {
         "length": 4.6,
@@ -46,15 +46,15 @@
         "height": 1.45
       },
       "velocity": [
-        1.1755683574335591,
-        5.736350459948835
+        4.3626828654579725e-16,
+        7.124801809787838
       ],
-      "speed_mps": 5.855568081950226,
+      "speed_mps": 7.124801809787838,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
-      "lane_offset": -1,
+      "lane_offset": 0,
       "emergency": false
     }
   ],
@@ -63,16 +63,16 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 5.380000000000002,
-        "y": 57.62067692172593,
-        "heading": 1.3686618866655125
+        "x": 1.7999999999999992,
+        "y": 60.89644077445028,
+        "heading": 1.5707963267948966
       },
       "size": {
         "length": 4.6,
         "width": 1.9,
         "height": 1.45
       },
-      "speed_mps": 5.855568081950226
+      "speed_mps": 7.124801809787838
     },
     {
       "id": "veh_01",
@@ -227,10 +227,10 @@
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": -0.7437,
-        "range_m": 53.57,
-        "range_rate_mps": 2.79,
-        "rcs_db": 7.71,
+        "azimuth": -0.6784,
+        "range_m": 56.82,
+        "range_rate_mps": 4.06,
+        "rcs_db": 7.45,
         "tracked": true
       },
       {
@@ -294,10 +294,10 @@
         {
           "id": "veh_00",
           "cls": "car",
-          "lane_offset": -1,
-          "longitudinal_m": 53.89,
-          "lateral_m": -3.6,
-          "speed_mps": 5.855568081950226,
+          "lane_offset": 0,
+          "longitudinal_m": 57.17,
+          "lateral_m": 0.0,
+          "speed_mps": 7.124801809787838,
           "hazard": false
         }
       ]

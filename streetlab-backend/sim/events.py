@@ -92,6 +92,16 @@ JAYWALK_KERB_M = 2.8
 #: Road kept clear between a crossing and the next signal or stop line.
 JAYWALK_CONTROL_CLEAR_M = 10.0
 
+#: Seeded placement jitter, drawn from `sim.rng` so a pinned seed replays. Only
+#: where a distance is otherwise a fixed constant: cut-in and jaywalker
+#: distances already vary through the ego's speed.
+#: Obstacle and stalled-car distance ahead, as a factor.
+AHEAD_JITTER = (0.8, 1.2)
+#: Cyclist drift rate, as a factor.
+DRIFT_JITTER = (0.7, 1.3)
+#: Jaywalker arrival margin, as a factor.
+MARGIN_JITTER = (0.5, 1.5)
+
 #: Where an obstacle lands, and how long before it is cleared away.
 #:
 #: It expires for the same reason `ScriptedTraffic.slow` is time-boxed: a
@@ -571,6 +581,8 @@ def _jaywalker(sim: "Simulation") -> str | Declined:
     # stop `JAYWALK_MARGIN_M` short of where that puts it. The walker's pace is
     # `JAYWALK_SPEED_MPS * traffic_speed_scale`, like every agent's.
     walk_mps = JAYWALK_SPEED_MPS * _pace(sim)
+    # Seeded placement jitter (`sim.rng`), so a pinned seed replays but presets vary.
+    margin = JAYWALK_MARGIN_M * sim.rng.uniform(*MARGIN_JITTER)
     # The crossing is never farther than `JAYWALK_MAX_AHEAD_M`, nor beyond the next
     # signal or stop sign: the ego halts there, and the walker has long finished
     # by the time it moves on -- measured, the ego stood 48 m short of the crossing
@@ -587,12 +599,12 @@ def _jaywalker(sim: "Simulation") -> str | Declined:
     room = min(JAYWALK_MAX_AHEAD_M, next_control - JAYWALK_CONTROL_CLEAR_M)
     if room < JAYWALK_MIN_AHEAD_M:
         return Declined("the ego is about to stop at a junction ahead, with no road to cross first")
-    t_ego = next((t for t, d, _v in _ego_path(sim) if d >= room - JAYWALK_MARGIN_M), math.inf)
+    t_ego = next((t for t, d, _v in _ego_path(sim) if d >= room - margin), math.inf)
     lead_time_s = min(JAYWALK_HALF_SPAN_M / walk_mps, t_ego)
     start_m = max(JAYWALK_KERB_M, lead_time_s * walk_mps)
     lead_time_s = start_m / walk_mps
     travelled = next(d for t, d, _v in _ego_path(sim) if t >= lead_time_s)
-    ahead = min(max(JAYWALK_MIN_AHEAD_M, travelled + JAYWALK_MARGIN_M), room)
+    ahead = min(max(JAYWALK_MIN_AHEAD_M, travelled + margin), room)
     at = ego_s + ahead
     cx, cy = route.point_at(at)
     heading = route.heading_at(at)
@@ -622,7 +634,8 @@ def _obstacle(sim: "Simulation") -> str | Declined:
     ahead. Zero target speed, so IDM holds it at rest rather than driving it.
     """
     route = sim.scene.ego_route
-    at = _ego_s(sim) + OBSTACLE_AHEAD_M
+    ahead = OBSTACLE_AHEAD_M * sim.rng.uniform(*AHEAD_JITTER)
+    at = _ego_s(sim) + ahead
     agent = _spawn(
         sim,
         kind="obstacle",
@@ -635,7 +648,7 @@ def _obstacle(sim: "Simulation") -> str | Declined:
     at = _clear_of_traffic(sim, route, at, agent.size.length, moving=agent)
     _place(agent, route, at)
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
-    return f"{agent.id} stopped in the lane {OBSTACLE_AHEAD_M:.0f} m ahead"
+    return f"{agent.id} stopped in the lane {ahead:.0f} m ahead"
 
 
 def _emergency_vehicle(sim: "Simulation") -> str | Declined:
@@ -669,6 +682,7 @@ def _stalled_vehicle(sim: "Simulation") -> str | Declined:
     something fair to be judged against.
     """
     route = sim.scene.ego_route
+    ahead = STALLED_AHEAD_M * sim.rng.uniform(*AHEAD_JITTER)
     agent = _spawn(
         sim,
         kind="stalled_vehicle",
@@ -679,11 +693,11 @@ def _stalled_vehicle(sim: "Simulation") -> str | Declined:
         lifetime_s=STALLED_LIFE_S,
     )
     at = _clear_of_traffic(
-        sim, route, _ego_s(sim) + STALLED_AHEAD_M, agent.size.length, moving=agent
+        sim, route, _ego_s(sim) + ahead, agent.size.length, moving=agent
     )
     _place(agent, route, at)
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
-    return f"{agent.id} stalled in the lane {STALLED_AHEAD_M:.0f} m ahead"
+    return f"{agent.id} stalled in the lane {ahead:.0f} m ahead"
 
 
 def _cyclist_drift(sim: "Simulation") -> str | Declined:
@@ -707,7 +721,7 @@ def _cyclist_drift(sim: "Simulation") -> str | Declined:
     )
     _place(agent, route, _ego_s(sim) + CYCLIST_AHEAD_M, lateral_m=kerb)
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
-    agent.lateral_rate_mps = CYCLIST_DRIFT_MPS
+    agent.lateral_rate_mps = CYCLIST_DRIFT_MPS * sim.rng.uniform(*DRIFT_JITTER)
     # Drifting is the scenario; changing lane outright would be a different one.
     agent.lane_change_cooldown_s = CYCLIST_LIFE_S
     return f"{agent.id} drifting in from the kerb {CYCLIST_AHEAD_M:.0f} m ahead"
