@@ -1491,6 +1491,7 @@ def _noisy_stats(quality: ScoreResult | None) -> PerceptionStats:
     """Noisy-truth's wire stats when no pipeline exists: no detector, no frames."""
     return PerceptionStats(
         mode="noisy-truth",
+        pipeline=False,
         detector_ms=None,
         server_e2e_ms=None,
         frames_received=0,

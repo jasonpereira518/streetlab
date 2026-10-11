@@ -263,6 +263,7 @@ describe('TopToolbar', () => {
       ...harness.sim.frame(),
       perception: {
         mode: 'ground-truth',
+        pipeline: true,
         detector_ms: null,
         server_e2e_ms: null,
         frames_received: 0,
@@ -288,6 +289,7 @@ describe('TopToolbar', () => {
       ...harness.sim.frame(),
       perception: {
         mode: 'ground-truth',
+        pipeline: true,
         detector_ms: null,
         server_e2e_ms: null,
         frames_received: 0,
@@ -1040,6 +1042,7 @@ describe('RightPanel', () => {
       ...harness.sim.frame(),
       perception: {
         mode: 'ml',
+        pipeline: true,
         detector_ms: 4.5,
         server_e2e_ms: 31.2,
         frames_received: 120,
@@ -1293,6 +1296,7 @@ describe('Walkthrough presets', () => {
 
     emitSummary(20, null);
     let table = screen.getByTestId('scorecard');
+    expect(screen.getByRole('table', { name: 'Scorecard' })).toBe(table);
     expect(within(table).getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
       'Metric',
       'seed 20',
@@ -1323,5 +1327,43 @@ describe('Walkthrough presets', () => {
     fireEvent.click(screen.getByRole('tab', { name: /events/i }));
     expect(screen.getByText('hazard_declined').closest('li')!.className).toMatch(/event--declined/);
     expect(screen.getByText('cut_in').closest('li')!.className).toMatch(/event--fired/);
+  });
+});
+
+describe('Perception menu pipeline flag', () => {
+  const emitStats = (pipeline: boolean) => {
+    harness!.sim.step();
+    harness!.emit({
+      ...harness!.sim.frame(),
+      perception: {
+        mode: 'noisy-truth',
+        pipeline,
+        detector_ms: null,
+        server_e2e_ms: null,
+        frames_received: 0,
+        frames_dropped: 0,
+        precision: null,
+        recall: null,
+        mean_pos_err_m: null,
+      },
+    });
+  };
+
+  it('noisy-truth stats with no pipeline leave the ML item disabled', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    emitStats(false);
+    fireEvent.click(screen.getByTitle('Perception source'));
+    expect(screen.getByRole('menuitemradio', { name: /ML/ }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('a pipeline enables the ML item', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    emitStats(true);
+    fireEvent.click(screen.getByTitle('Perception source'));
+    expect(screen.getByRole('menuitemradio', { name: /ML/ }).hasAttribute('disabled')).toBe(false);
   });
 });

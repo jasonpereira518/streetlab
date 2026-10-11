@@ -367,6 +367,11 @@ class CameraParams(Wire):
 
 class PerceptionStats(Wire):
     mode: PerceptionMode
+    # True iff an ML perception pipeline exists on the server. Stats also
+    # arrive without one while noisy truth drives, so a non-null `perception`
+    # no longer implies a pipeline: the client gates camera-frame uploads and
+    # the ML option on this, not on presence.
+    pipeline: bool
     # Null until Phase 2 lands a model.
     detector_ms: NonNeg | None
     # Socket arrival -> detections available, measured entirely on the

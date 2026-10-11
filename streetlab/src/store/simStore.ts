@@ -38,6 +38,11 @@ import { LAYER_KEYS } from '../schema';
 import type { ConnectionStatus, Transport } from '../net/transport';
 import { httpUrlForWsLabel, perfMetrics } from '../perf/perfMetrics';
 
+/** Whether the server has an ML perception pipeline. Not `perception !==
+ * null`: noisy truth sends stats without one. Gates camera-frame uploads
+ * (Renderer) and the ML perception option (TopToolbar). */
+export const hasPipeline = (p: PerceptionStats | null): boolean => p?.pipeline === true;
+
 /* ------------------------------------------------------------------ */
 /* Frame bus                                                           */
 /* ------------------------------------------------------------------ */
@@ -694,9 +699,10 @@ function applyServerMessage(
       if (s.perception !== null || msg.perception !== null) {
         patch.perception = msg.perception;
       }
-      if (msg.perception && msg.perception.mode !== s.perceptionMode) {
-        patch.perceptionMode = msg.perception.mode;
-      }
+      // Null perception happens in exactly one backend state: ground truth
+      // with no pipeline (a pipeline always sends stats; so does noisy truth).
+      const wireMode = msg.perception?.mode ?? 'ground-truth';
+      if (wireMode !== s.perceptionMode) patch.perceptionMode = wireMode;
       if (s.paused !== msg.paused) patch.paused = msg.paused;
       if (s.assistActive !== msg.assist_active) {
         patch.assistActive = msg.assist_active;
@@ -765,6 +771,12 @@ function applyServerMessage(
           locationProgress: null,
           locationError: msg.message,
         });
+        return;
+      }
+      // A refused load_preset never swaps the scene, so the optimistic
+      // activePresetId from `loadPreset` falls back to what is running.
+      if (msg.cmd === 'load_preset' && !msg.ok) {
+        set((s) => ({ lastAck: msg, activePresetId: s.scene?.preset_id ?? null }));
         return;
       }
       set({ lastAck: msg });

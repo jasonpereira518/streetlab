@@ -378,6 +378,7 @@ describe('Walkthrough presets wire', () => {
       ...sample,
       perception: {
         mode: 'noisy-truth',
+        pipeline: false,
         detector_ms: null,
         server_e2e_ms: null,
         frames_received: 0,

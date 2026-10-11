@@ -154,6 +154,7 @@ class PerceptionPipeline:
             latest = self._latest
         return PerceptionStats(
             mode=mode,
+            pipeline=True,
             detector_ms=None if latest is None else latest.detector_ms,
             server_e2e_ms=None if latest is None else latest.server_e2e_ms,
             frames_received=self._frames.received,

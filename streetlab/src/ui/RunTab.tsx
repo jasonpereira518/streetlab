@@ -130,6 +130,8 @@ export function RunTab() {
         ) : (
           <div className="scorecard-wrap">
             <table className="scorecard" data-testid="scorecard">
+              {/* The accessible name; the Field heading above shows it visually. */}
+              <caption className="sr-only">Scorecard</caption>
               <thead>
                 <tr>
                   <th scope="col">Metric</th>

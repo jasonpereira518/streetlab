@@ -335,6 +335,10 @@ export const CameraParamsSchema = z.object({
 /** Transport and quality numbers for the ML perception path. */
 export const PerceptionStatsSchema = z.object({
   mode: PerceptionModeSchema,
+  /** True iff an ML perception pipeline exists on the server. Stats also
+   * arrive without one while noisy truth drives, so presence alone no longer
+   * implies a pipeline — gate camera frames and the ML option on this. */
+  pipeline: z.boolean(),
   /** Model inference time. Null until Phase 2 lands a model. */
   detector_ms: z.number().nonnegative().nullable(),
   /**

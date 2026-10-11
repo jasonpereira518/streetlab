@@ -1524,6 +1524,14 @@ canvas {
 }
 .run-notes dd { margin: 1px 0 0; color: var(--c-text-muted, #5f6e80); }
 .scorecard-wrap { overflow-x: auto; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .scorecard {
   width: 100%;
   border-collapse: collapse;

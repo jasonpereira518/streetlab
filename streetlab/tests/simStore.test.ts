@@ -11,8 +11,8 @@
  *    `Object.keys(patch).length` change-gate for every user not running ML.
  */
 import { describe, expect, it } from 'vitest';
-import { useSimStore } from '../src/store/simStore';
-import type { RunSummary, StateUpdate } from '../src/schema';
+import { hasPipeline, useSimStore } from '../src/store/simStore';
+import type { PerceptionStats, RunSummary, StateUpdate } from '../src/schema';
 import { createHarness, resetStore } from './harness';
 
 const CAMERA_FRAME_CMD = {
@@ -81,6 +81,7 @@ describe('perception change-gate', () => {
       events: [],
       perception: {
         mode: 'ml',
+        pipeline: true,
         detector_ms: 1.2,
         server_e2e_ms: 5.6,
         frames_received: 1,
@@ -459,6 +460,7 @@ describe('walkthrough presets', () => {
       seq: base.seq + 1,
       perception: {
         mode: 'noisy-truth',
+        pipeline: false,
         detector_ms: null,
         server_e2e_ms: null,
         frames_received: 0,
@@ -469,5 +471,47 @@ describe('walkthrough presets', () => {
       },
     });
     expect(useSimStore.getState().perceptionMode).toBe('noisy-truth');
+  });
+});
+
+describe('perception fix round', () => {
+  const stats = (mode: PerceptionStats['mode'], pipeline: boolean): PerceptionStats => ({
+    mode,
+    pipeline,
+    detector_ms: null,
+    server_e2e_ms: null,
+    frames_received: 0,
+    frames_dropped: 0,
+    precision: null,
+    recall: null,
+    mean_pos_err_m: null,
+  });
+
+  it('hasPipeline (the camera-frame gate and the ML option) reads the explicit flag', () => {
+    expect(hasPipeline(null)).toBe(false);
+    expect(hasPipeline(stats('noisy-truth', false))).toBe(false);
+    expect(hasPipeline(stats('noisy-truth', true))).toBe(true);
+    expect(hasPipeline(stats('ground-truth', true))).toBe(true);
+  });
+
+  it('a null perception on the wire means ground truth', () => {
+    const h = createHarness();
+    h.emitScene();
+    const base = h.emitFrame();
+    h.emit({ ...base, seq: base.seq + 1, perception: stats('noisy-truth', false) });
+    expect(useSimStore.getState().perceptionMode).toBe('noisy-truth');
+    h.emit({ ...base, seq: base.seq + 2, perception: null });
+    expect(useSimStore.getState().perceptionMode).toBe('ground-truth');
+  });
+
+  it('a refused load_preset restores the previous activePresetId', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().loadPreset('mock-cutin-20s');
+    expect(useSimStore.getState().activePresetId).toBe('mock-cutin-20s');
+    // The harness acks synchronously; the mock refuses an unknown id.
+    useSimStore.getState().loadPreset('nope');
+    expect(useSimStore.getState().lastAck?.ok).toBe(false);
+    expect(useSimStore.getState().activePresetId).toBe('mock-cutin-20s');
   });
 });

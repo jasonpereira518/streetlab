@@ -403,6 +403,7 @@ def test_state_update_perception_defaults_to_null_and_survives_serialisation():
 
     stats = PerceptionStats(
         mode="ground-truth",
+        pipeline=True,
         detector_ms=None,
         server_e2e_ms=12.5,
         frames_received=3,

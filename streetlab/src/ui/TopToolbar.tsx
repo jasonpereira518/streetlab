@@ -5,9 +5,9 @@
  * frame stream at ~10 Hz and only re-renders when the displayed value changes.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CameraView, Maneuver, PerceptionMode, PerceptionStats } from '../schema';
+import type { CameraView, Maneuver, PerceptionMode } from '../schema';
 import { useFrameValue } from '../store/hooks';
-import { useSimStore } from '../store/simStore';
+import { hasPipeline, useSimStore } from '../store/simStore';
 import { formatTtc, toMph } from '../units';
 import {
   ActivityIcon,
@@ -282,15 +282,6 @@ function CameraMenu({
       )}
     </div>
   );
-}
-
-/**
- * Whether an ONNX pipeline exists. Stats arrive from one whenever it does;
- * without one they arrive only while noisy truth drives, and then carry no
- * detector and no frames (`_noisy_stats` in the backend's `sim/loop.py`).
- */
-function hasPipeline(p: PerceptionStats | null): boolean {
-  return p !== null && !(p.mode === 'noisy-truth' && p.detector_ms === null && p.frames_received === 0);
 }
 
 /**
