@@ -58,81 +58,6 @@
       "emergency": false
     },
     {
-      "id": "veh_01",
-      "cls": "car",
-      "pose": {
-        "x": 44.11233617767533,
-        "y": 78.2,
-        "heading": 0.0
-      },
-      "size": {
-        "length": 4.9,
-        "width": 1.95,
-        "height": 1.5
-      },
-      "velocity": [
-        6.03440185155966,
-        0.0
-      ],
-      "speed_mps": 6.03440185155966,
-      "confidence": 1.0,
-      "hazard": false,
-      "hazard_label": null,
-      "ttc_s": null,
-      "lane_offset": 0,
-      "emergency": false
-    },
-    {
-      "id": "veh_03",
-      "cls": "car",
-      "pose": {
-        "x": 78.2,
-        "y": 14.25444877638013,
-        "heading": -1.5707963267948966
-      },
-      "size": {
-        "length": 4.3,
-        "width": 1.82,
-        "height": 1.42
-      },
-      "velocity": [
-        2.1858208349815393e-16,
-        -3.5697163239284877
-      ],
-      "speed_mps": 3.5697163239284877,
-      "confidence": 1.0,
-      "hazard": false,
-      "hazard_label": null,
-      "ttc_s": null,
-      "lane_offset": 0,
-      "emergency": false
-    },
-    {
-      "id": "veh_04",
-      "cls": "bus",
-      "pose": {
-        "x": 64.28765263542554,
-        "y": 1.799999999999999,
-        "heading": 3.141592653589793
-      },
-      "size": {
-        "length": 11.5,
-        "width": 2.55,
-        "height": 3.3
-      },
-      "velocity": [
-        -5.596224933900068,
-        6.853398952609326e-16
-      ],
-      "speed_mps": 5.596224933900068,
-      "confidence": 1.0,
-      "hazard": false,
-      "hazard_label": null,
-      "ttc_s": null,
-      "lane_offset": 0,
-      "emergency": false
-    },
-    {
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
@@ -242,30 +167,6 @@
         "tracked": true
       },
       {
-        "id": "veh_01",
-        "azimuth": -0.5423,
-        "range_m": 78.92,
-        "range_rate_mps": 0.92,
-        "rcs_db": 5.69,
-        "tracked": true
-      },
-      {
-        "id": "veh_03",
-        "azimuth": -1.5101,
-        "range_m": 76.78,
-        "range_rate_mps": -1.54,
-        "rcs_db": 5.86,
-        "tracked": true
-      },
-      {
-        "id": "veh_04",
-        "azimuth": -1.6999,
-        "range_m": 63.62,
-        "range_rate_mps": 0.48,
-        "rcs_db": 6.91,
-        "tracked": true
-      },
-      {
         "id": "veh_05",
         "azimuth": -0.364,
         "range_m": 4.65,
@@ -338,33 +239,6 @@
           "longitudinal_m": 51.8,
           "lateral_m": -3.6,
           "speed_mps": 3.080059151323533,
-          "hazard": false
-        },
-        {
-          "id": "veh_01",
-          "cls": "car",
-          "lane_offset": 0,
-          "longitudinal_m": 106.13,
-          "lateral_m": 0.0,
-          "speed_mps": 6.03440185155966,
-          "hazard": false
-        },
-        {
-          "id": "veh_03",
-          "cls": "car",
-          "lane_offset": 0,
-          "longitudinal_m": -93.67,
-          "lateral_m": 0.0,
-          "speed_mps": 3.5697163239284877,
-          "hazard": false
-        },
-        {
-          "id": "veh_04",
-          "cls": "bus",
-          "lane_offset": 0,
-          "longitudinal_m": -69.89,
-          "lateral_m": 0.0,
-          "speed_mps": 5.596224933900068,
           "hazard": false
         },
         {

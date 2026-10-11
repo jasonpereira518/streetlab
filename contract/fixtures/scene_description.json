@@ -5616,5 +5616,186 @@
       "group": "crossing",
       "ml_limitation": null
     }
-  ]
+  ],
+  "presets": [
+    {
+      "id": "control",
+      "title": "Control run",
+      "blurb": "A quiet loop with no hazards: the baseline every other preset is read against.",
+      "what_to_watch": "The baseline scorecard: distance, min TTC and hard brakes with nothing staged.",
+      "what_varies": "Only the seed: traffic start offsets and target speeds.",
+      "scene": "loop",
+      "seed": null,
+      "perception": "ground-truth",
+      "params": {},
+      "hazards": [],
+      "duration_s": 90.0
+    },
+    {
+      "id": "lead-pressure",
+      "title": "Lead-vehicle pressure",
+      "blurb": "Slow traffic, two hard stops and a stalled car on the merge route.",
+      "what_to_watch": "Whether the ego queues behind or changes lane around each blockage.",
+      "what_varies": "Hazard times jitter, and the stalled car's distance with them; with ego speed and the traffic gaps that decides queue or pass.",
+      "scene": "merge",
+      "seed": null,
+      "perception": "ground-truth",
+      "params": {
+        "traffic_speed_scale": 0.8
+      },
+      "hazards": [
+        "sudden_brake",
+        "stalled_vehicle",
+        "sudden_brake"
+      ],
+      "duration_s": 90.0
+    },
+    {
+      "id": "cut-in-gauntlet",
+      "title": "Cut-in gauntlet",
+      "blurb": "Neighbours cut in at random intervals, each at a 3 s time to collision.",
+      "what_to_watch": "Hard-brake count and min TTC.",
+      "what_varies": "Cut-in arrival times are exponential, about one every 12 s.",
+      "scene": "arterial",
+      "seed": null,
+      "perception": "ground-truth",
+      "params": {
+        "cutin_period_s": 12
+      },
+      "hazards": [
+        "cut_in"
+      ],
+      "duration_s": 120.0
+    },
+    {
+      "id": "vulnerable-road-users",
+      "title": "Vulnerable road users",
+      "blurb": "Cyclists drifting in and pedestrians crossing, seen through noisy perception.",
+      "what_to_watch": "Late track births, mid-crossing dropouts and reaction latency.",
+      "what_varies": "Hazard times, drift rates and crossing margins, plus the perception noise.",
+      "scene": "loop",
+      "seed": null,
+      "perception": "noisy-truth",
+      "params": {},
+      "hazards": [
+        "cyclist_drift",
+        "jaywalker",
+        "jaywalker",
+        "cyclist_drift"
+      ],
+      "duration_s": 100.0
+    },
+    {
+      "id": "junction-conflicts",
+      "title": "Junction conflicts",
+      "blurb": "Red-light runners and an oncoming car drifting over the line at signals.",
+      "what_to_watch": "min_clearance_m on the oncoming drift; hazard_declined when a window closes.",
+      "what_varies": "When a runner fires depends on the signal cycle the ego meets; a runner only stages on a green with time to spare.",
+      "scene": "signals",
+      "seed": null,
+      "perception": "ground-truth",
+      "params": {},
+      "hazards": [
+        "red_light_runner",
+        "oncoming_drift",
+        "red_light_runner"
+      ],
+      "duration_s": 150.0
+    },
+    {
+      "id": "ladder-ground-truth",
+      "title": "Perception ladder: ground truth",
+      "blurb": "The reference rung: the planner sees everything in view.",
+      "what_to_watch": "Precision, recall, reaction latency and min TTC against the other rungs.",
+      "what_varies": "Nothing but sensing: seed 41 pins traffic and the hazards fire at fixed times, so the three ladder rungs differ only in what the planner is told.",
+      "scene": "merge",
+      "seed": 41,
+      "perception": "ground-truth",
+      "params": {},
+      "hazards": [
+        "cut_in",
+        "stalled_vehicle",
+        "jaywalker",
+        "cyclist_drift"
+      ],
+      "duration_s": 90.0
+    },
+    {
+      "id": "ladder-noisy-truth",
+      "title": "Perception ladder: noisy truth",
+      "blurb": "The same run with seeded dropout and position noise on every object.",
+      "what_to_watch": "Precision, recall, reaction latency and min TTC against the other rungs.",
+      "what_varies": "Nothing but sensing: seed 41 pins traffic and the hazards fire at fixed times, so the three ladder rungs differ only in what the planner is told.",
+      "scene": "merge",
+      "seed": 41,
+      "perception": "noisy-truth",
+      "params": {},
+      "hazards": [
+        "cut_in",
+        "stalled_vehicle",
+        "jaywalker",
+        "cyclist_drift"
+      ],
+      "duration_s": 90.0
+    },
+    {
+      "id": "ladder-ml",
+      "title": "Perception ladder: ML detector",
+      "blurb": "The same run driven by the real ONNX detector, where it is available.",
+      "what_to_watch": "Precision, recall, reaction latency and min TTC against the other rungs.",
+      "what_varies": "Nothing but sensing: seed 41 pins traffic and the hazards fire at fixed times, so the three ladder rungs differ only in what the planner is told. The ML rung's frames arrive on wall-clock time, so it is not bit-replayable; without a detector it falls back to noisy truth.",
+      "scene": "merge",
+      "seed": 41,
+      "perception": "ml",
+      "params": {},
+      "hazards": [
+        "cut_in",
+        "stalled_vehicle",
+        "jaywalker",
+        "cyclist_drift"
+      ],
+      "duration_s": 90.0
+    },
+    {
+      "id": "dense-arterial-behind",
+      "title": "Dense arterial, threats behind",
+      "blurb": "Fast traffic with a tailgater and an emergency vehicle coming up from behind.",
+      "what_to_watch": "Behind-hazards a forward-only sensor cannot see; the ego does not pull over.",
+      "what_varies": "Hazard times and the perception noise.",
+      "scene": "arterial",
+      "seed": null,
+      "perception": "noisy-truth",
+      "params": {
+        "traffic_speed_scale": 1.1
+      },
+      "hazards": [
+        "tailgater",
+        "emergency_vehicle",
+        "cut_in",
+        "sudden_brake"
+      ],
+      "duration_s": 100.0
+    },
+    {
+      "id": "replay-twin",
+      "title": "Replay twin",
+      "blurb": "Lead-vehicle pressure on a pinned seed: load it twice and get the same run.",
+      "what_to_watch": "A bit-identical run summary on every load; then rerun on a fresh seed.",
+      "what_varies": "Nothing, on seed 7. Load with another seed to see it diverge.",
+      "scene": "merge",
+      "seed": 7,
+      "perception": "ground-truth",
+      "params": {
+        "traffic_speed_scale": 0.8
+      },
+      "hazards": [
+        "sudden_brake",
+        "stalled_vehicle",
+        "sudden_brake"
+      ],
+      "duration_s": 90.0
+    }
+  ],
+  "preset_id": null,
+  "seed": 4
 }
