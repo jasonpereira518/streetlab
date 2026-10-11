@@ -53,7 +53,7 @@ test('boots on the mock with no backend present', async ({ page }) => {
   await expect(page.locator('.brand-name')).toHaveText('StreetLab');
   // "mock" chip proves the default source, not a live socket.
   await expect(page.locator('.link-chip')).toHaveText('mock');
-  await expect(page.getByRole('heading', { name: 'Nob Hill', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Synthetic Grid', exact: true })).toBeVisible();
 });
 
 test('renders the 3D scene within the draw-call budget', async ({ page }) => {
@@ -113,10 +113,9 @@ test('all six telemetry widgets are present and animating', async ({ page }) => 
 });
 
 test('loading a scenario from the sidebar swaps the scene', async ({ page }) => {
-  await expect(page.getByRole('heading', { name: 'Nob Hill', exact: true })).toBeVisible();
-  await page.getByLabel('Load Hyde St Descent').click();
-  await expect(page.getByRole('heading', { name: 'Russian Hill', exact: true })).toBeVisible();
-  await expect(page.locator('.scenario.is-active')).toContainText('Hyde St Descent');
+  await expect(page.getByRole('heading', { name: 'Synthetic Grid', exact: true })).toBeVisible();
+  await page.getByLabel('Load Signal Ladder').click();
+  await expect(page.locator('.scenario.is-active')).toContainText('Signal Ladder');
 });
 
 test('toggling the detections layer keeps the renderer alive', async ({ page }) => {
@@ -145,7 +144,9 @@ test('a parameter slider round-trips through an ack', async ({ page }) => {
 test('an unreachable ?backend= degrades without crashing the app', async ({ page }) => {
   // Port 9 (discard) refuses connections, so this exercises the retry path.
   await page.goto('/?backend=ws://127.0.0.1:9');
-  await expect(page.locator('.link-chip')).toHaveText('ws://127.0.0.1:9');
+  // Since #34 the chip says "Connecting to backend…" while retrying; the URL moved to its title.
+  await expect(page.locator('.link-chip')).toHaveText('Connecting to backend…');
+  await expect(page.locator('.link-chip')).toHaveAttribute('title', 'Source: ws://127.0.0.1:9');
   // No frames arrive, so the widgets sit in their placeholder state — but the
   // shell, the 3D canvas and the controls are all still up.
   await expect(page.locator('canvas.viewport-canvas')).toBeVisible();

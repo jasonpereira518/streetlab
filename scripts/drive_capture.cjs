@@ -20,8 +20,26 @@ const { chromium } = require('playwright');
   page.on('console', (msg) => {
     if (msg.type() === 'error') console.error('console error:', msg.text());
   });
-  await page.goto('http://localhost:1420/');
+  await page.goto(process.env.CAPTURE_URL || 'http://localhost:1420/');
   console.log('page loaded, letting the sim run...');
+
+  // Optional hazard staging (M2 benchmark-hazards): CAPTURE_HAZARDS is a comma list of
+  // hazard button labels ("Jaywalker,Cyclist drift"), injected in turn every
+  // HAZARD_EVERY_S seconds. A declined injection is harmless: the backend acks false.
+  const hazards = (process.env.CAPTURE_HAZARDS || '').split(',').map((h) => h.trim()).filter(Boolean);
+  if (hazards.length) {
+    const everyMs = Number(process.env.HAZARD_EVERY_S || 25) * 1000;
+    for (let i = 0; ; i++) {
+      await page.waitForTimeout(everyMs);
+      const label = hazards[i % hazards.length];
+      try {
+        await page.getByRole('button', { name: label, exact: true }).click({ timeout: 5000 });
+        console.log('injected', label);
+      } catch (err) {
+        console.error('could not inject', label, err.message);
+      }
+    }
+  }
 
   // Keep the process (and page) alive; run_capture.sh polls frames on disk
   // and kills this process once the target is reached or it times out.

@@ -49,6 +49,20 @@ def test_a_box_smaller_than_the_minimum_is_dropped():
     assert far.boxes == []
 
 
+def test_a_car_behind_a_nearer_car_is_marked_occluded_by_it_and_not_the_reverse():
+    """`visible` models buildings only; a lead vehicle hiding the one behind it
+    is what `agent_occlusion` records. The nearer box is untouched."""
+    frame = label_frame(JPEG, 1, 0.5, W, H, camera(),
+                        [TruthObject(id="near", cls="car", x=10.0, y=0.0),
+                         TruthObject(id="far", cls="car", x=18.0, y=0.0),
+                         TruthObject(id="aside", cls="car", x=18.0, y=-12.0)],
+                        {"near": math.pi, "far": math.pi, "aside": math.pi})
+    by_id = {b.track_id: b for b in frame.boxes}
+    assert by_id["near"].agent_occlusion == 0.0
+    assert by_id["far"].agent_occlusion > 0.5
+    assert by_id["aside"].agent_occlusion == 0.0
+
+
 def test_a_missing_heading_defaults_rather_than_raising():
     """Capture must never take down a running sim over a bookkeeping gap."""
     frame = label_frame(JPEG, 1, 0.5, W, H, camera(),

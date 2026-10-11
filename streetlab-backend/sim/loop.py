@@ -28,10 +28,16 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
+from map.geocode import Place
 from map.lanes import ARRIVAL_CONTROL_ID
 from map.osm_source import describe_build_failure
 from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.capture import CaptureSink
+from perception.health import (
+    DEGRADED_EXTRA_HEADWAY_S,
+    DEGRADED_SPEED_CAP_MPS,
+    DegradedMonitor,
+)
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
 from perception.pipeline import PerceptionPipeline
@@ -42,6 +48,7 @@ from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSou
 from perception.tracker import Tracker
 from plan.behavior import BehaviorState
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
+from plan.hazard import Reaction
 from schema import (
     Ack,
     Cruise,
@@ -50,6 +57,7 @@ from schema import (
     LaneNeighbor,
     LaneState,
     PerceptionMode,
+    PerceptionStats,
     Plan,
     Pose,
     RadarPoint,
@@ -63,6 +71,7 @@ from schema import (
     TrajectoryPrediction,
     TrajectorySample,
     VehicleStatus,
+    WorldAgent,
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
@@ -99,7 +108,6 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "follow_distance_s": 1.5,
     "assist_enabled": True,
     "traffic_speed_scale": 1.0,
-    "cutin_period_s": 22.0,
 }
 
 
@@ -251,6 +259,10 @@ class Simulation:
         # `perception/history.py`.
         self.pose_history = PoseHistory()
         self.perception_score: ScoreResult | None = None
+        # Whether the car is driving in degraded-perception mode (spec 5d): only
+        # ever true while it is driving on ML. Updated once per plan, read by
+        # `_limits` (speed cap, headway) and the wire's `perception.health`.
+        self._degraded = DegradedMonitor()
         # The frame_t last folded into `perception_score`, so `_observe` scores
         # a frame once -- at 60 Hz stepping and ~10 Hz frames the same
         # `last_frame_t` is seen roughly six times in a row.
@@ -323,6 +335,7 @@ class Simulation:
         self._record_truth()
         self.perception_score = None
         self._scored_frame_t = None
+        self._degraded.reset()
         # `runtime_checkable` cannot enforce `reset`, and a user-supplied
         # planner predating it must not crash a scene swap.
         reset = getattr(self._planner, "reset", None)
@@ -337,6 +350,11 @@ class Simulation:
             reset = getattr(source, "reset", None)
             if reset is not None:
                 reset()
+        # The sources that project through the scene's terrain (or occlude by its
+        # buildings) are told which scene they are in. Duck-typed like `reset`.
+        bind = getattr(self._ml_perception, "bind_scene", None)
+        if bind is not None:
+            bind(self.scene.description.buildings, _ground_fn(self.scene.description.terrain))
 
     # -- convenience accessors --------------------------------------------- #
 
@@ -486,6 +504,9 @@ class Simulation:
         # shadow. The driving feed is what the cabin can resolve: FOV plus
         # building occlusion, with a short rear mirror cone so lane-change
         # still sees approaching traffic behind.
+        advance = getattr(self._ml_perception, "advance_to", None)
+        if advance is not None:
+            advance(self.world.t)
         ground_truth = self._perception.observe(ego, agents, route)
         driving = visible_to_driver(
             ego, ground_truth, self.scene.description.buildings
@@ -557,6 +578,13 @@ class Simulation:
         """
         dt = self.dt if dt is None else dt
         detections, detections_shadow = self._observe()
+        pipeline = self.perception_pipeline
+        self._degraded.update(
+            self.world.t,
+            driving_on_ml=self.perception_mode == "ml" and self._ml_perception is not None,
+            pipeline_healthy=pipeline is None or pipeline.stats(self.perception_mode).health == "ok",
+            last_frame_t=getattr(self._ml_perception, "last_frame_t", None),
+        )
         signals = self._signals.state(self.world.t)
         truth = {s.id: s for s in signals}
         desc = self.scene.description
@@ -617,12 +645,23 @@ class Simulation:
         s = route.project((self.world.ego.x, self.world.ego.y))
         return route.limit_at(s) or self.scene.speed_limit_mps
 
+    @property
+    def perception_degraded(self) -> bool:
+        """Driving on ML with perception that is stale or failing (spec 5d)."""
+        return self._degraded.degraded
+
     def _limits(self) -> PlanLimits:
         p = self.world.params
+        cap = float(p["ego_speed_cap_mph"]) * MPH
+        follow = float(p["follow_distance_s"])
+        if self._degraded.degraded:
+            # Slower and further back until perception has been healthy for a while.
+            cap = min(cap, DEGRADED_SPEED_CAP_MPS)
+            follow += DEGRADED_EXTRA_HEADWAY_S
         return PlanLimits(
             speed_limit_mps=self.posted_limit(),
-            speed_cap_mps=float(p["ego_speed_cap_mph"]) * MPH,
-            follow_distance_s=float(p["follow_distance_s"]),
+            speed_cap_mps=cap,
+            follow_distance_s=follow,
             assist_enabled=bool(p["assist_enabled"]),
         )
 
@@ -747,6 +786,19 @@ class Simulation:
 
     # -- frame assembly ---------------------------------------------------- #
 
+    def _world_agents(self) -> list[WorldAgent]:
+        """Ground truth for every agent: not range-gated, not perception-gated."""
+        return [
+            WorldAgent(
+                id=a.id,
+                cls=a.cls,
+                pose=Pose(x=a.state.x, y=a.state.y, heading=a.state.heading),
+                size=Size(length=a.size.length, width=a.size.width, height=a.size.height),
+                speed_mps=a.state.speed_mps,
+            )
+            for a in self._traffic.agents
+        ]
+
     def state_update(self) -> StateUpdate:
         self._guard_world()
         # Reuse this tick's plan rather than computing a second one. The frame
@@ -764,6 +816,7 @@ class Simulation:
             world=self.world,
             scene=self.scene,
             detections=detections,
+            world_agents=self._world_agents(),
             detections_shadow=self.world.detections_shadow,
             plan=plan.plan,
             # Reused from `_plan()` rather than recomputed, for the same
@@ -780,6 +833,7 @@ class Simulation:
             perception_pipeline=self.perception_pipeline,
             perception_mode=self.perception_mode,
             perception_quality=self.perception_score,
+            perception_degraded=self._degraded.degraded,
         )
         self.world.events = []
         return frame
@@ -841,9 +895,18 @@ class Simulation:
             return CommandOutcome(ok=False, message="no build executor attached")
 
         query, radius, destination = command.query, command.radius_m, command.destination
+        # A picked suggestion's coordinates skip the second geocode. The label
+        # text is the display name; the pair is both-or-neither (schema).
+        picks: dict = {}
+        if command.lat is not None and command.lon is not None:
+            picks["place"] = Place(lat=command.lat, lon=command.lon, display_name=query)
+        if destination and command.destination_lat is not None and command.destination_lon is not None:
+            picks["destination_place"] = Place(
+                lat=command.destination_lat, lon=command.destination_lon, display_name=destination
+            )
         self._build_sink(
             lambda on_progress: builder(
-                query, radius, destination=destination, on_progress=on_progress
+                query, radius, destination=destination, on_progress=on_progress, **picks
             )
         )
         label = f"{query} → {destination}" if destination else query
@@ -924,6 +987,20 @@ class Simulation:
 # --------------------------------------------------------------------------- #
 # The wire boundary                                                            #
 # --------------------------------------------------------------------------- #
+
+
+def _stats_with_health(stats: PerceptionStats, degraded: bool) -> PerceptionStats:
+    """The pipeline's own health, escalated when the planner is in degraded mode."""
+    return stats.model_copy(update={"health": "degraded"}) if degraded else stats
+
+
+def _ground_fn(terrain):
+    """Absolute terrain height at a world point, or None for flat ground."""
+    if terrain is None:
+        return None
+    from map.terrain import from_wire
+
+    return from_wire(terrain).sample
 
 
 def _lane_from_the_right(off: float, lo: float, count: int) -> int:
@@ -1036,6 +1113,7 @@ def assemble_state_update(
     world: WorldState,
     scene: BuiltScene,
     detections: Sequence[Detection],
+    world_agents: Sequence[WorldAgent],
     detections_shadow: Sequence[Detection] | None,
     plan: Plan,
     signals: Sequence[SignalState],
@@ -1044,6 +1122,7 @@ def assemble_state_update(
     perception_pipeline: PerceptionPipeline | None = None,
     perception_mode: PerceptionMode = "ground-truth",
     perception_quality: ScoreResult | None = None,
+    perception_degraded: bool = False,
 ) -> StateUpdate:
     """Build the one message the frontend consumes at frame rate.
 
@@ -1112,6 +1191,7 @@ def assemble_state_update(
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
         detections=list(detections),
+        world_agents=list(world_agents),
         # Null when there is no second source at all; a real (possibly
         # empty) list whenever both sources ran -- see `_observe`'s
         # docstring. Never collapse `None` into `[]` here.
@@ -1124,7 +1204,7 @@ def assemble_state_update(
             lane=_lane_state(scene, route, ego_s, offset, heading_error, detections),
             ttc_s=ttc,
             vehicle=_vehicle_status(world, perception_mode),
-            trajectory=_trajectory(world, offset, detections),
+            trajectory=_trajectory(world, offset),
         ),
         signals=list(signals),
         events=list(world.events),
@@ -1133,7 +1213,10 @@ def assemble_state_update(
         perception=(
             None
             if perception_pipeline is None
-            else perception_pipeline.stats(perception_mode, quality=perception_quality)
+            else _stats_with_health(
+                perception_pipeline.stats(perception_mode, quality=perception_quality),
+                perception_degraded,
+            )
         ),
     )
 
@@ -1263,10 +1346,9 @@ def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
     )
 
 
-def _trajectory(
-    world: WorldState, offset: float, detections: Sequence[Detection]
-) -> TrajectoryPrediction:
-    """Observed lateral history (t < 0) followed by a decay toward the centreline."""
+def _trajectory(world: WorldState, offset: float) -> TrajectoryPrediction:
+    """Observed lateral history (t < 0) followed by a decay toward the centreline,
+    plus the prediction the planner is currently reacting to, if it is."""
     samples = [
         TrajectorySample(t=round(t - world.t, 3), lateral_m=round(d, 3))
         for t, d in world.history
@@ -1281,24 +1363,44 @@ def _trajectory(
             TrajectorySample(t=round(t, 3), lateral_m=round(offset * math.exp(-t / 1.2), 3))
         )
 
-    reacting_to = next((d for d in detections if d.hazard), None)
-    threat = None
-    if reacting_to is not None:
-        start = (reacting_to.lane_offset or 1) * LANE_W
-        threat = [
-            TrajectorySample(
-                t=round(i * _TRAJECTORY_STEP_S, 3),
-                lateral_m=round(start * math.exp(-i * _TRAJECTORY_STEP_S / 1.5), 3),
-            )
-            for i in range(steps + 1)
-        ]
-
+    threat, label = _threat_series(world.plan_result.reaction if world.plan_result else None, steps)
     return TrajectoryPrediction(
         horizon_s=_TRAJECTORY_HORIZON_S,
         planned=samples,
         threat=threat,
-        threat_label=(reacting_to.hazard_label if reacting_to else None),
+        threat_label=label,
     )
+
+
+_REACTION_VERBS = {"aeb": "Emergency braking", "yield_to_entry": "Yielding"}
+
+
+def _threat_series(
+    reaction: Reaction | None, steps: int
+) -> tuple[list[TrajectorySample] | None, str | None]:
+    """The sideways path of the thing the planner is reacting to, over the horizon.
+
+    This is the prediction the planner acts on -- `plan/hazard.py`'s strip
+    window for its source -- not a separate guess: `offset + v_lat * t` relative
+    to the line the ego is steering along, stopped at the far edge of the strip
+    once it has crossed (it is no longer a threat beyond it). It replaced an
+    exponential decay drawn for any detection flagged `hazard`, which showed a
+    curve the planner knew nothing about.
+    """
+    if reaction is None or reaction.source_window is None:
+        return None, None
+    w = reaction.source_window
+    series = []
+    for i in range(steps + 1):
+        t = i * _TRAJECTORY_STEP_S
+        lateral = w.offset_m + w.lateral_speed_mps * t
+        if w.lateral_speed_mps < 0:
+            lateral = max(lateral, -w.strip_half_m)
+        elif w.lateral_speed_mps > 0:
+            lateral = min(lateral, w.strip_half_m)
+        series.append(TrajectorySample(t=round(t, 3), lateral_m=round(lateral, 3)))
+    verb = _REACTION_VERBS.get(reaction.kind, "Reacting")
+    return series, f"{verb} for {w.cls}"
 
 
 # --------------------------------------------------------------------------- #

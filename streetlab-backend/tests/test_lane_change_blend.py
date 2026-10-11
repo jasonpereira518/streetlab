@@ -267,6 +267,10 @@ def test_the_speed_is_capped_by_the_curvature_of_the_lane_being_held(road):
         EGO_LANE_ID, "lane_left", +1, elapsed_s=LANE_CHANGE_RAMP_S, phase=OUTBOUND, blend=1.0
     )
     holding = follower.plan(ego, road, [], LIMITS, ctx)
-    # sqrt(2.0 m/s^2 / (1/3 m^-1)) = 2.45 m/s. The ego lane is dead straight, so
-    # nothing but the held lane can have asked for this.
-    assert holding.plan.target_speed_mps < 3.0
+    # The corner speed is sqrt(2.0 m/s^2 / (1/3 m^-1)) = 2.45 m/s, 10-13 m ahead. The ego lane
+    # is dead straight, so nothing but the held lane can have asked for any limit at all. Since
+    # the Phase 3 braking profile the limit now is the speed from which that corner can still be
+    # reached at 1.8 m/s^2, sqrt(2.45^2 + 2 * 1.8 * (12 - 8 * 0.56)) = 5.7 m/s (measured 5.48),
+    # not the corner speed itself from 22 m out.
+    assert 2.45 < holding.plan.target_speed_mps < 6.0
+    assert holding.plan.target_speed_mps < free.plan.target_speed_mps

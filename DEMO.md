@@ -13,7 +13,7 @@ data — either behind `--source osm` at startup or typed into the running app's
 address box; Cycle 3's junction compliance, lane changes, reactive
 IDM/MOBIL traffic and five distinct hazard scenarios; and Cycle 4's real ONNX
 detector, which runs and is measured honestly — including the result that it
-can't drive the car yet. See the root [`README.md`](README.md#roadmap) for
+can't drive the car yet. See the [roadmap](docs/ARCHITECTURE.md#roadmap) for
 what's deliberately not built yet.
 
 Two ways to run it — pick one:
@@ -141,39 +141,91 @@ click **Cut-in**.
 A neighbouring vehicle slides into the ego's lane 1.5 seconds of travel ahead
 at half the ego's speed, and the ack log shows `injected cut_in: veh_NN
 cutting in N m ahead`. Watch the TTC readout in the toolbar drop and the
-planner respond — the orange hazard overlay renders around the flagged vehicle
-in the 3D view, and the trajectory graph's threat curve shows the predicted
-path.
+planner respond. At cruising speed the orange hazard overlay renders around
+the flagged vehicle in the 3D view and the ordinary following law slows the
+car; below ~4 m/s the cut-in lands too close for that, so the planner
+emergency-brakes before the car reaches the lane — closing speed collapses, TTC
+never flags it, and you see the `Emergency braking` label and the trajectory
+graph's threat curve instead of the overlay.
 
 The menu offers every scenario in `streetlab-backend/sim/events.py`, grouped
 Ahead, Crossing and Behind. A hazard the scene cannot host right now acks
-false and says why — no signal ahead, a one-way street:
+false and says why — no signal ahead, a one-way street, no lane beside the
+ego for a cut-in to come from, buildings that would hide a red-light runner
+until it is on top of the ego:
 
 | `kind` | What it stages |
 |---|---|
-| `cut_in` | A neighbour merges into the ego's lane, close and slower |
-| `sudden_brake` | The vehicle leading the ego's lane stops dead for 8 s |
-| `jaywalker` | A pedestrian crosses the ego's path 30 m ahead, then leaves |
+| `cut_in` | A neighbour merges into the ego's lane from a lane beside it that exists and may be crossed, close and slower |
+| `sudden_brake` | The vehicle leading the ego's lane stops dead for 8 s (a lead is staged, at least the ego's stopping distance ahead, when none is within 60 m) |
+| `jaywalker` | A pedestrian crosses the ego's path (up to 60 m ahead, and before the next signal or stop sign), timed to reach the lane as the ego does, then leaves |
 | `obstacle` | Something stationary and unclassifiable sits in the lane 40 m ahead |
 | `emergency_vehicle` | The nearest vehicle behind runs lights and siren, wanting 1.6× the limit, and queues behind the ego |
 | `stalled_vehicle` | A broken-down car sits in the ego's lane 40 m ahead until it is towed |
 | `cyclist_drift` | A cyclist 25 m ahead drifts slowly in from the kerb |
-| `tailgater` | A car pulls up close behind the ego and stays there for 30 s |
-| `oncoming_drift` | An oncoming car drifts 0.8 m over the centre line as it reaches the ego |
-| `red_light_runner` | A car runs the red across the ego's green, timed to arrive when the ego does |
+| `tailgater` | A car pulls up close behind the ego and holds that gap for up to 30 s (it keeps its own target speed, so a fast ego can leave it behind sooner) |
+| `oncoming_drift` | An oncoming car drifts 0.6 m over the centre line as it reaches the ego |
+| `red_light_runner` | A car runs the red across the ego's green, timed to arrive when the ego does; only staged when the ego is far enough from the signal to stop and could see the car coming |
 
 An unknown `kind` acks false rather than raising, so a newer client cannot
 break an older backend.
+
+### What the car does about each one
+
+Cycle 6 Phase 2 added a threat layer (`plan/hazard.py`) that can only *lower*
+the car's speed ceiling. It brakes at the cap for anything it cannot stop for
+gently (`Emergency braking`) and yields to something about to step or drive
+into its path (`Yield`). The plan ribbon, target speed and trajectory graph all
+show it.
+
+| `kind` | The ego |
+|---|---|
+| `cut_in` | Follows the car down at speed; emergency-brakes if it lands too close (see above) |
+| `sudden_brake` | Follows the lead down smoothly; emergency-brakes only if it cannot stop gently |
+| `jaywalker` | Yields as the pedestrian steps out; emergency-brakes if it is too late; does nothing for one standing still at the kerb |
+| `cyclist_drift` | Brakes or yields as the cyclist drifts into the lane; passes where it can |
+| `red_light_runner` | Emergency-brakes if it is moving; a car already stopped at the red has nothing to do |
+| `obstacle`, `stalled_vehicle` | Changes lane around it where that is legal; emergency-brakes if it cannot; otherwise stops short and waits |
+| `oncoming_drift` | Emergency-brakes or yields as it crosses the line (measured on every scene); the nudge to the right is Cycle 6 Phase 3 |
+| `emergency_vehicle`, `tailgater` | **No reaction yet** — Cycle 6 Phase 3 |
+
+Measured on `grid-loop`, `grid-loop` at 0.45x traffic speed and Nob Hill across
+five seeds each (`docs/measurements/2026-10-09-hazard-reactions.md`), the ego
+reacted to and cleared `sudden_brake`, `jaywalker`, `obstacle`, `stalled_vehicle`,
+`cyclist_drift` and `oncoming_drift` on every scene, and `cut_in` and
+`red_light_runner` on the scenes that can host them. It still ends in contact
+with a car beside it that the driving feed cannot see (`cut_in` and
+`tailgater` on `grid-loop`) and with an emergency vehicle that swings past it.
+That is a measurement of these runs, not a safety claim.
 
 ## See it survive a dropped connection
 
 With Option B running, kill the backend process (Ctrl-C in its terminal)
 while the frontend is still open. The toolbar's connection chip goes to
-`reconnecting`, the 3D view and telemetry cards keep rendering their last
-known state rather than crashing, and restarting `uv run streetlab serve`
+`reconnecting`; after a couple of failed attempts a "Can't reach the simulator"
+card appears with a Retry button (it keeps retrying on its own and disappears
+when the backend returns). The 3D view and telemetry cards keep rendering
+their last known state rather than crashing, and restarting `uv run streetlab serve`
 gets you a fresh scene automatically — no page reload needed.
 (`e2e/faultInjection.spec.ts` proves this programmatically against a real
 backend subprocess, not just a mocked socket.)
+
+## Run the hosted build locally
+
+The web build talks to whatever `VITE_BACKEND_WS_URL` named when it was built
+(see `streetlab/.env.example`); `?backend=ws://host:port` in the page URL overrides it
+without rebuilding. To rehearse the hosted setup on your machine:
+
+```bash
+docker build -t streetlab-sim streetlab-backend
+docker run --rm -p 8080:8080 streetlab-sim                 # per-connection sessions, cap 2
+uv run --project streetlab-backend python scripts/smoke_hosted.py --url ws://127.0.0.1:8080
+cd streetlab && npm run dev                                # then open /?backend=ws://127.0.0.1:8080
+```
+
+Open two tabs: each has its own world (pausing in one does nothing to the other). A
+third tab shows "The simulator is busy" with a Retry button; a dead or refusing
+backend shows its own distinct message instead of an empty viewport.
 
 ## Check the performance overlay
 
@@ -183,11 +235,31 @@ backend's `/health` endpoint at 1 Hz — the backend's own sim-step time
 (p50/p95) and resident memory. All six numbers come from the real running
 processes, not fixture data.
 
-## See the ML detector — and what it doesn't see
+## See the ML detector — and what it doesn't do
 
-Cycle 4 added a real RT-DETR ONNX detector running on rendered camera
-frames. It's worth seeing run, and worth seeing what it actually finds,
-which is nothing — a genuine result, not a placeholder.
+A real RT-DETR ONNX detector runs on rendered camera frames. It is worth
+seeing run, and worth seeing the measured result: it does not meet its
+gates, and the ML track has been stopped. Ground truth stays the default
+driver and ML mode stays labelled **Experimental**.
+
+What was measured (details in `docs/measurements/2026-10-09-ml-gate-1.md`
+and `2026-10-09-ml-gate-s.md`, including its Amendments 1 and 2):
+
+- **Gate 1 (detector on the realistic renderer, int8, threshold 0.5): FAIL
+  on every scored criterion.** Car recall 0.150 against 0.70 required;
+  truck/bus/motorcycle recall 0.119 against 0.50; pedestrian and cyclist
+  recall 0.000. On the older renderer's frozen sets it detects nothing.
+- **Gate S (driving on a noisy sensor against ground truth, 660 runs): FAIL
+  on criteria 1, 3, 4, 5 and 7** (collisions, hazard-free emergency braking,
+  budgets, time gap, route progress); criteria 2 and 6 pass.
+- **Cost:** three cameras (front plus two 100 degree sides) need roughly 1.5
+  to 2.1 times the 100 ms frame interval on one CPU worker (a ratio; no
+  absolute milliseconds are claimed).
+
+The walkthrough below was written against the Cycle 4 renderer, where the
+detector scored zero matched vehicles; on the newer renderer it finds some
+(car recall 0.150) but still far below the gate, so expect low, non-zero
+precision and recall rather than exact zeros.
 
 ```bash
 cd streetlab-backend
@@ -201,7 +273,7 @@ detector pipeline running *alongside* it, in shadow: both sources answer the
 same question every frame, so the numbers below are live from the first
 scenario load, not from the moment you switch anything.
 
-Open the right panel's **Parameters** tab and find the **Perception** field
+Open the right panel's **Params** tab and find the **Perception** field
 at the bottom. `frames` and `detector` (ms) tick up in real time — the
 pipeline is genuinely decoding JPEGs and running the model at ~10 Hz. Watch
 `precision`, `recall`, and `mean position error` instead: in every frame
@@ -246,15 +318,12 @@ yet.
   — a loaded address still drives a single, fixed-radius extract, and every
   intersection uses the same fixed-timing signal controller as the synthetic
   grid regardless of what the real signals actually do.
-- A perception model that works (Cycle 5) — Cycle 4's detector is real and
-  runs real inference (see above), but it's COCO-pretrained and untuned for
-  this renderer's geometry, and it detects zero vehicles here. That
-  zero-detections result survives every configuration Cycle 5 Phase 2
-  tested; the *causal* half of the sentence is what narrowed. The shipped
-  weights are **int8-quantized**, and unquantized fp32 weights of the same
-  architecture more than double the peak car score on a 60-frame benchmark
-  — so "untuned for this geometry" was, for two cycles, measured only on
-  quantized weights nobody had compared against. Fine-tuning on
-  sim-generated data is Cycle 5's job, not this one's.
+- A perception model that works — it does not. Cycle 4's detector is real
+  and runs real inference (see above), but it is COCO-pretrained and
+  int8-quantized: it detected zero vehicles on the Cycle 4/5 renderer, fine-tuning
+  on sim-generated data returned a null result (Cycle 5), and on the later
+  realistic renderer Gate 1 measured car recall 0.150 against 0.70 required.
+  The closed-loop Gate S also failed. The ML track is stopped; ground truth
+  stays the default driver.
 - Code signing or notarization — the built `.app` is unsigned, fine for local
   use but not for distributing to another machine.

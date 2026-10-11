@@ -43,12 +43,23 @@ from map.features import (
     signal_groups,
     stop_node_id,
 )
-from map.geocode import GeocodeError, Geocoder, GeocodeNotFound, GeocodeUnavailable, NominatimGeocoder, Place
+from map.geocode import (
+    CachedGeocoder,
+    CompositeGeocoder,
+    GeocodeError,
+    Geocoder,
+    GeocodeNotFound,
+    GeocodeUnavailable,
+    NominatimGeocoder,
+    PhotonGeocoder,
+    Place,
+)
 from map.lanes import (
     Junction,
     NoDrivableRoad,
     NoRouteFound,
     RouteGraph,
+    SameJunction,
     arrival_control_point,
     drivable_ways,
     build_roads,
@@ -61,7 +72,14 @@ from map.lanes import (
     select_route_to_destination,
     speed_limits_along,
 )
-from map.overpass import BBox, HttpxFetcher, OverpassClient, OverpassError
+from map.overpass import (
+    OVERPASS_MIRRORS,
+    BBox,
+    HttpxFetcher,
+    OverpassClient,
+    OverpassError,
+    OverpassRateLimited,
+)
 from map.projection import LatLon, to_local
 from map.tags import passes_under
 from map.placement import faces_the_route
@@ -90,6 +108,11 @@ log = logging.getLogger("streetlab.map")
 
 # ODbL requires crediting OpenStreetMap wherever its data is shown.
 ATTRIBUTION = "© OpenStreetMap contributors"
+
+# The elevation tiles (map/elevation.py) are AWS Terrain Tiles, a Mapzen/Tilezen
+# composite whose published terms ask for this credit wherever the terrain is
+# shown. Added only when real tiles shaped the scene, not for a flat fallback.
+ELEVATION_ATTRIBUTION = "Terrain: Mapzen, AWS Terrain Tiles (SRTM, USGS, GEBCO and others)"
 
 MPH = 0.44704
 
@@ -154,10 +177,14 @@ def describe_build_failure(exc: Exception) -> str:
         return "Couldn't reach the geocoding service. Check your connection and try again."
     if isinstance(exc, GeocodeError):
         return "Couldn't resolve that address. Try a different one."
+    if isinstance(exc, OverpassRateLimited):
+        return "The map data service is busy right now. Wait a minute and try again."
     if isinstance(exc, OverpassError):
         return "Couldn't fetch map data for this area right now. Try again in a moment."
     if isinstance(exc, TripTooLong):
         return f"That trip is too far for now (over {MAX_TRIP_SPAN_M / 1000:.0f} km). Try a closer destination."
+    if isinstance(exc, SameJunction):
+        return "Those two addresses are at the same intersection. Pick a destination a block or more away."
     if isinstance(exc, NoRouteFound):
         return "No drivable path connects those two addresses in the map data available."
     if isinstance(exc, NoDrivableRoad):
@@ -254,7 +281,7 @@ class LocationSpec:
     its past self.
     """
 
-    __slots__ = ("id", "query", "name", "radius_m", "traffic", "place", "destination")
+    __slots__ = ("id", "query", "name", "radius_m", "traffic", "place", "destination", "destination_place")
 
     def __init__(
         self,
@@ -265,6 +292,7 @@ class LocationSpec:
         traffic: int = 4,
         place: Place | None = None,
         destination: str | None = None,
+        destination_place: Place | None = None,
     ) -> None:
         self.id = id
         self.query = query
@@ -278,6 +306,8 @@ class LocationSpec:
         # every location loaded before this existed) preserves today's
         # loop-driving behaviour exactly.
         self.destination = destination
+        # Same as `place`, for the destination: a suggestion the user picked.
+        self.destination_place = destination_place
 
 
 BUNDLED: tuple[LocationSpec, ...] = (
@@ -323,11 +353,19 @@ def _slug(query: str) -> str:
 def default_source() -> OsmSceneSource:
     """The wiring the CLI uses: real geocoder, real Overpass, on-disk cache
     backed by the bundled offline extracts as a read-only fallback."""
+    cache_dir = default_cache_dir()
+    # Suggestions come from Photon (Nominatim's policy forbids client-side
+    # as-you-type use); submitted lookups go to Nominatim, behind a disk cache.
+    geocoder = CompositeGeocoder(
+        PhotonGeocoder(),
+        CachedGeocoder(NominatimGeocoder(), DiskCache(cache_dir / "geocode")),
+    )
     return OsmSceneSource(
-        NominatimGeocoder(),
+        geocoder,
         OverpassClient(
             HttpxFetcher(),
-            DiskCache(default_cache_dir(), fallback=BundledExtracts(_bundled_dir())),
+            DiskCache(cache_dir, fallback=BundledExtracts(_bundled_dir())),
+            mirrors=[HttpxFetcher(url) for url in OVERPASS_MIRRORS],
         ),
         elevation=ElevationClient(
             HttpxTileFetcher(),
@@ -356,6 +394,22 @@ class OsmSceneSource:
         self._lock = threading.Lock()
         self._locations = locations
         self._scenes: dict[str, BuiltScene] = {}
+
+    def fork(self) -> "OsmSceneSource":
+        """A private catalog for one hosted session.
+
+        Shares the network clients (so Nominatim's 1 req/s and the disk cache
+        stay global) and the already-built scenes (frozen, so sharing them
+        costs nothing), but not the catalog: an address one visitor loads must
+        not appear in another's sidebar, and its scene is freed with its
+        session instead of accumulating for the life of the process.
+        """
+        with self._lock:
+            child = OsmSceneSource(
+                self.geocoder, self.overpass, self._locations, elevation=self.elevation
+            )
+            child._scenes = dict(self._scenes)
+        return child
 
     @property
     def locations(self) -> tuple[LocationSpec, ...]:
@@ -433,7 +487,11 @@ class OsmSceneSource:
         dest_xy: tuple[float, float] | None = None
         if spec.destination is not None:
             _report(on_progress, "Geocoding destination", 0.12)
-            dest_place = self.geocoder.lookup(spec.destination)
+            dest_place = (
+                spec.destination_place
+                if spec.destination_place is not None
+                else self.geocoder.lookup(spec.destination)
+            )
             dest_xy = to_local(dest_place.lat, dest_place.lon, origin)
             span_m = math.dist((0.0, 0.0), dest_xy)
             if span_m > MAX_TRIP_SPAN_M:
@@ -477,6 +535,9 @@ class OsmSceneSource:
                     else select_ego_route(rg, (0.0, 0.0))
                 )
                 break
+            except SameJunction:
+                # Widening the extract cannot separate two points that snap to one junction.
+                raise
             except (NoDrivableRoad, NoRouteFound) as exc:
                 last_exc = exc
                 log.info(
@@ -504,8 +565,13 @@ class OsmSceneSource:
         roads = fit_road_widths(roads, buildings, under)
         crosswalks = build_crosswalks(graph, origin)
         keep_out = KeepOut(roads, crosswalks, buildings)
-        lights = build_traffic_lights(graph, origin, keep_out)
-        stop_signs = build_stop_signs(graph, origin, keep_out)
+        # Controls are derived from EVERY head, drawn or not: a pole that finds
+        # no clear kerb is dropped from the picture, but its junction still
+        # stops the ego. Only the drawn lists are filtered by the blocker.
+        control_lights = build_traffic_lights(graph, origin, keep_out, keep_crowded=True)
+        control_signs = build_stop_signs(graph, origin, keep_out, keep_crowded=True)
+        lights = [l for l in control_lights if not keep_out.blocks_post(l.position)]
+        stop_signs = [s for s in control_signs if not keep_out.blocks_post(s.position)]
         trees = clear_trees(build_trees(graph, origin, buildings), keep_out)
 
         build_notes: list[tuple[str, str]] = []
@@ -534,11 +600,14 @@ class OsmSceneSource:
 
         bounds = self._bounds(roads, ego_route, buildings, trees, crosswalks, stop_signs, lights)
         terrain = None
+        attribution = ATTRIBUTION
         if self.elevation is not None:
             field = self.elevation.heightfield(
                 origin, (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y), TERRAIN_CELL_M
             )
             terrain = terrain_to_wire(grade(field, roads, under))
+            if field.source == "terrarium":
+                attribution = f"{ATTRIBUTION} · {ELEVATION_ATTRIBUTION}"
 
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
@@ -546,7 +615,7 @@ class OsmSceneSource:
             scenario_id=spec.id,
             name=spec.name,
             location=place.display_name,
-            attribution=ATTRIBUTION,
+            attribution=attribution,
             origin=Origin(lat=place.lat, lon=place.lon),
             bounds=bounds,
             roads=roads,
@@ -590,7 +659,7 @@ class OsmSceneSource:
         anchors = control_anchors(graph, origin)
         candidates = []
         seen_junctions = set()
-        for light in lights:
+        for light in control_lights:
             junction = junction_of(light.id)
             at = anchors.get(junction)
             if at is None or junction in seen_junctions:
@@ -605,7 +674,7 @@ class OsmSceneSource:
         # remaining few are tagged on the junction node itself, where the full
         # setback is exactly right.
         junctions = junction_node_ids(graph)
-        for sign in stop_signs:
+        for sign in control_signs:
             at = anchors.get(sign.id)
             if at is None:
                 continue
@@ -632,7 +701,7 @@ class OsmSceneSource:
             description=description,
             ego_route=ego_route,
             agent_routes=self._agent_routes(traffic_loops, spec.traffic),
-            signal_groups=signal_groups(lights),
+            signal_groups=signal_groups(control_lights),
             speed_limit_mps=self._speed_limit(roads),
             traffic_count=spec.traffic,
             control_points=control_points,
@@ -802,6 +871,8 @@ class OsmSceneSource:
         radius_m: float | None = None,
         destination: str | None = None,
         on_progress: ProgressCallback = None,
+        place: Place | None = None,
+        destination_place: Place | None = None,
     ) -> BuiltScene:
         """Geocode an arbitrary address, build it, and add it to the catalog.
 
@@ -859,11 +930,15 @@ class OsmSceneSource:
                         name=f"{query} → {destination}" if destination else query,
                         radius_m=radius_m or (300.0 if destination else 500.0),
                         traffic=4,
+                        place=place,
                         destination=destination,
+                        destination_place=destination_place,
                     )
                     self._locations = self._locations + (spec,)
                 else:
-                    spec = self._disambiguate(base_id, query, radius_m, destination, by_id)
+                    spec = self._disambiguate(
+                        base_id, query, radius_m, destination, by_id, place, destination_place
+                    )
                 appended = True
         try:
             return self.build(spec.id, on_progress)
@@ -895,6 +970,8 @@ class OsmSceneSource:
         radius_m: float | None,
         destination: str | None,
         by_id: dict[str, LocationSpec],
+        place: Place | None = None,
+        destination_place: Place | None = None,
     ) -> LocationSpec:
         """`base_id` is taken by a DIFFERENT (query, destination) pair (a slug
         collision), and the caller has already ruled out this exact pair
@@ -911,7 +988,9 @@ class OsmSceneSource:
             name=f"{query} → {destination}" if destination else query,
             radius_m=radius_m or (300.0 if destination else 500.0),
             traffic=4,
+            place=place,
             destination=destination,
+            destination_place=destination_place,
         )
         self._locations = self._locations + (spec,)
         return spec

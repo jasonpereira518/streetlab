@@ -34,7 +34,7 @@ import type {
   StateUpdate,
 } from '../schema';
 import { LAYER_KEYS } from '../schema';
-import type { ConnectionStatus, Transport } from '../net/transport';
+import type { ConnectionFailure, ConnectionStatus, Transport } from '../net/transport';
 import { httpUrlForWsLabel, perfMetrics } from '../perf/perfMetrics';
 
 /* ------------------------------------------------------------------ */
@@ -135,17 +135,6 @@ export const PARAM_DEFS: ParamDef[] = [
     unit: '×',
   },
   {
-    key: 'cutin_period_s',
-    label: 'Cut-in interval',
-    kind: 'slider',
-    group: 'traffic',
-    default: 22,
-    min: 6,
-    max: 60,
-    step: 1,
-    unit: 's',
-  },
-  {
     key: 'plan_opacity',
     label: 'Plan opacity',
     kind: 'slider',
@@ -232,6 +221,12 @@ export const DEFAULT_RELOAD_PAGE = (): void => {
  * runtime surprise (`setRightTab('events')` compiling while the panel has
  * nothing registered for it, or vice versa).
  */
+/** Coordinates of a suggestion the user picked, per address field. */
+export interface LocationPicks {
+  start?: { lat: number; lon: number } | null;
+  destination?: { lat: number; lon: number } | null;
+}
+
 export type RightTab = 'parameters' | 'map' | 'layers' | 'events';
 
 /**
@@ -245,6 +240,10 @@ export interface SimStoreState {
   /* connection */
   status: ConnectionStatus;
   statusDetail: string;
+  /** Set while the backend is unreachable or has refused us; drives the error overlay. */
+  failure: ConnectionFailure | null;
+  /** Ask the transport to reconnect now (the overlay's Retry button). */
+  retryConnection(): void;
   sourceKind: 'mock' | 'ws';
   sourceLabel: string;
 
@@ -313,6 +312,8 @@ export interface SimStoreState {
   /** Purely local chrome state — collapsing a panel sends no command. */
   collapsed: Record<PanelId, boolean>;
   perfOverlayVisible: boolean;
+  /** The help / shortcut dialog. */
+  helpOpen: boolean;
   /** A `refreshAll` is in flight; the button that starts one is disabled. */
   refreshPending: boolean;
   /** See `DEFAULT_RELOAD_PAGE` — swapped by tests, never at runtime. */
@@ -331,7 +332,7 @@ export interface SimStoreState {
   send(command: CommandInput): string;
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
-  loadLocation(query: string, destination?: string): void;
+  loadLocation(query: string, destination?: string, picks?: LocationPicks): void;
   /** Fire off a `suggest_address` request and return its command id, so the
    * caller can look its result up in `addressSuggestions` once it arrives. */
   suggestAddress(query: string): string;
@@ -342,6 +343,7 @@ export interface SimStoreState {
   setRightTab(tab: RightTab): void;
   togglePanel(panel: PanelId): void;
   togglePerfOverlay(): void;
+  setHelpOpen(open: boolean): void;
   resetSim(): void;
   refreshAll(): Promise<void>;
   injectHazard(kind: string): void;
@@ -357,6 +359,7 @@ const MAX_ADDRESS_SUGGESTIONS = 8;
 export const useSimStore = create<SimStoreState>((set, get) => ({
   status: 'idle',
   statusDetail: '',
+  failure: null,
   sourceKind: 'mock',
   sourceLabel: 'mock',
 
@@ -381,6 +384,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   rightTab: 'parameters',
   collapsed: { scenarios: false, inspector: false, telemetry: false },
   perfOverlayVisible: false,
+  helpOpen: false,
   refreshPending: false,
   reloadPage: DEFAULT_RELOAD_PAGE,
 
@@ -399,11 +403,13 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       sourceKind: transport.kind,
       sourceLabel: transport.label,
       status: 'connecting',
+      failure: null,
       hasFrames: false,
     });
 
     transport.connect({
       onMessage: (msg) => applyServerMessage(msg, set, get),
+      onFailure: (failure) => set({ failure }),
       onStatus: (status, detail) =>
         set((s) => ({
           status,
@@ -435,6 +441,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       perfMetrics.watchHealth(null);
       if (transportRef === transport) transportRef = null;
     };
+  },
+
+  retryConnection() {
+    transportRef?.retry?.();
   },
 
   send(partial) {
@@ -474,7 +484,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
   },
 
-  loadLocation(query, destination) {
+  loadLocation(query, destination, picks) {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) return;
     const trimmedDest = destination?.trim() || undefined;
@@ -488,6 +498,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       cmd: 'load_location',
       query: trimmedQuery,
       ...(trimmedDest ? { destination: trimmedDest } : {}),
+      ...(picks?.start ? { lat: picks.start.lat, lon: picks.start.lon } : {}),
+      ...(trimmedDest && picks?.destination
+        ? { destination_lat: picks.destination.lat, destination_lon: picks.destination.lon }
+        : {}),
     });
   },
 
@@ -532,6 +546,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
 
   togglePerfOverlay() {
     set((s) => ({ perfOverlayVisible: !s.perfOverlayVisible }));
+  },
+
+  setHelpOpen(open) {
+    set({ helpOpen: open });
   },
 
   resetSim() {

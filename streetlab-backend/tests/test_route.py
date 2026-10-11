@@ -290,3 +290,30 @@ def test_resample_erases_the_stubs_that_points_carries():
         before = math.atan2(pts[i - 1][1] - pts[i - 2][1], pts[i - 1][0] - pts[i - 2][0])
         after = math.atan2(pts[i][1] - pts[i - 1][1], pts[i][0] - pts[i - 1][0])
         assert abs(math.remainder(after - before, math.tau)) < 1e-6
+
+
+# --- first_crossing ---------------------------------------------------------- #
+
+
+def test_first_crossing_finds_where_a_path_cuts_a_turn_not_where_it_runs_parallel(rect):
+    """The route turns north at x=40. A walker heading north at x=36 has its
+    NEAREST route point on the north-going leg (4 m east of it) and never
+    meets that leg, but it does cross the eastbound one at (36, 0)."""
+    hit = rect.first_crossing((36.0, -10.0), (36.0, 10.0), from_s=30.0, within_m=60.0)
+    assert hit is not None
+    s, u = hit
+    assert s == pytest.approx(36.0)
+    assert u == pytest.approx(0.5)
+
+
+def test_first_crossing_is_none_for_a_path_that_misses_or_is_too_far():
+    route = Route([(0.0, 0.0), (200.0, 0.0)], closed=False)
+    assert route.first_crossing((50.0, 5.0), (50.0, 20.0), 0.0, 100.0) is None  # never reaches it
+    assert route.first_crossing((150.0, -5.0), (150.0, 5.0), 0.0, 100.0) is None  # beyond `within_m`
+    assert route.first_crossing((50.0, -5.0), (50.0, 5.0), 60.0, 100.0) is None  # behind `from_s`
+
+
+def test_first_crossing_wraps_a_closed_route(rect):
+    # Ego near the end of the lap; the crossing is just past the start line.
+    hit = rect.first_crossing((5.0, -3.0), (5.0, 3.0), from_s=110.0, within_m=40.0)
+    assert hit is not None and hit[0] == pytest.approx(5.0)

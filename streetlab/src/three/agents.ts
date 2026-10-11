@@ -1,5 +1,5 @@
 /**
- * Renders the `detections` array as vehicles.
+ * Renders `world_agents` -- ground truth, independent of perception -- as vehicles.
  *
  * Meshes are pooled per detection class and recycled by id, so a scenario that
  * cycles agents in and out does not churn GPU buffers. Poses are damped toward
@@ -7,29 +7,31 @@
  * renderer runs faster than the simulator.
  */
 import * as THREE from 'three/webgpu';
-import type { Detection } from '../schema';
+import type { WorldAgent } from '../schema';
 import { dampAngle } from '../units';
-import {
-  TRAFFIC_STYLES,
-  buildVehicleGeometry,
-  vehicleMaterial,
-} from './ego';
+import { buildCyclist, buildPedestrian, CYCLIST_REF, PEDESTRIAN_REF, type Figure } from './figures';
+import { agentMaterial } from './meshKit';
 import { attitudeOn, type HeightFn } from './terrain';
+import { buildVehicleGeometry, styleFor } from './vehicles';
 
-/** Canonical body sizes per class; the frame's own size scales these. */
-const REFERENCE_SIZE: Record<string, { length: number; width: number; height: number }> = {
-  car: { length: 4.6, width: 1.9, height: 1.46 },
-  truck: { length: 8.2, width: 2.5, height: 3.1 },
-  bus: { length: 11, width: 2.55, height: 3.2 },
-  motorcycle: { length: 2.1, width: 0.8, height: 1.3 },
-  cyclist: { length: 1.8, width: 0.7, height: 1.7 },
-  pedestrian: { length: 0.6, width: 0.6, height: 1.75 },
-  unknown: { length: 4.4, width: 1.9, height: 1.5 },
+/** Radians of gait / crank cycle per metre travelled. */
+const GAIT_RAD_PER_M = 4.2;
+const CRANK_RAD_PER_M = 2.2;
+
+/** Canonical size of the figures' meshes; the frame's own size scales them. */
+const FIGURE_REF: Record<string, { length: number; width: number; height: number }> = {
+  pedestrian: PEDESTRIAN_REF,
+  cyclist: CYCLIST_REF,
 };
+/** Motorcycles are built at the size the simulator spawns them. */
+const MOTORCYCLE_REF = { length: 2.1, width: 0.8, height: 1.3 };
 
 interface Slot {
   group: THREE.Group;
   cls: string;
+  /** Pedestrians and cyclists: limbs that move. */
+  figure: Figure | null;
+  phase: number;
   /** Damped pose, so agents glide rather than teleport between frames. */
   x: number;
   z: number;
@@ -39,7 +41,8 @@ interface Slot {
 
 export class TrafficFleet {
   readonly group = new THREE.Group();
-  private readonly material = vehicleMaterial();
+  private readonly material = agentMaterial();
+  /** One merged buffer per (class, paint, size); shared by every agent that matches. */
   private readonly geometries = new Map<string, THREE.BufferGeometry>();
   private readonly slots = new Map<string, Slot>();
   private readonly free: THREE.Group[] = [];
@@ -48,21 +51,42 @@ export class TrafficFleet {
     this.group.name = 'traffic';
   }
 
-  private geometryFor(cls: string): THREE.BufferGeometry {
-    let geo = this.geometries.get(cls);
+  private geometryFor(d: WorldAgent): THREE.BufferGeometry {
+    const style = styleFor(d.cls, d.id);
+    const size = d.cls === 'motorcycle' ? MOTORCYCLE_REF : d.size;
+    const key = [d.cls, style.body, style.cargo ?? '', size.length, size.width, size.height].join('|');
+    let geo = this.geometries.get(key);
     if (!geo) {
-      const size = REFERENCE_SIZE[cls] ?? REFERENCE_SIZE.unknown;
-      const style = TRAFFIC_STYLES[cls] ?? TRAFFIC_STYLES.unknown;
       geo = buildVehicleGeometry(size, style);
-      this.geometries.set(cls, geo);
+      this.geometries.set(key, geo);
     }
     return geo;
   }
 
-  update(detections: Detection[], dt: number, ground: HeightFn | null = null): void {
+  /** The mesh (or articulated figure) for a newly seen agent, added to `holder`. */
+  private populate(holder: THREE.Group, d: WorldAgent): Figure | null {
+    const ref = FIGURE_REF[d.cls];
+    if (ref) {
+      const figure = d.cls === 'pedestrian' ? buildPedestrian(d.id, this.material) : buildCyclist(d.id, this.material);
+      // The reference figure is unit-correct for the class; scale to the size reported.
+      figure.group.scale.set(d.size.length / ref.length, d.size.height / ref.height, d.size.width / ref.width);
+      holder.add(figure.group);
+      return figure;
+    }
+    const mesh = new THREE.Mesh(this.geometryFor(d), this.material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    if (d.cls === 'motorcycle') {
+      mesh.scale.set(d.size.length / MOTORCYCLE_REF.length, d.size.height / MOTORCYCLE_REF.height, d.size.width / MOTORCYCLE_REF.width);
+    }
+    holder.add(mesh);
+    return null;
+  }
+
+  update(agents: WorldAgent[], dt: number, ground: HeightFn | null = null): void {
     for (const slot of this.slots.values()) slot.seen = false;
 
-    for (const d of detections) {
+    for (const d of agents) {
       let slot = this.slots.get(d.id);
       if (slot && slot.cls !== d.cls) {
         this.release(d.id, slot);
@@ -71,23 +95,14 @@ export class TrafficFleet {
       if (!slot) {
         const holder = this.free.pop() ?? new THREE.Group();
         holder.clear();
-        const mesh = new THREE.Mesh(this.geometryFor(d.cls), this.material);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        // The reference geometry is unit-correct for the class; scale to the
-        // exact size the simulator reported.
-        const ref = REFERENCE_SIZE[d.cls] ?? REFERENCE_SIZE.unknown;
-        mesh.scale.set(
-          d.size.length / ref.length,
-          d.size.height / ref.height,
-          d.size.width / ref.width,
-        );
-        holder.add(mesh);
+        const figure = this.populate(holder, d);
         holder.visible = true;
         this.group.add(holder);
         slot = {
           group: holder,
           cls: d.cls,
+          figure,
+          phase: 0,
           x: d.pose.x,
           z: -d.pose.y,
           heading: d.pose.heading,
@@ -106,6 +121,10 @@ export class TrafficFleet {
       slot.group.position.set(slot.x, a.y, slot.z);
       slot.group.rotation.order = 'YZX';
       slot.group.rotation.set(a.roll, slot.heading, a.pitch);
+      if (slot.figure) {
+        slot.phase += dt * d.speed_mps * (d.cls === 'pedestrian' ? GAIT_RAD_PER_M : CRANK_RAD_PER_M);
+        slot.figure.animate(slot.phase, d.speed_mps);
+      }
       slot.seen = true;
     }
 
@@ -115,6 +134,7 @@ export class TrafficFleet {
   }
 
   private release(id: string, slot: Slot): void {
+    slot.figure?.dispose();
     slot.group.clear();
     slot.group.visible = false;
     this.group.remove(slot.group);
@@ -122,11 +142,8 @@ export class TrafficFleet {
     this.slots.delete(id);
   }
 
-  setVisible(visible: boolean): void {
-    this.group.visible = visible;
-  }
-
   dispose(): void {
+    for (const slot of this.slots.values()) slot.figure?.dispose();
     for (const g of this.geometries.values()) g.dispose();
     this.geometries.clear();
     this.material.dispose();

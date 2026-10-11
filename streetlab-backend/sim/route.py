@@ -157,6 +157,52 @@ class Route:
                 best_s = self._cum[i] + math.sqrt(leg2) * t
         return best_s
 
+    def first_crossing(
+        self, p: Point, q: Point, from_s: float, within_m: float
+    ) -> tuple[float, float] | None:
+        """Where the segment `p -> q` first crosses this route ahead of `from_s`.
+
+        Returns `(s, u)`: the route's arc length at the crossing and the
+        fraction of the way along `p -> q`, or `None` if it does not cross within
+        `within_m` of arc length (a few metres behind `from_s` are allowed, for
+        a body that straddles its own station). Exact geometry over the route's
+        legs, so a path that crosses a junction's curve is found where it
+        actually crosses -- `project` answers only "what is nearest to `p`
+        now", which for something about to cross a turn is a point on the leg
+        it will run PARALLEL to, never the one it will cut.
+        """
+        ring = self._ring
+        cum = self._cum
+        legs = len(ring) - 1
+        back = 5.0
+        start = self.normalise(from_s - back) if self.closed else max(from_s - back, 0.0)
+        i = min(max(bisect_right(cum, start) - 1, 0), legs - 1)
+        rx, ry = q[0] - p[0], q[1] - p[1]
+        travelled = cum[i] + 0.0 - start  # <= 0: part of leg i is behind `start`
+        for k in range(legs):
+            ax, ay = ring[i]
+            bx, by = ring[i + 1]
+            dx, dy = bx - ax, by - ay
+            denom = rx * dy - ry * dx
+            if abs(denom) > 1e-12:
+                ex, ey = ax - p[0], ay - p[1]
+                u = (ex * dy - ey * dx) / denom
+                w = (ex * ry - ey * rx) / denom
+                if 0.0 <= u <= 1.0 and 0.0 <= w <= 1.0:
+                    s = cum[i] + w * math.hypot(dx, dy)
+                    ahead = (s - start) % cum[-1] if self.closed else s - start
+                    if (k > 0 or s >= start) and ahead <= within_m + back:
+                        return s, u
+            travelled += cum[i + 1] - cum[i]
+            if travelled > within_m + back:
+                return None
+            i += 1
+            if i >= legs:
+                if not self.closed:
+                    return None
+                i = 0
+        return None
+
     def lateral_offset(self, p: Point, s: float | None = None) -> float:
         """Signed distance from the centreline, positive to the left of travel."""
         if s is None:
@@ -248,6 +294,11 @@ class Route:
         loop = self.length_m
         gap = (to_s - from_s) % loop
         return gap - loop if gap > loop / 2 else gap
+
+    def curvature_at(self, s: float, window_m: float = 4.0) -> float:
+        """Curvature (1/m) at `s`, from the circle through three points `window_m` apart."""
+        half = window_m / 2
+        return _menger_curvature(self.point_at(s - half), self.point_at(s), self.point_at(s + half))
 
     def peak_curvature(
         self,

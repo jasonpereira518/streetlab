@@ -27,11 +27,11 @@ Three transcription hazards are handled deliberately; see the tests that pin the
 
 from typing import Annotated, Any, Generic, Literal, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 11
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -303,6 +303,19 @@ class Detection(Wire):
     emergency: bool
 
 
+class WorldAgent(Wire):
+    """One simulated agent as the world has it: ground truth, independent of
+    what perception sees. Rendering reads this; `detections` is only what the
+    driving source reported (an overlay), so a missed car never vanishes from
+    the scene the detector camera photographs."""
+
+    id: str
+    cls: DetectionClass
+    pose: Pose
+    size: Size
+    speed_mps: Num
+
+
 PerceptionMode = Literal["ground-truth", "ml"]
 
 
@@ -328,6 +341,9 @@ class CameraParams(Wire):
     aspect: Pos
 
 
+CameraSet = Literal["front", "front+sides100"]
+
+
 class PerceptionStats(Wire):
     mode: PerceptionMode
     # Null until Phase 2 lands a model.
@@ -349,6 +365,15 @@ class PerceptionStats(Wire):
     precision: Unit | None
     recall: Unit | None
     mean_pos_err_m: NonNeg | None
+    # Required, never null: "degraded" while the detector is a stub or its most
+    # recent frame failed. The planner's degraded mode (M1) keys off this.
+    health: Literal["ok", "degraded"]
+    # Required, never null (protocol 11): which detector cameras the client must render and
+    # send, one `camera_frame` each per frame time. "front" is the shipped single camera;
+    # "front+sides100" adds a left and a right 640x640 camera at +-80 deg, 100 deg wide.
+    # Mirrored by `contract/detector_cameras.json`, `DETECTOR_CAMERA_SETS` in detectorCamera.ts
+    # and `perception.noisy_truth.CAMERA_SETS`.
+    camera_set: CameraSet
 
 
 class RadarPoint(Wire):
@@ -451,8 +476,8 @@ class Plan(Wire):
     target_speed_mps: NonNeg
     maneuver: Maneuver
     confidence: Unit
-    # The detection the planner's current reaction is to, or null. Always
-    # null until Cycle 6 Phase 2's `plan/hazard.py` exists.
+    # The detection the planner's current reaction is to (`plan/hazard.py`:
+    # emergency braking or yielding), or null when it is not reacting.
     reaction_source_id: str | None
 
 
@@ -508,6 +533,9 @@ class StateUpdate(Wire):
     scenario_id: str
     ego: Ego
     detections: list[Detection]
+    # Every agent's ground truth, not range-gated and independent of perception
+    # mode. Required and never null: an empty list when there is no traffic.
+    world_agents: list[WorldAgent]
     # The perception source that is NOT driving, when both are running.
     # `None` when there is no second source at all (no ML pipeline running)
     # -- distinct from `[]`, which means the other source ran and saw
@@ -538,6 +566,7 @@ class StateUpdate(Wire):
 LayerKey = Literal[
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",
@@ -554,6 +583,10 @@ CameraView = Literal["chase", "overhead", "cockpit", "free"]
 # matches exact types first, and `int` precedes `float` so an integral value
 # survives the round trip as an integer rather than becoming 35.0.
 ParamValue = Union[bool, int, float, str]
+
+
+#: Longest address text a command may carry (mirrored in the zod schema).
+MAX_QUERY_LEN = 200
 
 
 class _Cmd(Wire):
@@ -583,13 +616,28 @@ class LoadScenario(_Cmd):
 
 class LoadLocation(_Cmd):
     cmd: Literal["load_location"] = "load_location"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
     # A second address to route TO. Absent (the common case) means "drive an
     # auto-discovered loop near `query`", exactly as before this existed.
-    destination: Annotated[str, Field(min_length=1)] | None = None
+    destination: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)] | None = None
+    # The coordinates of a suggestion the user picked, so the backend does not
+    # geocode its label a second time. Each pair is both-or-neither. Commands
+    # only travel client -> server, so `None` here never reaches a zod schema.
+    lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    destination_lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    destination_lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+
+    @model_validator(mode="after")
+    def _pairs_are_both_or_neither(self) -> "LoadLocation":
+        if (self.lat is None) != (self.lon is None):
+            raise ValueError("lat and lon must be given together")
+        if (self.destination_lat is None) != (self.destination_lon is None):
+            raise ValueError("destination_lat and destination_lon must be given together")
+        return self
 
 
 class SuggestAddress(_Cmd):
@@ -599,7 +647,7 @@ class SuggestAddress(_Cmd):
     bypasses it: a network geocode call must not stall the physics step."""
 
     cmd: Literal["suggest_address"] = "suggest_address"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
 
 
 class SetParam(_Cmd):
@@ -749,6 +797,7 @@ def parse_command(raw: Any) -> ParseResult:
 LAYER_KEYS: tuple[str, ...] = (
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",

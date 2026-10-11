@@ -28,7 +28,7 @@ it('is protocol 9', () => {
   // old client, matching the reasoning above. Then 8 for the required
   // `SceneDescription.reference_path`, and 9 for the required-nullable
   // `terrain`: an old client would drop it and draw a hilly scene flat.
-  expect(PROTOCOL_VERSION).toBe(9);
+  expect(PROTOCOL_VERSION).toBe(11);
 });
 
 it('accepts load_location with and without a radius', () => {
@@ -88,7 +88,7 @@ const sample: StateUpdate = {
   sim_rate_hz: 60,
   paused: false,
   assist_active: true,
-  scenario_id: 'nob-hill-loop',
+  scenario_id: 'grid-loop',
   ego: {
     pose: { x: 5.4, y: 21.3, heading: Math.PI / 2 },
     speed_mps: 14.3,
@@ -189,6 +189,15 @@ const sample: StateUpdate = {
   events: [
     { t: 0.7, level: 'warn', code: 'CUTIN_DETECTED', message: 'Vehicle cutting in' },
   ],
+  world_agents: [
+    {
+      id: 'veh_cutin',
+      cls: 'car',
+      pose: { x: 5.1, y: 34.8, heading: Math.PI / 2 },
+      size: { length: 4.6, width: 1.9, height: 1.46 },
+      speed_mps: 13.1,
+    },
+  ],
   perception: null,
   detections_shadow: null,
 };
@@ -245,6 +254,41 @@ describe('StateUpdate', () => {
     expect(StateUpdateSchema.safeParse(missing).success).toBe(false);
   });
 
+  it('requires world_agents and perception.health, and accepts neither as null (protocol 10)', () => {
+    const noWorld = structuredClone(sample) as Record<string, any>;
+    delete noWorld.world_agents;
+    expect(StateUpdateSchema.safeParse(noWorld).success).toBe(false);
+    expect(StateUpdateSchema.safeParse({ ...sample, world_agents: null }).success).toBe(false);
+    expect(StateUpdateSchema.safeParse({ ...sample, world_agents: [] }).success).toBe(true);
+
+    const stats = {
+      mode: 'ml', detector_ms: null, server_e2e_ms: null, frames_received: 0,
+      frames_dropped: 0, precision: null, recall: null, mean_pos_err_m: null,
+      camera_set: 'front',
+    };
+    const withHealth = (health: unknown) =>
+      StateUpdateSchema.safeParse({ ...sample, perception: { ...stats, health } }).success;
+    expect(withHealth('ok')).toBe(true);
+    expect(withHealth('degraded')).toBe(true);
+    expect(withHealth(null)).toBe(false);
+    expect(withHealth(undefined)).toBe(false);
+    expect(withHealth('meh')).toBe(false);
+  });
+
+  it('requires perception.camera_set, never null, and only the known layouts (protocol 11)', () => {
+    const stats = {
+      mode: 'ml', detector_ms: null, server_e2e_ms: null, frames_received: 0,
+      frames_dropped: 0, precision: null, recall: null, mean_pos_err_m: null, health: 'ok',
+    };
+    const withSet = (camera_set: unknown) =>
+      StateUpdateSchema.safeParse({ ...sample, perception: { ...stats, camera_set } }).success;
+    expect(withSet('front')).toBe(true);
+    expect(withSet('front+sides100')).toBe(true);
+    expect(withSet(null)).toBe(false);
+    expect(withSet(undefined)).toBe(false);
+    expect(withSet('front+sides76')).toBe(false);
+  });
+
   it('requires the protocol 7 fields rather than defaulting them', () => {
     const noEmergency = structuredClone(sample) as Record<string, any>;
     delete noEmergency.detections[0].emergency;
@@ -254,26 +298,26 @@ describe('StateUpdate', () => {
     delete noSource.plan.reaction_source_id;
     expect(StateUpdateSchema.safeParse(noSource).success).toBe(false);
 
-    expect(PROTOCOL_VERSION).toBe(9);
+    expect(PROTOCOL_VERSION).toBe(11);
   });
 });
 
 describe('SceneDescription', () => {
   it('validates the hand-authored mock city', () => {
-    const scene = buildScene('nob-hill-loop');
+    const scene = buildScene('grid-loop');
     expect(() => SceneDescriptionSchema.parse(scene)).not.toThrow();
     expect(parseServerMessage(scene).ok).toBe(true);
   });
 
   it('rejects a building footprint with fewer than three points', () => {
-    const scene = buildScene('nob-hill-loop');
+    const scene = buildScene('grid-loop');
     const bad = structuredClone(scene);
     bad.buildings[0].footprint = [[0, 0], [1, 1]];
     expect(SceneDescriptionSchema.safeParse(bad).success).toBe(false);
   });
 
   it('requires attribution', () => {
-    const scene = buildScene('nob-hill-loop');
+    const scene = buildScene('grid-loop');
     expect(typeof scene.attribution).toBe('string');
     const bad = structuredClone(scene) as Record<string, unknown>;
     delete bad.attribution;
@@ -287,7 +331,7 @@ describe('Command', () => {
       { id: 'c1', cmd: 'set_paused', paused: true },
       { id: 'c2', cmd: 'step', frames: 3 },
       { id: 'c3', cmd: 'reset' },
-      { id: 'c4', cmd: 'load_scenario', scenario_id: 'hyde-descent' },
+      { id: 'c4', cmd: 'load_scenario', scenario_id: 'grid-signals' },
       { id: 'c4b', cmd: 'load_location', query: 'Nob Hill', radius_m: 400 },
       {
         id: 'c4c',
@@ -296,7 +340,7 @@ describe('Command', () => {
         radius_m: 400,
         destination: "Fisherman's Wharf",
       },
-      { id: 'c5', cmd: 'set_param', key: 'cutin_period_s', value: 12 },
+      { id: 'c5', cmd: 'set_param', key: 'ego_speed_cap_mph', value: 35 },
       { id: 'c6', cmd: 'toggle_layer', layer: 'detections', visible: false },
       { id: 'c7', cmd: 'set_camera', view: 'overhead' },
       { id: 'c8', cmd: 'inject_hazard', kind: 'cutin' },

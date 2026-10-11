@@ -17,6 +17,7 @@ committed fixtures through the real ``parseServerMessage`` from schema.ts.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,7 @@ VALID_NAMES = [
     "state_update_moving",
     "state_update_hazard",
     "state_update_events",
+    "state_update_reaction",
     "ack_ok",
     "ack_error",
 ]
@@ -57,21 +59,38 @@ def generate() -> dict[str, dict]:
         sim.step()
     out["state_update_moving"] = sim.state_update().model_dump(mode="json")
 
-    # Capture while the ego is still closing on the merging car: once it has
-    # matched speed the closing rate is zero and TTC is legitimately null,
-    # which would make this fixture prove nothing about the nullable fields.
+    # Two injections, because since Cycle 6 Phase 2 the frame that proves the TTC
+    # fields and the frame that proves the planner's reaction cannot be the same.
+    # The planner reacts to a cut-in by braking before the car reaches its lane,
+    # which collapses the closing speed, so TTC (and with it the `hazard` flag) is
+    # undefined exactly while the planner is reacting; and while TTC flags a car,
+    # the following law is handling it and the planner is not "reacting".
     #
-    # `cut_in` rather than `sudden_brake`, and the choice is load-bearing now
-    # that the two are different events. `sim/events.py` defines a cut-in in
-    # TIME -- it lands 1.5 s of the ego's own travel ahead at half its speed --
-    # so it raises a hazard flag by construction, whatever speed the ego is
-    # doing three seconds into grid-merge. `sudden_brake` stops whichever
-    # vehicle happens to lead the ego's lane, and with reactive traffic that
-    # can be 100 m away: measured on this scene, it never produces a frame
-    # inside `plan.ttc.HAZARD_TTC_S` at all, the best TTC in 300 s being 4.03 s
-    # against a 4.0 s threshold. A fixture named for `threat`/`threat_label`
-    # asking for a cut-in is also simply the honest version.
-    sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
+    # `cut_in` gives `state_update_events` and `state_update_reaction`
+    # (`plan.reaction_source_id` and the `threat` series). `sudden_brake`, on a
+    # second simulation further down, gives `state_update_hazard`: captured while
+    # the ego is still closing on the braking car, as once it has matched speed
+    # the closing rate is zero and TTC is legitimately null, which would make that
+    # fixture prove nothing about the nullable fields. (It used `cut_in` for this
+    # until the cut-in grew a reaction; `sudden_brake` was ruled out then because
+    # it braked "whichever vehicle leads the lane", 100 m away on this scene. It
+    # stages its own lead now when none is near.)
+    #
+    # Wait for the ego to be doing 7 m/s or more. Three seconds in, with main's
+    # driving, it is at ~3 m/s: below the ~4 m/s where a cut-in lands too close
+    # for the following law, so the planner emergency-brakes first and TTC never
+    # drops under 4.0 s (measured: best 5.98 s in 30 s) -- no hazard flag for the
+    # fixture to prove anything with. And a cut-in needs a lane beside the ego to
+    # come from (`sim/events.py` `_cut_in_side`), which this scene does not have
+    # at every moment: ask until it stages, as the event-injection tests do.
+    for _ in range(60 * 60):
+        if sim.world.ego.speed_mps >= 7.0 and sim.apply_dict(
+            {"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"}
+        ).ok:
+            break
+        sim.step()
+    else:
+        raise AssertionError("cut_in never staged at 7 m/s in 60 s on the fixture scene")
     # The frame an event lands on is the ONLY one that carries it:
     # `state_update()` drains `world.events` into the frame it builds. Every
     # other fixture here is therefore captured with an empty `events` array,
@@ -81,12 +100,43 @@ def generate() -> dict[str, dict]:
     # below consumes it.
     hazard = sim.state_update()
     out["state_update_events"] = hazard.model_dump(mode="json")
+    reaction = None
     for _ in range(60 * 30):
         sim.step()
         hazard = sim.state_update()
-        if hazard.telemetry.ttc_s is not None and any(d.hazard for d in hazard.detections):
+        if (
+            reaction is None
+            and hazard.plan.reaction_source_id is not None
+            and hazard.telemetry.trajectory.threat
+        ):
+            reaction = hazard
+        if reaction is not None:
             break
-    out["state_update_hazard"] = hazard.model_dump(mode="json")
+    assert reaction is not None, "the planner never reacted to the injected cut-in"
+    out["state_update_reaction"] = reaction.model_dump(mode="json")
+
+    # A stalled car, not a sudden brake: since the ego follows a braking lead on the braking profile
+    # (docs/measurements/2026-10-09-driving-after-phase-3.md) the lead's TTC never falls under the
+    # hazard threshold in 12 s on any of seeds 1-8, which is the intent; a stationary car is flagged
+    # at t=7.2 s.
+    braking = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    for _ in range(60 * 90):
+        braking.step()
+        if braking.world.ego.speed_mps >= 8.0 and braking.apply_dict(
+            {"id": "sb", "cmd": "inject_hazard", "kind": "stalled_vehicle"}
+        ).ok:
+            break
+    else:
+        raise AssertionError("stalled_vehicle never staged at 8 m/s in 90 s on the fixture scene")
+    flagged = None
+    for _ in range(60 * 12):
+        braking.step()
+        frame = braking.state_update()
+        if frame.telemetry.ttc_s is not None and any(d.hazard for d in frame.detections):
+            flagged = frame
+            break
+    assert flagged is not None, "no frame with a TTC and a hazard flag after the stalled vehicle"
+    out["state_update_hazard"] = flagged.model_dump(mode="json")
 
     outcome = sim.apply_dict({"id": "a1", "cmd": "set_paused", "paused": False})
     out["ack_ok"] = make_ack("a1", "set_paused", outcome, sim.t).model_dump(mode="json")
@@ -128,6 +178,67 @@ def _dump(payload: dict) -> str:
     return json.dumps(payload, indent=2) + "\n"
 
 
+#: Floats in the fixtures come out of a numerical simulation, and their last
+#: digits are not bit-identical across platforms (libm/NumPy on macOS arm64 vs
+#: Linux x86). Byte-for-byte comparison therefore failed on CI while the
+#: fixtures were perfectly fine. A relative tolerance this tight still fails on
+#: any change that matters to the wire contract: a renamed or missing field, a
+#: changed type or enum, or a value that moved by anything visible.
+FLOAT_REL_TOL = 1e-6
+FLOAT_ABS_TOL = 1e-9
+
+
+def _differences(committed, fresh, path: str = "$") -> list[str]:
+    """Structural diff of two decoded JSON values, float-tolerant.
+
+    Returns human-readable lines (path, committed value, fresh value) so a
+    failure shows *what* moved and by how much, not just that something did.
+    """
+    if isinstance(committed, dict) and isinstance(fresh, dict):
+        out = []
+        for key in sorted(set(committed) | set(fresh)):
+            if key not in committed:
+                out.append(f"{path}.{key}: missing from the committed fixture")
+            elif key not in fresh:
+                out.append(f"{path}.{key}: no longer produced by the simulation")
+            else:
+                out.extend(_differences(committed[key], fresh[key], f"{path}.{key}"))
+        return out
+    if isinstance(committed, list) and isinstance(fresh, list):
+        if len(committed) != len(fresh):
+            return [f"{path}: length {len(committed)} committed vs {len(fresh)} fresh"]
+        out = []
+        for i, (c, f) in enumerate(zip(committed, fresh)):
+            out.extend(_differences(c, f, f"{path}[{i}]"))
+        return out
+    numbers = (int, float)
+    if (
+        isinstance(committed, numbers)
+        and isinstance(fresh, numbers)
+        and not isinstance(committed, bool)
+        and not isinstance(fresh, bool)
+    ):
+        if math.isclose(committed, fresh, rel_tol=FLOAT_REL_TOL, abs_tol=FLOAT_ABS_TOL):
+            return []
+        return [f"{path}: {committed!r} committed vs {fresh!r} fresh"]
+    if type(committed) is not type(fresh) or committed != fresh:
+        return [f"{path}: {committed!r} committed vs {fresh!r} fresh"]
+    return []
+
+
+def test_differences_ignores_float_noise_but_catches_real_changes():
+    base = {"a": 1.0, "b": [0.1, {"c": "x"}], "d": None}
+    noisy = {"a": 1.0 + 1e-12, "b": [0.1 + 1e-13, {"c": "x"}], "d": None}
+    assert _differences(base, noisy) == []
+
+    assert _differences(base, {**base, "a": 1.001}) != []
+    assert _differences(base, {**base, "b": [0.1, {"c": "y"}]}) != []
+    assert _differences(base, {k: v for k, v in base.items() if k != "d"}) != []
+    assert _differences(base, {**base, "e": 1}) != []
+    assert _differences({"a": 1}, {"a": True}) != []
+    assert _differences({"a": [1, 2]}, {"a": [1, 2, 3]}) != []
+
+
 @pytest.fixture(scope="module")
 def generated() -> dict[str, dict]:
     return generate()
@@ -144,8 +255,12 @@ def test_committed_fixtures_match_the_live_simulation(generated, update_fixtures
             continue
         if not path.exists():
             mismatched.append(f"{name}: missing — run with --update-fixtures")
-        elif path.read_text() != fresh:
-            mismatched.append(f"{name}: committed fixture is stale")
+        else:
+            diffs = _differences(json.loads(path.read_text()), json.loads(fresh))
+            if diffs:
+                shown = "\n".join(f"      {d}" for d in diffs[:5])
+                more = f"\n      ... and {len(diffs) - 5} more" if len(diffs) > 5 else ""
+                mismatched.append(f"{name}: committed fixture is stale\n{shown}{more}")
     assert not mismatched, (
         "committed fixtures drifted from the live simulation:\n"
         + "\n".join(mismatched)
@@ -169,8 +284,17 @@ def test_the_hazard_fixture_exercises_non_null_optionals(generated):
     assert frame.telemetry.ttc_s is not None, "no TTC — the frame proves little"
     assert any(d.ttc_s is not None for d in frame.detections)
     assert any(d.hazard and d.hazard_label is not None for d in frame.detections)
+
+
+def test_the_reaction_fixture_exercises_the_planner_reaction_fields(generated):
+    """`plan.reaction_source_id` and `threat` are nullable; a fixture where both
+    are null proves neither survives the wire."""
+    frame = StateUpdate.model_validate(generated["state_update_reaction"])
+    assert frame.plan.reaction_source_id is not None
+    assert frame.plan.maneuver in {"emergency_brake", "yield"}
     assert frame.telemetry.trajectory.threat, "threat is null — nullable path untested"
     assert frame.telemetry.trajectory.threat_label is not None
+    assert frame.plan.reaction_source_id in {d.id for d in frame.detections}
 
 
 def test_the_events_fixture_actually_carries_an_event(generated):

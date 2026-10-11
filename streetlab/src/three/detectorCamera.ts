@@ -11,6 +11,7 @@
 
 import * as THREE from 'three/webgpu';
 import type { CameraParams } from '../schema';
+import { setDetectorLayers } from './layers';
 
 /**
  * Which of the two renderer backends `createRenderer` (Renderer.tsx) settled
@@ -19,10 +20,23 @@ import type { CameraParams } from '../schema';
  */
 export type Backend = 'webgpu' | 'webgl2';
 
+/**
+ * Horizontal coverage the detector has always had: fovY 50 deg on a 640x384
+ * frame, so tan(hFOV/2) = tan(25 deg) * 640 / 384, i.e. ~75.7 deg.
+ */
+const HORIZONTAL_FOV_DEG =
+  (2 * Math.atan(Math.tan((25 * Math.PI) / 180) * (640 / 384)) * 180) / Math.PI;
+
+/**
+ * Square, because the model's input is: a 640x384 frame was stretched to
+ * 640x640 (1.67x vertical squash), so a car reached the network as a shape no
+ * COCO car has. At 1:1 `fovYDeg` equals the horizontal FOV, so the coverage a
+ * scene sees is unchanged and the backend's resize is a no-op.
+ */
 export const DETECTOR_FRAME = {
   width: 640,
-  height: 384,
-  fovYDeg: 50,
+  height: 640,
+  fovYDeg: HORIZONTAL_FOV_DEG,
   /** ~10 Hz. Independent of render FPS. */
   intervalMs: 100,
   /** JPEG quality: the wire cost is roughly linear in this. */
@@ -93,16 +107,18 @@ export function cameraParamsFromThree(
   position: { x: number; y: number; z: number },
   headingRad: number,
   pitchRad: number,
+  spec: DetectorCameraSpec = FRONT_SPEC,
 ): CameraParams {
   return {
     x: position.x,
     y: -position.z,
     z: position.y,
-    yaw: headingRad,
+    // The camera's own yaw: the ego heading plus where this camera is turned.
+    yaw: headingRad + spec.yawRad,
     pitch: pitchRad,
     roll: 0,
-    fov_y_deg: DETECTOR_FRAME.fovYDeg,
-    aspect: DETECTOR_FRAME.width / DETECTOR_FRAME.height,
+    fov_y_deg: spec.fovYDeg,
+    aspect: spec.width / spec.height,
   };
 }
 
@@ -136,6 +152,43 @@ export function encodeBase64(bytes: Uint8Array): string {
   }
   return btoa(binary);
 }
+
+/** One detector camera: where it points relative to the ego heading and what it resolves. */
+export interface DetectorCameraSpec {
+  name: string;
+  /** Radians from the ego heading, + = left. */
+  yawRad: number;
+  fovYDeg: number;
+  width: number;
+  height: number;
+}
+
+const FRONT_SPEC: DetectorCameraSpec = {
+  name: 'front',
+  yawRad: 0,
+  fovYDeg: DETECTOR_FRAME.fovYDeg,
+  width: DETECTOR_FRAME.width,
+  height: DETECTOR_FRAME.height,
+};
+
+const SIDE_YAW_RAD = (80 * Math.PI) / 180;
+
+/**
+ * The layouts `PerceptionStats.camera_set` names. Pinned to `contract/detector_cameras.json`
+ * (tests/detectorCameras.test.ts) and mirrored by the backend's `perception.noisy_truth.CAMERA_SETS`.
+ * The side cameras exist because the front one sees only +-38 deg while the car must react to
+ * traffic out to ~+-110 deg; each camera is one detector inference per frame time.
+ */
+export const DETECTOR_CAMERA_SETS = {
+  front: [FRONT_SPEC],
+  'front+sides100': [
+    FRONT_SPEC,
+    { name: 'left', yawRad: SIDE_YAW_RAD, fovYDeg: 100, width: 640, height: 640 },
+    { name: 'right', yawRad: -SIDE_YAW_RAD, fovYDeg: 100, width: 640, height: 640 },
+  ],
+} as const satisfies Record<string, readonly DetectorCameraSpec[]>;
+
+export type CameraSet = keyof typeof DETECTOR_CAMERA_SETS;
 
 /**
  * Whether a readback from `backend` needs `flipRowsInPlace` to end up
@@ -196,6 +249,7 @@ function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof
 }
 
 export interface DetectorCamera {
+  readonly spec: DetectorCameraSpec;
   /**
    * `ground` is the terrain height under the car (0 on flat ground). The
    * camera rides that high above it, but reports its height ABOVE the ground,
@@ -221,16 +275,22 @@ export function createDetectorCamera(
   scene: THREE.Scene,
   renderer: THREE.WebGPURenderer,
   backend: Backend,
+  spec: DetectorCameraSpec = FRONT_SPEC,
 ): DetectorCamera {
-  const { width, height, fovYDeg, quality } = DETECTOR_FRAME;
+  const { quality } = DETECTOR_FRAME;
+  const { width, height, fovYDeg } = spec;
   // Decided once, from the backend that won at renderer creation — it never
   // changes for the renderer's lifetime, so there is nothing to recompute
   // per capture.
   const flip = shouldFlipRows(backend);
-  const camera = new THREE.PerspectiveCamera(fovYDeg, width / height, 0.1, 400);
+  // Far plane past the sky dome (SKY_RADIUS 900 in Renderer.tsx): at 400 the dome
+  // was clipped and every detector frame had a black sky, a void no COCO scene has.
+  const camera = new THREE.PerspectiveCamera(fovYDeg, width / height, 0.1, 1400);
   // Defaults to UnsignedByteType. `capture()` reinterprets the readback's raw
   // bytes as a Uint8Array directly (no per-channel conversion) — switching this
   // to FloatType/HalfFloatType would make that reinterpretation silent garbage.
+  // World geometry only: no overlays, no ego, whatever the UI toggles say.
+  setDetectorLayers(camera);
   const target = new THREE.RenderTarget(width, height);
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d');
@@ -251,11 +311,16 @@ export function createDetectorCamera(
   let hasWarnedTimeout = false;
 
   return {
+    spec,
     update(pose) {
       heading = pose.heading;
       groundY = pose.ground ?? 0;
+      // The mount sits ahead of the ego origin along the EGO heading; only the aim turns
+      // with the camera's own yaw, so every camera shares one position and downtilt.
       const fx = Math.cos(pose.heading);
       const fz = -Math.sin(pose.heading);
+      const ax = Math.cos(pose.heading + spec.yawRad);
+      const az = -Math.sin(pose.heading + spec.yawRad);
       camera.position.set(
         pose.x + fx * MOUNT_FORWARD,
         groundY + MOUNT_HEIGHT,
@@ -266,9 +331,9 @@ export function createDetectorCamera(
       // actually has. Inlining `40` or `1.15` here again would silently
       // reintroduce the drift the derivation exists to prevent.
       camera.lookAt(
-        pose.x + fx * MOUNT_LOOK_DISTANCE,
+        pose.x + ax * MOUNT_LOOK_DISTANCE,
         groundY + MOUNT_HEIGHT - MOUNT_LOOK_DROP,
-        pose.z + fz * MOUNT_LOOK_DISTANCE,
+        pose.z + az * MOUNT_LOOK_DISTANCE,
       );
     },
 
@@ -327,7 +392,7 @@ export function createDetectorCamera(
         // that ever changes. Left dangling, it would silently corrupt the
         // *next* canvas frame too: `_getFrameBufferTarget()` keys its cached
         // intermediate buffer on `_outputRenderTarget || _canvasTarget`, so a
-        // stale 640x384 detector target there would hand the main view's own
+        // stale 640x640 detector target there would hand the main view's own
         // tonemap pass a buffer sized for the wrong viewport.
         renderer.setOutputRenderTarget(previousOutput);
         restoredEarly = true;
@@ -377,6 +442,7 @@ export function createDetectorCamera(
             { x: camera.position.x, y: camera.position.y - groundY, z: camera.position.z },
             heading,
             MOUNT_PITCH_RAD,
+            spec,
           ),
         };
       } finally {
@@ -402,7 +468,7 @@ export function createDetectorCamera(
           // setRenderTarget (the device-lost case this whole block exists
           // for) skip setOutputRenderTarget entirely, since a throw jumps
           // straight past the rest of the try body. That left
-          // `_outputRenderTarget` pointed at this detector's 640x384 target
+          // `_outputRenderTarget` pointed at this detector's 640x640 target
           // indefinitely — worse than the dangling `_renderTarget` this
           // block was written to guard against, since `_getFrameBufferTarget()`
           // keys its cached intermediate buffer on `_outputRenderTarget ||

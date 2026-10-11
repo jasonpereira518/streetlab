@@ -236,8 +236,10 @@ describe('TopToolbar', () => {
     harness.emitScene();
     harness.emitFrame(1);
 
-    const trigger = screen.getByTitle(/no perception pipeline running/i);
-    expect(trigger.hasAttribute('disabled')).toBe(true);
+    // The reason sits on the wrapper: a disabled button swallows hover in
+    // some webviews, the wrapper does not.
+    const wrapper = screen.getByTitle(/no perception pipeline running/i);
+    expect(wrapper.querySelector('button')?.hasAttribute('disabled')).toBe(true);
   });
 
   it('labels the ML perception mode experimental in the control itself', () => {
@@ -259,6 +261,8 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
+        camera_set: 'front',
       },
     });
 
@@ -284,6 +288,8 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
+        camera_set: 'front',
       },
     });
 
@@ -302,11 +308,11 @@ describe('LeftScenarioSidebar', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    expect(screen.getByText('Nob Hill')).toBeTruthy();
+    expect(screen.getByTestId('scene-name').textContent).toBe('Synthetic Grid');
     expect(screen.getAllByRole('listitem')).toHaveLength(5);
     expect(screen.getByText('01')).toBeTruthy();
     expect(screen.getByText('05')).toBeTruthy();
-    expect(screen.getByText('Hyde St Descent')).toBeTruthy();
+    expect(screen.getByText('Signal Ladder')).toBeTruthy();
   });
 
   it("a card's play button emits load_scenario", () => {
@@ -314,14 +320,14 @@ describe('LeftScenarioSidebar', () => {
     render(<LeftScenarioSidebar />);
     harness.emitScene();
 
-    fireEvent.click(screen.getByLabelText('Load Hyde St Descent'));
+    fireEvent.click(screen.getByLabelText('Load Signal Ladder'));
 
     expect(harness.sent).toContainEqual(
-      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'hyde-descent' }),
+      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'grid-signals' }),
     );
     // The server answered with a new scene, so the sidebar now shows its location.
-    expect(useSimStore.getState().activeScenarioId).toBe('hyde-descent');
-    expect(screen.getByText('Russian Hill')).toBeTruthy();
+    expect(useSimStore.getState().activeScenarioId).toBe('grid-signals');
+    expect(screen.getByTestId('scene-name').textContent).toBe('Synthetic Grid');
   });
 
   it('renders a mini-map thumbnail per scenario', () => {
@@ -649,21 +655,21 @@ describe('Location search box', () => {
     // the one actually being awaited — so the address build's own scene
     // could land later and silently replace whatever the user just picked,
     // with no warning since the indicator vanished the moment they clicked.
-    const playBtn = screen.getByLabelText('Load Hyde St Descent') as HTMLButtonElement;
+    const playBtn = screen.getByLabelText('Load Signal Ladder') as HTMLButtonElement;
     expect(playBtn.disabled).toBe(true);
 
     fireEvent.click(playBtn);
     expect(harness.sent.filter((c) => c.cmd === 'load_scenario')).toHaveLength(0);
-    expect(useSimStore.getState().activeScenarioId).not.toBe('hyde-descent');
+    expect(useSimStore.getState().activeScenarioId).not.toBe('grid-signals');
     // A blocked click must not itself disturb the address search still in flight.
     expect(useSimStore.getState().locationPending).toBe('1600 Amphitheatre Parkway');
 
     // Once the address search resolves, the scenario list works normally again.
     harness.emitScene();
     expect(playBtn.disabled).toBe(false);
-    fireEvent.click(screen.getByLabelText('Load Hyde St Descent'));
+    fireEvent.click(screen.getByLabelText('Load Signal Ladder'));
     expect(harness.sent).toContainEqual(
-      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'hyde-descent' }),
+      expect.objectContaining({ cmd: 'load_scenario', scenario_id: 'grid-signals' }),
     );
   });
 });
@@ -725,6 +731,55 @@ describe('Address suggestions', () => {
 
     expect(box.value).toBe('Nob Hill, San Francisco, CA');
     expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  function pickSuggestion(box: HTMLInputElement) {
+    fireEvent.change(box, { target: { value: 'nob' } });
+    fireEvent.focus(box);
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    const cmd = harness!.sent.find((c) => c.cmd === 'suggest_address');
+    act(() => {
+      harness!.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id: cmd!.id,
+        query: 'nob',
+        suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+      });
+    });
+    fireEvent.mouseDown(screen.getByRole('option', { name: 'Nob Hill, San Francisco, CA' }));
+  }
+
+  it('sends the picked suggestion coordinates with load_location', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    pickSuggestion(box);
+    fireEvent.submit(box.closest('form')!);
+    expect(harness.sent.find((c) => c.cmd === 'load_location')).toMatchObject({
+      query: 'Nob Hill, San Francisco, CA',
+      lat: 37.79,
+      lon: -122.42,
+    });
+  });
+
+  it('discards the pick as soon as the text is edited', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    pickSuggestion(box);
+    fireEvent.change(box, { target: { value: 'Nob Hill, San Francisco, CA 94108' } });
+    fireEvent.submit(box.closest('form')!);
+    const sent = harness.sent.find((c) => c.cmd === 'load_location') as Record<string, unknown>;
+    expect(sent.query).toBe('Nob Hill, San Francisco, CA 94108');
+    expect('lat' in sent).toBe(false);
+    expect('lon' in sent).toBe(false);
   });
 
   it('never shows a stale reply that no longer matches the box, even if it arrives late', () => {
@@ -1035,6 +1090,8 @@ describe('RightPanel', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
+        camera_set: 'front',
       },
     };
     harness.emit(frame);
@@ -1086,7 +1143,7 @@ describe('Telemetry row', () => {
     const mph = String(Math.round(toMph(frame.ego.speed_mps)));
     expect(canvasText(speed)).toContain(mph);
     expect(canvasText(speed)).toContain(
-      `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} MAX`,
+      `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} TARGET`,
     );
 
     // Lane widget states the lane index that came down the wire.

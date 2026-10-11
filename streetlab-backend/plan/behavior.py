@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
+from plan.profile import BRAKE_DECEL_MPS2
 from schema import Detection, SignalState
 from sim.route import ControlPoint, LaneSet, Route
 from sim.vehicle import VehicleState
@@ -112,6 +113,14 @@ STOP_MARGIN_M = 6.5
 STOP_ZONE_M = 7.0
 STOPPED_MPS = 0.3
 
+#: Where the nose comes to rest short of a stop line, m. The budget is 0.5-2.0
+#: (`evaluation/driving_metrics.py`); stops measured rest 0.25 m past the target, and 2.31 m was the worst nose with 1.25.
+STOP_NOSE_GAP_M = 0.9
+#: The ego's half-length (`EGO_LENGTH_M` below is declared later): the pose is the body centre.
+_EGO_HALF_LENGTH_M = 2.35
+#: The pose-to-line distance at which the stopping curve reaches zero speed.
+STOP_REST_OFFSET_M = _EGO_HALF_LENGTH_M + STOP_NOSE_GAP_M
+
 assert STOP_ZONE_M >= STOP_MARGIN_M, (
     "STOP_ZONE_M must cover the whole interval the ceiling is zero across "
     "(see STOP_MARGIN_M's docstring) -- otherwise a car can come to rest "
@@ -119,6 +128,19 @@ assert STOP_ZONE_M >= STOP_MARGIN_M, (
     "FSM never sees itself as stopped, and it stalls in APPROACH forever, "
     "even on green."
 )
+
+def stop_line_ceiling(distance_m: float) -> float:
+    """The speed ceiling that brings the car to rest `STOP_MARGIN_M` short of a line.
+
+    `sqrt(2 * COMFORT_DECEL_MPS2 * (distance - STOP_MARGIN_M))`, zero once the
+    car is inside the margin. One definition, shared by the junction FSM and by
+    `plan/hazard.py`'s `yield_to_entry`, which treats a predicted lane entry as
+    a virtual stop line: two copies of this arithmetic would drift, and every
+    number around it (`STOP_MARGIN_M`, `STOP_ZONE_M`, the tracker's gain) was
+    tuned against this exact shape.
+    """
+    return math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance_m - STOP_MARGIN_M, 0.0))
+
 
 #: How long a stop sign is honoured at rest.
 STOP_DWELL_S = 1.0
@@ -400,6 +422,11 @@ class BehaviorDecision:
     #: change is under way. Defaulted so `_CRUISE` and every existing
     #: `BehaviorDecision(...)` construction from Phase 1 stays valid.
     target_lane_id: str | None = None
+    #: How far ahead of the ego's pose it should come to rest for the line it is stopping at, or
+    #: None when it is not stopping. `plan/control.py` brakes along the stopping curve to this
+    #: point; `speed_ceiling_mps` above is the older margin-based stand-in for the same thing
+    #: and is what `plan/hazard.py` and the tests that pin it still read.
+    stop_distance_m: float | None = None
 
 
 _CRUISE = BehaviorDecision(BehaviorState.CRUISE, math.inf, None, None)
@@ -494,7 +521,12 @@ class BehaviorFSM:
         detections: Sequence[Detection] = (),
     ) -> BehaviorDecision:
         self._expire(route, ego_s)
-        target = self._next_point(route, ego_s, control_points)
+        # A line only matters from a braking distance away, and that grows with speed squared:
+        # 45 m is 11.2 m/s at 2.0 m/s^2 with room, not 13 m/s.
+        horizon = max(
+            APPROACH_M, ego.speed_mps**2 / (2 * BRAKE_DECEL_MPS2) + STOP_REST_OFFSET_M + 20.0
+        )
+        target = self._next_point(route, ego_s, control_points, horizon)
         if target is None:
             return self._cruise()
 
@@ -542,9 +574,10 @@ class BehaviorFSM:
             BehaviorState.APPROACH,
             # Zero out STOP_MARGIN_M early -- see its docstring -- so the
             # tracker's own lag overshoots toward the line rather than past it.
-            math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance - STOP_MARGIN_M, 0.0)),
+            stop_line_ceiling(distance),
             "arrived" if target.kind == "arrival" else "stop",
             target,
+            stop_distance_m=max(distance - STOP_REST_OFFSET_M, 0.0),
         )
 
     # -- helpers ------------------------------------------------------------ #
@@ -556,7 +589,11 @@ class BehaviorFSM:
         return _CRUISE
 
     def _next_point(
-        self, route: Route, ego_s: float, control_points: Sequence[ControlPoint]
+        self,
+        route: Route,
+        ego_s: float,
+        control_points: Sequence[ControlPoint],
+        horizon_m: float = APPROACH_M,
     ) -> ControlPoint | None:
         """The nearest un-honoured line from just behind out to `APPROACH_M`.
 
@@ -569,7 +606,7 @@ class BehaviorFSM:
             if cp.id in self.honoured:
                 continue
             gap = route.signed_gap(ego_s, cp.s)
-            if -CLEARED_M <= gap < min(best_gap, APPROACH_M):
+            if -CLEARED_M <= gap < min(best_gap, horizon_m):
                 best, best_gap = cp, gap
         return best
 
@@ -684,6 +721,15 @@ class BehaviorFSM:
             if not self._committed(distance, ego):
                 return True
             return not self._can_clear(target, signals, distance, ego)
+        if phase == "green" and not self._committed(distance, ego):
+            # A stale green: it will have changed before the car gets there, and the car cannot
+            # then stop gently. Planning the stop now costs 1.8 m/s^2; finding out at the change
+            # cost 2.9 (Nob Hill t=125.6 s, 12.4 m/s, 49 m out) and the car flapped between
+            # approach and cruise on the way, accelerating through the first 0.4 s of it.
+            state = signals.get(target.id)
+            left = state.time_to_change_s if state is not None else None
+            if left is not None and ego.speed_mps > 0.0 and distance / ego.speed_mps > left:
+                return True
         # green, flashing_yellow, or off.
         return False
 
@@ -974,6 +1020,7 @@ class BehaviorFSM:
             maneuver=back.maneuver,
             target=junction.target,
             target_lane_id=back.target_lane_id,
+            stop_distance_m=junction.stop_distance_m,
         )
 
     def _begin_return(self) -> None:

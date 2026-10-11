@@ -1,0 +1,39 @@
+{
+  "scenario": "grid-loop+grid-arterial+grid-signals",
+  "seed": 51,
+  "command": "scripts/run_capture.sh {grid-loop 51, grid-arterial 52, grid-signals 53} 30 <dir> 100 (EXTRA_SERVE_ARGS='--tick-hz 10')",
+  "note": "D1 renderer, native 640x640. Dev seeds 41-43 were used for renderer tuning; these seeds were not.",
+  "commit": "",
+  "frames": 221,
+  "annotations": 1243,
+  "visible": 968,
+  "usable": 968,
+  "per_class": {
+    "car": 764,
+    "truck": 195,
+    "bus": 70,
+    "motorcycle": 214
+  },
+  "per_class_visible": {
+    "car": 615,
+    "truck": 163,
+    "bus": 44,
+    "motorcycle": 146
+  },
+  "per_class_usable": {
+    "car": 615,
+    "truck": 163,
+    "bus": 44,
+    "motorcycle": 146
+  },
+  "n_occluders": [
+    64
+  ],
+  "labels_sha256": "4c144ff9ffe560512a75b584b7aa13649fb6bb1da0a6dfe1b7b10139dccd7957",
+  "frames_sha256": "1a523d3eadf6abd16a3ce08fbdae8424bc5c13695de39822b33c8a178ca71d5a",
+  "selection": {
+    "keep": "vehicles",
+    "dropped_static_ego_frames": 65,
+    "dropped_no_matching_class": 16
+  }
+}

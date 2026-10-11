@@ -184,9 +184,23 @@ def perception_pipeline_for(args) -> PerceptionPipeline | None:
     own: Phase 1 shipped a resource leak precisely because a fix landed on
     one of those two paths and not the other.
     """
+    if args.perception == "noisy-truth":
+        # Closed-loop evaluation only: ground truth through a seeded noisy sensor,
+        # driving (spec 5a). Never reachable from the packaged app's command line.
+        from perception.noisy_truth import NOMINAL, NoisyTruthPerception
+
+        npt = NoisyTruthPerception(NOMINAL, getattr(args, "seed", 0), cameras=getattr(args, "cameras", "front+sides100"))
+        npt.pipeline.source = npt
+        return npt.pipeline  # type: ignore[return-value]
     if args.perception != "ml":
         return None
-    return PerceptionPipeline(build_detector(args.detector_model))
+    return PerceptionPipeline(build_detector(args.detector_model), getattr(args, "cameras", "front+sides100"))
+
+
+def _drive_on_noisy_truth(sim, pipeline) -> None:
+    """`--perception noisy-truth` drives on the noisy sensor from the first step."""
+    if pipeline is not None and getattr(pipeline, "source", None) is not None:
+        sim.perception_mode = "ml"
 
 
 def capture_sink_for(args) -> CaptureSink | None:
@@ -255,6 +269,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--sim-hz", type=float, default=1 / DEFAULT_DT)
     serve.add_argument("--tick-hz", type=float, default=60.0)
+    serve.add_argument(
+        "--max-sessions",
+        type=int,
+        default=int(os.environ.get("STREETLAB_MAX_SESSIONS", "0")),
+        help="hosted mode: give every WebSocket connection its own private "
+        "simulation, at most this many at once (further connections are "
+        "closed with code 4429 'server busy'). 0, the default, is the "
+        "desktop sidecar's single shared world. Defaults to "
+        "$STREETLAB_MAX_SESSIONS. Not combinable with --perception ml or "
+        "--capture, which own a single process-wide pipeline.",
+    )
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
     serve.add_argument(
         "--no-stdin-watchdog",
@@ -266,12 +291,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--perception",
-        choices=("ground-truth", "ml"),
+        choices=("ground-truth", "ml", "noisy-truth"),
         default="ground-truth",
         help="ground-truth drives on perfect sensing; ml additionally runs the "
-        "detector pipeline and reports it (shadow mode)",
+        "detector pipeline and reports it (shadow mode); noisy-truth DRIVES on "
+        "ground truth seen through a seeded noisy sensor (evaluation only)",
     )
     serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
+    serve.add_argument(
+        "--cameras",
+        choices=("front", "front+sides100"),
+        default="front+sides100",
+        help="detector cameras: front is the single 76 deg camera; front+sides100 adds a left and "
+        "a right 100 deg camera (3 inferences per frame, sees +-130 deg; the ground-truth feed "
+        "sees +-75 deg plus a shoulder check, and the front camera alone left collisions there)",
+    )
     serve.add_argument(
         "--capture",
         default=None,
@@ -301,12 +335,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_.add_argument(
         "--perception",
-        choices=("ground-truth", "ml"),
+        choices=("ground-truth", "ml", "noisy-truth"),
         default="ground-truth",
         help="ground-truth drives on perfect sensing; ml additionally runs the "
-        "detector pipeline and reports it (shadow mode)",
+        "detector pipeline and reports it (shadow mode); noisy-truth DRIVES on "
+        "ground truth seen through a seeded noisy sensor (evaluation only)",
     )
     run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
+    run_.add_argument(
+        "--cameras",
+        choices=("front", "front+sides100"),
+        default="front+sides100",
+        help="detector cameras: front is the single 76 deg camera; front+sides100 adds a left and "
+        "a right 100 deg camera (3 inferences per frame, sees +-130 deg; the ground-truth feed "
+        "sees +-75 deg plus a shoulder check, and the front camera alone left collisions there)",
+    )
 
     sub.add_parser("scenarios", help="list the scenario catalog")
 
@@ -341,6 +384,13 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 "--traffic applies to synthetic scenarios only; OsmSceneSource "
                 "builds its agent routes from the ingested graph and would ignore it"
+            )
+        if args.max_sessions < 0:
+            parser.error("--max-sessions must be >= 0")
+        if args.max_sessions and (args.perception == "ml" or args.capture):
+            parser.error(
+                "--max-sessions cannot be combined with --perception ml or --capture: "
+                "both own one process-wide pipeline that sessions would share"
             )
         return _serve(args)
     if args.command == "build":
@@ -410,14 +460,20 @@ def _resolve_port(requested: int | None) -> int:
 
 
 def _bind(host: str, port: int) -> socket.socket:
-    """Bind (but do not listen on) a socket the way uvicorn's own
-    ``Config.bind_socket`` does, so ``--port 0`` resolves to a real ephemeral
-    port before anything is printed. Listening is left to uvicorn's own
-    ``asyncio.loop.create_server``, which is handed this socket directly.
+    """Bind and listen on a socket the way uvicorn's own ``Config.bind_socket``
+    does, so ``--port 0`` resolves to a real ephemeral port before anything is
+    printed. uvicorn's ``asyncio.loop.create_server`` is then handed this
+    socket directly.
+
+    It must already be *listening*, not just bound: ``STREETLAB_READY`` is
+    printed well before uvicorn starts, and a bound-only socket refuses a
+    client that connects in that gap. Connections now queue in the backlog
+    until uvicorn begins accepting them.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
+    sock.listen(socket.SOMAXCONN)
     sock.set_inheritable(True)
     return sock
 
@@ -483,8 +539,10 @@ def _serve(args) -> int:
             seed=args.seed,
             dt=1 / args.sim_hz,
             perception_pipeline=pipeline,
+            ml_perception=getattr(pipeline, "source", None),
             capture=sink is not None,
         )
+        _drive_on_noisy_truth(sim, pipeline)
     except _SOURCE_ERRORS as exc:
         # The pipeline's worker thread already exists by this point -- if
         # construction fails there is no later `finally` to reach, so it is
@@ -499,12 +557,31 @@ def _serve(args) -> int:
     sock = _bind(args.host, port)
     real_port = sock.getsockname()[1]
 
-    loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
     # Address suggestions need a real geocoder; SyntheticGrid has none, and
     # asking it for one would be a lie the dropdown would then show as an
     # empty result anyway -- `None` here makes that explicit instead.
     geocoder = source.geocoder if isinstance(source, OsmSceneSource) else None
-    app = create_app(loop, tick_hz=args.tick_hz, geocoder=geocoder)
+    if args.max_sessions:
+        # `sim` above exists to fail fast on a bad scenario and to warm the
+        # source's scene cache; each connection gets its own from the factory.
+        def make_session() -> SimLoop:
+            src = source.fork() if isinstance(source, OsmSceneSource) else scene_source_for(
+                args.source, args.traffic
+            )
+            return SimLoop(
+                Simulation(src, args.scenario, seed=args.seed, dt=1 / args.sim_hz),
+                hz=args.sim_hz,
+            )
+
+        app = create_app(
+            tick_hz=args.tick_hz,
+            geocoder=geocoder,
+            session_factory=make_session,
+            max_sessions=args.max_sessions,
+        )
+    else:
+        loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)
+        app = create_app(loop, tick_hz=args.tick_hz, geocoder=geocoder)
 
     print(
         f"StreetLab serving {sim.scene.description.scenario_id} on "
@@ -583,7 +660,9 @@ def _run(args) -> int:
             seed=args.seed,
             dt=1 / args.hz,
             perception_pipeline=pipeline,
+            ml_perception=getattr(pipeline, "source", None),
         )
+        _drive_on_noisy_truth(sim, pipeline)
     except _SOURCE_ERRORS as exc:
         # Same leak as `_serve`'s: the pipeline's worker thread already
         # exists, and this early return skips the `finally` below entirely.

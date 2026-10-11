@@ -91,3 +91,41 @@ def test_reset_after_a_frame_was_already_taken_counts_no_drop():
     slot.take()
     slot.reset()
     assert slot.dropped == 0
+
+
+# -- several cameras per frame time -------------------------------------------- #
+
+
+def cam_frame(seq, t, yaw, width=640, height=384):
+    return CameraFrame(
+        seq=seq, t=t, width=width, height=height, jpeg=b"x",
+        camera=CAM.model_copy(update={"yaw": yaw}), received_ms=float(seq),
+    )
+
+
+def test_a_group_is_taken_only_when_every_camera_has_arrived():
+    slot = FrameSlot(expected=3)
+    slot.offer(cam_frame(0, 1.0, 0.0))
+    slot.offer(cam_frame(1, 1.0, 1.4, 640, 640))
+    assert slot.take_group() == [] and not slot.pending()
+    slot.offer(cam_frame(2, 1.0, -1.4, 640, 640))
+    group = slot.take_group()
+    assert [f.seq for f in group] == [0, 1, 2]
+    assert slot.take_group() == []
+
+
+def test_a_newer_frame_time_drops_an_incomplete_group_and_counts_it():
+    slot = FrameSlot(expected=3)
+    slot.offer(cam_frame(0, 1.0, 0.0))
+    slot.offer(cam_frame(1, 1.0, 1.4, 640, 640))
+    slot.offer(cam_frame(2, 1.1, 0.0))
+    assert slot.dropped == 2 and slot.take_group() == []
+
+
+def test_a_repeat_of_a_camera_in_the_group_replaces_it():
+    slot = FrameSlot(expected=2)
+    slot.offer(cam_frame(0, 1.0, 0.0))
+    slot.offer(cam_frame(1, 1.0, 0.05))
+    assert slot.dropped == 1 and not slot.pending()
+    slot.offer(cam_frame(2, 1.0, 1.4, 640, 640))
+    assert [f.seq for f in slot.take_group()] == [1, 2]

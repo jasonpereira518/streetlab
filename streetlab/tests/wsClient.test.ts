@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import {
   createTransportFromLocation,
@@ -123,6 +123,16 @@ describe('transport selection', () => {
     const t2 = await createTransportFromLocation('?scenario=x');
     expect(t2.kind).toBe('ws');
     expect(t2.label).toBe('ws://127.0.0.1:8765');
+  });
+
+  it('defaults to the mock in a VITE_DEMO build, but an explicit ?backend= still wins', async () => {
+    vi.stubEnv('VITE_DEMO', '1');
+    try {
+      expect((await createTransportFromLocation('')).kind).toBe('mock');
+      expect((await createTransportFromLocation('?backend=ws://localhost:8765')).kind).toBe('ws');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('?mock=1 wins even when Tauri IPC is present', async () => {
@@ -331,5 +341,61 @@ describe('camera frames while disconnected', () => {
     const transport = createWebSocketTransport({ url: 'ws://localhost:1' });
     transport.send({ id: 'a1', cmd: 'set_paused', paused: true });
     expect(transport.pendingCount()).toBe(1);
+  });
+});
+
+describe('connection failures', () => {
+  function connect() {
+    const failures: Array<{ kind: string } | null> = [];
+    const c = collector();
+    const t = createWebSocketTransport({ url: 'ws://x/1' });
+    t.connect({ ...c.handlers, onFailure: (f) => failures.push(f) });
+    return { t, c, failures, socket: () => FakeWebSocket.instances.at(-1)! };
+  }
+
+  it('close 1008 is an origin rejection and does not retry', () => {
+    const { failures, socket } = connect();
+    socket().serverClose(1008);
+    expect(failures).toEqual([expect.objectContaining({ kind: 'origin_rejected' })]);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('close 4429 is server-busy and retry() reconnects', () => {
+    const { t, failures, socket } = connect();
+    socket().serverClose(4429);
+    expect(failures).toEqual([expect.objectContaining({ kind: 'server_busy' })]);
+    t.retry!();
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(failures.at(-1)).toBeNull();
+    socket().open();
+    expect(failures.at(-1)).toBeNull();
+  });
+
+  it('reports backend_down on the second consecutive failed attempt, clears on open', async () => {
+    vi.useFakeTimers();
+    try {
+      const { failures, socket } = connect();
+      socket().serverClose(1006);
+      expect(failures).toEqual([]);
+      await vi.advanceTimersByTimeAsync(500);
+      socket().serverClose(1006);
+      expect(failures).toEqual([expect.objectContaining({ kind: 'backend_down' })]);
+      await vi.advanceTimersByTimeAsync(1000);
+      socket().open();
+      expect(failures.at(-1)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a first message on another protocol halts with protocol_mismatch', () => {
+    const { c, failures, socket } = connect();
+    socket().open();
+    socket().receive({ type: 'scene_description', protocol: PROTOCOL_VERSION + 1 });
+    expect(failures.at(-1)).toMatchObject({ kind: 'protocol_mismatch' });
+    expect(c.messages).toEqual([]);
+    expect(c.invalid).toEqual([]); // diagnosed as a version problem, not a bad frame
+    socket().serverClose(1000);
+    expect(FakeWebSocket.instances).toHaveLength(1); // no retry
   });
 });

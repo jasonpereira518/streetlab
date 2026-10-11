@@ -1,6 +1,6 @@
 /**
  * Speed gauge: a 240-degree arc with the live speed in the middle and the
- * cruise set-speed marked on the rim as "45 MAX".
+ * planner target speed (orange) and the posted limit (grey) marked on the rim.
  */
 import { useTelemetryCanvas } from '../../store/hooks';
 import { clamp, toMph } from '../../units';
@@ -91,9 +91,19 @@ export function Speedometer() {
       baseline: 'middle',
     });
 
-    // Set-speed legend, top-right where the arc leaves the corner free.
-    dot(ctx, width - 52, 9, 3, color.warn);
-    text(ctx, `${Math.round(setMph)} MAX`, width - 45, 9, {
+    // Legends, top-right where the arc leaves the corner free. The orange
+    // marker is the planner's instantaneous target (it drops for corners and
+    // lead vehicles), NOT a cap, so it says TARGET; the posted limit is the
+    // number a driver would call the maximum.
+    dot(ctx, width - 62, 9, 3, color.warn);
+    text(ctx, `${Math.round(setMph)} TARGET`, width - 55, 9, {
+      size: 9.5,
+      weight: 700,
+      color: color.textMuted,
+      baseline: 'middle',
+    });
+    dot(ctx, width - 62, 22, 3, color.textFaint);
+    text(ctx, `${Math.round(limitMph)} LIMIT`, width - 55, 22, {
       size: 9.5,
       weight: 700,
       color: color.textMuted,

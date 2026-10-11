@@ -9,7 +9,15 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { PROTOCOL_VERSION, parseCommand, parseServerMessage } from '../schema';
 import type { Command } from '../schema';
-import type { Transport, TransportHandlers } from './transport';
+import {
+  CLOSE_ORIGIN_REJECTED,
+  CLOSE_SERVER_BUSY,
+} from './transport';
+import type {
+  ConnectionFailure,
+  Transport,
+  TransportHandlers,
+} from './transport';
 import { createMockTransport } from './mockServer';
 
 /** The CLI's own default port — used so `npm run dev` + `streetlab serve`
@@ -18,9 +26,7 @@ const LOCAL_DEFAULT_URL = 'ws://127.0.0.1:8765';
 
 /** A hosted build (e.g. Vercel) sets `VITE_BACKEND_WS_URL` at build time to the
  * externally hosted simulator; unset, the local CLI default applies. */
-const BROWSER_DEV_DEFAULT_URL =
-  (import.meta as unknown as { env?: Record<string, string | undefined> }).env
-    ?.VITE_BACKEND_WS_URL || LOCAL_DEFAULT_URL;
+const BROWSER_DEV_DEFAULT_URL = import.meta.env.VITE_BACKEND_WS_URL || LOCAL_DEFAULT_URL;
 
 interface BackendHandshake {
   ws: string;
@@ -60,6 +66,9 @@ export function createWebSocketTransport(
   let handlers: TransportHandlers | null = null;
   let socket: WebSocket | null = null;
   let closedByUs = false;
+  // Set when the server gave a verdict (refused, busy, wrong protocol): the
+  // retry timer must not paper over it. Cleared by `retry()`.
+  let halted = false;
   let attempt = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const queue: Command[] = [];
@@ -71,8 +80,24 @@ export function createWebSocketTransport(
     }
   };
 
+  /** Attempts in a row that failed before the socket ever opened. */
+  const DOWN_AFTER_ATTEMPTS = 2;
+
+  const fail = (failure: ConnectionFailure) => {
+    handlers?.onFailure?.(failure);
+  };
+
+  const halt = (failure: ConnectionFailure) => {
+    halted = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    fail(failure);
+    handlers?.onStatus('error', failure.detail);
+  };
+
   const open = () => {
-    if (closedByUs) return;
+    if (closedByUs || halted) return;
+    let protocolChecked = false;
     handlers?.onStatus(attempt === 0 ? 'connecting' : 'reconnecting', url);
     try {
       socket = new WebSocket(url);
@@ -83,6 +108,7 @@ export function createWebSocketTransport(
 
     socket.onopen = () => {
       attempt = 0;
+      handlers?.onFailure?.(null);
       handlers?.onStatus('open', url);
       flushQueue();
     };
@@ -97,6 +123,24 @@ export function createWebSocketTransport(
       } catch {
         handlers.onInvalid('message was not valid JSON', ev.data);
         return;
+      }
+      // The browser path has no handshake, so the version check happens on the
+      // first message. It runs BEFORE schema validation: a server on another
+      // protocol is exactly the one whose frames would fail it, and "dropped
+      // invalid frame" is the wrong diagnosis for "wrong server version".
+      if (!protocolChecked) {
+        const theirs = (raw as { protocol?: unknown } | null)?.protocol;
+        if (typeof theirs === 'number') {
+          protocolChecked = true;
+          if (theirs !== PROTOCOL_VERSION) {
+            halt({
+              kind: 'protocol_mismatch',
+              detail: `server speaks protocol ${theirs}, this page expects ${PROTOCOL_VERSION}`,
+            });
+            socket?.close();
+            return;
+          }
+        }
       }
       const res = parseServerMessage(raw);
       if (!res.ok) {
@@ -117,6 +161,21 @@ export function createWebSocketTransport(
       if (closedByUs) {
         handlers?.onStatus('closed', url);
         return;
+      }
+      if (halted) return; // protocol mismatch: we closed it ourselves
+      if (ev.code === CLOSE_ORIGIN_REJECTED) {
+        halt({
+          kind: 'origin_rejected',
+          detail: `${url} refused this page's origin (close ${ev.code})`,
+        });
+        return;
+      }
+      if (ev.code === CLOSE_SERVER_BUSY) {
+        halt({ kind: 'server_busy', detail: `${url} is at capacity (close ${ev.code})` });
+        return;
+      }
+      if (attempt + 1 >= DOWN_AFTER_ATTEMPTS) {
+        fail({ kind: 'backend_down', detail: `no answer from ${url} (close ${ev.code})` });
       }
       scheduleRetry(`closed (${ev.code})`);
     };
@@ -139,7 +198,17 @@ export function createWebSocketTransport(
     connect(h) {
       handlers = h;
       closedByUs = false;
+      halted = false;
       attempt = 0;
+      open();
+    },
+    retry() {
+      if (closedByUs || !handlers || socket) return;
+      halted = false;
+      attempt = 0;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      handlers.onFailure?.(null);
       open();
     },
     send(command) {
@@ -211,6 +280,12 @@ export async function createTransportFromLocation(
     }
     return createWebSocketTransport({ url: backend });
   }
+
+  // The hosted demo is a static site with no backend to reach: built with
+  // VITE_DEMO=1, it runs the in-process mock by default. An explicit
+  // ?backend= (handled above) still wins, so a visitor can point it at a
+  // simulator of their own.
+  if (import.meta.env.VITE_DEMO === '1') return createMockTransport();
 
   if (isTauri()) {
     let handshake: unknown;

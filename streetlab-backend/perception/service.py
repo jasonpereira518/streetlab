@@ -27,14 +27,16 @@ import math
 from dataclasses import dataclass
 from typing import Protocol, Sequence, runtime_checkable
 
+from map.lanes import LANE_W
 from plan.ttc import hazard_label, is_hazard, time_to_collision
 from schema import Detection, Pose, Size
 from sim.agents import Agent
 from sim.route import Route
 from sim.vehicle import VehicleState
 
-# Width of one lane, used to bucket agents into lanes relative to ego.
-_LANE_W = 3.6
+# Width of one lane, used to bucket agents into lanes relative to ego. The
+# same figure `map.lanes.LANE_W` builds the neighbouring lane routes from.
+_LANE_W = LANE_W
 
 #: How far a source claims to see. Ground truth is capped so it cannot hand
 #: the planner objects no sensor could resolve; `MlPerception` is capped to
@@ -45,6 +47,11 @@ _LANE_W = 3.6
 #: see `EgoFrame.range_to`, which both sources call so that the origin and
 #: the instant cannot drift apart either.
 MAX_RANGE_M = 90.0
+
+
+def _lane_index(lateral_m: float) -> int:
+    """Which lane of the ego route's carriageway a lateral offset falls in (0 = the ego lane)."""
+    return round(lateral_m / _LANE_W)
 
 
 @runtime_checkable
@@ -130,8 +137,17 @@ class EgoFrame:
         return self.route.signed_gap(self.s, self.route.project((x, y)))
 
     def lane_offset(self, x: float, y: float) -> int:
-        """Lane of `(x, y)` relative to ego: -1 right, 0 same, +1 left."""
-        return round((self.route.lateral_offset((x, y)) - self.lateral_m) / _LANE_W)
+        """Lane of `(x, y)` relative to ego: -1 right, 0 same, +1 left.
+
+        Lanes are the scene's own: `lane_ego` is the ego route and its
+        neighbours sit at multiples of `LANE_W` from it (`map.lanes.derive_lanes`).
+        A point's lane and the ego's lane are each found against THOSE centres,
+        then differenced. The earlier `round((d_point - d_ego) / LANE_W)` measured
+        the point from the ego's body instead, so an ego drifting 1 m inside its
+        own lane moved every neighbour's lane by one: a car in the lane beside it
+        read as in-path or out of it depending on where in its lane the ego was.
+        """
+        return _lane_index(self.route.lateral_offset((x, y))) - _lane_index(self.lateral_m)
 
     def threat(
         self, gap: float | None, lane_offset: int, cls: str, speed_mps: float

@@ -1,0 +1,13 @@
+{
+  "_comment": "Cross-language pin for the detector camera layouts named by PerceptionStats.camera_set (protocol 11). Not a wire message: streetlab-backend/tests/test_detector_cameras.py and streetlab/tests/detectorCameras.test.ts both assert their own tables against this ONE file, so the renderer's cameras and the backend's model of them cannot drift. yaw_deg is relative to the ego heading (+ = left); all cameras share the mount position and downtilt (contract/mount_pitch_rad.json). Each camera is one inference per frame time.",
+  "sets": {
+    "front": [
+      { "name": "front", "yaw_deg": 0, "fov_y_deg": 75.7072332851039, "width": 640, "height": 640 }
+    ],
+    "front+sides100": [
+      { "name": "front", "yaw_deg": 0, "fov_y_deg": 75.7072332851039, "width": 640, "height": 640 },
+      { "name": "left", "yaw_deg": 80, "fov_y_deg": 100, "width": 640, "height": 640 },
+      { "name": "right", "yaw_deg": -80, "fov_y_deg": 100, "width": 640, "height": 640 }
+    ]
+  }
+}

@@ -1,0 +1,464 @@
+{
+  "meta": {
+    "sha": "1ee6861",
+    "date": "2026-10-09",
+    "model": "rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx"
+  },
+  "gate": [
+    {
+      "set": "benchmark-close",
+      "criterion": "car recall",
+      "need": ">= 0.70",
+      "got": 0.14965986394557823,
+      "pass": false
+    },
+    {
+      "set": "benchmark-close",
+      "criterion": "truck+bus+motorcycle recall",
+      "need": ">= 0.50",
+      "got": 0.11926605504587157,
+      "pass": false
+    },
+    {
+      "set": "benchmark-hazards",
+      "criterion": "pedestrian recall",
+      "need": ">= 0.70",
+      "got": 0.0,
+      "pass": false
+    },
+    {
+      "set": "benchmark-hazards",
+      "criterion": "cyclist recall",
+      "need": ">= 0.60",
+      "got": 0.0,
+      "pass": false
+    },
+    {
+      "set": "benchmark-nobhill",
+      "criterion": "car recall",
+      "need": ">= 0.60",
+      "got": null,
+      "pass": false,
+      "n": "not captured"
+    },
+    {
+      "set": "benchmark-close",
+      "criterion": "precision",
+      "need": ">= 0.80",
+      "got": 0.3723404255319149,
+      "pass": false
+    },
+    {
+      "set": "benchmark-hazards",
+      "criterion": "precision",
+      "need": ">= 0.80",
+      "got": 0.0,
+      "pass": false
+    },
+    {
+      "set": "benchmark-nobhill",
+      "criterion": "precision",
+      "need": ">= 0.75",
+      "got": null,
+      "pass": false,
+      "n": "not captured"
+    },
+    {
+      "set": "all D1 sets",
+      "criterion": "position error within 20 m (matched, pooled mean)",
+      "need": "<= 1.0 m",
+      "got": 2.2147921237694894,
+      "n": 34,
+      "pass": false
+    },
+    {
+      "set": "all D1 sets",
+      "criterion": "position error 20-40 m (matched, pooled mean)",
+      "need": "<= 2.5 m",
+      "got": 2.9859319129881614,
+      "n": 1,
+      "pass": false
+    }
+  ],
+  "sets": {
+    "benchmark-close": {
+      "frames": 221,
+      "recall": {
+        "car": {
+          "n": 147,
+          "hit": 22,
+          "recall": 0.14965986394557823,
+          "per_class": {
+            "car": [
+              22,
+              147
+            ]
+          }
+        },
+        "truck+bus+motorcycle": {
+          "n": 109,
+          "hit": 13,
+          "recall": 0.11926605504587157,
+          "per_class": {
+            "truck": [
+              13,
+              67
+            ],
+            "bus": [
+              0,
+              14
+            ],
+            "motorcycle": [
+              0,
+              28
+            ]
+          }
+        }
+      },
+      "precision": {
+        "tp": 35,
+        "fp": 59,
+        "ignored": 8,
+        "precision": 0.3723404255319149,
+        "per_class": {
+          "car": [
+            22,
+            28
+          ],
+          "truck": [
+            13,
+            27
+          ],
+          "bus": [
+            0,
+            3
+          ],
+          "motorcycle": [
+            0,
+            1
+          ]
+        }
+      },
+      "detections_by_class": {
+        "bus": 4,
+        "truck": 42,
+        "car": 55,
+        "pedestrian": 7,
+        "motorcycle": 1
+      },
+      "position_error_m": {
+        "within_20m": {
+          "n": 34,
+          "mean": 2.2147921237694894
+        },
+        "20_to_40m": {
+          "n": 1,
+          "mean": 2.9859319129881614
+        }
+      },
+      "recall_by_range": {
+        "0-10 m": {
+          "n": 120,
+          "hit": 21
+        },
+        "10-20 m": {
+          "n": 80,
+          "hit": 13
+        },
+        "20-30 m": {
+          "n": 33,
+          "hit": 1
+        },
+        "30-40 m": {
+          "n": 23,
+          "hit": 0
+        }
+      }
+    },
+    "benchmark-hazards": {
+      "frames": 135,
+      "recall": {
+        "pedestrian": {
+          "n": 17,
+          "hit": 0,
+          "recall": 0.0,
+          "per_class": {
+            "pedestrian": [
+              0,
+              17
+            ]
+          }
+        },
+        "cyclist": {
+          "n": 79,
+          "hit": 0,
+          "recall": 0.0,
+          "per_class": {
+            "cyclist": [
+              0,
+              79
+            ]
+          }
+        }
+      },
+      "precision": {
+        "tp": 0,
+        "fp": 72,
+        "ignored": 15,
+        "precision": 0.0,
+        "per_class": {
+          "pedestrian": [
+            0,
+            56
+          ],
+          "cyclist": [
+            0,
+            16
+          ]
+        }
+      },
+      "detections_by_class": {
+        "car": 24,
+        "pedestrian": 56,
+        "cyclist": 16,
+        "truck": 7
+      },
+      "position_error_m": {
+        "within_20m": {
+          "n": 0,
+          "mean": null
+        },
+        "20_to_40m": {
+          "n": 0,
+          "mean": null
+        }
+      },
+      "recall_by_range": {
+        "0-10 m": {
+          "n": 52,
+          "hit": 0
+        },
+        "10-20 m": {
+          "n": 30,
+          "hit": 0
+        },
+        "20-30 m": {
+          "n": 14,
+          "hit": 0
+        }
+      }
+    }
+  },
+  "legacy": {
+    "benchmark": {
+      "frames": 60,
+      "recall": {
+        "all": {
+          "n": 84,
+          "hit": 0,
+          "recall": 0.0,
+          "per_class": {
+            "car": [
+              0,
+              76
+            ],
+            "truck": [
+              0,
+              8
+            ],
+            "bus": [
+              0,
+              0
+            ],
+            "motorcycle": [
+              0,
+              0
+            ],
+            "cyclist": [
+              0,
+              0
+            ],
+            "pedestrian": [
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "precision": {
+        "tp": 0,
+        "fp": 0,
+        "ignored": 0,
+        "precision": null,
+        "per_class": {
+          "car": [
+            0,
+            0
+          ],
+          "truck": [
+            0,
+            0
+          ],
+          "bus": [
+            0,
+            0
+          ],
+          "motorcycle": [
+            0,
+            0
+          ],
+          "cyclist": [
+            0,
+            0
+          ],
+          "pedestrian": [
+            0,
+            0
+          ]
+        }
+      },
+      "detections_by_class": {},
+      "position_error_m": {
+        "within_20m": {
+          "n": 0,
+          "mean": null
+        },
+        "20_to_40m": {
+          "n": 0,
+          "mean": null
+        }
+      },
+      "recall_by_range": {
+        "30-40 m": {
+          "n": 13,
+          "hit": 0
+        },
+        "40-50 m": {
+          "n": 33,
+          "hit": 0
+        },
+        "60-70 m": {
+          "n": 21,
+          "hit": 0
+        },
+        "70-80 m": {
+          "n": 9,
+          "hit": 0
+        },
+        "80-90 m": {
+          "n": 8,
+          "hit": 0
+        }
+      }
+    },
+    "benchmark-v2": {
+      "frames": 92,
+      "recall": {
+        "all": {
+          "n": 26,
+          "hit": 0,
+          "recall": 0.0,
+          "per_class": {
+            "car": [
+              0,
+              14
+            ],
+            "truck": [
+              0,
+              0
+            ],
+            "bus": [
+              0,
+              0
+            ],
+            "motorcycle": [
+              0,
+              12
+            ],
+            "cyclist": [
+              0,
+              0
+            ],
+            "pedestrian": [
+              0,
+              0
+            ]
+          }
+        }
+      },
+      "precision": {
+        "tp": 0,
+        "fp": 0,
+        "ignored": 0,
+        "precision": null,
+        "per_class": {
+          "car": [
+            0,
+            0
+          ],
+          "truck": [
+            0,
+            0
+          ],
+          "bus": [
+            0,
+            0
+          ],
+          "motorcycle": [
+            0,
+            0
+          ],
+          "cyclist": [
+            0,
+            0
+          ],
+          "pedestrian": [
+            0,
+            0
+          ]
+        }
+      },
+      "detections_by_class": {},
+      "position_error_m": {
+        "within_20m": {
+          "n": 0,
+          "mean": null
+        },
+        "20_to_40m": {
+          "n": 0,
+          "mean": null
+        }
+      },
+      "recall_by_range": {
+        "0-10 m": {
+          "n": 5,
+          "hit": 0
+        },
+        "10-20 m": {
+          "n": 7,
+          "hit": 0
+        },
+        "20-30 m": {
+          "n": 1,
+          "hit": 0
+        },
+        "30-40 m": {
+          "n": 1,
+          "hit": 0
+        },
+        "40-50 m": {
+          "n": 2,
+          "hit": 0
+        },
+        "50-60 m": {
+          "n": 3,
+          "hit": 0
+        },
+        "60-70 m": {
+          "n": 7,
+          "hit": 0
+        }
+      }
+    }
+  }
+}

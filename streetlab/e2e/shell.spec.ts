@@ -70,7 +70,6 @@ test('content in each chrome surface shares one left inset', async ({ page }) =>
     '.sidebar-title',
     '.location-search input',
     '.scenario',
-    '.foot-btn',
   ]) {
     expect(await inset(page, '.sidebar', child), child).toBe(PAD);
   }

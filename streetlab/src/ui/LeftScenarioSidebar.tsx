@@ -6,12 +6,31 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AddressSuggestion, ScenarioSummary } from '../schema';
 import { useSimStore } from '../store/simStore';
-import { BookmarkIcon, FolderIcon, PlayIcon, PlusIcon, SearchIcon } from './Icons';
+import { BookmarkIcon, PlayIcon, SearchIcon } from './Icons';
 import { alpha, color } from './theme';
+
+const BOOKMARKS_KEY = 'streetlab.bookmarks';
+
+function loadBookmarks(): Record<string, boolean> {
+  try {
+    const v = JSON.parse(localStorage.getItem(BOOKMARKS_KEY) ?? '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveBookmarks(b: Record<string, boolean>) {
+  try {
+    localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(b));
+  } catch {
+    // Storage blocked or full: bookmarks fall back to session-only.
+  }
+}
 
 /** Debounce before an as-you-type address fires a `suggest_address` request.
  * Short enough to feel responsive, long enough that a fast typist doesn't
- * spend one Nominatim round trip per keystroke. */
+ * spend one geocoder round trip per keystroke. */
 const SUGGEST_DEBOUNCE_MS = 250;
 /** Below this length a query is either empty or too short to narrow down
  * real candidates — Nominatim's own results get noisy well before this. */
@@ -37,7 +56,7 @@ function AddressField({
 }: {
   value: string;
   onChange: (value: string) => void;
-  onSelect: (label: string) => void;
+  onSelect: (suggestion: AddressSuggestion) => void;
   placeholder: string;
   ariaLabel: string;
   disabled: boolean;
@@ -68,8 +87,8 @@ function AddressField({
     reply && reply.query === value.trim() ? reply.items : [];
   const showDropdown = open && suggestions.length > 0;
 
-  const select = (label: string) => {
-    onSelect(label);
+  const select = (suggestion: AddressSuggestion) => {
+    onSelect(suggestion);
     setRequestId(null);
     setOpen(false);
   };
@@ -101,7 +120,7 @@ function AddressField({
             setHighlight((h) => (h <= 0 ? suggestions.length - 1 : h - 1));
           } else if (e.key === 'Enter' && highlight >= 0) {
             e.preventDefault();
-            select(suggestions[highlight].label);
+            select(suggestions[highlight]);
           } else if (e.key === 'Escape') {
             setOpen(false);
           }
@@ -126,7 +145,7 @@ function AddressField({
                 // a click that was already in flight.
                 e.preventDefault();
                 if (blurTimer.current) clearTimeout(blurTimer.current);
-                select(s.label);
+                select(s);
               }}
             >
               {s.label}
@@ -149,9 +168,13 @@ export function LeftScenarioSidebar() {
   const locationProgress = useSimStore((s) => s.locationProgress);
   const locationError = useSimStore((s) => s.locationError);
   const tripComplete = useSimStore((s) => s.tripComplete);
-  const [bookmarks, setBookmarks] = useState<Record<string, boolean>>({});
+  const [bookmarks, setBookmarks] = useState<Record<string, boolean>>(loadBookmarks);
   const [query, setQuery] = useState('');
   const [destQuery, setDestQuery] = useState('');
+  // The suggestion picked for each field. Editing the text discards the pick,
+  // so coordinates are only ever sent for the exact label the user chose.
+  const [startPick, setStartPick] = useState<AddressSuggestion | null>(null);
+  const [destPick, setDestPick] = useState<AddressSuggestion | null>(null);
 
   const isBookmarked = (s: ScenarioSummary) => bookmarks[s.id] ?? s.bookmarked;
 
@@ -182,23 +205,37 @@ export function LeftScenarioSidebar() {
         className="location-search"
         onSubmit={(e) => {
           e.preventDefault();
-          loadLocation(query, destQuery);
+          loadLocation(query, destQuery, { start: startPick, destination: destPick });
           setQuery('');
           setDestQuery('');
+          setStartPick(null);
+          setDestPick(null);
         }}
       >
         <AddressField
           value={query}
-          onChange={setQuery}
-          onSelect={setQuery}
+          onChange={(v) => {
+            setQuery(v);
+            setStartPick(null);
+          }}
+          onSelect={(p) => {
+            setQuery(p.label);
+            setStartPick(p);
+          }}
           placeholder="Address or place…"
           ariaLabel="Start address"
           disabled={locationPending !== null}
         />
         <AddressField
           value={destQuery}
-          onChange={setDestQuery}
-          onSelect={setDestQuery}
+          onChange={(v) => {
+            setDestQuery(v);
+            setDestPick(null);
+          }}
+          onSelect={(p) => {
+            setDestQuery(p.label);
+            setDestPick(p);
+          }}
           placeholder="Destination (optional)…"
           ariaLabel="Destination address"
           disabled={locationPending !== null}
@@ -285,9 +322,11 @@ export function LeftScenarioSidebar() {
               <button
                 type="button"
                 className={`ghost-btn${isBookmarked(s) ? ' is-marked' : ''}`}
-                onClick={() =>
-                  setBookmarks((b) => ({ ...b, [s.id]: !isBookmarked(s) }))
-                }
+                onClick={() => {
+                  const next = { ...bookmarks, [s.id]: !isBookmarked(s) };
+                  setBookmarks(next);
+                  saveBookmarks(next);
+                }}
                 aria-label={`${isBookmarked(s) ? 'Remove' : 'Add'} bookmark for ${s.name}`}
                 aria-pressed={isBookmarked(s)}
                 title="Bookmark"
@@ -319,30 +358,6 @@ export function LeftScenarioSidebar() {
           </article>
         ))}
       </div>
-
-      <footer className="sidebar-foot">
-        {/* Inert, like the three icon buttons in the toolbar. `.foot-btn`'s
-            dashed border reads as "placeholder" for New and much less so for
-            Open, so both say it outright rather than relying on the border. */}
-        <button
-          type="button"
-          className="foot-btn"
-          disabled
-          title="New scenario — not implemented yet"
-        >
-          <PlusIcon size={16} />
-          <span>New</span>
-        </button>
-        <button
-          type="button"
-          className="foot-btn"
-          disabled
-          title="Open folder — not implemented yet"
-        >
-          <FolderIcon size={16} />
-          <span>Open</span>
-        </button>
-      </footer>
     </aside>
   );
 }

@@ -80,15 +80,16 @@ export const signalColor = {
 } as const;
 
 /**
- * Sun/sky presets driven by the `time_of_day` render parameter. `ambient` is deliberately high relative to `intensity`: in a
- * light theme a shadow must read as a soft grey wash, not a black hole, so the
- * hemisphere fill carries most of the exposure and the sun supplies contrast.
+ * Sun/sky presets driven by the `time_of_day` render parameter. The key light carries more than the fill (M2): with the
+ * fill at ~2.7 against a ~1.5 sun a vehicle's flanks and roof came out the same
+ * grey and nothing read as a solid, which is part of why the detector saw
+ * chairs. The fill is still high enough that a shadow stays a soft grey wash.
  */
 export const lighting = {
-  morning: { sky: '#DCEAF6', horizon: '#F3EEE4', sun: '#FFE9C9', ground: '#D8D2C6', elev: 0.42, azim: 1.9, intensity: 1.35, ambient: 2.5 },
-  midday: { sky: '#CFE3F5', horizon: '#EFF4F8', sun: '#FFFAF0', ground: '#D6D3CB', elev: 0.95, azim: 0.9, intensity: 1.55, ambient: 2.7 },
-  golden: { sky: '#E8D9E8', horizon: '#FFE2C2', sun: '#FFD39B', ground: '#DCCBB8', elev: 0.24, azim: 2.6, intensity: 1.5, ambient: 2.35 },
-  overcast: { sky: '#DEE4EA', horizon: '#E9EDF1', sun: '#F2F5F8', ground: '#D5D8DB', elev: 0.7, azim: 1.2, intensity: 0.55, ambient: 3.1 },
+  morning: { sky: '#DCEAF6', horizon: '#F3EEE4', sun: '#FFE9C9', ground: '#D8D2C6', elev: 0.42, azim: 1.9, intensity: 2.2, ambient: 1.7 },
+  midday: { sky: '#CFE3F5', horizon: '#EFF4F8', sun: '#FFFAF0', ground: '#D6D3CB', elev: 0.95, azim: 0.9, intensity: 2.3, ambient: 2.1 },
+  golden: { sky: '#E8D9E8', horizon: '#FFE2C2', sun: '#FFD39B', ground: '#DCCBB8', elev: 0.24, azim: 2.6, intensity: 2.3, ambient: 1.6 },
+  overcast: { sky: '#DEE4EA', horizon: '#E9EDF1', sun: '#F2F5F8', ground: '#D5D8DB', elev: 0.7, azim: 1.2, intensity: 0.8, ambient: 2.6 },
 } as const;
 
 export type LightingPreset = keyof typeof lighting;

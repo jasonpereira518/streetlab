@@ -20,9 +20,12 @@ for a model.
 from __future__ import annotations
 
 import math
+
+import numpy as np
 from typing import Protocol, Sequence
 
-from perception.geometry import CLASS_SIZE, project_to_ground
+from perception.geometry import CLASS_SIZE
+from perception.localize import GroundFn, locate
 from perception.pipeline import PipelineResult
 from perception.service import MAX_RANGE_M, EgoFrame
 from perception.tracker import Observation, Track, Tracker
@@ -30,6 +33,16 @@ from schema import Detection, Pose
 from sim.agents import Agent
 from sim.route import Route
 from sim.vehicle import VehicleState
+
+#: Matched frames at which a track's confidence is no longer discounted. A track born on
+#: 2 hits reports half its detector confidence; at 6 (0.5 s of evidence) all of it.
+MATURE_HITS = 6
+
+#: Tracks matched in fewer frames than this are not published at all. Birth is 2 hits in 3
+#: frames (spec 5b); a ghost chain of 2-3 consistent false positives passes it, and with three
+#: cameras (each its own detector run) the false-positive rate triples. Real objects pay (as far as the planner is concerned) nothing extra: its reactions already need 4 matched frames of confidence. Real objects pay one or
+#: two frames (0.1-0.2 s) of delay once, at first sight.
+MIN_PUBLISH_HITS = 4
 
 # Under this speed a track's velocity vector is mostly estimator noise, and
 # the direction of a near-zero vector is essentially random. Heading falls
@@ -65,12 +78,20 @@ class MlPerception:
         pipeline: LatestResult,
         tracker: Tracker,
         max_range_m: float = MAX_RANGE_M,
+        min_publish_hits: int | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._tracker = tracker
         self.max_range_m = max_range_m
+        self.min_publish_hits = MIN_PUBLISH_HITS if min_publish_hits is None else min_publish_hits
         self._processed: PipelineResult | None = None
         self._tracks: list[Track] = []
+        #: Sim time the next `observe` publishes for. Set by the loop each step;
+        #: until it is, tracks are published as of their own frame.
+        self._now: float | None = None
+        #: Terrain height under a world point relative to the ground under the
+        #: ego, or None for flat ground. Set by the loop with the scene.
+        self.ground: GroundFn | None = None
 
     def reset(self) -> None:
         """Forget everything. Called on a scene swap, which invalidates it all.
@@ -89,7 +110,21 @@ class MlPerception:
         """
         self._processed = None
         self._tracks = []
+        self._now = None
         self._tracker.reset()
+
+    def bind_scene(self, buildings: Sequence[object], ground: GroundFn | None) -> None:
+        """Give the source the scene's terrain (it has no use for the buildings)."""
+        self.ground = ground
+
+    def advance_to(self, t: float) -> None:
+        """Tell the source what time it is, so tracks are published as of now.
+
+        A frame is 100-200 ms old by the time its tracks reach the planner.
+        Publishing the frame's positions as they were would be publishing the
+        past: the lead would read as that much further away than it is.
+        """
+        self._now = t
 
     @property
     def last_frame_t(self) -> float | None:
@@ -104,9 +139,14 @@ class MlPerception:
     def observe(
         self, ego: VehicleState, agents: Sequence[Agent], route: Route
     ) -> list[Detection]:
-        result = self._pipeline.latest()
-        if result is None:
+        latest_set = getattr(self._pipeline, "latest_set", None)
+        results = latest_set() if latest_set is not None else None
+        if results is None:
+            single = self._pipeline.latest()
+            results = None if single is None else (single,)
+        if results is None:
             return []
+        result = results[0]
 
         # Computed before the tracker runs, because the range gate below
         # needs it too: both this source and `GroundTruthPerception` answer
@@ -121,9 +161,13 @@ class MlPerception:
         # track takes a miss each call -- kill live tracks within a single
         # frame interval.
         if result is not self._processed:
-            observations = _observations(result, frame, self.max_range_m)
-            self._tracks = self._tracker.update(observations, result.frame_t)
+            per_camera = [_observations(r, frame, self.max_range_m, self.ground) for r in results]
+            observations = per_camera[0] if len(per_camera) == 1 else fuse_cameras(per_camera)
+            self._tracker.update(observations, result.frame_t)
             self._processed = result
+        self._tracks = self._tracker.snapshot(
+            result.frame_t if self._now is None else max(self._now, result.frame_t)
+        )
 
         # The gate that actually decides what leaves this source, applied to
         # the tracks being published rather than to the observations that fed
@@ -146,11 +190,66 @@ class MlPerception:
             _detection(track, frame, ego)
             for track in self._tracks
             if frame.range_to(track.x, track.y) <= self.max_range_m
+            and track.total_hits >= self.min_publish_hits
         ]
 
 
+def fuse_cameras(per_camera: Sequence[Sequence[Observation]]) -> list[Observation]:
+    """One observation per object when several cameras overlap on it.
+
+    Two observations from DIFFERENT cameras that agree within their combined
+    uncertainty (Mahalanobis, 95 %) are one object seen twice: fused by inverse
+    covariance into a single, tighter observation. Without this a car in the
+    overlap would spawn two tracks and the planner would brake for a ghost
+    beside the real one. Observations from the same camera are never merged:
+    they are distinct boxes by construction.
+    """
+    out: list[tuple[int, Observation]] = [(ci, o) for ci, obs in enumerate(per_camera) for o in obs]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                (ci, a), (cj, b) = out[i], out[j]
+                if ci == cj:
+                    continue
+                ra, rb = _obs_cov(a), _obs_cov(b)
+                d = np.array([a.x - b.x, a.y - b.y])
+                if float(d @ np.linalg.solve(ra + rb, d)) > _SAME_OBJECT_CHI2:
+                    continue
+                pa, pb = np.linalg.inv(ra), np.linalg.inv(rb)
+                cov = np.linalg.inv(pa + pb)
+                mean = cov @ (pa @ np.array([a.x, a.y]) + pb @ np.array([b.x, b.y]))
+                w, v = np.linalg.eigh(cov)
+                best = a if a.confidence >= b.confidence else b
+                fused = Observation(
+                    best.cls, float(mean[0]), float(mean[1]), max(a.confidence, b.confidence),
+                    math.atan2(v[1, 1], v[0, 1]), math.sqrt(w[1]), math.sqrt(w[0]),
+                )
+                out[i] = (-1 - i, fused)  # a fused observation joins no camera: it may fuse no more
+                del out[j]
+                changed = True
+                break
+            if changed:
+                break
+    return [o for _, o in out]
+
+
+#: 95 % point of chi-squared with 2 degrees of freedom: two cameras' boxes this close are one object.
+_SAME_OBJECT_CHI2 = 5.99
+
+
+def _obs_cov(o: Observation) -> np.ndarray:
+    c, s = math.cos(o.bearing), math.sin(o.bearing)
+    rot = np.array([[c, -s], [s, c]])
+    return rot @ np.diag([max(o.sigma_r, 0.3) ** 2, max(o.sigma_t, 0.3) ** 2]) @ rot.T
+
+
 def _observations(
-    result: PipelineResult, frame: EgoFrame, max_range_m: float
+    result: PipelineResult,
+    frame: EgoFrame,
+    max_range_m: float,
+    ground: GroundFn | None = None,
 ) -> list[Observation]:
     """Ground-plane positions for the boxes of one frame, within range.
 
@@ -172,13 +271,17 @@ def _observations(
     """
     out: list[Observation] = []
     for box in result.boxes:
-        ground = project_to_ground(box, result.camera, result.frame_w, result.frame_h)
-        if ground is None:
+        placed = locate(box, result.camera, result.frame_w, result.frame_h, ground)
+        if placed is None:
             continue  # at or above the horizon: no ground contact to place
-        x, y = ground
-        if frame.range_to(x, y) > max_range_m:
+        if frame.range_to(placed.x, placed.y) > max_range_m:
             continue
-        out.append((box.cls, x, y, box.confidence))
+        out.append(
+            Observation(
+                box.cls, placed.x, placed.y, box.confidence,
+                placed.bearing, placed.sigma_r, placed.sigma_t,
+            )
+        )
     return out
 
 
@@ -210,7 +313,7 @@ def _detection(track: Track, frame: EgoFrame, ego: VehicleState) -> Detection:
         # Clamped rather than trusted: `Detection.confidence` is bounded on
         # the wire, and a detector that returns 1.0000001 must degrade
         # perception, not raise on the sim thread.
-        confidence=min(1.0, max(0.0, track.confidence)),
+        confidence=min(1.0, max(0.0, track.confidence)) * min(1.0, track.total_hits / MATURE_HITS),
         hazard=threat.hazard,
         hazard_label=threat.label,
         ttc_s=threat.ttc_s,

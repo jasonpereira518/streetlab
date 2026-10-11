@@ -50,6 +50,7 @@ const INITIAL = {
   invalidCount: 0,
   lastInvalid: null,
   commandLog: [],
+  helpOpen: false,
   refreshPending: false,
   // Restored per test: a spy left in place here would quietly disarm the
   // reload for every test that follows.

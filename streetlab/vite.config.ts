@@ -1,12 +1,24 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
+import { backendUrlProblem } from './buildGuard';
 
 // Tauri expects a fixed port and does not want vite to obscure rust errors.
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      // Production builds only (`apply: 'build'`); see buildGuard.ts.
+      name: 'streetlab-backend-url-guard',
+      apply: 'build',
+      config() {
+        const problem = backendUrlProblem(process.env);
+        if (problem) throw new Error(`[streetlab] ${problem}`);
+      },
+    },
+  ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

@@ -51,6 +51,15 @@
 #                    omitted entirely; this script always passes one, so point
 #                    DETECTOR_MODEL at your own cache to reproduce a capture.
 #
+# PARALLEL SESSIONS: set STREETLAB_PORT and VITE_PORT (defaults 8765 / 1420) to
+# run beside another capture. The stale-process sweep below is then scoped to
+# those ports rather than every `streetlab serve` on the machine.
+#
+# SLOW MACHINE: a frame is labelled against the pose history at its own sim
+# time, and silently dropped once inference lags past the history window (the
+# symptom is "frames: 0" forever with the backend healthy). Slow the sim down
+# so a frame stays fresh: EXTRA_SERVE_ARGS="--tick-hz 10".
+#
 # Cleanup is scoped to THIS repo. `pkill -f` for Vite matches the frontend's
 # own absolute `node_modules/.bin/vite` path rather than the bare string
 # "vite", because a bare match kills any unrelated Vite dev server on the
@@ -73,11 +82,15 @@ TRAFFIC="${3:?traffic required}"
 CAPTURE_DIR="${4:?out_dir required}"
 TARGET="${5:-150}"
 MAXWAIT="${6:-480}"
+# traffic "-" omits --traffic (required for `--source osm`, which builds its own agents).
+TRAFFIC_ARG="--traffic $TRAFFIC"; [ "$TRAFFIC" = "-" ] && TRAFFIC_ARG=""
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$REPO_ROOT/streetlab-backend"
 FRONTEND_DIR="$REPO_ROOT/streetlab"
-LOGDIR=/tmp/streetlab-capture
+STREETLAB_PORT="${STREETLAB_PORT:-8765}"
+VITE_PORT="${VITE_PORT:-1420}"
+LOGDIR="${LOGDIR:-/tmp/streetlab-capture}"
 DETECTOR_MODEL="${DETECTOR_MODEL:-/Users/jasonpereira/Library/Caches/StreetLab/models/rtdetr_r18vd_quantized-85703b0f56dbaceb.onnx}"
 
 mkdir -p "$LOGDIR"
@@ -85,8 +98,7 @@ rm -rf "$CAPTURE_DIR"
 mkdir -p "$CAPTURE_DIR"
 
 echo "=== cleaning up any stale processes from a prior run ==="
-pkill -f "streetlab serve" 2>/dev/null
-pkill -f "drive_capture" 2>/dev/null
+pkill -f "streetlab serve --port $STREETLAB_PORT " 2>/dev/null
 pkill -f "$FRONTEND_DIR/node_modules/.bin/vite" 2>/dev/null
 sleep 2
 
@@ -94,8 +106,8 @@ echo "=== starting backend: scenario=$SCENARIO seed=$SEED traffic=$TRAFFIC -> $C
 cd "$BACKEND_DIR"
 # stdin held open by a long-lived `sleep` -- see header. Never plain
 # background / </dev/null, or the stdin watchdog kills this within ~1s.
-uv run streetlab serve --port 8765 --scenario "$SCENARIO" --seed "$SEED" --traffic "$TRAFFIC" \
-  --perception ml \
+uv run streetlab serve --port "$STREETLAB_PORT" --scenario "$SCENARIO" --seed "$SEED" $TRAFFIC_ARG \
+  --perception ml ${EXTRA_SERVE_ARGS:-} \
   --detector-model "$DETECTOR_MODEL" \
   --capture "$CAPTURE_DIR" < <(sleep 99999) > "$LOGDIR/backend.log" 2>&1 &
 BACKEND_PID=$!
@@ -114,7 +126,7 @@ fi
 
 echo "=== starting vite ==="
 cd "$FRONTEND_DIR"
-npm run dev < /dev/null > "$LOGDIR/vite.log" 2>&1 &
+npm run dev -- --port "$VITE_PORT" < /dev/null > "$LOGDIR/vite.log" 2>&1 &
 VITE_PID=$!
 for i in $(seq 1 30); do
   grep -q "Local:" "$LOGDIR/vite.log" 2>/dev/null && break
@@ -122,6 +134,7 @@ for i in $(seq 1 30); do
 done
 
 echo "=== starting playwright driver ==="
+CAPTURE_URL="http://localhost:$VITE_PORT/?backend=ws://127.0.0.1:$STREETLAB_PORT" \
 NODE_PATH="$FRONTEND_DIR/node_modules" node "$REPO_ROOT/scripts/drive_capture.cjs" \
   < /dev/null > "$LOGDIR/driver.log" 2>&1 &
 DRIVER_PID=$!
@@ -163,7 +176,6 @@ echo "=== cleaning up driver + vite ==="
 kill "$DRIVER_PID" 2>/dev/null
 kill "$VITE_PID" 2>/dev/null
 sleep 1
-pkill -f "drive_capture" 2>/dev/null
 pkill -f "$FRONTEND_DIR/node_modules/.bin/vite" 2>/dev/null
 
 DISK_FRAMES=$(ls "$CAPTURE_DIR/frames" 2>/dev/null | wc -l | tr -d ' ')

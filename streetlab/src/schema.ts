@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 11;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -270,6 +270,19 @@ export const DetectionSchema = z.object({
   emergency: z.boolean(),
 });
 
+/**
+ * One simulated agent as the world has it: ground truth, not range-gated, and
+ * independent of what perception saw. The renderer draws traffic from this so
+ * a missed detection never removes a car from the detector's own view.
+ */
+export const WorldAgentSchema = z.object({
+  id: z.string(),
+  cls: DetectionClassSchema,
+  pose: PoseSchema,
+  size: SizeSchema,
+  speed_mps: z.number(),
+});
+
 export const PerceptionModeSchema = z.enum(['ground-truth', 'ml']);
 
 /**
@@ -316,6 +329,13 @@ export const PerceptionStatsSchema = z.object({
   precision: z.number().min(0).max(1).nullable(),
   recall: z.number().min(0).max(1).nullable(),
   mean_pos_err_m: z.number().nonnegative().nullable(),
+  /** Required, never null. "degraded" while the detector is a stub or its latest frame failed. */
+  health: z.enum(['ok', 'degraded']),
+  /**
+   * Required, never null (protocol 11): which detector cameras to render and send, one
+   * `camera_frame` each per frame time. Layouts are pinned by `contract/detector_cameras.json`.
+   */
+  camera_set: z.enum(['front', 'front+sides100']),
 });
 
 export const RadarPointSchema = z.object({
@@ -483,6 +503,8 @@ export const StateUpdateSchema = z.object({
   scenario_id: z.string(),
   ego: EgoSchema,
   detections: z.array(DetectionSchema),
+  /** Every agent's ground truth; required, never null (empty list = no traffic). */
+  world_agents: z.array(WorldAgentSchema),
   /**
    * The perception source that is NOT driving, when both are running.
    * `null` when there is no second source at all (no ML pipeline running) --
@@ -536,11 +558,17 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('load_scenario'), scenario_id: z.string() }),
   cmd({
     cmd: z.literal('load_location'),
-    query: z.string().min(1),
+    query: z.string().min(1).max(200),
     radius_m: z.number().positive().optional(),
     /** A second address to route TO. Absent means "drive an auto-discovered
      * loop near `query`", exactly as before this existed. */
-    destination: z.string().min(1).optional(),
+    destination: z.string().min(1).max(200).optional(),
+    /** The coordinates of a suggestion the user picked, so the backend does
+     * not geocode the label a second time. Each pair is both-or-neither. */
+    lat: z.number().min(-90).max(90).optional(),
+    lon: z.number().min(-180).max(180).optional(),
+    destination_lat: z.number().min(-90).max(90).optional(),
+    destination_lon: z.number().min(-180).max(180).optional(),
   }),
   cmd({
     cmd: z.literal('set_param'),
@@ -557,7 +585,7 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('set_perception'), mode: PerceptionModeSchema }),
   /** Answered directly by the server's connection handler, not routed
    * through the sim command queue — see `SuggestAddress` in schema.py. */
-  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1) }),
+  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1).max(200) }),
   cmd({
     cmd: z.literal('camera_frame'),
     /** Monotonic per connection; the backend drops anything out of order. */
@@ -636,6 +664,7 @@ export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
 
 export type DetectionClass = z.infer<typeof DetectionClassSchema>;
 export type Detection = z.infer<typeof DetectionSchema>;
+export type WorldAgent = z.infer<typeof WorldAgentSchema>;
 export type PerceptionMode = z.infer<typeof PerceptionModeSchema>;
 export type CameraParams = z.infer<typeof CameraParamsSchema>;
 export type PerceptionStats = z.infer<typeof PerceptionStatsSchema>;
