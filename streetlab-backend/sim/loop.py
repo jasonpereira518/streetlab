@@ -986,7 +986,10 @@ class Simulation:
 
         self._seed = seed
         # Before `_load`: traffic reads `traffic_speed_scale` at construction.
-        self.world.params.update(preset.params)
+        # The recipe replaces every backend param, so an earlier preset's
+        # override (say cut-in-gauntlet's `cutin_period_s`) cannot leak into
+        # this one; `adopt_scene` then restarts the cut-in timer from it.
+        self.world.params.update({**DEFAULT_PARAMS, **preset.params})
         self._load(presets.resolve_scene(preset, self._source))
         self._preset = preset
         self.scorecard = Scorecard(preset.id, preset.duration_s)

@@ -57,6 +57,9 @@ uv run streetlab run --preset control --perception noisy-truth
   - **Run** loads the preset on its pinned seed, or on a fresh one.
   - **Replay** reloads it on the seed of your last Run. It stays disabled
     ("Run once to replay its seed") until you have run that preset once.
+  - Every Run or Replay resets the backend parameters (the planner and
+    traffic sliders in the Params tab) to the preset's recipe, so one
+    preset's overrides never leak into the next.
 - **Right panel, Run tab.** Run switches to it automatically. It shows:
   - the preset's "What to watch" and "What varies";
   - a "Run status" block with "Seed", "Elapsed", "Perception" and
@@ -101,8 +104,7 @@ against. Press **Run** twice and compare the two columns.
 - **Varies:** only the seed (traffic start offsets and target speeds).
 - **Good row:** Complete yes, Collisions 0, Hazards fired 0. Distance and
   Min TTC move a little between seeds. Any hard brake here is a planner event
-  worth reading in the Events tab, not a hazard. If Hazards fired is not 0,
-  check the Params tab: see the parameter carry-over limitation below.
+  worth reading in the Events tab, not a hazard.
 
 ### Lead-vehicle pressure (`lead-pressure`, 90 s, ground truth, fresh seed)
 
@@ -245,12 +247,6 @@ Lead-vehicle pressure on a pinned seed.
 - **The ML rung is not replayable.** Its camera frames arrive on wall-clock
   time, so the same seed does not give the same run. Every other preset
   replays exactly on its seed, as long as the run is left untouched.
-- **Preset parameters carry over.** A preset's parameter overrides are
-  applied like slider moves and stay set. A preset that sets nothing does not
-  reset them. So running Control run straight after Cut-in gauntlet keeps
-  cut-ins arriving every 12 s on average, and straight after Lead-vehicle
-  pressure keeps traffic at 0.8×. The Params tab's sliders show the live
-  values. Reset them there, or restart the backend, before reading a baseline.
 - **The Events tab keeps 40 entries.** On a long or busy run the early events
   scroll out. The scorecard does not depend on them, since each `run_summary`
   is stored when it arrives. The Run tab's "Fired / declined" count is

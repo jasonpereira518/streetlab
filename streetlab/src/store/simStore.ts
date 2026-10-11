@@ -202,6 +202,12 @@ const DEFAULT_PARAMS: Record<string, ParamValue> = Object.fromEntries(
   PARAM_DEFS.map((d) => [d.key, d.default]),
 );
 
+/** The params the backend honours (its `DEFAULT_PARAMS`): a preset load
+ * resets exactly these to their defaults before applying its recipe. */
+const BACKEND_DEFAULTS: Record<string, ParamValue> = Object.fromEntries(
+  PARAM_DEFS.filter((d) => !d.clientOnly).map((d) => [d.key, d.default]),
+);
+
 const DEFAULT_LAYERS = Object.fromEntries(
   LAYER_KEYS.map((k) => [k, true]),
 ) as Record<LayerKey, boolean>;
@@ -675,7 +681,10 @@ function applyServerMessage(
           // Mirror what the server applied, so the sliders and the perception
           // control stay honest. Not re-sent: the server already has them.
           ...(preset
-            ? { params: { ...s.params, ...preset.params }, perceptionMode: preset.perception }
+            ? {
+                params: { ...s.params, ...BACKEND_DEFAULTS, ...preset.params },
+                perceptionMode: preset.perception,
+              }
             : {}),
         };
       });

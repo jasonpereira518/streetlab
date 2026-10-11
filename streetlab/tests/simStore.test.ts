@@ -421,6 +421,19 @@ describe('walkthrough presets', () => {
     expect(h.sent.some((c) => c.cmd === 'set_param')).toBe(false);
   });
 
+  it('resets backend params to defaults under the next preset, leaving client-only ones', () => {
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.setState((s) => ({ params: { ...s.params, plan_opacity: 0.9, follow_distance_s: 2.5 } }));
+    useSimStore.getState().loadPreset('mock-cutin-fresh', 3);
+    expect(useSimStore.getState().params.cutin_period_s).toBe(12);
+    useSimStore.getState().loadPreset('mock-cutin-20s');
+    const p = useSimStore.getState().params;
+    expect(p.cutin_period_s).toBe(0);
+    expect(p.follow_distance_s).toBe(1.5);
+    expect(p.plan_opacity).toBe(0.9);
+  });
+
   it('harvests run summaries into runHistory, newest first, capped at five', () => {
     const h = createHarness();
     h.emitScene();

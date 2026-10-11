@@ -304,3 +304,13 @@ def test_every_noisy_truth_preset_warns_about_velocity_noise():
     for preset in PRESETS.values():
         warned = "velocity from noisy positions" in preset.what_varies
         assert warned == (preset.id in noisy), preset.id
+
+
+def test_a_preset_load_resets_params_left_by_the_previous_preset():
+    sim = Simulation(SyntheticGrid())
+    assert load(sim, "cut-in-gauntlet").ok
+    assert sim.world.params["cutin_period_s"] == 12
+    assert load(sim, "control").ok
+    assert sim.world.params["cutin_period_s"] == 0.0
+    assert sim.world.params["traffic_speed_scale"] == 1.0
+    assert not [e for e in run(sim, 60) if e.code == "cut_in"]
