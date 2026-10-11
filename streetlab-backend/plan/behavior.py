@@ -214,6 +214,12 @@ _TARGET_CORRIDOR_M = 2.4
 #: episodes across both scenes ever gaining on the lead. The phase ends on
 #: ARRIVAL now, with `LANE_CHANGE_OUTBOUND_MAX_S` behind it.
 LANE_CHANGE_RAMP_S = 4.5
+#: Braking assumed during a return forced by a lane's end (`_return_runout_m`):
+#: comfortable, well under the planner's own `_MAX_DECEL_MPS2`.
+LANE_END_DECEL_MPS2 = 1.5
+#: The least a pass is worth beginning for: lane held past the end of the
+#: outbound ramp before the trip home would have to start.
+LANE_CHANGE_MIN_HOLD_M = 10.0
 
 #: The shortest span a return's blend is ramped over, however little of the lane
 #: the car had crossed. Without a floor, a return begun a few centimetres across
@@ -291,6 +297,10 @@ EGO_LENGTH_M = 4.7
 #: trip near it. (The step-input return it replaces settled in 1.9-2.6 s, which
 #: is why this was 6.0 s.)
 LANE_CHANGE_RETURN_MAX_S = LANE_CHANGE_RAMP_S + 3.5
+#: The return's backstop, as distance: what `LANE_CHANGE_RETURN_MAX_S` is at
+#: 5 m/s. Both must be spent -- see `LaneChange.returned_m` for why the
+#: clock alone is not enough, and a car at speed still gets its full ramp.
+LANE_CHANGE_RETURN_MAX_M = LANE_CHANGE_RETURN_MAX_S * 5.0
 
 #: How long a lead is left alone after an attempt on it achieved nothing.
 #:
@@ -351,6 +361,13 @@ class LaneChange:
     #: derived from `elapsed_s` in `plan/control.py`, because a return has to start
     #: from wherever the car is and only the FSM knows that. See `_tick_blend`.
     blend: float = 0.0
+    #: Metres driven since the return began. The return ends on settling or
+    #: on `LANE_CHANGE_RETURN_MAX_M`, never on a clock: a car that has
+    #: stopped (queued behind the lead it gave up passing, held at a red)
+    #: cannot converge while it stands, and dropping the label there left it
+    #: 3.5 m off its lane with nothing on the wire saying so (measured on
+    #: grid-loop, traffic at 0.45x).
+    returned_m: float = 0.0
     #: `blend` at the moment the return began, which the return ramps down from.
     #: Less than 1.0 when a junction (or a failed traverse) turned the car round
     #: part-way across.
@@ -781,6 +798,7 @@ class BehaviorFSM:
         if self.lane_change is not None:
             self.lane_change.elapsed_s += dt
             if self.lane_change.returning:
+                self.lane_change.returned_m += ego.speed_mps * dt
                 # Checked here, ahead of a fresh outbound decision below,
                 # deliberately: while `self.lane_change` is set the whole
                 # method returns before ever reaching the "not held up ->
@@ -791,6 +809,17 @@ class BehaviorFSM:
                 # lead re-triggered a fresh outbound change ~1 s into the
                 # unlabelled coast back, before the car had settled, three
                 # times in one 600 s Nob Hill run.
+                return self._advance_return(ego, lanes)
+            if self._lane_ends_within(
+                lanes, ego_s, self.lane_change.direction, self._return_runout_m(ego)
+            ) and not self._alongside(route, ego_s, detections):
+                # The lane the car is in (or crossing into) stops ahead --
+                # a kerbside lane at a corner where the cross street is
+                # narrower. Turn round now, with room to be home before it
+                # ends; measured before this the car carried a pass round
+                # the corner and drove 2.9 m up the pavement of the side
+                # street.
+                self._begin_return()
                 return self._advance_return(ego, lanes)
             if self.lane_change.phase == PASSING:
                 return self._advance_pass(route, ego_s, detections, limit_mps, dt)
@@ -812,6 +841,12 @@ class BehaviorFSM:
             return None
         target = lanes.neighbour(direction)
         if target is None:
+            return None
+        if self._lane_ends_within(lanes, ego_s, direction, self._pass_room_m(ego)):
+            # Out, a short hold, and back again -- or the change would be
+            # turned round (above) the moment it arrived. Measured without
+            # this on grid-loop: arrived in the kerb lane and turned round
+            # 0.03 s later, every time.
             return None
         if not self._gap_is_acceptable(
             route, ego_s, detections, direction, ego.speed_mps, target.offset_m
@@ -939,8 +974,9 @@ class BehaviorFSM:
         trip home (a change already returning just keeps going), and the
         lane-change label and target lane ride out alongside the junction's
         ceiling until `_advance_return` ends it -- on settling, or on
-        `LANE_CHANGE_RETURN_MAX_S`, which is what stops a car held at a red
-        with no way to converge from wearing the label for the whole light.
+        `LANE_CHANGE_RETURN_MAX_M` of driving. A car held at a red keeps
+        the label for the whole light: it IS still between lanes, and the
+        return resumes the moment it rolls (`LaneChange.returned_m`).
         The wire says `lane_change_*` rather than `stop` for those few tenths
         of a second, deliberately: the label describes the LATERAL manoeuvre,
         which is the one still happening and the one nothing else reports,
@@ -963,6 +999,7 @@ class BehaviorFSM:
             return junction
         if self.lane_change.returning:
             self.lane_change.elapsed_s += dt
+            self.lane_change.returned_m += ego.speed_mps * dt
         else:
             self._begin_return()
         back = self._advance_return(ego, lanes)
@@ -975,6 +1012,42 @@ class BehaviorFSM:
             target=junction.target,
             target_lane_id=back.target_lane_id,
         )
+
+    @staticmethod
+    def _lane_ends_within(lanes: "LaneSet", ego_s: float, direction: int, distance_m: float) -> bool:
+        """Does the lane one step `direction` over stop within `distance_m`?"""
+        return lanes.legal_for(ego_s, direction, distance_m) < distance_m
+
+    @staticmethod
+    def _return_runout_m(ego: VehicleState) -> float:
+        """Forward distance a trip home needs, plus the car's own length so
+        its tail is in too.
+
+        One return ramp at the current speed -- or, when that is further, the
+        distance to a standstill braking at `LANE_END_DECEL_MPS2`. A lane
+        ends at a corner, and a car returning for a corner is braking for it;
+        held at the straight-road figure, a 100 m Nob Hill block allowed no
+        completed overtake at all (0 of 3, measured).
+        """
+        v = ego.speed_mps
+        return min(v * LANE_CHANGE_RAMP_S, v * v / (2 * LANE_END_DECEL_MPS2)) + EGO_LENGTH_M
+
+    @classmethod
+    def _pass_room_m(cls, ego: VehicleState) -> float:
+        """Lane needed ahead to begin a pass: the outbound ramp at this
+        speed, a hold of `LANE_CHANGE_MIN_HOLD_M`, and the trip home."""
+        return ego.speed_mps * LANE_CHANGE_RAMP_S + LANE_CHANGE_MIN_HOLD_M + cls._return_runout_m(ego)
+
+    def _alongside(self, route, ego_s: float, detections) -> bool:
+        """Is the lead of the current change beside the car -- too close
+        ahead or behind to turn into its lane?"""
+        lc = self.lane_change
+        lead = next((d for d in detections if d.id == lc.lead_id), None) if lc else None
+        if lead is None:
+            return False
+        gap = route.signed_gap(ego_s, route.project((lead.pose.x, lead.pose.y)))
+        clearance = (EGO_LENGTH_M + lead.size.length) / 2.0 + LANE_CHANGE_PASS_BUFFER_M
+        return -clearance < gap < clearance
 
     def _begin_return(self) -> None:
         """Flip an outbound commitment into a labelled trip back.
@@ -991,6 +1064,7 @@ class BehaviorFSM:
         lc.from_lane_id, lc.to_lane_id = lc.to_lane_id, lc.from_lane_id
         lc.direction = -lc.direction
         lc.elapsed_s = 0.0
+        lc.returned_m = 0.0
         lc.phase = RETURNING
 
     def _tick_blend(self) -> None:
@@ -1022,14 +1096,17 @@ class BehaviorFSM:
 
         Ends on whichever comes first: settling within `LANE_CHANGE_SETTLE_M`
         of the home lane's centreline (the real condition -- the manoeuvre is
-        over when the car is in a lane), or `LANE_CHANGE_RETURN_MAX_S`
-        elapsing (the backstop for whatever prevents that, so this cannot hang
-        the FSM indefinitely).
+        over when the car is in a lane), or `LANE_CHANGE_RETURN_MAX_M` of
+        driving (the backstop for whatever prevents that, so this cannot hang
+        the FSM indefinitely -- while a car that is not moving is not given
+        up on, see `LaneChange.returned_m`).
         """
         lc = self.lane_change
         assert lc is not None
         home = lanes.by_id(lc.to_lane_id)
-        if self._settled_in(home, ego) or lc.elapsed_s >= LANE_CHANGE_RETURN_MAX_S:
+        if self._settled_in(home, ego) or (
+            lc.returned_m >= LANE_CHANGE_RETURN_MAX_M and lc.elapsed_s >= LANE_CHANGE_RETURN_MAX_S
+        ):
             self.lane_change = None
             return None
         return self._changing()
