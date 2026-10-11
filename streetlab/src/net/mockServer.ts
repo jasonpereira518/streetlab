@@ -983,7 +983,7 @@ export class MockSim {
         this.preset = preset;
         this.seed = command.seed ?? preset.seed ?? Math.floor(Math.random() * 2 ** 31);
         this.perceptionMode = preset.perception;
-        this.params = { ...DEFAULT_PARAMS };
+        // Overrides persist like slider moves, as the backend's do.
         for (const [key, value] of Object.entries(preset.params)) {
           if (key in DEFAULT_PARAMS) (this.params as unknown as Record<string, unknown>)[key] = value;
         }
