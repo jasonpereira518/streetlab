@@ -35,6 +35,7 @@ from map.scene_build import LANE_W, BuiltScene, SceneSource
 from perception.capture import CaptureSink
 from perception.history import PoseHistory
 from perception.ml_source import MlPerception
+from perception.noisy_truth import NoisyTruthPerception
 from perception.pipeline import PerceptionPipeline
 from perception.driver_view import visible_to_driver
 from perception.road_rules import RoadRulesObserver
@@ -51,6 +52,7 @@ from schema import (
     LaneNeighbor,
     LaneState,
     PerceptionMode,
+    PerceptionStats,
     Plan,
     Pose,
     RadarPoint,
@@ -256,6 +258,10 @@ class Simulation:
         # see `_record_truth`'s docstring for the two consumers this now
         # serves and why their gating differs.
         self._capture = capture
+        # One tracker for the simulation's life, so noisy-truth track ids never
+        # repeat across scenes (see `Tracker.reset`); the source around it is
+        # rebuilt per scene in `adopt_scene`, reseeding its own `Random`.
+        self._noisy_tracker = Tracker()
         # Shadow is the default: the ML path runs and is measured, but ground
         # truth is what the planner drives on until someone asks otherwise.
         self.perception_mode: PerceptionMode = "ground-truth"
@@ -310,6 +316,11 @@ class Simulation:
         # reset replays. A scene installed by anything but `_cmd_load_preset`
         # is not a preset's, which sets these back after `_load`.
         self.rng = Random(self._seed)
+        # Its own stream, never `self.rng`: switching perception mode must not
+        # shift a single hazard draw (the perception ladder depends on that).
+        self._noisy = NoisyTruthPerception(
+            self._seed, self.scene.description.buildings, self._noisy_tracker
+        )
         self._preset: Preset | None = None
         self._timeline: list[tuple[float, float, str]] = []
         self._next_cutin_at: float | None = None
@@ -361,7 +372,7 @@ class Simulation:
         # coordinates sitting on the new ego route -- close enough to be
         # picked as the lead and braked for. `GroundTruthPerception` has no
         # state and so no `reset`; `MlPerception` has both.
-        for source in (self._perception, self._ml_perception):
+        for source in (self._perception, self._ml_perception, self._noisy):
             reset = getattr(source, "reset", None)
             if reset is not None:
                 reset()
@@ -578,18 +589,33 @@ class Simulation:
         driving = visible_to_driver(
             ego, ground_truth, self.scene.description.buildings
         )
-        if self._ml_perception is None:
+        ml = None
+        if self._ml_perception is not None:
+            # Still run in noisy-truth mode, so its tracker stays warm.
+            ml = self._ml_perception.observe(ego, agents, route)
+        if self.perception_mode == "noisy-truth":
+            # Run only while driving: it is not a shadow of anything, and
+            # ground truth is the reference the scorecard measures it against.
+            noisy = self._noisy.observe(ego, agents, route, self.world.t)
+            self._score_shadow(noisy, self._noisy.last_frame_t, self._noisy.last_truth)
+            return noisy, driving
+        if ml is None:
             return driving, None
-        ml = self._ml_perception.observe(ego, agents, route)
-        self._score_ml(ml)
+        self._score_shadow(ml, getattr(self._ml_perception, "last_frame_t", None))
         if self.perception_mode == "ml":
             return ml, ground_truth
         return driving, ml
 
-    def _score_ml(self, ml_detections: Sequence[Detection]) -> None:
-        """Score the ML source's latest published frame against the truth
-        recorded for that same instant, and cache the result on
-        `perception_score` for `state_update` to thread onto the wire.
+    def _score_shadow(
+        self,
+        detections: Sequence[Detection],
+        frame_t: float | None,
+        truth: Sequence[TruthObject] | None = None,
+    ) -> None:
+        """Score a non-ground-truth source's latest published frame (ML, or
+        noisy-truth while it drives) against the truth recorded for that same
+        instant, and cache the result on `perception_score` for
+        `state_update` to thread onto the wire.
 
         Scored once per *frame*, mirroring the `_processed` guard in
         `MlPerception.observe`: `last_frame_t` is a plain read of the
@@ -612,16 +638,21 @@ class Simulation:
         When the lookup misses -- the frame has aged out of the buffer, or a
         scene swap cleared it -- `perception_score` is left as it was rather
         than scored against the wrong world.
+
+        Noisy-truth passes its own `truth` instead: its frame has no latency
+        (the observation and the reference come from the same step), and the
+        reference is what its forward cabin view could see -- see
+        `perception/noisy_truth.py` for why not all-around in-range truth.
         """
-        frame_t = getattr(self._ml_perception, "last_frame_t", None)
         if frame_t is None or frame_t == self._scored_frame_t:
             return
         self._scored_frame_t = frame_t
-        truth = self.pose_history.at(frame_t)
+        if truth is None:
+            truth = self.pose_history.at(frame_t)
         if truth is None:
             return
         predictions = [
-            Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in ml_detections
+            Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in detections
         ]
         self.perception_score = score(predictions, truth)
         self.scorecard.on_score(self.perception_score)
@@ -957,7 +988,7 @@ class Simulation:
 
     def perception_modes(self) -> set[str]:
         """The perception modes this simulation can drive on right now."""
-        modes = {"ground-truth"}
+        modes = {"ground-truth", "noisy-truth"}
         if self._ml_perception is not None:
             modes.add("ml")
         return modes
@@ -1053,9 +1084,9 @@ class Simulation:
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
 
     def _cmd_set_perception(self, command) -> CommandOutcome:
-        if self.perception_pipeline is None:
+        if command.mode == "ml" and self.perception_pipeline is None:
             return CommandOutcome(
-                ok=False, message="no perception pipeline: start with --perception"
+                ok=False, message="no perception pipeline: start with --perception ml"
             )
         if command.mode not in self.perception_modes():
             return CommandOutcome(ok=False, message=f"{command.mode} perception is unavailable")
@@ -1324,12 +1355,15 @@ def assemble_state_update(
         ),
         signals=list(signals),
         events=list(world.events),
-        # Null distinguishes "no ML perception running" from "measured, and
-        # zero" -- there is no pipeline unless `--perception ml` started one.
+        # Null distinguishes "no scored perception running" from "measured,
+        # and zero": there is none unless `--perception ml` started a pipeline
+        # or noisy-truth is driving.
         perception=(
-            None
-            if perception_pipeline is None
-            else perception_pipeline.stats(perception_mode, quality=perception_quality)
+            perception_pipeline.stats(perception_mode, quality=perception_quality)
+            if perception_pipeline is not None
+            else _noisy_stats(perception_quality)
+            if perception_mode == "noisy-truth"
+            else None
         ),
     )
 
@@ -1433,6 +1467,27 @@ def _radar(ego: VehicleState, detections: Sequence[Detection]) -> list[RadarPoin
     return points
 
 
+def _noisy_stats(quality: ScoreResult | None) -> PerceptionStats:
+    """Noisy-truth's wire stats when no pipeline exists: no detector, no frames."""
+    return PerceptionStats(
+        mode="noisy-truth",
+        detector_ms=None,
+        server_e2e_ms=None,
+        frames_received=0,
+        frames_dropped=0,
+        precision=None if quality is None else quality.precision,
+        recall=None if quality is None else quality.recall,
+        mean_pos_err_m=None if quality is None else quality.mean_pos_err_m,
+    )
+
+
+_PERCEPTION_DETAIL: dict[str, str] = {
+    "ground-truth": "ground truth",
+    "noisy-truth": "noisy truth",
+    "ml": "ml detector",
+}
+
+
 def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
     # Battery drains slowly with distance so the readout is not frozen.
     battery = max(4.0, 92.0 - world.t * 0.02)
@@ -1449,7 +1504,7 @@ def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
                 key="perception",
                 label="Perception",
                 status="ok",
-                detail="ground truth" if mode == "ground-truth" else "ml detector",
+                detail=_PERCEPTION_DETAIL[mode],
             ),
             Subsystem(key="planner", label="Planner", status="ok", detail="centerline"),
             Subsystem(key="control", label="Control", status="ok", detail=None),

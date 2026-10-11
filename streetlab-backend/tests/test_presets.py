@@ -196,12 +196,37 @@ def test_spontaneous_cut_ins_are_floored():
     assert _cut_ins(0.1) <= 30
 
 
-def test_an_unavailable_perception_falls_back_with_a_note():
+def test_ladder_ml_without_a_pipeline_drives_noisy_truth_with_a_note():
     sim = Simulation(SyntheticGrid())
     load(sim, "ladder-ml")
     notes = [e for e in sim.state_update().events if e.code == "preset_note"]
-    assert sim.perception_mode == "ground-truth"
+    assert sim.perception_mode == "noisy-truth"
     assert len(notes) == 1 and "ml" in notes[0].message
+
+
+def test_noisy_truth_presets_load_without_a_note():
+    sim = Simulation(SyntheticGrid())
+    load(sim, "ladder-noisy-truth")
+    assert sim.perception_mode == "noisy-truth"
+    assert not [e for e in sim.state_update().events if e.code == "preset_note"]
+
+
+def test_the_ladder_fires_hazards_at_identical_times_whatever_the_perception():
+    """Seed 41 on every rung: the perception RNG never touches the hazard RNG."""
+    kinds = {h.code for h in events.catalog()} | {"hazard_declined"}
+    fired = {}
+    for rung in ("ladder-ground-truth", "ladder-noisy-truth", "ladder-ml"):
+        sim = Simulation(SyntheticGrid())
+        load(sim, rung)
+        assert sim.seed == 41
+        timeline = list(sim._timeline)
+        times = [e.t for e in run(sim, 70) if e.code in kinds]
+        # The hazard stream's position after the run: any perception draw
+        # from `sim.rng` would shift it.
+        fired[rung] = (timeline, times, sim.rng.getstate())
+    (gt, noisy, ml) = fired.values()
+    assert len(gt[1]) >= 4
+    assert gt == noisy == ml
 
 
 def test_an_unknown_preset_acks_false():
