@@ -983,6 +983,15 @@ class Simulation:
             # Render-only and unknown keys are accepted and ignored, so a newer
             # frontend cannot break an older backend.
             return CommandOutcome(ok=True, message=f"{command.key} ignored by the backend")
+        if command.key == "cutin_period_s":
+            # Read every tick by `_fire_due_hazards`, on the sim thread: a
+            # string or a non-finite float would raise there and stop the
+            # world. Zero or negative is a valid "off".
+            value = command.value
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return CommandOutcome(
+                    ok=False, message=f"cutin_period_s must be a finite number, not {value!r}"
+                )
         self.world.params[command.key] = command.value
         if command.key == "traffic_speed_scale":
             self._traffic.set_speed_scale(float(command.value))

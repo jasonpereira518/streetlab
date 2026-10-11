@@ -168,14 +168,16 @@ PRESETS: dict[str, Preset] = {
             title="Cut-in gauntlet",
             blurb="Neighbours cut in at random intervals, each at a 3 s time to collision.",
             what_to_watch="Hard-brake count and min TTC.",
-            what_varies="Cut-in arrival times are exponential, about one every 12 s.",
+            what_varies=(
+                "Cut-in arrival times: exponential, a mean of 12 s apart, set by the "
+                "cut-in interval slider."
+            ),
             scene="arterial",
             seed=None,
             perception="ground-truth",
             params={"cutin_period_s": 12},
             timeline=(),
             duration_s=120.0,
-            poisson=(("cut_in",), 12.0),
         ),
         Preset(
             id="vulnerable-road-users",

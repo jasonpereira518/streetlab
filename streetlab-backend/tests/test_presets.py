@@ -8,6 +8,7 @@ import pytest
 from map.scene_build import SyntheticGrid
 from sim import events
 from sim.presets import PRESETS, Timed, catalog, resolve_scene, schedule
+from schema import SetParam
 from sim.loop import Simulation
 
 DT = 1 / 60
@@ -93,7 +94,8 @@ def test_the_schedule_is_deterministic_and_inside_its_jitter(preset_id):
 
 
 def test_the_poisson_pool_actually_produces_hazards():
-    entries = schedule(PRESETS["cut-in-gauntlet"], Random(1))
+    preset = replace(PRESETS["control"], duration_s=120.0, poisson=(("cut_in",), 12.0))
+    entries = schedule(preset, Random(1))
     assert len(entries) >= 3 and {k for _, _, k in entries} == {"cut_in"}
 
 
@@ -204,3 +206,25 @@ def test_an_unavailable_perception_falls_back_with_a_note():
 def test_an_unknown_preset_acks_false():
     outcome = load(Simulation(SyntheticGrid()), "atlantis")
     assert not outcome.ok and "atlantis" in outcome.message
+
+
+def test_the_gauntlet_draws_its_cut_ins_from_the_param_alone():
+    """Two 12 s sources made ~6 s arrivals; the param is what the slider mirrors."""
+    gauntlet = PRESETS["cut-in-gauntlet"]
+    assert gauntlet.poisson is None and gauntlet.params == {"cutin_period_s": 12}
+    assert schedule(gauntlet, Random(1)) == []
+
+
+@pytest.mark.parametrize("value", ["abc", float("inf"), True])
+def test_a_bad_cutin_period_is_refused_and_the_sim_keeps_running(value):
+    sim = Simulation(SyntheticGrid(), "grid-arterial")
+    outcome = sim.apply(SetParam(id="c", key="cutin_period_s", value=value))
+    assert not outcome.ok
+    assert sim.world.params["cutin_period_s"] == 0.0
+    sim.step()
+
+
+def test_a_negative_cutin_period_is_off():
+    sim = Simulation(SyntheticGrid(), "grid-arterial")
+    assert sim.apply_dict({"id": "c", "cmd": "set_param", "key": "cutin_period_s", "value": -3}).ok
+    assert not [e for e in run(sim, 10) if e.code == "cut_in"]
