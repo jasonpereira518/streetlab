@@ -372,6 +372,17 @@ describe('Walkthrough presets wire', () => {
     ).toBe(true);
   });
 
+  it('bounds a command seed to 0..2**31-1, as the backend does', () => {
+    for (const cmd of [
+      { cmd: 'load_preset', preset_id: 'control' },
+      { cmd: 'load_scenario', scenario_id: 'grid-loop' },
+    ]) {
+      expect(parseCommand({ id: 's', ...cmd, seed: 2 ** 31 - 1 }).ok).toBe(true);
+      expect(parseCommand({ id: 's', ...cmd, seed: 2 ** 31 }).ok).toBe(false);
+      expect(parseCommand({ id: 's', ...cmd, seed: -1 }).ok).toBe(false);
+    }
+  });
+
   it('accepts noisy-truth as a perception mode on set_perception and on the wire', () => {
     expect(parseCommand({ id: 'n1', cmd: 'set_perception', mode: 'noisy-truth' }).ok).toBe(true);
     const frame = {

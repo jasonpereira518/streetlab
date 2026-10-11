@@ -314,3 +314,45 @@ def test_a_preset_load_resets_params_left_by_the_previous_preset():
     assert sim.world.params["cutin_period_s"] == 0.0
     assert sim.world.params["traffic_speed_scale"] == 1.0
     assert not [e for e in run(sim, 60) if e.code == "cut_in"]
+
+
+def _scored_run(sim, seconds=8):
+    """Run, then ask for the scorecard: the summary carries precision/recall."""
+    run(sim, seconds)
+    sim.apply_dict({"id": "s", "cmd": "run_summary"})
+    [summary] = _summaries(sim.state_update().events)
+    return summary, sim.perception_score
+
+
+def test_a_noisy_truth_preset_replays_identically_from_the_first_load():
+    # Fresh sim, so the first load starts from ground truth: the t = 0 truth
+    # record and the noisy reset must happen exactly as on Replay and Reset.
+    sim = Simulation(SyntheticGrid())
+    assert load(sim, "ladder-noisy-truth", seed=41).ok
+    first = _scored_run(sim)
+    assert first[0]["perception_mode"] == "noisy-truth"
+    assert load(sim, "ladder-noisy-truth", seed=41).ok
+    assert _scored_run(sim) == first
+    sim.apply_dict({"id": "r", "cmd": "reset"})
+    assert _scored_run(sim) == first
+
+
+@pytest.mark.parametrize("cmd", ["load_preset", "load_scenario"])
+@pytest.mark.parametrize("seed", ["%d" % 10**400, "-1", "2147483648"], ids=["1e400", "-1", "2**31"])
+def test_an_out_of_range_seed_is_refused_off_the_wire(cmd, seed):
+    sim = Simulation(SyntheticGrid(), "grid-arterial")
+    target = '"preset_id": "replay-twin"' if cmd == "load_preset" else '"scenario_id": "grid-arterial"'
+    raw = json.loads('{"id": "c", "cmd": "%s", %s, "seed": %s}' % (cmd, target, seed))
+    outcome = sim.apply_dict(raw)
+    assert not outcome.ok
+    assert sim.seed == 0
+    sim.step()
+
+
+@pytest.mark.parametrize("cmd", ["load_preset", "load_scenario"])
+def test_the_largest_seed_is_accepted(cmd):
+    sim = Simulation(SyntheticGrid(), "grid-arterial")
+    target = {"preset_id": "replay-twin"} if cmd == "load_preset" else {"scenario_id": "grid-arterial"}
+    assert sim.apply_dict({"id": "c", "cmd": cmd, **target, "seed": 2**31 - 1}).ok
+    assert sim.seed == 2**31 - 1
+    sim.step()

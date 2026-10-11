@@ -593,6 +593,9 @@ export const LayerKeySchema = z.enum([
 
 export const CameraViewSchema = z.enum(['chase', 'overhead', 'cockpit', 'free']);
 
+/** A client-chosen seed: mirrors the backend's `schema.Seed` (0..2**31-1). */
+const Seed = z.number().int().min(0).max(2147483647);
+
 /** Every command carries a client-generated id so an Ack can be correlated. */
 const cmd = <S extends z.ZodRawShape>(shape: S) =>
   z.object({ id: z.string(), ...shape });
@@ -605,13 +608,13 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
     cmd: z.literal('load_scenario'),
     scenario_id: z.string(),
     /** Absent keeps the simulation's current seed. */
-    seed: z.number().int().optional(),
+    seed: Seed.optional(),
   }),
   cmd({
     cmd: z.literal('load_preset'),
     preset_id: z.string(),
     /** Absent follows the preset's own seed policy (pinned, or fresh per load). */
-    seed: z.number().int().optional(),
+    seed: Seed.optional(),
   }),
   /** Emit the current run's scorecard as a `run_summary` event now. */
   cmd({ cmd: z.literal('run_summary') }),

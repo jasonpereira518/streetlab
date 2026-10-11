@@ -646,18 +646,25 @@ class Reset(_Cmd):
     cmd: Literal["reset"] = "reset"
 
 
+# A client-chosen seed rides every frame to every viewer: bounded so the
+# browser can hold it exactly (and a 400-digit int cannot become Infinity and
+# drop the frame). Fresh seeds are drawn from the same range.
+SEED_MAX = 2**31 - 1
+Seed = Annotated[int, Field(ge=0, le=SEED_MAX)]
+
+
 class LoadScenario(_Cmd):
     cmd: Literal["load_scenario"] = "load_scenario"
     scenario_id: str
     # Absent keeps the simulation's current seed.
-    seed: int | None = None
+    seed: Seed | None = None
 
 
 class LoadPreset(_Cmd):
     cmd: Literal["load_preset"] = "load_preset"
     preset_id: str
     # Absent follows the preset's own seed policy (pinned, or fresh per load).
-    seed: int | None = None
+    seed: Seed | None = None
 
 
 class RunSummaryCmd(_Cmd):
