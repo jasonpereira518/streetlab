@@ -988,7 +988,11 @@ class Simulation:
             # string or a non-finite float would raise there and stop the
             # world. Zero or negative is a valid "off".
             value = command.value
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            try:
+                finite = math.isfinite(float(value))
+            except (OverflowError, ValueError):  # a huge int, or a string
+                finite = False
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not finite:
                 return CommandOutcome(
                     ok=False, message=f"cutin_period_s must be a finite number, not {value!r}"
                 )

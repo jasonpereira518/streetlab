@@ -1,15 +1,16 @@
 """Walkthrough presets, the per-run seed and the hazard scheduler."""
 
+import json
 from dataclasses import replace
 from random import Random
 
 import pytest
 
 from map.scene_build import SyntheticGrid
-from sim import events
-from sim.presets import PRESETS, Timed, catalog, resolve_scene, schedule
 from schema import SetParam
+from sim import events
 from sim.loop import Simulation
+from sim.presets import PRESETS, Timed, catalog, resolve_scene, schedule
 
 DT = 1 / 60
 
@@ -228,3 +229,12 @@ def test_a_negative_cutin_period_is_off():
     sim = Simulation(SyntheticGrid(), "grid-arterial")
     assert sim.apply_dict({"id": "c", "cmd": "set_param", "key": "cutin_period_s", "value": -3}).ok
     assert not [e for e in run(sim, 10) if e.code == "cut_in"]
+
+
+def test_an_int_beyond_float_range_is_refused_off_the_wire():
+    sim = Simulation(SyntheticGrid(), "grid-arterial")
+    raw = json.loads('{"id": "c", "cmd": "set_param", "key": "cutin_period_s", "value": %d}' % 10**400)
+    outcome = sim.apply_dict(raw)
+    assert not outcome.ok
+    assert sim.world.params["cutin_period_s"] == 0.0
+    sim.step()
