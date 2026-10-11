@@ -26,7 +26,8 @@ import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Sequence
+from random import Random, SystemRandom
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from map.lanes import ARRIVAL_CONTROL_ID
 from map.osm_source import describe_build_failure
@@ -68,6 +69,9 @@ from schema import (
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
 from sim.vehicle import BicycleModel, VehicleState
 
+if TYPE_CHECKING:  # pragma: no cover - `sim.presets` is imported lazily below
+    from sim.presets import Preset
+
 log = logging.getLogger("streetlab.sim")
 
 # A build's progress: a short stage label, plus how far through the whole
@@ -99,8 +103,16 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "follow_distance_s": 1.5,
     "assist_enabled": True,
     "traffic_speed_scale": 1.0,
-    "cutin_period_s": 22.0,
+    # Mean seconds between spontaneous cut-ins; 0 is off, so no scene gains
+    # them unasked. Floored at `_CUTIN_MIN_PERIOD_S` when on.
+    "cutin_period_s": 0.0,
 }
+
+#: Trust-boundary floor on `cutin_period_s`: a wire param must not be able to
+#: ask for a cut-in every frame.
+_CUTIN_MIN_PERIOD_S = 5.0
+#: How often a scheduled hazard the scene declined is retried in its window.
+_HAZARD_RETRY_S = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +281,10 @@ class Simulation:
         self._trip_complete_emitted = False
         self._load(scenario_id or source.scenarios()[0].id)
 
+    @property
+    def seed(self) -> int:
+        return self._seed
+
     # -- lifecycle --------------------------------------------------------- #
 
     def _load(self, scenario_id: str) -> None:
@@ -287,6 +303,14 @@ class Simulation:
             ego_route=self.scene.ego_route,
         )
         self._signals = SignalController(self.scene.signal_groups)
+        # Every scene-scoped draw -- hazard schedule, placement jitter,
+        # spontaneous cut-ins -- comes from this one stream, reseeded here so a
+        # reset replays. A scene installed by anything but `_cmd_load_preset`
+        # is not a preset's, which sets these back after `_load`.
+        self.rng = Random(self._seed)
+        self._preset: Preset | None = None
+        self._timeline: list[tuple[float, float, str]] = []
+        self._next_cutin_at: float | None = None
         self._reset_dynamics()
 
     def set_build_sink(self, sink: Callable[[SceneBuilder], None]) -> None:
@@ -358,11 +382,19 @@ class Simulation:
         Scene sources build `hazards=[]`: what can be injected is the
         simulation's business, not the map's. Attached here rather than in
         `adopt_scene`, which installs the scene exactly as built. Imported
-        here for the reason `_cmd_inject_hazard` gives.
+        here for the reason `inject_hazard` gives. The preset menu, active
+        preset and seed are the simulation's too, for the same reason.
         """
-        from sim import events
+        from sim import events, presets
 
-        return self.scene.description.model_copy(update={"hazards": events.catalog()})
+        return self.scene.description.model_copy(
+            update={
+                "hazards": events.catalog(),
+                "presets": presets.catalog(),
+                "preset_id": None if self._preset is None else self._preset.id,
+                "seed": self._seed,
+            }
+        )
 
     # -- stepping ---------------------------------------------------------- #
 
@@ -373,6 +405,7 @@ class Simulation:
                 return
             self.world.pending_steps -= 1
 
+        self._fire_due_hazards()
         self._traffic.step(
             dt,
             TrafficWorld(
@@ -409,6 +442,38 @@ class Simulation:
         # has always had this order right; the two now agree.
         self._record_truth()
         self._record_history()
+
+    def _fire_due_hazards(self) -> None:
+        """Stage the preset's scheduled hazards that are due, then the
+        spontaneous cut-in timer.
+
+        A scheduled hazard the scene declines is retried every
+        `_HAZARD_RETRY_S` until its window closes, then reported as
+        `hazard_declined` -- a runner can only stage on a green, and the window
+        is what lets it wait for one.
+        """
+        t = self.world.t
+        while self._timeline and self._timeline[0][0] <= t:
+            _, window_end, kind = self._timeline.pop(0)
+            outcome = self.inject_hazard(kind)
+            if outcome.ok:
+                continue
+            if t + _HAZARD_RETRY_S <= window_end:
+                self._timeline.append((t + _HAZARD_RETRY_S, window_end, kind))
+                self._timeline.sort()
+            else:
+                self._emit("hazard_declined", outcome.message or kind, "warn")
+
+        period = float(self.world.params["cutin_period_s"])
+        if period <= 0:
+            self._next_cutin_at = None
+            return
+        if self._next_cutin_at is not None and t >= self._next_cutin_at:
+            self.inject_hazard("cut_in")
+            self._next_cutin_at = None
+        if self._next_cutin_at is None:
+            rate = 1.0 / max(period, _CUTIN_MIN_PERIOD_S)
+            self._next_cutin_at = t + self.rng.expovariate(rate)
 
     def _guard_world(self) -> None:
         """Repair a non-finite ego state before anything downstream reads it.
@@ -810,19 +875,82 @@ class Simulation:
         return CommandOutcome(ok=True, message=f"stepping {command.frames} frames")
 
     def _cmd_reset(self, command) -> CommandOutcome:
-        self._load(self.scene.description.scenario_id)
+        if self._preset is not None:
+            # The whole preset load, on the same seed, so the params and the
+            # hazard timeline replay along with the traffic.
+            self._load_preset(self._preset, self._seed)
+        else:
+            self._load(self.scene.description.scenario_id)
         self._emit("reset", "scenario reset")
         return CommandOutcome(ok=True, message="reset")
 
     def _cmd_load_scenario(self, command) -> CommandOutcome:
+        previous_seed = self._seed
+        if command.seed is not None:
+            self._seed = command.seed
         try:
             self._load(command.scenario_id)
         except KeyError:
+            self._seed = previous_seed
             return CommandOutcome(
                 ok=False, message=f"unknown scenario: {command.scenario_id}"
             )
         self._emit("scenario_loaded", f"loaded {command.scenario_id}")
         return CommandOutcome(ok=True, message="loaded", scene=self.scene_description())
+
+    def _cmd_load_preset(self, command) -> CommandOutcome:
+        """Load a walkthrough preset (`sim/presets.py`). The seed is the
+        command's, else the preset's pinned one, else fresh -- so a fresh-seed
+        preset differs on every load and still replays on `reset`."""
+        from sim import presets
+
+        preset = presets.PRESETS.get(command.preset_id)
+        if preset is None:
+            return CommandOutcome(ok=False, message=f"unknown preset: {command.preset_id}")
+        seed = command.seed
+        if seed is None:
+            seed = preset.seed if preset.seed is not None else SystemRandom().randrange(1, 2**31)
+        self._load_preset(preset, seed)
+        return CommandOutcome(ok=True, message=f"loaded {preset.id}", scene=self.scene_description())
+
+    def _load_preset(self, preset: Preset, seed: int) -> None:
+        from sim import presets
+
+        self._seed = seed
+        # Before `_load`: traffic reads `traffic_speed_scale` at construction.
+        self.world.params.update(preset.params)
+        self._load(presets.resolve_scene(preset, self._source))
+        self._preset = preset
+        self._timeline = presets.schedule(preset, self.rng)
+        mode = self.select_perception(preset.perception)
+        if mode != preset.perception:
+            self._emit(
+                "preset_note",
+                f"{preset.perception} perception is unavailable here; running on {mode}",
+            )
+        self._emit("preset_loaded", f"{preset.id}: seed {seed}")
+
+    def perception_modes(self) -> set[str]:
+        """The perception modes this simulation can drive on right now."""
+        modes = {"ground-truth"}
+        if self._ml_perception is not None:
+            modes.add("ml")
+        return modes
+
+    def select_perception(self, mode: PerceptionMode) -> PerceptionMode:
+        """Drive on `mode`, or on the best available stand-in, and say which.
+
+        One fallback for every unavailable mode: `noisy-truth` where it exists
+        (the nearest thing to a detector), otherwise ground truth.
+        """
+        available = self.perception_modes()
+        if mode not in available:
+            mode = "noisy-truth" if "noisy-truth" in available else "ground-truth"
+        self.perception_mode = mode
+        return mode
+
+    def _cmd_run_summary(self, command) -> CommandOutcome:
+        return CommandOutcome(ok=False, message="scorecard not implemented yet")
 
     def _cmd_load_location(self, command) -> CommandOutcome:
         """Ack now, build later.
@@ -865,11 +993,16 @@ class Simulation:
             return CommandOutcome(
                 ok=False, message="no perception pipeline: start with --perception"
             )
+        if command.mode not in self.perception_modes():
+            return CommandOutcome(ok=False, message=f"{command.mode} perception is unavailable")
         self.perception_mode = command.mode
         self._emit("perception_mode", f"perception: {command.mode}")
         return CommandOutcome(ok=True, message=f"perception: {command.mode}")
 
     def _cmd_inject_hazard(self, command) -> CommandOutcome:
+        return self.inject_hazard(command.kind)
+
+    def inject_hazard(self, kind: str) -> CommandOutcome:
         """Stage one of `sim/events.py`'s scenarios.
 
         This method used to BE the hazard set: one branch, and whatever `kind`
@@ -884,14 +1017,12 @@ class Simulation:
         """
         from sim import events
 
-        scenario = events.resolve(command.kind)
+        scenario = events.resolve(kind)
         if scenario is None:
-            return CommandOutcome(
-                ok=False, message=f"unknown hazard kind: {command.kind}"
-            )
+            return CommandOutcome(ok=False, message=f"unknown hazard kind: {kind}")
         result = scenario.stage(self)
         if isinstance(result, events.Declined):
-            return CommandOutcome(ok=False, message=f"{command.kind}: {result.reason}")
+            return CommandOutcome(ok=False, message=f"{kind}: {result.reason}")
         self._emit(scenario.code, f"{scenario.code}: {result}", scenario.level)
         return CommandOutcome(ok=True, message=f"injected {scenario.code}: {result}")
 
