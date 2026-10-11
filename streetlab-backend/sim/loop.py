@@ -990,11 +990,14 @@ class Simulation:
         # override (say cut-in-gauntlet's `cutin_period_s`) cannot leak into
         # this one; `adopt_scene` then restarts the cut-in timer from it.
         self.world.params.update({**DEFAULT_PARAMS, **preset.params})
+        # Also before `_load`: its t = 0 truth record and noisy reset depend on
+        # the mode, so a first load from ground truth must already be noisy to
+        # replay exactly like a Reset or Replay of the same seed.
+        mode = self.select_perception(preset.perception)
         self._load(presets.resolve_scene(preset, self._source))
         self._preset = preset
         self.scorecard = Scorecard(preset.id, preset.duration_s)
         self._timeline = presets.schedule(preset, self.rng)
-        mode = self.select_perception(preset.perception)
         if mode != preset.perception:
             self._emit(
                 "preset_note",
