@@ -52,3 +52,44 @@ theirs throughout); no timing test was loosened, and none failed.
 - `fly.toml` policy decision (scale-to-zero vs always-on) is Jason's; see the merge log.
 - README claims on quantization and the fine-tune null result are carried from the dated measurement docs.
 - Hosted: Fly and Vercel were not exercised (no deploys by instruction).
+
+
+---
+
+# Refresh 2026-10-11: after merging origin/main (#34, #36, #37)
+
+Same branch, now containing main at 44c2f67. Machine load average was 3-22 across the runs (checked with `uptime` before
+each); no timing test was loosened. The reconciliation is in [integration-merge-log.md](integration-merge-log.md).
+
+| suite | result | evidence |
+|---|---|---|
+| Backend pytest plus `../contract` | **PASS** | 1889 passed, 1 skipped, 4 xfailed in 922 s. First run after the merge: 7 failures (lane-change replays, two budgets, one loop test), all semantic overlaps, re-pinned with measured values (merge log). |
+| vitest | **PASS** | 375 passed in 26 files; `tsc --noEmit` clean |
+| Playwright | **PASS** | 36 tests in 10 specs: 34 pass, 2 skipped (`hostedSessions`). First run: 2 failures, both P4 specs superseded by #37's menu and cut-in slider (rewritten). |
+| 20-run e2e flake check | **PASS** | 20 of 20 runs: 34 passed, 2 skipped, 0 failed, 0 flaky; 2.9 min per run |
+| Local Docker smoke (no deploy) | **PASS** | image rebuilt; `/health` protocol 11; `smoke_hosted.py`: `OK scenario=osm-nob-hill frames=20 hazard=sudden_brake protocol=11`; with `STREETLAB_E2E_BACKEND`: `hostedSessions` 2 of 2 and `walkthroughBackend` (a real preset run lands a scorecard, Replay reuses its seed) pass against the per-connection container |
+| Packaged `.app` | not re-run | built and launched before the refresh (checklist above); not rebuilt after merging main |
+| PR #35 checks | **fixed the cause** | `backend` was cancelled by its 30 min timeout (now 60 min); `e2e` is the documented advisory SwiftShader runner limitation (25 passed, 5 flaky, 1 failed). CI has not re-run yet. |
+
+## Do the stacked PRs still merge into current main on their own?
+
+`git merge-tree --write-tree origin/main origin/<branch>` (a PR stacked on another branch is judged against main directly here, so its
+base's content is included):
+
+| PR | branch | merges cleanly into main? | conflicting files |
+|---|---|---|---|
+| #24 | p0-green-baseline | **no** | contract fixtures only (8 files: `state_update_{events,hazard,moving}`, 5 `invalid/*`) |
+| #25 | p2-location-routing | **no** | `schema.py`, `tests/test_route_selection.py`, `simStore.ts` |
+| #26 | p5-hosted-deploy | **no** | `fly.toml` (scale-to-zero vs always-on), `state_update_moving.json` |
+| #27 | p4-ui-shell | **no** | `TopToolbar.tsx`, `tests/ui.test.tsx` |
+| #28 | m0-ml-foundation | **no** | 8 fixtures, `schema.py`, `schema.ts` |
+| #29 | p3-map-render | **no** | `state_update_hazard.json`, `state_update_moving.json`, `tests/ui.test.tsx` |
+| #30 | h-hazard-reactions | **no** | fixtures, `validate_py_test.py`, `driver_view.py`, `sim/events.py`, `test_behavior.py`, `test_events.py` |
+| #31 | m2-renderer-gate1 | **no** | fixtures, `schema.py`, `schema.ts`, `tests/ui.test.tsx` |
+| #32 | m1-ml-stack | **no** (also contains #30 and #33) | fixtures, `driver_view.py`, `noisy_truth.py` (add/add), `schema.py`, `cli.py`, `sim/events.py`, `sim/loop.py`, `test_behavior.py`, `test_events.py`, `test_noisy_truth.py` (add/add), `test_vehicle_clearance.py`, `schema.ts`, `Renderer.tsx` |
+| #33 | p1-driving-realism-p3 | **no** | fixtures, `driver_view.py`, `sim/events.py`, `test_behavior.py`, `test_events.py`, `test_vehicle_clearance.py` |
+
+None is redundant: nothing in main replaces their content (main's fixture churn is why every one of them conflicts on the contract
+fixtures, which are regenerated, not hand-merged). The fixture conflicts are mechanical (`uv run pytest ../contract --update-fixtures`).
+The ones with real code overlap are #32 (noisy truth, `--perception`, `PerceptionStats`), #30 and #33 (`driver_view.py`,
+`sim/events.py`, the staging rules) and #27 (toolbar, P4 specs). #35 contains the resolved versions of all of them plus the re-pins in the merge log.
