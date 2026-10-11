@@ -267,10 +267,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--perception",
-        choices=("ground-truth", "ml"),
+        choices=("ground-truth", "noisy-truth", "ml"),
         default="ground-truth",
-        help="ground-truth drives on perfect sensing; ml additionally runs the "
-        "detector pipeline and reports it (shadow mode)",
+        help="ground-truth drives on perfect sensing; noisy-truth on seeded "
+        "degraded sensing; ml additionally runs the detector pipeline and "
+        "reports it (shadow mode)",
     )
     serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
     serve.add_argument(
@@ -320,8 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("ground-truth", "noisy-truth", "ml"),
         default="ground-truth",
         help="ground-truth drives on perfect sensing; noisy-truth on seeded "
-        "degraded sensing, where available; ml additionally runs the detector "
-        "pipeline and reports it (shadow mode)",
+        "degraded sensing; ml additionally runs the detector pipeline and "
+        "reports it (shadow mode)",
     )
     run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
 
@@ -511,6 +512,8 @@ def _serve(args) -> int:
             pipeline.shutdown()
         print(f"error: {exc}")
         return 1
+    if args.perception == "noisy-truth":
+        sim.select_perception("noisy-truth")
 
     port = _resolve_port(args.port)
     sock = _bind(args.host, port)

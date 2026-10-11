@@ -188,3 +188,11 @@ def test_run_accepts_noisy_truth_perception(capsys):
     code, out = run(capsys, "run", "--perception", "noisy-truth", "--duration", "2")
     assert code == 0
     assert "distance" in out.lower()
+    assert "unavailable" not in out
+
+
+def test_serve_accepts_noisy_truth_perception():
+    from server.cli import build_parser, perception_pipeline_for
+
+    args = build_parser().parse_args(["serve", "--perception", "noisy-truth"])
+    assert perception_pipeline_for(args) is None
