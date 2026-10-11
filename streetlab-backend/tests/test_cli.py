@@ -162,3 +162,29 @@ def test_run_reports_a_slowdown_the_car_actually_made(capsys):
     )
     assert code == 0
     assert "hazard response: slowed" in out, out[-400:]
+
+
+def test_a_pinned_preset_replays_identically(capsys):
+    _, first = run(capsys, "run", "--preset", "replay-twin", "--duration", "15")
+    _, second = run(capsys, "run", "--preset", "replay-twin", "--duration", "15")
+    assert "replay-twin: seed 7" in first
+    assert first == second
+
+
+def test_a_preset_on_another_seed_diverges(capsys):
+    _, pinned = run(capsys, "run", "--preset", "replay-twin", "--duration", "15")
+    _, other = run(capsys, "run", "--preset", "replay-twin", "--duration", "15", "--seed", "8")
+    assert "replay-twin: seed 8" in other
+    assert pinned != other
+
+
+def test_an_unknown_preset_exits_1_listing_the_ids(capsys):
+    code, out = run(capsys, "run", "--preset", "atlantis")
+    assert code == 1
+    assert "atlantis" in out and "replay-twin" in out
+
+
+def test_run_accepts_noisy_truth_perception(capsys):
+    code, out = run(capsys, "run", "--perception", "noisy-truth", "--duration", "2")
+    assert code == 0
+    assert "distance" in out.lower()

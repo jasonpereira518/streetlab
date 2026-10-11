@@ -41,6 +41,7 @@ from perception.model_cache import DEFAULT_MODEL, ModelCache
 from perception.pipeline import Detector, PerceptionPipeline, StubDetector
 from schema import PROTOCOL_VERSION
 from sim.loop import DEFAULT_DT, SimLoop, Simulation
+from sim.presets import PRESETS
 
 log = logging.getLogger("streetlab.cli")
 
@@ -287,8 +288,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_ = sub.add_parser("run", help="drive a scenario headlessly and log the reactions")
     run_.add_argument("--scenario", default=None)
-    run_.add_argument("--seed", type=int, default=0)
-    run_.add_argument("--duration", type=float, default=30.0, help="simulated seconds")
+    run_.add_argument(
+        "--preset",
+        default=None,
+        help="load a walkthrough preset (sim/presets.py); --seed pins its seed for replay",
+    )
+    run_.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="omit for 0, or for a preset's own seed policy",
+    )
+    run_.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="simulated seconds; omit for 30, or for a preset's own duration",
+    )
     run_.add_argument("--hz", type=float, default=1 / DEFAULT_DT)
     run_.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
     run_.add_argument("--interval", type=float, default=2.0, help="log every N seconds")
@@ -301,10 +317,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_.add_argument(
         "--perception",
-        choices=("ground-truth", "ml"),
+        choices=("ground-truth", "noisy-truth", "ml"),
         default="ground-truth",
-        help="ground-truth drives on perfect sensing; ml additionally runs the "
-        "detector pipeline and reports it (shadow mode)",
+        help="ground-truth drives on perfect sensing; noisy-truth on seeded "
+        "degraded sensing, where available; ml additionally runs the detector "
+        "pipeline and reports it (shadow mode)",
     )
     run_.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
 
@@ -574,13 +591,21 @@ class _Trace:
 
 
 def _run(args) -> int:
+    preset = None
+    if args.preset is not None:
+        preset = PRESETS.get(args.preset)
+        if preset is None:
+            print(f"error: unknown preset {args.preset!r}; one of: {', '.join(PRESETS)}")
+            return 1
+    if args.duration is None:
+        args.duration = preset.duration_s if preset is not None else 30.0
     pipeline = perception_pipeline_for(args)
 
     try:
         sim = Simulation(
             scene_source_for(args.source),
             args.scenario,
-            seed=args.seed,
+            seed=args.seed if args.seed is not None else 0,
             dt=1 / args.hz,
             perception_pipeline=pipeline,
         )
@@ -591,6 +616,14 @@ def _run(args) -> int:
             pipeline.shutdown()
         print(f"error: {exc}")
         return 1
+
+    if preset is not None:
+        raw = {"id": "cli", "cmd": "load_preset", "preset_id": preset.id, "seed": args.seed}
+        sim.apply_dict(raw)
+    elif args.perception != "ground-truth":
+        mode = sim.select_perception(args.perception)
+        if mode != args.perception:
+            print(f"note: {args.perception} perception is unavailable; running on {mode}")
 
     try:
         return _run_loop(args, sim)
@@ -604,7 +637,7 @@ def _run(args) -> int:
 
 def _run_loop(args, sim: Simulation) -> int:
     scene = sim.scene.description
-    print(f"scenario {scene.scenario_id}  seed {args.seed}  {args.duration:g}s @ {args.hz:g} Hz")
+    print(f"scenario {scene.scenario_id}  seed {sim.seed}  {args.duration:g}s @ {args.hz:g} Hz")
     print(f"route {sim.scene.ego_route.length_m:.0f} m, limit {sim.scene.speed_limit_mps * MPS_TO_MPH:.0f} mph")
     print("-" * 72)
 
@@ -636,6 +669,8 @@ def _run_loop(args, sim: Simulation) -> int:
 
         for event in frame.events:
             print(f"t={event.t:6.2f}  [{event.level}] {event.code}: {event.message}")
+            if event.code == "run_summary" and event.summary is not None:
+                print(json.dumps(event.summary.model_dump(mode="json")))
 
         if i % log_every == 0:
             _log_frame(frame)
