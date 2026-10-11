@@ -14,7 +14,7 @@ from perception.scoring import ScoreResult
 from plan.behavior import BehaviorState
 from schema import HazardReaction, PerceptionMode, RunSummary
 from sim import events
-from sim.route import ControlPoint
+from sim.route import ControlPoint, Route
 from sim.vehicle import BicycleModel
 
 #: The hazard-free ego comfort budget, `BUDGET.ego_decel_mps2` in
@@ -27,7 +27,6 @@ BRAKE_REACTION_MPS2 = 1.0
 REACTION_TIMEOUT_S = 10
 
 _EGO = BicycleModel()
-_EGO_RADIUS = math.hypot(_EGO.length_m, _EGO.width_m) / 2
 
 
 def _corners(x, y, heading, length, width):
@@ -72,6 +71,9 @@ class Scorecard:
         self.min_clearance_m: float | None = None
         self.hard_brakes = 0
         self._hard_braking = False
+        #: Last step's ego accel, so a reaction is a NEW brake, not one already
+        #: under way when the hazard fired.
+        self._prev_accel = 0.0
         self.collisions = 0
         self._touching: set[str] = set()
         self.stop_overshoots = 0
@@ -99,7 +101,9 @@ class Scorecard:
         if result.recall is not None:
             self._recall.append(result.recall)
 
-    def step(self, world, agents, fsm, control_points: Sequence[ControlPoint], dt: float) -> None:
+    def step(
+        self, world, agents, fsm, control_points: Sequence[ControlPoint], route: Route, dt: float
+    ) -> None:
         ego, t = world.ego, world.t
         self.distance_m += abs(ego.speed_mps) * dt
 
@@ -113,30 +117,21 @@ class Scorecard:
             self.hard_brakes += 1
         self._hard_braking = hard
 
-        for r in self._reactions:
-            if r[2] is None and t - r[1] <= REACTION_TIMEOUT_S and accel <= -BRAKE_REACTION_MPS2:
-                r[2] = t - r[1]
+        if accel <= -BRAKE_REACTION_MPS2 < self._prev_accel:
+            for r in self._reactions:
+                if r[2] is None and t - r[1] <= REACTION_TIMEOUT_S:
+                    r[2] = t - r[1]
+        self._prev_accel = accel
 
         self._clearance(ego, agents)
-        self._overshoot(ego, fsm, control_points)
+        self._overshoot(ego, fsm, control_points, route)
 
     def _clearance(self, ego, agents) -> None:
-        ego_box = None
+        # Exact SAT for every agent. No centre-distance skip: SAT separation
+        # can be well under the Euclidean gap, so radii give no valid bound.
+        ego_box = _corners(ego.x, ego.y, ego.heading, _EGO.length_m, _EGO.width_m)
         for agent in agents:
             st, size = agent.state, agent.size
-            # A lower bound on the separation from centre distance alone: an
-            # agent that can neither collide nor beat the current minimum
-            # skips the SAT, which keeps this O(agents) cheap at 60 Hz.
-            bound = (
-                math.hypot(st.x - ego.x, st.y - ego.y)
-                - _EGO_RADIUS
-                - math.hypot(size.length, size.width) / 2
-            )
-            if self.min_clearance_m is not None and bound > max(self.min_clearance_m, 0.0):
-                self._touching.discard(agent.id)
-                continue
-            if ego_box is None:
-                ego_box = _corners(ego.x, ego.y, ego.heading, _EGO.length_m, _EGO.width_m)
             sep = obb_separation(
                 ego_box, _corners(st.x, st.y, st.heading, size.length, size.width)
             )
@@ -149,17 +144,17 @@ class Scorecard:
             else:
                 self._touching.discard(agent.id)
 
-    def _overshoot(self, ego, fsm, control_points) -> None:
+    def _overshoot(self, ego, fsm, control_points, route: Route) -> None:
         if fsm is None or fsm.state is not BehaviorState.STOP:
             self._overshoot_counted = None
             return
         target = next((cp for cp in control_points if cp.id == fsm.target_id), None)
         if target is None:
             return
-        # Distance from the ego's centre to the stop line along its heading;
-        # the nose is past the line once that is under half a car length.
-        px, py = target.position
-        gap = (px - ego.x) * math.cos(ego.heading) + (py - ego.y) * math.sin(ego.heading)
+        # Arc length from the ego's centre to the stop line (`cp.s`, set back
+        # from the junction at `cp.position`); the nose is past the line once
+        # that is under half a car length.
+        gap = route.signed_gap(route.project((ego.x, ego.y)), target.s)
         overshoot = _EGO.length_m / 2 - gap
         if overshoot <= 0:
             return

@@ -452,6 +452,7 @@ class Simulation:
             self._traffic.agents,
             getattr(self._planner, "fsm", None),
             self.scene.control_points,
+            self.scene.ego_route,
             dt,
         )
         card = self.scorecard

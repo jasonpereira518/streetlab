@@ -1034,7 +1034,7 @@
         "t_s": 4.8,
         "distance_m": 13.34,
         "min_ttc_s": 3.86,
-        "min_clearance_m": 0.921,
+        "min_clearance_m": 0.89,
         "hard_brakes": 1,
         "collisions": 0,
         "stop_overshoots": 0,
