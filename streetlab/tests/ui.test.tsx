@@ -226,18 +226,29 @@ describe('TopToolbar', () => {
     );
   });
 
-  it('disables the perception control when no perception pipeline is running', () => {
+  it('disables only the ML item when no perception pipeline is running', () => {
     // The mock never runs ML perception, so `perception` stays null on every
-    // frame — the ordinary default. A rejected/no-op command here would be
-    // worse than an unavailable control, so it must be disabled with a title
-    // explaining why.
+    // frame — the ordinary default. Noisy truth needs no pipeline, so the
+    // control stays live; only ML, which the backend refuses without one,
+    // is disabled with a title explaining why.
     harness = createHarness();
     render(<TopToolbar />);
     harness.emitScene();
     harness.emitFrame(1);
 
-    const trigger = screen.getByTitle(/no perception pipeline running/i);
-    expect(trigger.hasAttribute('disabled')).toBe(true);
+    const trigger = screen.getByTitle('Perception source');
+    expect(trigger.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(trigger);
+    const ml = screen.getByRole('menuitemradio', { name: /ML/ });
+    expect(ml.hasAttribute('disabled')).toBe(true);
+    expect(ml.getAttribute('title')).toMatch(/no perception pipeline running/i);
+
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Noisy truth' }));
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'set_perception', mode: 'noisy-truth' }),
+    );
+    expect(useSimStore.getState().perceptionMode).toBe('noisy-truth');
+    expect(screen.getByTitle('Perception source').textContent).toContain('Noisy truth');
   });
 
   it('labels the ML perception mode experimental in the control itself', () => {
@@ -303,7 +314,8 @@ describe('LeftScenarioSidebar', () => {
     harness.emitScene();
 
     expect(screen.getByText('Nob Hill')).toBeTruthy();
-    expect(screen.getAllByRole('listitem')).toHaveLength(5);
+    const saved = within(screen.getByRole('list', { name: 'Saved scenarios' }));
+    expect(saved.getAllByRole('listitem')).toHaveLength(5);
     expect(screen.getByText('01')).toBeTruthy();
     expect(screen.getByText('05')).toBeTruthy();
     expect(screen.getByText('Hyde St Descent')).toBeTruthy();
@@ -1193,5 +1205,123 @@ describe('RightPanel hazard menu', () => {
     expect(
       screen.getByText('emergency_vehicle: the in-process mock only stages cut_in'),
     ).toBeTruthy();
+  });
+});
+
+describe('Walkthrough presets', () => {
+  function renderShell() {
+    harness = createHarness();
+    render(
+      <>
+        <LeftScenarioSidebar />
+        <RightPanel />
+      </>,
+    );
+    harness.emitScene();
+    return harness;
+  }
+  const presets = () => within(screen.getByRole('list', { name: 'Walkthrough presets' }));
+
+  it('renders a card per preset with its duration and seed policy', () => {
+    renderShell();
+    const cards = presets().getAllByRole('listitem');
+    expect(cards).toHaveLength(2);
+    expect(within(cards[0]).getByText('Mock cut-in, pinned')).toBeTruthy();
+    expect(within(cards[0]).getByTestId('preset-duration').textContent).toBe('20 s');
+    expect(within(cards[0]).getByText('fixed seed')).toBeTruthy();
+    expect(within(cards[0]).getByText('Ground truth')).toBeTruthy();
+    expect(within(cards[1]).getByText('fresh seed')).toBeTruthy();
+  });
+
+  it('Run emits load_preset without a seed and switches to the Run tab', () => {
+    const h = renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Run Mock cut-ins, fresh seed' }));
+
+    const sent = h.sent.filter((c) => c.cmd === 'load_preset');
+    expect(sent).toEqual([{ id: expect.any(String), cmd: 'load_preset', preset_id: 'mock-cutin-fresh' }]);
+    expect(screen.getByRole('tab', { name: 'Run' }).getAttribute('aria-selected')).toBe('true');
+    // The Run tab shows the preset's own text and the seed the scene runs on.
+    expect(screen.getByText(/Spontaneous cut-ins at a Poisson mean/, { selector: '.run-blurb' })).toBeTruthy();
+    expect(screen.getByText('The seed, and with it every cut-in interval.')).toBeTruthy();
+    expect(screen.getByTestId('run-seed').textContent).toBe(String(useSimStore.getState().runSeed));
+  });
+
+  it('Replay is disabled until a seed is known, then replays the scene seed', () => {
+    const h = renderShell();
+    const replay = screen.getByRole('button', { name: 'Replay Mock cut-ins, fresh seed' });
+    expect(replay.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run Mock cut-ins, fresh seed' }));
+    const seed = h.sim.scene.seed;
+    const enabled = screen.getByRole('button', { name: 'Replay Mock cut-ins, fresh seed' });
+    expect(enabled.hasAttribute('disabled')).toBe(false);
+    expect(enabled.getAttribute('title')).toContain(String(seed));
+
+    fireEvent.click(enabled);
+    expect(h.sent.at(-1)).toMatchObject({ cmd: 'load_preset', preset_id: 'mock-cutin-fresh', seed });
+  });
+
+  it('a frame carrying a summary renders a scorecard column; two render newest first', () => {
+    const h = renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Run Mock cut-in, pinned' }));
+    const base = h.emitFrame();
+    const summary = (seed: number, min_ttc_s: number | null) => ({
+      preset_id: 'mock-cutin-20s',
+      scenario_id: 'nob-hill-loop',
+      seed,
+      perception_mode: 'ground-truth' as const,
+      complete: true,
+      t_s: 20,
+      distance_m: 53.3,
+      min_ttc_s,
+      min_clearance_m: 4.95,
+      hard_brakes: 2,
+      collisions: 0,
+      stop_overshoots: 0,
+      worst_overshoot_m: 0,
+      hazards_fired: 1,
+      hazards_declined: 1,
+      reactions: [{ kind: 'cut_in', t: 4.5, reaction_s: 1.6 }],
+      precision: null,
+      recall: null,
+    });
+    const emitSummary = (seed: number, ttc: number | null) =>
+      h.emit({
+        ...base,
+        events: [{ t: 20, level: 'info', code: 'run_summary', message: 'run summary', summary: summary(seed, ttc) }],
+      });
+
+    emitSummary(20, null);
+    let table = screen.getByTestId('scorecard');
+    expect(within(table).getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
+      'Metric',
+      'seed 20',
+    ]);
+    const ttcRow = () => within(screen.getByTestId('scorecard')).getByRole('row', { name: /Min TTC/ });
+    expect(within(ttcRow()).getAllByRole('cell').map((c) => c.textContent)).toEqual(['—']);
+
+    emitSummary(21, 2.345);
+    table = screen.getByTestId('scorecard');
+    expect(within(table).getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
+      'Metric',
+      'seed 21',
+      'seed 20',
+    ]);
+    expect(within(ttcRow()).getAllByRole('cell').map((c) => c.textContent)).toEqual(['2.35 s', '—']);
+  });
+
+  it('styles hazard_declined as declined and a fired hazard as fired in the event log', () => {
+    const h = renderShell();
+    const base = h.emitFrame();
+    h.emit({
+      ...base,
+      events: [
+        { t: 4, level: 'warn', code: 'cut_in', message: 'Cut-in staged' },
+        { t: 10, level: 'info', code: 'hazard_declined', message: 'jaywalker: declined' },
+      ],
+    });
+    fireEvent.click(screen.getByRole('tab', { name: /events/i }));
+    expect(screen.getByText('hazard_declined').closest('li')!.className).toMatch(/event--declined/);
+    expect(screen.getByText('cut_in').closest('li')!.className).toMatch(/event--fired/);
   });
 });

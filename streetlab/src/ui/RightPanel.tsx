@@ -10,9 +10,10 @@ import { useTelemetryCanvas } from '../store/hooks';
 import { PARAM_DEFS, useSimStore } from '../store/simStore';
 import type { ParamDef, RightTab } from '../store/simStore';
 import { EventLog } from './EventLog';
-import { ActivityIcon, LayersIcon, MapIcon, SlidersIcon } from './Icons';
+import { ActivityIcon, LayersIcon, MapIcon, PlayIcon, SlidersIcon } from './Icons';
 import { ColorPicker, Field, Select, Slider, Toggle } from './controls';
 import { PerceptionPanel } from './PerceptionPanel';
+import { RunTab } from './RunTab';
 import { alpha, classColor, color } from './theme';
 
 type Tab = RightTab;
@@ -28,6 +29,7 @@ const TABS: Array<{
   // icon at any panel width the shell offers; the full word lives on `name`,
   // which becomes the tab's title and accessible name.
   { id: 'parameters', label: 'Params', name: 'Parameters', icon: SlidersIcon },
+  { id: 'run', label: 'Run', icon: PlayIcon },
   { id: 'map', label: 'Map', icon: MapIcon },
   { id: 'layers', label: 'Layers', icon: LayersIcon },
   { id: 'events', label: 'Events', icon: ActivityIcon },
@@ -128,6 +130,7 @@ export function RightPanel() {
 
       <div className="panel-body" role="tabpanel">
         {tab === 'parameters' && <ParametersTab />}
+        {tab === 'run' && <RunTab />}
         {tab === 'map' && <MapTab />}
         {tab === 'layers' && <LayersTab />}
         {tab === 'events' && <EventLog />}

@@ -5,7 +5,7 @@
  * frame stream at ~10 Hz and only re-renders when the displayed value changes.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CameraView, Maneuver, PerceptionMode } from '../schema';
+import type { CameraView, Maneuver, PerceptionMode, PerceptionStats } from '../schema';
 import { useFrameValue } from '../store/hooks';
 import { useSimStore } from '../store/simStore';
 import { formatTtc, toMph } from '../units';
@@ -72,6 +72,7 @@ export function TopToolbar() {
   const sourceLabel = useSimStore((s) => s.sourceLabel);
   const cameraView = useSimStore((s) => s.cameraView);
   const perception = useSimStore((s) => s.perception);
+  const perceptionMode = useSimStore((s) => s.perceptionMode);
   const scenarioName = useSimStore(
     (s) => s.catalog.find((c) => c.id === s.activeScenarioId)?.name ?? s.scene?.name ?? '—',
   );
@@ -206,8 +207,8 @@ export function TopToolbar() {
         </IconButton>
         <CameraMenu view={cameraView} onSelect={setCameraView} />
         <PerceptionMenu
-          mode={perception?.mode ?? 'ground-truth'}
-          disabled={perception === null}
+          mode={perceptionMode}
+          mlAvailable={hasPipeline(perception)}
           onSelect={setPerceptionMode}
         />
         <IconButton label="Settings" onClick={() => setRightTab('parameters')}>
@@ -284,6 +285,15 @@ function CameraMenu({
 }
 
 /**
+ * Whether an ONNX pipeline exists. Stats arrive from one whenever it does;
+ * without one they arrive only while noisy truth drives, and then carry no
+ * detector and no frames (`_noisy_stats` in the backend's `sim/loop.py`).
+ */
+function hasPipeline(p: PerceptionStats | null): boolean {
+  return p !== null && !(p.mode === 'noisy-truth' && p.detector_ms === null && p.frames_received === 0);
+}
+
+/**
  * This control *is* closed loop: switching to 'ml' hands driving to the real
  * detector's perception instead of ground truth. A frame round trip plus
  * inference (100-200 ms) means the planner acts on a stale world, so the ML
@@ -291,17 +301,17 @@ function CameraMenu({
  * only in documentation — both on the trigger (visible without opening the
  * menu) and on the menu item.
  *
- * Disabled when no perception pipeline is running (`perception` is null on
- * the wire): the backend refuses `set_perception` in that case, so a live
- * control here would silently do nothing.
+ * The trigger is always live: ground truth and noisy truth need no pipeline.
+ * Only the ML item is disabled without one, since the backend refuses
+ * `set_perception ml` then and a live item would silently do nothing.
  */
 function PerceptionMenu({
   mode,
-  disabled,
+  mlAvailable,
   onSelect,
 }: {
   mode: PerceptionMode;
-  disabled: boolean;
+  mlAvailable: boolean;
   onSelect: (m: PerceptionMode) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -323,10 +333,6 @@ function PerceptionMenu({
     };
   }, [open]);
 
-  const title = disabled
-    ? 'No perception pipeline running — start with --perception'
-    : 'Perception source';
-
   return (
     <div className="menu" ref={ref}>
       <button
@@ -335,8 +341,7 @@ function PerceptionMenu({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        disabled={disabled}
-        title={title}
+        title="Perception source"
       >
         <EyeIcon />
         <span>{PERCEPTION_LABELS[mode]}</span>
@@ -352,6 +357,12 @@ function PerceptionMenu({
               role="menuitemradio"
               aria-checked={m === mode}
               className={`menu-item${m === mode ? ' is-active' : ''}`}
+              disabled={m === 'ml' && !mlAvailable}
+              title={
+                m === 'ml' && !mlAvailable
+                  ? 'No perception pipeline running — start with --perception'
+                  : undefined
+              }
               onClick={() => {
                 onSelect(m);
                 setOpen(false);
