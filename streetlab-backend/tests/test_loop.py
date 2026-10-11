@@ -318,7 +318,9 @@ def test_the_world_recovers_after_an_injected_hazard(sim):
 
 
 def test_events_are_drained_after_being_reported(sim):
-    sim.apply_dict({"id": "a", "cmd": "inject_hazard", "kind": "cut_in"})
+    # sudden_brake, not cut_in: a cut-in needs a legal lane beside the ego, and at t=0 the
+    # ego starts in a turn, where no lane change is legal (#36), so it is declined with no event.
+    sim.apply_dict({"id": "a", "cmd": "inject_hazard", "kind": "sudden_brake"})
     assert sim.state_update().events
     sim.step()
     assert sim.state_update().events == []

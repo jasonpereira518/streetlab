@@ -631,11 +631,17 @@ def standard_runs(
     nob_hill_scene,
     *,
     nobhill_s: float = 340.0,
-    nobhill_slow_s: float = 340.0,
+    nobhill_slow_s: float = 480.0,
     grid_s: float = 150.0,
     grid_slow_s: float = 200.0,
 ) -> dict[str, Run]:
-    """The three hazard-free recordings the budgets and the report are built on.
+    """The four hazard-free recordings the budgets and the report are built on.
+
+    `nobhill_slow` is Nob Hill at 0.4x traffic, the setting `test_lane_changes.py` replays it at:
+    default traffic never meets a lead under the Phase 3 speed law, so this is the recording that
+    changes lane and follows. Its first lane change was at 112 s; on the integration branch
+    (#36's lane rules plus the speed law) it moved to 392.1 s (measured 2026-10-11), so the run
+    is 480 s, not 340.
 
     Nob Hill at default traffic reaches signals and stop signs within 250 s and
     starts overtaking from about 290 s (the lane-change return is the worst thing it

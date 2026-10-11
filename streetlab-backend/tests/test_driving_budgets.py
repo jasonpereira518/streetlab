@@ -30,8 +30,15 @@ from evaluation.driving_metrics import (
 )
 
 #: (budget, run) -> why it fails today. Deleting a line is how a phase says "fixed". Empty since
-#: driving-realism Phase 3/4 (docs/measurements/2026-10-09-driving-after-phase-3.md).
-BASELINE_FAILS: dict[tuple[str, str], str] = {}
+#: driving-realism Phase 3/4 (docs/measurements/2026-10-09-driving-after-phase-3.md); one entry
+#: again on the integration branch, below.
+BASELINE_FAILS: dict[tuple[str, str], str] = {
+    ("agent_decel", "grid"): (
+        "integration of #36 (vehicles kept on the carriageway) with the Phase 3 ego: traffic 99th "
+        "percentile deceleration on grid measures 3.70 m/s^2 against the 3.5 budget (measured "
+        "2026-10-11, 26997 frames); the other three recordings meet it"
+    ),
+}
 
 
 def _expect(request, budget: str, key: str) -> None:

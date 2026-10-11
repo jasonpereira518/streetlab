@@ -739,21 +739,14 @@ def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_re
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
 
 
-#: Measured 2026-10-10, after lanes stopped continuing round corners
-#: (`map.lanes._turn_segments`): at 0.45x traffic the ego pulls out at 4 m/s
-#: behind a 4.2 m/s car 60 m before a stop-sign corner, cannot pass, stops at
-#: the line still in the kerb lane, and wears the label for the whole stop
-#: and the trip home -- 37 s. Honest (it IS between lanes throughout) but
-#: over `MAX_LABELLED_RUN_S`. A pass-room estimate at the speed the pass will
-#: actually be driven, not the speed it is decided at, would refuse it.
-_LONG_LABEL_AT_THE_STOP_SIGN = pytest.mark.xfail(
-    strict=True, reason="label worn through a stop at the line in the kerb lane (37 s)"
-)
+# The strict xfail that lived here (#36: grid-loop wore the lane-change label for 37 s through
+# a stop at the line) now passes on the integration branch, so it is removed as the repo's
+# rule requires: with Phase 3's stop profile the car is no longer stuck in the kerb lane.
 
 
 @pytest.mark.parametrize(
     "scene_name",
-    ["nob_hill", pytest.param("grid_loop", marks=_LONG_LABEL_AT_THE_STOP_SIGN)],
+    ["nob_hill", "grid_loop"],
 )
 def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
     scene_name, nob_hill_replay, grid_loop_replay
@@ -1036,18 +1029,20 @@ def test_a_completed_overtake_actually_passes_the_lead(nob_hill_replay):
     )
 
 
-#: Measured 2026-10-10: Nob Hill's one episode in 600 s reaches the kerb
-#: lane and is turned round by the lane's end (`_lane_ends_within`), not of
-#: its own accord, so there is nothing for this test to judge. Strict, so a
-#: start rule that leaves room for a voluntary return shows up here.
-_NO_VOLUNTARY_TURNAROUND = pytest.mark.xfail(
-    strict=True, reason="the only Nob Hill episode is turned round by the lane's end"
+#: Measured on the integration branch (2026-10-11): Nob Hill's strict xfail here started passing
+#: (a voluntary turnaround with a lead worth passing now exists), so it is removed. grid-loop went
+#: the other way: none of its 5 episodes in 300 s (none of 11 in 600 s) both reaches the lane,
+#: turns round of its own accord and still has a lead worth passing -- #36 forbids lane changes
+#: through turns and Phase 3's speed law keeps the ego ahead of traffic, so every episode is cut
+#: short by a corner or a stop line. Strict, so a rule that brings one back shows up here.
+_NO_JUDGEABLE_GRID_EPISODE = pytest.mark.xfail(
+    strict=True, reason="no grid-loop episode is a voluntary turnaround with a lead worth passing"
 )
 
 
 @pytest.mark.parametrize(
     "scene_name",
-    [pytest.param("nob_hill", marks=_NO_VOLUNTARY_TURNAROUND), "grid_loop"],
+    ["nob_hill", pytest.param("grid_loop", marks=_NO_JUDGEABLE_GRID_EPISODE)],
 )
 def test_a_traverse_that_reaches_the_lane_holds_it(
     scene_name, nob_hill_replay, grid_loop_replay
@@ -1314,7 +1309,10 @@ def test_the_ego_is_in_its_own_lane_wherever_the_street_has_only_one():
     route = sim.scene.ego_route
     worst = 0.0
     changed = False
-    while sim.t < 120.0:
+    # 120 -> 300 s: with the Phase 3 speed law the ego stays ahead of traffic and first leaves
+    # its lane at t=252.9 s here (seeds 1 and 7; it never does in 120 s, at traffic scale 1.0 or
+    # 0.45), so 120 s no longer reached the pass this test is about.
+    while sim.t < 300.0:
         sim.step()
         ego = sim.world.ego
         s = route.project((ego.x, ego.y))
