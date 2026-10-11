@@ -238,3 +238,37 @@ def test_an_int_beyond_float_range_is_refused_off_the_wire():
     assert not outcome.ok
     assert sim.world.params["cutin_period_s"] == 0.0
     sim.step()
+
+
+def _summaries(events_):
+    return [e.summary.model_dump(mode="json") for e in events_ if e.code == "run_summary"]
+
+
+def _short(monkeypatch, preset_id, duration_s):
+    monkeypatch.setitem(PRESETS, preset_id, replace(PRESETS[preset_id], duration_s=duration_s))
+
+
+def test_fixed_seed_twins_produce_identical_run_summaries(monkeypatch):
+    _short(monkeypatch, "replay-twin", 20.0)
+    a, b = Simulation(SyntheticGrid()), Simulation(SyntheticGrid())
+    load(a, "replay-twin")
+    load(b, "replay-twin")
+    sa, sb = _summaries(run(a, 21)), _summaries(run(b, 21))
+    assert len(sa) == 1 and sa == sb
+
+
+def test_a_preset_run_emits_one_complete_summary_at_its_duration(monkeypatch):
+    _short(monkeypatch, "lead-pressure", 12.0)
+    sim = Simulation(SyntheticGrid())
+    load(sim, "lead-pressure", seed=7)
+    out = run(sim, 15)
+    found = [e for e in out if e.code == "run_summary"]
+    assert len(found) == 1
+    [event] = found
+    s = event.summary
+    assert s.complete and s.preset_id == "lead-pressure" and s.seed == 7
+    assert event.t == pytest.approx(12.0, abs=DT)
+    assert s.hazards_fired == sum(1 for e in out if e.code in events.SCENARIOS)
+    # The latch resets on reset: the replay summarises again.
+    sim.apply_dict({"id": "r", "cmd": "reset"})
+    assert len(_summaries(run(sim, 13))) == 1

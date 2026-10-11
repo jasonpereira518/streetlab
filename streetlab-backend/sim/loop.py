@@ -54,6 +54,7 @@ from schema import (
     Plan,
     Pose,
     RadarPoint,
+    RunSummary,
     SceneDescription,
     SignalState,
     SimEvent,
@@ -67,6 +68,7 @@ from schema import (
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
+from sim.scorecard import Scorecard
 from sim.vehicle import BicycleModel, VehicleState
 
 if TYPE_CHECKING:  # pragma: no cover - `sim.presets` is imported lazily below
@@ -336,6 +338,8 @@ class Simulation:
         # genuinely new one.
         self.pose_history.clear()
         self._trip_complete_emitted = False
+        # Preset-less; `_load_preset` swaps in one carrying its id and duration.
+        self.scorecard = Scorecard()
         self._road_rules.reset()
         # Seeded at t = 0.0 right after the clear, because `state_update()` is
         # legitimately callable before any `step()` -- and because `world.t`
@@ -442,6 +446,24 @@ class Simulation:
         # has always had this order right; the two now agree.
         self._record_truth()
         self._record_history()
+
+        self.scorecard.step(
+            self.world,
+            self._traffic.agents,
+            getattr(self._planner, "fsm", None),
+            self.scene.control_points,
+            dt,
+        )
+        card = self.scorecard
+        # A hair of slack: 5400 steps of 1/60 s sum to 89.999999999996, and
+        # `streetlab run` steps exactly `duration * hz` times.
+        if (
+            card.duration_s is not None
+            and not card.summarised
+            and self.world.t >= card.duration_s - 1e-6
+        ):
+            card.summarised = True
+            self._emit_summary(complete=True)
 
     def _fire_due_hazards(self) -> None:
         """Stage the preset's scheduled hazards that are due, then the
@@ -601,6 +623,7 @@ class Simulation:
             Prediction(cls=d.cls, x=d.pose.x, y=d.pose.y) for d in ml_detections
         ]
         self.perception_score = score(predictions, truth)
+        self.scorecard.on_score(self.perception_score)
 
     def _plan(self, dt: float | None = None) -> PlanResult:
         """Compute this tick's detections, signal phases and plan, and cache all three.
@@ -921,6 +944,7 @@ class Simulation:
         self.world.params.update(preset.params)
         self._load(presets.resolve_scene(preset, self._source))
         self._preset = preset
+        self.scorecard = Scorecard(preset.id, preset.duration_s)
         self._timeline = presets.schedule(preset, self.rng)
         mode = self.select_perception(preset.perception)
         if mode != preset.perception:
@@ -950,7 +974,33 @@ class Simulation:
         return mode
 
     def _cmd_run_summary(self, command) -> CommandOutcome:
-        return CommandOutcome(ok=False, message="scorecard not implemented yet")
+        s = self._emit_summary(complete=False)
+        return CommandOutcome(
+            ok=True,
+            message=(
+                f"run summary at {s.t_s:g}s: {s.distance_m:g} m, "
+                f"{s.collisions} collisions, {s.hard_brakes} hard brakes"
+            ),
+        )
+
+    def _emit_summary(self, *, complete: bool) -> RunSummary:
+        summary = self.scorecard.summary(
+            scenario_id=self.scene.description.scenario_id,
+            seed=self._seed,
+            t=self.world.t,
+            perception_mode=self.perception_mode,
+            complete=complete,
+        )
+        self.world.events.append(
+            SimEvent(
+                t=round(self.world.t, 3),
+                level="info",
+                code="run_summary",
+                message="run complete" if complete else "run summary",
+                summary=summary,
+            )
+        )
+        return summary
 
     def _cmd_load_location(self, command) -> CommandOutcome:
         """Ack now, build later.
@@ -1043,6 +1093,7 @@ class Simulation:
         self.world.events.append(
             SimEvent(t=round(self.world.t, 3), level=level, code=code, message=message)
         )
+        self.scorecard.on_event(code, self.world.t)
 
     def _check_trip_complete(self) -> None:
         """Emit `trip_complete` once the ego actually settles into STOP at an

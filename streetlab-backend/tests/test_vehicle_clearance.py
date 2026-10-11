@@ -15,6 +15,7 @@ import pytest
 
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
+from sim.scorecard import _corners, obb_separation
 from sim.vehicle import BicycleModel
 
 #: Clear space every pair of footprints must keep, metres.
@@ -29,44 +30,6 @@ GRID_SCENARIOS = ["grid-loop", "grid-merge", "grid-signals", "grid-night", "grid
 SEEDS = [7, 11]
 
 _EGO = BicycleModel()
-
-
-def _corners(x, y, heading, length, width):
-    c, s = math.cos(heading), math.sin(heading)
-    hl, hw = length / 2, width / 2
-    return [
-        (x + c * dx - s * dy, y + s * dx + c * dy)
-        for dx, dy in ((hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw))
-    ]
-
-
-def obb_separation(a, b) -> float:
-    """Signed separation between two oriented rectangles, by the SAT.
-
-    Positive is the clear distance along the best separating axis; negative is
-    penetration depth. It is the MAX over candidate axes: any one axis with a
-    gap proves the boxes apart, so taking the min would call every distant
-    pair overlapping.
-    """
-    best = -math.inf
-    for poly in (a, b):
-        for i in range(4):
-            (x0, y0), (x1, y1) = poly[i], poly[(i + 1) % 4]
-            ex, ey = x1 - x0, y1 - y0
-            norm = math.hypot(ex, ey)
-            ax, ay = -ey / norm, ex / norm
-            pa = [px * ax + py * ay for px, py in a]
-            pb = [px * ax + py * ay for px, py in b]
-            gap = max(min(pb) - max(pa), min(pa) - max(pb))
-            best = max(best, gap)
-    return best
-
-
-def test_obb_separation_sanity():
-    a = _corners(0, 0, 0, 4.0, 2.0)
-    assert obb_separation(a, _corners(10, 0, 0, 4.0, 2.0)) == pytest.approx(6.0)
-    assert obb_separation(a, _corners(3, 0, 0, 4.0, 2.0)) == pytest.approx(-1.0)
-    assert obb_separation(a, _corners(0, 5, math.pi / 2, 4.0, 2.0)) == pytest.approx(2.0)
 
 
 def footprints(sim: Simulation):
