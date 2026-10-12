@@ -94,6 +94,14 @@ class PlanLimits:
     speed_cap_mps: float
     follow_distance_s: float = 1.5
     assist_enabled: bool = True
+    #: How far over the limit the car may go (the user's "Speed margin").
+    speed_margin_mps: float = 0.0
+
+    @property
+    def target_limit_mps(self) -> float:
+        """The fastest the planner will aim for: the limit plus the margin,
+        never past the Max speed cap. The one place this formula lives."""
+        return min(self.speed_limit_mps + self.speed_margin_mps, self.speed_cap_mps)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +194,7 @@ class CenterlineFollower:
             ego, route, s, context.control_points, context.signals, context.dt,
             lanes=context.lanes,
             detections=detections,
-            limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
+            limit_mps=limits.target_limit_mps,
         )
 
         # The blend is the FSM's, not derived here: going out and coming back it
@@ -297,7 +305,7 @@ class CenterlineFollower:
         *,
         home_lane: bool = False,
     ) -> float:
-        target = min(limits.speed_limit_mps, limits.speed_cap_mps)
+        target = limits.target_limit_mps
         if curvature > 1e-6:
             target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / curvature))
 

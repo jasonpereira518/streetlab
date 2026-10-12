@@ -19,7 +19,7 @@
     "throttle": 0.14508162341429512,
     "brake": 0.0,
     "gear": "D",
-    "speed_limit_mps": 11.176,
+    "speed_limit_mps": 15.6464,
     "cruise": {
       "mode": "fsd",
       "set_speed_mps": 3.5115798028987397
@@ -36,9 +36,9 @@
       "id": "veh_00",
       "cls": "car",
       "pose": {
-        "x": 1.7999999999999992,
-        "y": 61.949517363789774,
-        "heading": 1.5707963267948966
+        "x": 1.799999999999999,
+        "y": 64.28565755100048,
+        "heading": 1.5707963267948968
       },
       "size": {
         "length": 4.6,
@@ -46,10 +46,10 @@
         "height": 1.45
       },
       "velocity": [
-        4.2215343429555775e-16,
-        6.894288779254189
+        -1.1758209642540319e-15,
+        7.311761727194549
       ],
-      "speed_mps": 6.894288779254189,
+      "speed_mps": 7.311761727194549,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
@@ -135,10 +135,10 @@
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": -0.496,
-        "range_m": 56.85,
-        "range_rate_mps": 3.73,
-        "rcs_db": 7.45,
+        "azimuth": -0.4965,
+        "range_m": 59.19,
+        "range_rate_mps": 4.15,
+        "rcs_db": 7.26,
         "tracked": true
       },
       {
@@ -203,9 +203,9 @@
           "id": "veh_00",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": 56.98,
+          "longitudinal_m": 59.32,
           "lateral_m": 0.0,
-          "speed_mps": 6.894288779254189,
+          "speed_mps": 7.311761727194549,
           "hazard": false
         }
       ]
@@ -808,7 +808,7 @@
       "route_length_m": 295.2385818865513,
       "distance_driven_m": 6.486471572941367,
       "distance_remaining_m": 288.65880263810385,
-      "eta_s": 65.56100671619545,
+      "eta_s": 57.51770704103288,
       "laps": 0,
       "closed": true
     }

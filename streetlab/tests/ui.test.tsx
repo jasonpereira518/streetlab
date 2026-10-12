@@ -961,6 +961,19 @@ describe('RightPanel', () => {
     );
   });
 
+  it('the speed margin slider defaults to five and emits set_param', () => {
+    harness = createHarness();
+    render(<RightPanel />);
+    harness.emitScene();
+
+    expect(useSimStore.getState().params.speed_margin_mph).toBe(5);
+    const slider = screen.getByLabelText(/Speed margin/);
+    fireEvent.change(slider, { target: { value: '8' } });
+    expect(harness.sent).toContainEqual(
+      expect.objectContaining({ cmd: 'set_param', key: 'speed_margin_mph', value: 8 }),
+    );
+  });
+
   it('render-only params stay on the client', () => {
     harness = createHarness();
     render(<RightPanel />);
@@ -1124,12 +1137,15 @@ describe('Telemetry row', () => {
 
     const [speed, lane, radar, vehicle, trajectory, steering] = canvases;
 
-    // Speedometer prints the rounded mph and the cruise ceiling.
+    // Speedometer prints the rounded mph, the speed the planner is aiming
+    // for ("SET" -- it was labelled "MAX" and read as the limit), and the
+    // posted limit itself, which used to be an unlabelled tick.
     const mph = String(Math.round(toMph(frame.ego.speed_mps)));
     expect(canvasText(speed)).toContain(mph);
     expect(canvasText(speed)).toContain(
-      `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} MAX`,
+      `${Math.round(toMph(frame.ego.cruise.set_speed_mps))} SET`,
     );
+    expect(canvasText(speed)).toContain(`LIMIT ${Math.round(toMph(frame.ego.speed_limit_mps))}`);
 
     // Lane widget states the lane index that came down the wire.
     expect(canvasText(lane)).toContain(

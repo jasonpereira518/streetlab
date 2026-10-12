@@ -20,7 +20,7 @@
     "throttle": 0.0,
     "brake": 0.0,
     "gear": "D",
-    "speed_limit_mps": 11.176,
+    "speed_limit_mps": 15.6464,
     "cruise": {
       "mode": "fsd",
       "set_speed_mps": 3.3689758816059947
@@ -366,7 +366,7 @@
       "route_length_m": 295.2385818865513,
       "distance_driven_m": 0.0,
       "distance_remaining_m": 295.2385818865513,
-      "eta_s": 66.24394729674297,
+      "eta_s": 57.94454490387507,
       "laps": 0,
       "closed": true
     }

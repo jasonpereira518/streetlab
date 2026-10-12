@@ -1480,6 +1480,11 @@ function buildStreetSigns(
   // Blades carry per-sign text, so each gets its own texture and mesh. With a
   // handful of intersections this stays well inside the draw-call budget.
   const perPost = new Map<string, number>();
+  // One texture, material and plate per speed-limit value, shared by every
+  // blade showing it: Nob Hill posts ~110 limit signs in about six values.
+  // ponytail: still one mesh (draw call) per blade; an InstancedMesh per
+  // value if sign count ever shows in the frame budget.
+  const limitPlates = new Map<string, { geo: THREE.PlaneGeometry; mat: THREE.MeshBasicNodeMaterial }>();
   for (const s of scene.street_signs) {
     const key = `${s.position[0].toFixed(2)}:${s.position[1].toFixed(2)}`;
     const nth = perPost.get(key) ?? 0;
@@ -1494,17 +1499,22 @@ function buildStreetSigns(
     const bz = -Math.sin(bladeAngle) * BLADE_PROUD;
 
     if (s.kind === 'speed_limit') {
-      const tex = speedLimitTexture(s.text);
-      const mat = new THREE.MeshBasicNodeMaterial({
-        map: tex,
-        side: THREE.DoubleSide,
-      });
-      const geo = new THREE.PlaneGeometry(0.62, 0.93);
-      const mesh = new THREE.Mesh(geo, mat);
+      let plate = limitPlates.get(s.text);
+      if (!plate) {
+        const tex = speedLimitTexture(s.text);
+        const mat = new THREE.MeshBasicNodeMaterial({
+          map: tex,
+          side: THREE.DoubleSide,
+        });
+        const geo = new THREE.PlaneGeometry(0.62, 0.93);
+        plate = { geo, mat };
+        limitPlates.set(s.text, plate);
+        disposables.push(geo, mat, tex);
+      }
+      const mesh = new THREE.Mesh(plate.geo, plate.mat);
       mesh.position.set(x + bx, g + 2.0, z + bz);
       mesh.rotation.y = bladeAngle;
       group.add(mesh);
-      disposables.push(geo, mat, tex);
       continue;
     }
 

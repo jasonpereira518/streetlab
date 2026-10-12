@@ -204,6 +204,9 @@ class ScriptedTraffic:
     ) -> None:
         self._rng = Random(seed)
         self._speed_scale = speed_scale
+        #: The scene-wide limit each agent's `target_speed_mps` was drawn
+        #: against, so `_desired_speed` can rescale it to the street it is on.
+        self._scene_limit_mps = speed_limit_mps
         self._elapsed = 0.0
         self._agents: list[Agent] = []
 
@@ -653,6 +656,12 @@ class IdmTraffic(ScriptedTraffic):
             wanted = agent.emergency_speed_mps
         else:
             wanted = agent.target_speed_mps * self._speed_scale
+            # The agent's own spread (`target / scene limit`) applied to the
+            # limit of the street it is on, so traffic speeds up on an
+            # arterial and slows on a side street like the ego does.
+            posted = agent.route.limit_at(agent.s)
+            if posted is not None and self._scene_limit_mps > 0:
+                wanted *= posted / self._scene_limit_mps
         curvature = agent.route.peak_curvature(agent.s, distance_m=_CURVATURE_PREVIEW_M)
         if curvature > 1e-6:
             wanted = min(wanted, math.sqrt(_MAX_LATERAL_MPS2 / curvature))

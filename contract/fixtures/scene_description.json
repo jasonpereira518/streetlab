@@ -3574,23 +3574,163 @@
       "kind": "street_name"
     },
     {
-      "id": "sn_st_hyde_limit",
+      "id": "sl_st_larkin_f_145",
       "position": [
-        9.2,
-        -40.0
+        -75.2,
+        15.0
+      ],
+      "heading": -1.5707963267948966,
+      "text": "25",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_larkin_b_115",
+      "position": [
+        -84.8,
+        -15.0
+      ],
+      "heading": 1.5707963267948966,
+      "text": "25",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_hyde_f_65",
+      "position": [
+        8.4,
+        -65.0
+      ],
+      "heading": -1.5707963267948966,
+      "text": "35",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_hyde_f_225",
+      "position": [
+        8.4,
+        95.0
+      ],
+      "heading": -1.5707963267948966,
+      "text": "35",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_hyde_b_35",
+      "position": [
+        -8.4,
+        -95.0
       ],
       "heading": 1.5707963267948966,
       "text": "35",
       "kind": "speed_limit"
     },
     {
-      "id": "sn_st_california_limit",
+      "id": "sl_st_hyde_b_195",
       "position": [
-        -40.0,
-        9.2
+        -8.4,
+        65.0
+      ],
+      "heading": 1.5707963267948966,
+      "text": "35",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_leavenworth_f_145",
+      "position": [
+        84.8,
+        15.0
+      ],
+      "heading": -1.5707963267948966,
+      "text": "25",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_leavenworth_b_115",
+      "position": [
+        75.2,
+        -15.0
+      ],
+      "heading": 1.5707963267948966,
+      "text": "25",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_pine_f_145",
+      "position": [
+        15.0,
+        -84.8
+      ],
+      "heading": 3.141592653589793,
+      "text": "25",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_pine_b_115",
+      "position": [
+        -15.0,
+        -75.2
+      ],
+      "heading": 0.0,
+      "text": "25",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_california_f_65",
+      "position": [
+        -65.0,
+        -8.4
+      ],
+      "heading": 3.141592653589793,
+      "text": "35",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_california_f_225",
+      "position": [
+        95.0,
+        -8.4
+      ],
+      "heading": 3.141592653589793,
+      "text": "35",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_california_b_35",
+      "position": [
+        -95.0,
+        8.4
       ],
       "heading": 0.0,
       "text": "35",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_california_b_195",
+      "position": [
+        65.0,
+        8.4
+      ],
+      "heading": 0.0,
+      "text": "35",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_sacramento_f_145",
+      "position": [
+        15.0,
+        75.2
+      ],
+      "heading": 3.141592653589793,
+      "text": "25",
+      "kind": "speed_limit"
+    },
+    {
+      "id": "sl_st_sacramento_b_115",
+      "position": [
+        -15.0,
+        84.8
+      ],
+      "heading": 0.0,
+      "text": "25",
       "kind": "speed_limit"
     }
   ],
@@ -4200,7 +4340,7 @@
       "name": "Nob Hill Loop",
       "location": "Synthetic Grid",
       "description": "A single block circuit with two signalised corners. The gentlest way in.",
-      "duration_s": 66.24394729674297,
+      "duration_s": 61.1366227472858,
       "route_length_m": 295.2385818865513,
       "bookmarked": true,
       "difficulty": "easy",
@@ -4471,7 +4611,7 @@
       "name": "California Arterial",
       "location": "Synthetic Grid",
       "description": "The long way round on the two arterials, at 35 mph with cross traffic.",
-      "duration_s": 143.8579773611667,
+      "duration_s": 133.21498113430556,
       "route_length_m": 615.2385818865512,
       "bookmarked": false,
       "difficulty": "moderate",
@@ -4742,7 +4882,7 @@
       "name": "Signal Ladder",
       "location": "Synthetic Grid",
       "description": "North-west block: every corner is signalised, so the light cycle drives.",
-      "duration_s": 66.24394729674296,
+      "duration_s": 61.13662274728579,
       "route_length_m": 295.2385818865512,
       "bookmarked": false,
       "difficulty": "moderate",
@@ -5013,7 +5153,7 @@
       "name": "Hyde Street Merge",
       "location": "Synthetic Grid",
       "description": "The tight block with heavy traffic \u2014 lead vehicles cut in without warning.",
-      "duration_s": 66.24394729674297,
+      "duration_s": 61.1366227472858,
       "route_length_m": 295.2385818865513,
       "bookmarked": true,
       "difficulty": "hard",
@@ -5284,7 +5424,7 @@
       "name": "Outer Circuit",
       "location": "Synthetic Grid",
       "description": "The full perimeter. Long straights, four-way stops at the quiet corners.",
-      "duration_s": 143.8579773611667,
+      "duration_s": 133.21498113430556,
       "route_length_m": 615.2385818865512,
       "bookmarked": false,
       "difficulty": "moderate",
@@ -5555,7 +5695,7 @@
       "name": "California Overtake",
       "location": "Synthetic Grid",
       "description": "A two-block circuit whose long leg is four-lane California St: room to pass a slow car honestly.",
-      "duration_s": 102.85096232895485,
+      "duration_s": 94.9758019407957,
       "route_length_m": 455.2385818865512,
       "bookmarked": false,
       "difficulty": "moderate",

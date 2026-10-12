@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Protocol, runtime_checkable
 
-from map.lanes import derive_lanes, project_control_points
+from map.clearance import KeepOut
+from map.features import build_speed_limit_signs
+from map.lanes import derive_lanes, project_control_points, speed_limits_along
 from map.placement import (
     KERB_CLEARANCE_M,
     SIDEWALK_W_M,
@@ -48,6 +50,11 @@ from sim.route import ControlPoint, LaneSet, Route, estimate_travel_s
 # --------------------------------------------------------------------------- #
 # The seam                                                                     #
 # --------------------------------------------------------------------------- #
+
+#: The default "Speed margin" (sim.loop.DEFAULT_PARAMS), for catalog
+#: durations: a card's time is timed at what the car will actually drive.
+_DEFAULT_MARGIN_MPS = 5.0 * 0.44704
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +327,13 @@ class SyntheticGrid:
         traffic = self._traffic_for(scenario)
 
         ego_route = self._block_route(scenario.block)
+        # Per street, as the OSM source does: the arterials post 35 and the
+        # side streets 25. Without this every grid circuit, "California
+        # Arterial" included, ran at one scene-wide 25 mph.
+        ego_route.segment_limits = speed_limits_along(ego_route, self._roads())
+        # Same rng order as before: buildings, then trees.
+        buildings = self._buildings(rng)
+        trees = self._trees(rng)
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
             scene_id=f"synthetic-grid:{scenario.id}",
@@ -334,12 +348,12 @@ class SyntheticGrid:
                 min_x=-MAP_EXTENT, min_y=-MAP_EXTENT, max_x=MAP_EXTENT, max_y=MAP_EXTENT
             ),
             roads=self._roads(),
-            buildings=self._buildings(rng),
+            buildings=buildings,
             crosswalks=self._crosswalks(),
             traffic_lights=self._traffic_lights(),
             stop_signs=self._stop_signs(),
-            trees=self._trees(rng),
-            street_signs=self._street_signs(),
+            trees=trees,
+            street_signs=self._street_signs(buildings),
             reference_path=ego_route.resample(REFERENCE_STEP_M),
             # The grid is flat by construction, and its frozen detector
             # benchmarks were captured on flat ground.
@@ -384,7 +398,8 @@ class SyntheticGrid:
             location="Synthetic Grid",
             description=scenario.description,
             duration_s=estimate_travel_s(
-                route, 0.0, route.length_m, limit, control_points=self._control_points(route)
+                route, 0.0, route.length_m, limit,
+                control_points=self._control_points(route), margin_mps=_DEFAULT_MARGIN_MPS,
             ),
             route_length_m=route.length_m,
             bookmarked=scenario.bookmarked,
@@ -672,7 +687,10 @@ class SyntheticGrid:
                 )
         return walks
 
-    def _street_signs(self) -> list[StreetSign]:
+    def _street_signs(self, buildings: list[Building]) -> list[StreetSign]:
+        """Street-name blades at each corner, and speed-limit signs from the
+        road network (`build_speed_limit_signs`, shared with OSM scenes) --
+        which replaces one hand-placed "35" per arterial."""
         signs = []
         for ns, ew in self._intersections():
             cx, cy = ns.at, ew.at
@@ -687,21 +705,9 @@ class SyntheticGrid:
                     kind="street_name",
                 )
             )
-        for s in STREETS:
-            if s.road_class != "arterial":
-                continue
-            a, _ = self._street_ends(s)
-            pos = (a[0] + s.half_width + 2.0, -40.0) if s.axis == "ns" else (-40.0, a[1] + s.half_width + 2.0)
-            signs.append(
-                StreetSign(
-                    id=f"sn_{s.id}_limit",
-                    position=pos,
-                    heading=math.pi / 2 if s.axis == "ns" else 0.0,
-                    text=f"{int(s.speed_mph)}",
-                    kind="speed_limit",
-                )
-            )
-        return signs
+        roads = self._roads()
+        keep_out = KeepOut(roads, self._crosswalks(), buildings)
+        return signs + build_speed_limit_signs(roads, keep_out)
 
     # -- block contents ---------------------------------------------------- #
 
