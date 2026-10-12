@@ -1,10 +1,10 @@
 """Phase 2 acceptance.
 
-The positive claim runs on `SyntheticGrid`'s grid-loop, whose Hyde St and
-California St sides are 2-lane arterials -- a constructed two-lane fixture that
-already exists rather than a new one. The negative claim runs on Nob Hill,
-where 87.7 % of the driven length has one forward lane and a lane change would
-be into oncoming traffic.
+The positive claim runs on `SyntheticGrid`'s grid-overtake, whose 160 m
+California St leg is a 2-lane-each-way arterial long enough for an honest pass
+(grid-loop's one-block legs are not: 64 m of kerb lane against the 73-80 m a
+pass needs). The negative claim runs on Nob Hill, where most of the driven
+length has one forward lane and a lane change would be into oncoming traffic.
 """
 
 import math
@@ -94,27 +94,27 @@ _SCAN_TOL_M = 0.75
 #: The two wire labels a lane change is driven under, outbound and return.
 LANE_CHANGE_LABELS = ("lane_change_left", "lane_change_right")
 
-#: How long the Nob Hill replay below runs. 240 s (the brief's original figure)
-#: is vacuous here: the ego starts well ahead of the 3 same-lane traffic agents
-#: on a 1182 m loop, so at `traffic_speed_scale=0.4` it never gets within
-#: `LANE_CHANGE_LOOKAHEAD_M` of a lead, `_held_up` never fires, and not one
-#: change is attempted -- every assertion below would pass with the legality
-#: gate deleted outright. 600 s (~2.4 compliant laps) was measured to produce
-#: the FSM's first attempt at t=373.4 s and 4 changes / 1353 labelled frames by
-#: t=600 s. `test_the_nob_hill_replay_actually_changes_lanes` makes that
-#: non-vacuousness an assertion rather than an artifact of one measurement run.
-NOB_HILL_REPLAY_S = 600.0
-
-#: How long the grid-loop replay below runs, and why not less.
+#: How long the Nob Hill replay below runs, and at what traffic speed.
 #:
-#: grid-loop's junction interrupts of a lane change come in two clusters
-#: (measured, seed=7, `traffic_speed_scale=0.45`): t=47.7 s and t=63.2 s, then
-#: t=264.3 s and t=279.8 s. 120 s reaches the first cluster -- including the
-#: worst pre-fix breach, 3.50 m at t=47.67 s -- but leaves the second entirely
-#: unrun, and the two are not the same case: the first cluster interrupts a
-#: RETURN phase and the second interrupts an OUTBOUND one. 300 s covers all
-#: four, and is the window the phase's defect was measured over.
-GRID_LOOP_REPLAY_S = 300.0
+#: The loop is the 2.7 km clockwise circuit (461 s a lap), and an overtake is
+#: begun only when the whole pass -- out, past and home -- fits before the
+#: lane ends and before the next line the car must stop at. The only stretch
+#: that fits one is California Street, and the ego is first stuck behind a
+#: slow car there on its second lap. Measured (2026-10-11): at 0.4x traffic,
+#: one pass by 1400 s; at 0.6x, passes at t=528 s and t=1049 s. So 1200 s at
+#: 0.6x, two genuine overtakes. (It was 600 s at 0.4x on the old 1.2 km loop,
+#: whose "changes" mostly turned back before passing anyone.)
+#: `test_the_nob_hill_replay_actually_changes_lanes` makes that
+#: non-vacuousness an assertion rather than an artifact of one measurement run.
+NOB_HILL_REPLAY_S = 1200.0
+NOB_HILL_TRAFFIC_SCALE = 0.6
+
+#: How long the grid replay below runs. It drives grid-overtake, not
+#: grid-loop: a one-block grid leg leaves 64 m of kerb lane, and an honest pass
+#: needs 73-80 m (measured), so grid-loop never overtakes. grid-overtake's
+#: 160 m California leg does: a complete pass at t=80 s (seed 7, 0.45x).
+#: 300 s covers it and the laps after.
+GRID_OVERTAKE_REPLAY_S = 300.0
 
 #: The longest a single unbroken `lane_change_*` run may last, in seconds, and
 #: how close to its own lane the car must be on the last frame of one.
@@ -197,26 +197,27 @@ def nob_hill_replay():
     from test_junctions import _osm_sim
 
     sim = _osm_sim()
-    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.4})
+    sim.apply_dict(
+        {"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": NOB_HILL_TRAFFIC_SCALE}
+    )
     return sim.scene, _drive(sim, NOB_HILL_REPLAY_S)
 
 
 @pytest.fixture(scope="module")
-def grid_loop_replay():
-    """`GRID_LOOP_REPLAY_S` of the grid-loop overtake scenario, driven once.
+def grid_overtake_replay():
+    """`GRID_OVERTAKE_REPLAY_S` of the grid-overtake scenario, driven once.
 
     The same `(pre, post, maneuver, offset_m)` shape as `nob_hill_replay`
     above, and for the same reasons -- deliberately interchangeable, so the
     core assertions can be written once and run against both scenes rather
     than existing on Nob Hill only (finding I3). `seed=7` and
     `traffic_speed_scale=0.45` are the settings the rest of this module's
-    grid-loop tests already use; at the scene defaults (seed=1,
-    `traffic_speed_scale=1.0`) grid-loop drives ZERO lane changes and every
-    lane-change assertion over it is vacuous -- ruling Q22.
+    grid tests use; at full traffic speed no lead is slow enough to pass and
+    every lane-change assertion would be vacuous -- ruling Q22.
     """
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
-    return sim.scene, _drive(sim, GRID_LOOP_REPLAY_S)
+    return sim.scene, _drive(sim, GRID_OVERTAKE_REPLAY_S)
 
 
 def _drive(sim, seconds: float) -> list[Frame]:
@@ -458,7 +459,7 @@ def _offsets_outside_their_own_lane(records):
     return rebased, violations
 
 
-def test_the_reported_offset_never_wraps_across_a_lane_on_grid_loop():
+def test_the_reported_offset_never_wraps_across_a_lane_on_grid_overtake():
     """120 s of the overtake scenario the tests above drive, judged frame by
     frame: 7200 frames, of which 761 re-base (measured).
 
@@ -473,7 +474,7 @@ def test_the_reported_offset_never_wraps_across_a_lane_on_grid_loop():
     branch at all (first at t=46.5 s) with room to spare; the sibling tests'
     180 s adds 3 s of suite time and no new re-based frames.
     """
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     route = sim.scene.ego_route
     records = []
@@ -537,7 +538,7 @@ def test_the_ego_overtakes_a_slow_lead_where_two_lanes_exist():
     `lane_change_left` (as this did) is satisfied by the return phase alone and
     would still pass with the outbound change deleted.
     """
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     seen = maneuvers_over(sim, 180.0)
     assert "lane_change_right" in seen, f"never overtook; saw {sorted(set(seen))}"
@@ -566,7 +567,7 @@ def test_the_ego_returns_to_its_own_lane_after_overtaking():
     leaves the home lane at all -- 0.61 m over the whole run. The claim was
     always "left its lane", never "left it leftward".
     """
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     route = sim.scene.ego_route
     offsets = []
@@ -716,7 +717,7 @@ def test_the_ego_still_holds_its_lane_outside_a_change(nob_hill_replay):
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
 
 
-def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_replay):
+def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_overtake(grid_overtake_replay):
     """The same claim on `SyntheticGrid`, where it fails harder (finding I3).
 
     grid-loop is the scene with two-lane arterials on two of its four sides, so
@@ -727,7 +728,7 @@ def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_re
     Hill's 2.32 m. No test covered it here, so the more severe half of defect
     I1 was invisible to the suite while the milder half sat under an `xfail`.
     """
-    scene, frames = grid_loop_replay
+    scene, frames = grid_overtake_replay
     labelled, worst, excluded = _worst_offset_outside_a_change(frames, scene.ego_route)
     assert labelled, "no frame was labelled a lane change; the exclusion is dead code"
     assert excluded == 0.0, (
@@ -738,24 +739,9 @@ def test_the_ego_still_holds_its_lane_outside_a_change_on_grid_loop(grid_loop_re
     assert worst < 2.0, f"peak lateral offset outside a change {worst:.2f} m"
 
 
-#: Measured 2026-10-10, after lanes stopped continuing round corners
-#: (`map.lanes._turn_segments`): at 0.45x traffic the ego pulls out at 4 m/s
-#: behind a 4.2 m/s car 60 m before a stop-sign corner, cannot pass, stops at
-#: the line still in the kerb lane, and wears the label for the whole stop
-#: and the trip home -- 37 s. Honest (it IS between lanes throughout) but
-#: over `MAX_LABELLED_RUN_S`. A pass-room estimate at the speed the pass will
-#: actually be driven, not the speed it is decided at, would refuse it.
-_LONG_LABEL_AT_THE_STOP_SIGN = pytest.mark.xfail(
-    strict=True, reason="label worn through a stop at the line in the kerb lane (37 s)"
-)
-
-
-@pytest.mark.parametrize(
-    "scene_name",
-    ["nob_hill", pytest.param("grid_loop", marks=_LONG_LABEL_AT_THE_STOP_SIGN)],
-)
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_overtake"])
 def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_overtake_replay
 ):
     """The ceiling on the exclusion window the two guards above are judged
     against. See `_labelled_runs` for why it has to exist.
@@ -770,7 +756,7 @@ def test_no_lane_change_label_outlasts_the_manoeuvre_it_names(
     phase's backstop expires. Drop either scene and one of the two bounds
     stops being tested near anything.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_overtake": grid_overtake_replay}[scene_name]
     runs = _labelled_runs(frames)
     assert runs, "no lane change was labelled at all -- this bounds nothing"
     over = [(round(i * DT, 2), round(s, 2)) for i, s, _e in runs if s > MAX_LABELLED_RUN_S]
@@ -1035,21 +1021,29 @@ def test_a_completed_overtake_actually_passes_the_lead(nob_hill_replay):
     )
 
 
-#: Measured 2026-10-10: Nob Hill's one episode in 600 s reaches the kerb
-#: lane and is turned round by the lane's end (`_lane_ends_within`), not of
-#: its own accord, so there is nothing for this test to judge. Strict, so a
-#: start rule that leaves room for a voluntary return shows up here.
+#: Measured 2026-10-11, both scenes: every pass begun now fits before the
+#: lane ends and the next stop line, and each one completes -- the lead is
+#: passed and the car goes home -- so no episode turns round of its own accord
+#: and there is nothing for this test to judge. Strict, so a voluntary
+#: turn-back (a lead that speeds up mid-pass) shows up here.
 _NO_VOLUNTARY_TURNAROUND = pytest.mark.xfail(
-    strict=True, reason="the only Nob Hill episode is turned round by the lane's end"
+    strict=True,
+    reason=(
+        "every pass that is begun now fits before the lane ends and the next stop "
+        "line, and each measured one completes: nothing turns round of its own accord"
+    ),
 )
 
 
 @pytest.mark.parametrize(
     "scene_name",
-    [pytest.param("nob_hill", marks=_NO_VOLUNTARY_TURNAROUND), "grid_loop"],
+    [
+        pytest.param("nob_hill", marks=_NO_VOLUNTARY_TURNAROUND),
+        pytest.param("grid_overtake", marks=_NO_VOLUNTARY_TURNAROUND),
+    ],
 )
 def test_a_traverse_that_reaches_the_lane_holds_it(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_overtake_replay
 ):
     """Defect C2, stated on the wire.
 
@@ -1088,7 +1082,7 @@ def test_a_traverse_that_reaches_the_lane_holds_it(
     car that flinched is what this guard must not do. All three exclusions are
     bounded by the count assertion below.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_overtake": grid_overtake_replay}[scene_name]
     route = scene.ego_route
     runs = _runs(frames)
     assert runs, "the replay drove no lane change at all -- this proves nothing"
@@ -1114,9 +1108,9 @@ def test_a_traverse_that_reaches_the_lane_holds_it(
     )
 
 
-@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_overtake"])
 def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_overtake_replay
 ):
     """The symptom that opened C2, and the deferred minor from P2-T6.
 
@@ -1125,7 +1119,7 @@ def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
     at home and inside every bound the rest of this file checks -- which is
     exactly why this needs its own assertion.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_overtake": grid_overtake_replay}[scene_name]
     episodes = [e for e in _episodes(scene, frames) if e[2] is not None]
     assert episodes, "no overtake was attempted at all -- this bounds nothing"
     failures = [(a, lead) for a, _b, lead, _g0, best in episodes if best >= -_PASSED_M]
@@ -1144,9 +1138,9 @@ def test_the_car_does_not_keep_retrying_a_lead_it_never_passes(
     )
 
 
-@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_overtake"])
 def test_the_ego_is_never_adrift_between_lanes(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_overtake_replay
 ):
     """The one lateral guard in this file with no exclusion window.
 
@@ -1168,7 +1162,7 @@ def test_the_ego_is_never_adrift_between_lanes(
     `test_no_lane_change_is_ever_initiated_into_lane_that_is_not_carriageway`'s,
     and neither scene admits a leftward change for the scan to confuse.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_overtake": grid_overtake_replay}[scene_name]
     lanes = scene.lanes
     assert lanes is not None and len(lanes.lanes) > 1, "no neighbour lane to be near"
     worst, worst_at = 0.0, None
@@ -1234,7 +1228,7 @@ def test_every_hazard_free_wire_maneuver_is_reachable():
     from schema import Maneuver
     from typing import get_args
 
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     seen = set(maneuvers_over(sim, 300.0))
     missing = set(get_args(Maneuver)) - seen - {"turn_left", "arrived"} - HAZARD_ONLY_MANEUVERS
@@ -1251,9 +1245,9 @@ def test_every_hazard_free_wire_maneuver_is_reachable():
 _FRONT_GAP_M, _REAR_GAP_M = 18.0, 14.0
 
 
-@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_loop"])
+@pytest.mark.parametrize("scene_name", ["nob_hill", "grid_overtake"])
 def test_no_lane_change_starts_into_an_occupied_gap(
-    scene_name, nob_hill_replay, grid_loop_replay
+    scene_name, nob_hill_replay, grid_overtake_replay
 ):
     """`_gap_is_acceptable` gets its first real occupants in Cycle 3 Phase 3.
 
@@ -1271,7 +1265,7 @@ def test_no_lane_change_starts_into_an_occupied_gap(
     violation on grid-loop at t = 291.7 s, from an agent whose `lane_offset`
     rounded over between the two frames.
     """
-    scene, frames = {"nob_hill": nob_hill_replay, "grid_loop": grid_loop_replay}[scene_name]
+    scene, frames = {"nob_hill": nob_hill_replay, "grid_overtake": grid_overtake_replay}[scene_name]
     route = scene.ego_route
     judged, violations = 0, []
     for a, _ in _runs(frames):
@@ -1292,13 +1286,16 @@ def test_no_lane_change_starts_into_an_occupied_gap(
 
 
 def test_the_ego_is_in_its_own_lane_wherever_the_street_has_only_one():
-    """grid-signals: the ego passes a slow lead in California St's kerbside
+    """grid-overtake: the ego passes a slow lead in California St's kerbside
     lane, then turns right onto Larkin St, which has one lane its way.
-    Measured before the lane-drop rule: it carried the pass round the corner
-    and drove 2.9 m up the pavement for 8 s. A lane change must be over --
-    car back on its route -- before the lane it used stops existing.
+    Measured on grid-signals before the lane-drop rule: it carried the pass
+    round the corner and drove 2.9 m up the pavement for 8 s. A lane change
+    must be over -- car back on its route -- before the lane it used stops
+    existing. (grid-signals no longer passes at all: its 64 m of kerb lane
+    cannot fit an honest one.)
     """
-    sim = Simulation(SyntheticGrid(), "grid-signals", seed=7)
+    sim = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
+    sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     lanes = sim.scene.lanes
     route = sim.scene.ego_route
     worst = 0.0

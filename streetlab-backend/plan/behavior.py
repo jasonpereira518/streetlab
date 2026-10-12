@@ -35,6 +35,11 @@ from sim.vehicle import VehicleState
 #: 30.6 m a car at the 11.18 m/s Nob Hill scene limit needs to stop at
 #: COMFORT_DECEL_MPS2, so the profile is never entered already too late.
 APPROACH_M = 45.0
+#: The deceleration a yellow interval is designed around: the ITE formula
+#: sizes the yellow so a driver who sees it can either stop at about this
+#: rate or clear the line before red. Firmer than comfort, well inside the
+#: tracker's 4.5 m/s2 authority.
+YELLOW_STOP_DECEL_MPS2 = 3.0
 
 #: Deceleration for a planned stop. Well inside the tracker's 4.5 m/s^2
 #: braking authority, so the ceiling is a request the speed law can meet
@@ -217,9 +222,11 @@ LANE_CHANGE_RAMP_S = 4.5
 #: Braking assumed during a return forced by a lane's end (`_return_runout_m`):
 #: comfortable, well under the planner's own `_MAX_DECEL_MPS2`.
 LANE_END_DECEL_MPS2 = 1.5
-#: The least a pass is worth beginning for: lane held past the end of the
-#: outbound ramp before the trip home would have to start.
-LANE_CHANGE_MIN_HOLD_M = 10.0
+#: How much faster than the lead a pass is driven, capped at the limit. A pass
+#: that cannot gain at least `MIN_PASS_GAIN_MPS` on the lead is not begun:
+#: passing must never require speeding.
+PASS_DELTA_MPS = 3.0
+MIN_PASS_GAIN_MPS = 1.0
 
 #: The shortest span a return's blend is ramped over, however little of the lane
 #: the car had crossed. Without a floor, a return begun a few centimetres across
@@ -493,7 +500,7 @@ class BehaviorFSM:
             decision = self._junction_abort(junction, ego, lanes, dt)
         else:
             change = self._lane_change_step(
-                ego, route, ego_s, lanes, detections, limit_mps, dt
+                ego, route, ego_s, lanes, detections, limit_mps, dt, control_points, signals
             )
             decision = _CRUISE if change is None else change
         self._tick_blend()
@@ -784,13 +791,21 @@ class BehaviorFSM:
 
     @staticmethod
     def _committed(distance: float, ego: VehicleState) -> bool:
-        """True once the car can no longer stop at the line comfortably."""
-        return distance <= ego.speed_mps**2 / (2 * COMFORT_DECEL_MPS2)
+        """True once the car can no longer stop at the line with the firm
+        braking a yellow is designed around (`YELLOW_STOP_DECEL_MPS2`).
+
+        Comfort braking was the old bar, and it is too gentle for a light:
+        measured on the 2.7 km Nob Hill loop, at 13.4 m/s the car latched
+        itself committed 43 m out on green, the light went yellow at 39.5 m,
+        and a 3 s yellow covers only 40 m -- it crossed 0.1 s into red twice
+        a lap, though a firm stop fitted when the yellow came on.
+        """
+        return distance <= ego.speed_mps**2 / (2 * YELLOW_STOP_DECEL_MPS2)
 
     # -- lane change ---------------------------------------------------------- #
 
     def _lane_change_step(
-        self, ego, route, ego_s, lanes, detections, limit_mps, dt
+        self, ego, route, ego_s, lanes, detections, limit_mps, dt, control_points=(), signals=None
     ) -> BehaviorDecision | None:
         if lanes is None:
             return None
@@ -842,11 +857,19 @@ class BehaviorFSM:
         target = lanes.neighbour(direction)
         if target is None:
             return None
-        if self._lane_ends_within(lanes, ego_s, direction, self._pass_room_m(ego)):
-            # Out, a short hold, and back again -- or the change would be
-            # turned round (above) the moment it arrived. Measured without
-            # this on grid-loop: arrived in the kerb lane and turned round
-            # 0.03 s later, every time.
+        gap = route.signed_gap(ego_s, route.project((lead.pose.x, lead.pose.y)))
+        room = self._pass_room_m(
+            ego,
+            lead_speed_mps=lead.speed_mps,
+            lead_length_m=lead.size.length,
+            gap_m=gap,
+            limit_mps=limit_mps,
+        )
+        if room > self._next_stop_line_m(route, ego_s, control_points, signals) or self._lane_ends_within(
+            lanes, ego_s, direction, room
+        ):
+            # The whole pass -- out, past, and home -- must fit before the
+            # lane ends and before the next stop line, or it is not begun.
             return None
         if not self._gap_is_acceptable(
             route, ego_s, detections, direction, ego.speed_mps, target.offset_m
@@ -1033,10 +1056,63 @@ class BehaviorFSM:
         return min(v * LANE_CHANGE_RAMP_S, v * v / (2 * LANE_END_DECEL_MPS2)) + EGO_LENGTH_M
 
     @classmethod
-    def _pass_room_m(cls, ego: VehicleState) -> float:
-        """Lane needed ahead to begin a pass: the outbound ramp at this
-        speed, a hold of `LANE_CHANGE_MIN_HOLD_M`, and the trip home."""
-        return ego.speed_mps * LANE_CHANGE_RAMP_S + LANE_CHANGE_MIN_HOLD_M + cls._return_runout_m(ego)
+    def _pass_room_m(
+        cls,
+        ego: VehicleState,
+        *,
+        lead_speed_mps: float,
+        lead_length_m: float,
+        gap_m: float,
+        limit_mps: float,
+    ) -> float:
+        """Lane needed ahead to pass the lead and be home again, or inf when
+        no legal pass gains on it.
+
+        Priced at the speed the pass will be driven -- `PASS_DELTA_MPS` over
+        the lead, capped at the limit -- not the speed the car is doing when
+        it decides. Measured with the old decision-speed figure: a car at
+        4 m/s behind a 4.2 m/s lead, 60 m before a stop sign, judged 40 m of
+        room enough, pulled out and stopped at the line still in the kerb
+        lane. Three parts: the outbound ramp, the overtake (closing `gap`
+        plus both half-lengths plus the pass buffer at the speed advantage),
+        and the trip home -- all at the pass speed. The out ramp and the
+        overtake overlap (closing continues while moving across), so they
+        cost whichever is longer, not their sum.
+        """
+        closing = max(0.0, gap_m) + (EGO_LENGTH_M + lead_length_m) / 2.0 + LANE_CHANGE_PASS_BUFFER_M
+        best = math.inf
+        # The driver picks the pass speed: whichever of a modest advantage
+        # over the lead or the limit itself needs the least lane.
+        for v_pass in {min(limit_mps, lead_speed_mps + PASS_DELTA_MPS), limit_mps}:
+            gain = v_pass - lead_speed_mps
+            if gain < MIN_PASS_GAIN_MPS:
+                continue
+            # The car closes on the lead while it moves across, so getting
+            # out and getting past overlap: whichever takes longer.
+            out_and_past = max(v_pass * LANE_CHANGE_RAMP_S, v_pass * closing / gain)
+            at_pass_speed = VehicleState(x=ego.x, y=ego.y, heading=ego.heading, speed_mps=v_pass)
+            best = min(best, out_and_past + cls._return_runout_m(at_pass_speed))
+        return best
+
+    @staticmethod
+    def _next_stop_line_m(route, ego_s: float, control_points, signals=None) -> float:
+        """Distance to the next line ahead the car will have to stop at, or
+        inf. Such a line ends any pass: the car must be back in its lane to
+        stop there. A signal showing green is not one -- passing through a
+        junction on green is legal, and counting every signal cut 74 m grid
+        blocks below the ~115 m a pass needs, leaving no lane change in any
+        replay on either scene (measured)."""
+        signals = signals or {}
+        ahead = []
+        for cp in control_points:
+            if cp.kind == "signal":
+                state = signals.get(cp.id)
+                if state is not None and state.phase == "green":
+                    continue
+            d = route.signed_gap(ego_s, cp.s)
+            if d > 0.0:
+                ahead.append(d)
+        return min(ahead, default=math.inf)
 
     def _alongside(self, route, ego_s: float, detections) -> bool:
         """Is the lead of the current change beside the car -- too close

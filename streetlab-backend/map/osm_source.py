@@ -106,7 +106,7 @@ class TripTooLong(RuntimeError):
 #: Conservative rather than tuned: raise it once general dense-area
 #: performance (geometry caps, render LOD) has more headroom measured against
 #: it than a single number picked here.
-MAX_TRIP_SPAN_M = 4000.0
+MAX_TRIP_SPAN_M = 8000.0
 
 #: Ceiling the radius-widening ladder below will not cross. Beyond this, an
 #: address genuinely has no nearby drivable road rather than merely an

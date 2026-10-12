@@ -1116,9 +1116,13 @@ def test_the_osm_scene_carries_control_points_for_the_driven_route(nob_hill_scen
     route now contribute one head each rather than all 16 of the heads
     standing around them.
 
-    So: 4 + 4. The bounds below stay wide on either side of that; the point of
-    the pin is that the ego stops for its own approaches only, and that a
-    regression which drops the projections entirely still fails.
+    So: 4 + 4 on the 1.2 km loop. The loop is now 2.7 km, clockwise, legal
+    with respect to one-ways and out of the Broadway Tunnel, and crosses 11
+    signalised junctions and 11 stop-controlled approaches it faces (the
+    facing tests in `test_control_device_placement.py` judge each one). The
+    bounds below stay wide on either side; the point of the pin is that the
+    ego stops for its own approaches only, and that a regression which drops
+    the projections entirely still fails.
     """
     scene = nob_hill_scene
     assert scene.control_points
@@ -1127,8 +1131,8 @@ def test_the_osm_scene_carries_control_points_for_the_driven_route(nob_hill_scen
     kinds = {cp.kind for cp in scene.control_points}
     assert kinds <= {"signal", "stop_sign"}
     by_kind = Counter(cp.kind for cp in scene.control_points)
-    assert by_kind == {"stop_sign": 4, "signal": 4}, (
-        f"expected the 4 stop signs and 4 signalised junctions facing the "
+    assert by_kind == {"stop_sign": 11, "signal": 11}, (
+        f"expected the 11 stop signs and 11 signalised junctions facing the "
         f"route, got {dict(by_kind)}"
     )
 
@@ -1226,7 +1230,7 @@ def test_max_trip_span_m_is_a_few_kilometers():
     """Pins the v1 cap to the range the plan actually committed to, so a
     casual future edit changing its order of magnitude fails loudly here
     rather than silently reshaping what "too far" means."""
-    assert 3000.0 <= MAX_TRIP_SPAN_M <= 5000.0
+    assert 6000.0 <= MAX_TRIP_SPAN_M <= 10000.0
 
 
 # --------------------------------------------------------------------------- #

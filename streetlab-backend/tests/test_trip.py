@@ -145,9 +145,10 @@ def test_laps_increment_on_a_closed_route():
 ETA_START_ERROR = {
     "grid-loop": 0.183,
     "grid-arterial": 0.027,
-    "grid-signals": 0.105,
+    "grid-signals": 0.125,  # 0.105 before passes had to fit before the next stop line
     "grid-merge": 0.205,
     "grid-night": 0.022,
+    "grid-overtake": 0.107,
 }
 
 
@@ -178,3 +179,35 @@ def test_scenario_durations_are_derived_from_route_length_not_hardcoded():
         assert summary.duration_s > 0.0
     # A longer route takes longer: the 640 m perimeter beats the 295 m block.
     assert by_id["grid-arterial"].duration_s > by_id["grid-loop"].duration_s
+
+
+def test_travel_time_finishes_when_a_segment_end_is_a_rounding_error_away():
+    """Measured: a 600 s Nob Hill run spun at 100 % CPU for 20 minutes. Adding
+    the distance left on a segment to the position can land a hair short of
+    the segment's end, and the walk then advanced by ~1e-16 m per pass,
+    forever. Every arc length on a real route has to finish."""
+    import random
+    import signal
+
+    from sim.route import Route
+
+    rng = random.Random(1)
+    pts = [(0.0, 0.0)]
+    for _ in range(300):
+        x, y = pts[-1]
+        pts.append((x + rng.uniform(0.001, 7.0) / 3.0, y + rng.uniform(-2.0, 2.0) / 7.0))
+    route = Route(pts, closed=True)
+    speed = lambda limit: 10.0  # noqa: E731
+
+    def boom(*_):
+        raise TimeoutError("travel_time_s did not finish")
+
+    signal.signal(signal.SIGALRM, boom)
+    signal.alarm(10)
+    try:
+        for _ in range(2000):
+            s = rng.uniform(0.0, route.length_m)
+            route.travel_time_s(s, route.length_m - s, speed)
+            route.travel_time_s(s, rng.uniform(0.0, 3 * route.length_m), speed)
+    finally:
+        signal.alarm(0)

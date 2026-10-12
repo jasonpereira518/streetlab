@@ -306,7 +306,7 @@ def test_every_two_way_road_the_ego_drives_is_a_symmetric_carriageway(
 
 @pytest.mark.parametrize(
     "scene_name, expected",
-    [("grid_loop", {-1: 2}), ("nob_hill_scene", {-1: 5})],
+    [("grid_loop", {-1: 2}), ("nob_hill_scene", {-1: 12})],
 )
 def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, request):
     """Non-vacuousness, and the shape of the answer, in one assertion.
@@ -314,8 +314,8 @@ def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, re
     Without this the safety property above passes on a model that rules
     everything illegal. Measured: grid-loop admits a RIGHT change on the one
     straight California St segment and the one straight Hyde St segment (2
-    lanes each way, ego at -1.79 m); Nob Hill on 5 straight California Street
-    segments. The counts were 18 and 29 while `nearest_road_along` matched by
+    lanes each way, ego at -1.79 m); Nob Hill on 12 straight California Street
+    segments of the 2.7 km loop (5 on the old 1.2 km one). The counts were 18 and 29 while `nearest_road_along` matched by
     midpoint and corner fillet pieces were attributed to whichever street
     was nearest; a corner is a turn now (`_turn_segments`) and admits
     nothing, and a straight leg is one segment however long. Neither scene
@@ -367,7 +367,7 @@ def _agent_samples_where_a_second_forward_lane_runs(scene):
 
 
 @pytest.mark.parametrize(
-    "scene_name, expected_samples", [("grid_loop", 54), ("nob_hill_scene", 36)]
+    "scene_name, expected_samples", [("grid_loop", 54), ("nob_hill_scene", 80)]
 )
 def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     scene_name, expected_samples, request
@@ -388,12 +388,13 @@ def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     this module's independent `_offset_from`, so a scene source that puts
     traffic in the wrong lane fails here whatever the lane model believes.
 
-    `expected_samples` is a measured fixture property (3 agents x 18 grid-loop
-    stations, 4 x 9 on Nob Hill: the California Street stations of non-zero
-    length, now that millimetre fillet vertices inherit a road instead of
-    matching one; 4 x 26 before that, 4 x 29 before straight nodes crowding
-    a corner were merged, 4 x 33 before the route lost its cusps -- it is a
-    segment count and moves with the vertex count), pinned exactly rather than as `> 0`. A
+    `expected_samples` is a measured fixture property: 3 agents x 18 grid-loop
+    stations, and 4 x 20 on Nob Hill's 2.7 km loop -- its California Street
+    stations of non-zero length. History: 4 x 9 on the old 1.2 km loop once
+    millimetre fillet vertices inherited a road instead of matching one, 4 x 26
+    before that, 4 x 29 before straight nodes crowding a corner were merged,
+    4 x 33 before the route lost its cusps. It is a segment count and moves
+    with the vertex count. Pinned exactly rather than as `> 0`. A
     source that shipped no traffic, or a route that stopped matching California
     Street, would otherwise satisfy the safety claim by having nothing to
     judge. Note what it does NOT prove: with every agent now on the ego route

@@ -98,17 +98,54 @@ def visible_fraction(
     """
     samples = box_corners(x, y, heading, size)
     samples.append((x, y, size.height / 2.0))
-    unblocked = sum(
-        1
-        for (sx, sy, sz) in samples
-        if not any(_blocked_at(camera, sx, sy, sz, b) for b in buildings)
-    )
+    unblocked = sum(1 for (sx, sy, sz) in samples if line_of_sight_clear(camera, sx, sy, sz, buildings))
     return unblocked / len(samples)
 
 
 def is_visible(fraction: float) -> bool:
     """Whether `fraction` clears `MIN_VISIBLE_FRACTION`."""
     return fraction >= MIN_VISIBLE_FRACTION
+
+
+#: Grid cell for `_BuildingIndex`, metres. A sight line the observer tests is
+#: at most ~70 m, so it touches a handful of cells.
+_CELL_M = 25.0
+
+
+class _BuildingIndex:
+    """Buildings filed by the grid cells their bounding box covers."""
+
+    def __init__(self, buildings: Sequence[Building]) -> None:
+        self.cells: dict[tuple[int, int], list[Building]] = {}
+        for b in buildings:
+            xs = [p[0] for p in b.footprint]
+            ys = [p[1] for p in b.footprint]
+            for cx in range(int(min(xs) // _CELL_M), int(max(xs) // _CELL_M) + 1):
+                for cy in range(int(min(ys) // _CELL_M), int(max(ys) // _CELL_M) + 1):
+                    self.cells.setdefault((cx, cy), []).append(b)
+
+    def near(self, ax: float, ay: float, bx: float, by: float) -> list[Building]:
+        """Every building whose box can meet the segment's box, once each."""
+        seen: dict[int, Building] = {}
+        for cx in range(int(min(ax, bx) // _CELL_M), int(max(ax, bx) // _CELL_M) + 1):
+            for cy in range(int(min(ay, by) // _CELL_M), int(max(ay, by) // _CELL_M) + 1):
+                for b in self.cells.get((cx, cy), ()):
+                    seen.setdefault(id(b), b)
+        return list(seen.values())
+
+
+#: One index per building list, keyed by the list's identity -- a scene's
+#: buildings never change after it is built. `ponytail:` unbounded only in
+#: theory; a session builds a handful of scenes.
+_INDEXES: dict[int, tuple[Sequence[Building], _BuildingIndex]] = {}
+
+
+def _index(buildings: Sequence[Building]) -> _BuildingIndex:
+    hit = _INDEXES.get(id(buildings))
+    if hit is None or hit[0] is not buildings:
+        hit = (buildings, _BuildingIndex(buildings))
+        _INDEXES[id(buildings)] = hit
+    return hit[1]
 
 
 def line_of_sight_clear(
@@ -123,5 +160,12 @@ def line_of_sight_clear(
     Used by the ego's traffic-control observer for a single lamp/sign sample,
     rather than the 9-point vehicle fraction above. Empty `buildings` means
     clear — same contract as `visible_fraction`.
+
+    Only buildings filed in the grid cells the ray's box covers are tested.
+    Testing every footprint was 85 % of the sim step on the 2.7 km Nob Hill
+    loop, which passes 22 lights and signs (measured 2026-10-11).
     """
-    return not any(_blocked_at(camera, x, y, z, b) for b in buildings)
+    if not buildings:
+        return True
+    near = _index(buildings).near(camera.x, camera.y, x, y)
+    return not any(_blocked_at(camera, x, y, z, b) for b in near)

@@ -505,9 +505,10 @@ def test_the_kerb_marking_tracks_the_kerbside_lane_where_there_is_another_one():
     of a road that has a non-kerbside one; the biconditional, so a marking that
     fires on the wrong lane fails rather than being skipped; and both
     populations asserted non-empty, since either one being empty is what made
-    the original vacuous.
+    the original vacuous. grid-overtake rather than grid-loop: a one-block
+    leg cannot fit an honest pass, so grid-loop never drives the kerb lane.
     """
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
     sim.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
     kerbside_of_many, inner = 0, 0
     for _ in range(int(120.0 / DT)):

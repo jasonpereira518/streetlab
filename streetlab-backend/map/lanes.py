@@ -21,7 +21,16 @@ from shapely.geometry import LinearRing, LineString
 
 from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
-from map.tags import is_oneway, lane_counts, road_class, sidewalk_sides, speed_limit_mps, street_name
+from map.tags import (
+    is_oneway,
+    passes_under,
+    lane_counts,
+    oneway_direction,
+    road_class,
+    sidewalk_sides,
+    speed_limit_mps,
+    street_name,
+)
 from schema import Road
 from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
 
@@ -160,13 +169,32 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
 # `int` too, so this is documentation, not a new invariant to enforce.
 Junction = int
 
+#: The shortest circuit worth driving at all; below this a loop is a block or
+#: two and the search falls back to an out-and-back.
 MIN_LOOP_M = 300.0
-MAX_LOOP_M = 1200.0
+#: The length a loop is searched for first: a trip of a few kilometres rather
+#: than one block. `_find_loop` is depth-first, so the circuit it returns sits
+#: near `MAX_LOOP_M` whenever the extract holds one that long (measured on the
+#: Nob Hill fixture: 3948 m). Shorter loops are accepted only when no longer
+#: one exists.
+TARGET_LOOP_M = 1500.0
+MAX_LOOP_M = 4000.0
 TURN_RADIUS_M = 6.0
 EGO_LANE_INSET = LANE_W * 0.5
 # A dense downtown extract can have thousands of junctions; the cycle search is
 # exponential in the worst case, so it is bounded rather than trusted.
 _MAX_EXPANSIONS = 20000
+
+#: The clockwise search is many small attempts, not one big one: depth-first
+#: search is trapped by one bad early branch, and a plain search with a
+#: clockwise filter took 2 s and failed from 7 of the 8 junctions nearest the
+#: Nob Hill origin. With straight-right-left ordering, `_CW_STARTS` attempts
+#: of `_CW_BUDGET` expansions found a 2.1-2.7 km clockwise loop for 12 of 16
+#: sampled origins, starting within 200 m, in at most 0.5 s (measured
+#: 2026-10-11). The other 4 take a legal counter-clockwise loop instead.
+_CW_STARTS = 40
+_CW_BUDGET = 20000
+_STRAIGHT_RAD = math.radians(30.0)
 
 # Higher is better: the search prefers bigger roads, which drive better.
 _CLASS_RANK = {"arterial": 3, "collector": 2, "residential": 1, "service": 0}
@@ -186,6 +214,10 @@ class Edge:
     polyline: list[tuple[float, float]]
     length_m: float
     class_rank: int
+    #: False on a one-way street: there is no edge back, so a route that
+    #: reverses along this one (an out-and-back stem) would drive it the
+    #: wrong way.
+    two_way: bool = True
 
 
 @dataclass
@@ -232,8 +264,17 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
 
     rg = RouteGraph()
     for way in ways:
+        if passes_under(way.tags):
+            # Tunnels, covered ways, negative layers: until they are drawn as
+            # such, a route through one drives under buildings in plain view
+            # (measured: 533 m of the Broadway Tunnel on the 4 km Nob Hill
+            # loop, five footprints standing on the lane).
+            continue
         cls = road_class(way.tags)
         rank = _CLASS_RANK.get(cls or "service", 0)
+        # +1: only the drawn direction; -1: only against it; 0: both.
+        direction = oneway_direction(way.tags)
+        two_way = direction == 0
         resolvable = [nid for nid in way.node_ids if nid in graph.nodes]
 
         run: list[tuple[float, float]] = []
@@ -249,15 +290,21 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
             if nid in junctions:
                 length = _polyline_length(run)
                 if length > 0 and run_start != nid:
-                    edge = Edge(to=nid, polyline=list(run), length_m=length, class_rank=rank)
-                    rg.adjacency.setdefault(run_start, []).append(edge)
-                    back = Edge(
-                        to=run_start,
-                        polyline=list(reversed(run)),
-                        length_m=length,
-                        class_rank=rank,
-                    )
-                    rg.adjacency.setdefault(nid, []).append(back)
+                    if direction >= 0:
+                        edge = Edge(
+                            to=nid, polyline=list(run), length_m=length,
+                            class_rank=rank, two_way=two_way,
+                        )
+                        rg.adjacency.setdefault(run_start, []).append(edge)
+                    if direction <= 0:
+                        back = Edge(
+                            to=run_start,
+                            polyline=list(reversed(run)),
+                            length_m=length,
+                            class_rank=rank,
+                            two_way=two_way,
+                        )
+                        rg.adjacency.setdefault(nid, []).append(back)
                 run_start = nid
                 run = [point]
 
@@ -268,10 +315,44 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
 
 
 def nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> Junction:
+    return _nearest_junctions(rg, origin_xy, 1)[0]
+
+
+#: How many of the junctions nearest the origin a loop is looked for from
+#: before falling back to an out-and-back.
+_START_CANDIDATES = 8
+
+
+def _nearest_junctions(
+    rg: RouteGraph, origin_xy: tuple[float, float], count: int
+) -> list[Junction]:
     candidates = [nid for nid in rg.adjacency if nid in rg.points]
     if not candidates:
         raise NoDrivableRoad("no drivable junctions in this extract")
-    return min(candidates, key=lambda nid: (math.dist(rg.points[nid], origin_xy), nid))
+    candidates.sort(key=lambda nid: (math.dist(rg.points[nid], origin_xy), nid))
+    return candidates[:count]
+
+
+def _clockwise_loop(rg: RouteGraph, origin_xy: tuple[float, float]) -> list[tuple[float, float]] | None:
+    """A clockwise loop -- right turns at every corner, never across oncoming
+    traffic -- from one of the junctions nearest the origin: a long one if
+    any start yields one, else any length. See `_CW_STARTS`."""
+    starts = _nearest_junctions(rg, origin_xy, _CW_STARTS)
+    for min_m in (TARGET_LOOP_M, MIN_LOOP_M):
+        for start in starts:
+            points = _find_loop(rg, start, min_m, MAX_LOOP_M, clockwise=True, budget=_CW_BUDGET)
+            if points is not None:
+                return points
+    return None
+
+
+def _any_loop(rg: RouteGraph, start: Junction) -> list[tuple[float, float]] | None:
+    """A legal loop from `start` in either direction, long if possible."""
+    for min_m in (TARGET_LOOP_M, MIN_LOOP_M):
+        points = _find_loop(rg, start, min_m, MAX_LOOP_M)
+        if points is not None:
+            return points
+    return None
 
 
 @dataclass
@@ -283,6 +364,26 @@ class _LoopFrame:
     length: float
     via: Edge | None  # the edge arrived on; None only for the start frame
     edge_idx: int = 0  # index of the next edge at `node` still to try
+    #: The edges at `node` in the order they are tried, or None for the
+    #: graph's own order.
+    edges: list[Edge] | None = None
+
+
+def _driver_order(edges: list[Edge], via: Edge | None) -> list[Edge]:
+    """Straight on first, then right, then left -- how a driver builds a big
+    clockwise tour. Bigger roads first within each."""
+    if via is None:
+        return edges
+    a, b = via.polyline[-2], via.polyline[-1]
+    h_in = math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def key(edge: Edge) -> tuple[int, int, float]:
+        c, d = edge.polyline[0], edge.polyline[1]
+        turn = math.remainder(math.atan2(d[1] - c[1], d[0] - c[0]) - h_in, math.tau)
+        kind = 0 if abs(turn) < _STRAIGHT_RAD else 1 if turn < 0 else 2
+        return (kind, -edge.class_rank, abs(turn))
+
+    return sorted(edges, key=key)
 
 
 @dataclass
@@ -306,8 +407,22 @@ def _reverses(edge: Edge, via: Edge | None) -> bool:
     return via is not None and edge.polyline == via.polyline[::-1]
 
 
-def _find_loop(rg: RouteGraph, start: Junction) -> list[tuple[float, float]] | None:
-    """Depth-first search for a circuit back to `start` within the length band.
+def _find_loop(
+    rg: RouteGraph,
+    start: Junction,
+    min_m: float = MIN_LOOP_M,
+    max_m: float = MAX_LOOP_M,
+    clockwise: bool = False,
+    budget: int | None = None,
+) -> list[tuple[float, float]] | None:
+    """Depth-first search for a circuit back to `start` within `[min_m, max_m]`.
+
+    With `clockwise`, a counter-clockwise circuit is passed over and the search
+    goes on: a clockwise loop turns right at every corner, never across
+    oncoming traffic. Nothing is ever reversed to make it clockwise -- on a
+    graph with one-way edges that drives a one-way backwards. A clockwise
+    search tries edges in `_driver_order`; `budget` bounds one attempt (the
+    shipped `_MAX_EXPANSIONS` when None, and only then is running out logged).
 
     Iterative rather than recursive. Two reasons, not one: a dense extract's
     *expansion count* is already bounded by `_MAX_EXPANSIONS` below, but nothing
@@ -319,14 +434,19 @@ def _find_loop(rg: RouteGraph, start: Junction) -> list[tuple[float, float]] | N
     as a side effect drops the per-branch `visited | {node}` set copy (each an
     O(depth) allocation) in favour of one shared set mutated on push/pop.
     """
+    limit = _MAX_EXPANSIONS if budget is None else budget
     expansions = 0
     stack = [_LoopFrame(node=start, path=[rg.points[start]], length=0.0, via=None)]
     visited = {start}
 
     while stack:
         frame = stack[-1]
-        edges = rg.adjacency.get(frame.node, [])
-        if frame.length > MAX_LOOP_M or frame.edge_idx >= len(edges) or expansions > _MAX_EXPANSIONS:
+        if frame.edges is None:
+            frame.edges = rg.adjacency.get(frame.node, [])
+            if clockwise:
+                frame.edges = _driver_order(frame.edges, frame.via)
+        edges = frame.edges
+        if frame.length > max_m or frame.edge_idx >= len(edges) or expansions > limit:
             if frame.node != start:
                 visited.discard(frame.node)
             stack.pop()
@@ -335,18 +455,19 @@ def _find_loop(rg: RouteGraph, start: Junction) -> list[tuple[float, float]] | N
         edge = edges[frame.edge_idx]
         frame.edge_idx += 1
         expansions += 1
-        if expansions > _MAX_EXPANSIONS:
+        if expansions > limit:
             # Distinct from the `return None` below the loop: reaching *that*
             # one means the search space was genuinely exhausted with no
             # circuit found. Reaching *this* one means the budget ran out
             # first -- the fallback that follows is not evidence the road
             # network has no loop, only that this one wasn't found in time.
-            log.warning(
-                "_find_loop hit its expansion budget (%d) before finding a "
-                "circuit; falling back to an out-and-back route even though "
-                "a real loop may exist beyond the search budget",
-                _MAX_EXPANSIONS,
-            )
+            if budget is None:
+                log.warning(
+                    "_find_loop hit its expansion budget (%d) before finding a "
+                    "circuit; falling back to a lesser route even though a real "
+                    "loop may exist beyond the search budget",
+                    _MAX_EXPANSIONS,
+                )
             return None
         if _reverses(edge, frame.via):
             continue
@@ -354,10 +475,10 @@ def _find_loop(rg: RouteGraph, start: Junction) -> list[tuple[float, float]] | N
         total = frame.length + edge.length_m
         extended = frame.path + edge.polyline[1:]
         if edge.to == start:
-            if MIN_LOOP_M <= total <= MAX_LOOP_M:
+            if min_m <= total <= max_m and not (clockwise and signed_area_x2(extended) > 0):
                 return extended
             continue
-        if edge.to in visited or total > MAX_LOOP_M:
+        if edge.to in visited or total > max_m:
             continue
         visited.add(edge.to)
         stack.append(_LoopFrame(node=edge.to, path=extended, length=total, via=edge))
@@ -393,6 +514,11 @@ def _out_and_back(rg: RouteGraph, start: Junction) -> list[tuple[float, float]]:
             continue
 
         edge = edges[frame.edge_idx]
+        if not edge.two_way:
+            # Out and back reverses every edge on the stem; a one-way has no
+            # way back.
+            frame.edge_idx += 1
+            continue
         frame.edge_idx += 1
         if edge.to in visited:
             continue
@@ -524,21 +650,30 @@ def _astar(rg: RouteGraph, start: Junction, goal: Junction) -> list[tuple[float,
 def select_ego_route(
     rg: RouteGraph, origin_xy: tuple[float, float], roads: list[Road] | None = None
 ) -> Route:
-    """A drivable loop near the origin, offset into the right-hand lane."""
-    start = nearest_junction(rg, origin_xy)
-    points = _find_loop(rg, start)
+    """A drivable loop near the origin, offset into the right-hand lane.
+
+    Starts from the nearest junction -- or, when no loop starts there, the
+    next nearest, up to `_START_CANDIDATES` of them. With one-way edges the
+    nearest junction can be a trap whose only way out runs into a one-way
+    dead end (measured: the Nob Hill extract geocoded elsewhere started on
+    one and failed to build at all).
+    """
+    candidates = _nearest_junctions(rg, origin_xy, _START_CANDIDATES)
+    points = _clockwise_loop(rg, origin_xy)
+    for start in candidates if points is None else ():
+        points = _any_loop(rg, start)
+        if points is not None:
+            break
     if points is None:
         log.info("no closed circuit found; falling back to an out-and-back route")
-        points = _out_and_back(rg, start)
-    elif signed_area_x2(points) > 0:
-        # `SyntheticGrid._block_route` (map/scene_build.py) fixes the convention
-        # this pipeline offsets against: corners traversed clockwise, so the
-        # loop's interior sits on the driver's right and a negative offset below
-        # lands in the right-hand lane. A cycle discovered by DFS on a real OSM
-        # graph can come out running either way, so it is normalised to match
-        # rather than trusted -- the alternative is the ego driving the wrong
-        # way down a one-way loop, or onto the sidewalk, half the time.
-        points = list(reversed(points))
+        for start in candidates:
+            try:
+                points = _out_and_back(rg, start)
+                break
+            except NoDrivableRoad:
+                continue
+        else:
+            raise NoDrivableRoad("no drivable stem long enough to drive")
 
     # Deduplicate consecutive identical points — Route cannot use zero-length
     # segments, and OSM ways occasionally repeat a coordinate.

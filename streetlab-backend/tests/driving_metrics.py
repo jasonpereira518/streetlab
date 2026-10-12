@@ -329,10 +329,18 @@ def standard_runs(
     slow = Simulation(SyntheticGrid(), "grid-loop", seed=7)
     slow.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
 
+    # The run that must contain an overtake. Passes are begun only when the
+    # whole pass fits before the lane ends and the next stop line, and only
+    # grid-overtake's 160 m California leg fits one on the grid (a complete
+    # pass at t=80 s, seed 7, 0.45x traffic; measured 2026-10-11).
+    overtake = Simulation(SyntheticGrid(), "grid-overtake", seed=7)
+    overtake.apply_dict({"id": "s", "cmd": "set_param", "key": "traffic_speed_scale", "value": 0.45})
+
     return {
         "nobhill": record(nob, nobhill_s, "nobhill"),
         "grid": record(grid, grid_s, "grid"),
         "grid_slow": record(slow, grid_slow_s, "grid_slow"),
+        "overtake": record(overtake, 150.0, "overtake"),
     }
 
 

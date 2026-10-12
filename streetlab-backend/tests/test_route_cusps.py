@@ -156,10 +156,10 @@ LOOP_ORIGINS = [
 
 @pytest.mark.parametrize("origin", LOOP_ORIGINS)
 def test_every_sampled_nob_hill_loop_is_free_of_cusps(route_graph, origin):
-    assert _find_loop(route_graph, nearest_junction(route_graph, origin)) is not None, (
-        "this origin no longer resolves to a closed loop, so it is not testing a loop"
-    )
     route = select_ego_route(route_graph, origin)
+    # A closed route proves this origin is testing a loop, not an
+    # out-and-back. (The nearest junction alone may no longer yield one: with
+    # one-way edges it can be a trap, and the search moves on.)
     assert route.closed is True
     assert max_turning_deg(route.points) <= CUSP_DEG
 

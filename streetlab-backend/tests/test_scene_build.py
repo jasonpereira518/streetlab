@@ -69,11 +69,13 @@ def test_building_footprints_are_simple_rings(built):
         assert building.footprint[0] != building.footprint[-1]
 
 
-def test_catalog_has_five_scenarios_with_unique_ids(source):
+def test_catalog_has_six_scenarios_with_unique_ids(source):
+    """Five, plus grid-overtake: the one grid circuit long enough to pass a
+    slow car honestly."""
     catalog = source.scenarios()
-    assert len(catalog) == 5
-    assert len({s.id for s in catalog}) == 5
-    assert [s.index for s in catalog] == [1, 2, 3, 4, 5]
+    assert len(catalog) == 6
+    assert len({s.id for s in catalog}) == 6
+    assert [s.index for s in catalog] == [1, 2, 3, 4, 5, 6]
 
 
 def test_every_catalog_entry_is_buildable(source):

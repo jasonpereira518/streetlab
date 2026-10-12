@@ -1146,3 +1146,119 @@ def test_a_car_held_still_off_its_lane_keeps_the_label(road):
         )
     assert fsm.lane_change is not None
     assert d.target_lane_id is not None
+
+
+# -- pass room: measured at the speed of the pass, ended by the next stop line #
+
+
+def test_no_pass_is_begun_that_cannot_finish_before_the_next_stop_line(road):
+    """The grid-loop case, measured: at 4 m/s behind a 4.2 m/s car, 60 m before
+    a stop sign. A pass at a usable speed needs far more than 60 m to get
+    past and back, and the stop sign ends it anyway -- the car used to pull
+    out, stop at the line still in the kerb lane and wear the label for 37 s.
+    The stop line is outside `APPROACH_M` here, so only the pass rule can
+    refuse it."""
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    d = fsm.step(
+        ego_at(0.0, 4.0), road, 0.0, sign_at(60.0), {}, DT,
+        lanes=lanes, detections=[slow_lead(12.0, 4.2)], limit_mps=12.0,
+    )
+    # The cheapest pass (7.2 m/s) needs ~69 m to get past and home; 60 m
+    # remain before the line.
+    assert fsm.lane_change is None, d
+
+
+def test_a_pass_with_room_before_the_next_stop_line_still_begins(road):
+    """The control: the same slow lead with the stop line 350 m away."""
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(
+        ego_at(0.0, 10.0), road, 0.0, sign_at(350.0), {}, DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None
+
+
+def test_pass_room_counts_the_overtake_at_the_speed_it_will_be_driven():
+    """Room = the longer of getting out and getting past (they overlap: the
+    car closes while it moves across) + the trip home, all at the pass speed,
+    the cheaper of lead + PASS_DELTA and the limit -- not the speed the car
+    happened to be doing when it decided."""
+    from plan.behavior import (
+        EGO_LENGTH_M,
+        LANE_CHANGE_PASS_BUFFER_M,
+        LANE_CHANGE_RAMP_S,
+        PASS_DELTA_MPS,
+    )
+
+    v_lead, gap, limit = 3.0, 20.0, 12.0
+    closing = gap + (EGO_LENGTH_M + 4.6) / 2 + LANE_CHANGE_PASS_BUFFER_M
+
+    def cost(v):
+        out_and_past = max(v * LANE_CHANGE_RAMP_S, v * closing / (v - v_lead))
+        return out_and_past + BehaviorFSM._return_runout_m(ego_at(0.0, v))
+
+    expected = min(cost(v_lead + PASS_DELTA_MPS), cost(limit))
+    room = BehaviorFSM._pass_room_m(
+        ego_at(0.0, 2.0), lead_speed_mps=v_lead, lead_length_m=4.6, gap_m=gap, limit_mps=limit
+    )
+    assert room == pytest.approx(expected)
+    # No pass that cannot out-pace the lead.
+    assert BehaviorFSM._pass_room_m(
+        ego_at(0.0, 2.0), lead_speed_mps=11.5, lead_length_m=4.6, gap_m=gap, limit_mps=limit
+    ) == float("inf")
+
+
+def test_a_green_light_ahead_does_not_end_a_pass(road):
+    """Passing through a junction on green is legal; only a line the car must
+    stop at ends a pass. Measured with every signal counted as a stop line:
+    74 m grid blocks against a ~115 m pass, and not one lane change in any
+    replay on either scene."""
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(
+        ego_at(0.0, 10.0), road, 0.0, light_at(60.0), signal("tl", "green"), DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is not None
+
+
+@pytest.mark.parametrize("phase", ["red", "yellow"])
+def test_a_light_that_is_not_green_ends_a_pass(road, phase):
+    fsm = BehaviorFSM()
+    lanes = two_lane_set(road)
+    fsm.step(
+        ego_at(0.0, 10.0), road, 0.0, light_at(60.0), signal("tl", phase), DT,
+        lanes=lanes, detections=[slow_lead(25.0, 3.0)], limit_mps=12.0,
+    )
+    assert fsm.lane_change is None
+
+
+def test_a_light_that_turns_yellow_inside_the_comfort_distance_is_still_stopped_for(road):
+    """Measured on the 2.7 km Nob Hill loop: at 13.4 m/s the car latched itself
+    committed 43 m out on green, because it could not stop at COMFORT braking
+    there; the light went yellow at 39.5 m, the latch kept it from looking
+    again, and a 3 s yellow covers 40 m -- it crossed 0.1 s into red, twice
+    per lap. A yellow is designed around a firm stop (ITE: ~3 m/s2), and at
+    39.5 m that stop fits, so the car must take it."""
+    fsm = BehaviorFSM()
+    cps = light_at(43.0)
+    d = fsm.step(ego_at(0.0, 13.4), road, 0.0, cps, signal("tl", "green"), DT)
+    assert d.state is BehaviorState.CRUISE
+    ego = ego_at(3.5, 13.4)
+    d = fsm.step(ego, road, 3.5, cps, {"tl": SignalState(id="tl", phase="yellow", time_to_change_s=3.0)}, DT)
+    assert d.state is BehaviorState.APPROACH, d
+    assert d.maneuver == "stop"
+
+
+def test_a_light_that_turns_yellow_too_close_to_stop_firmly_is_driven_through(road):
+    """The other side of the dilemma zone: 20 m out at 13.4 m/s a firm stop
+    no longer fits, and 3 s of yellow clears the line, so the car goes."""
+    fsm = BehaviorFSM()
+    cps = light_at(20.0)
+    d = fsm.step(
+        ego_at(0.0, 13.4), road, 0.0, cps,
+        {"tl": SignalState(id="tl", phase="yellow", time_to_change_s=3.0)}, DT,
+    )
+    assert d.state is BehaviorState.CRUISE

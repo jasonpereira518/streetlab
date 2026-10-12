@@ -14,7 +14,7 @@ the planner, the wire assembler — consumes `agents` and is unaffected.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from random import Random
 from collections.abc import Mapping, Sequence
 from typing import Protocol, runtime_checkable
@@ -337,7 +337,7 @@ class ScriptedTraffic:
         """
         s = (agent.s + speed * dt) % agent.route.length_m
         x, y = agent.route.point_at(s)
-        heading = agent.route.heading_at(s)
+        heading = _body_heading(agent.route, s, agent.size.length)
         if agent.lateral_m:
             nx, ny = lateral_unit(agent.route, s)
             x, y = x + nx * agent.lateral_m, y + ny * agent.lateral_m
@@ -535,6 +535,23 @@ class IdmTraffic(ScriptedTraffic):
         self._straddle_s: dict[tuple[int, int], float] = {}
         for agent in self._agents:
             agent.lane_id = by_route.get(id(agent.route))
+            self._arrive_able_to_stop(agent)
+
+    def _arrive_able_to_stop(self, agent: Agent) -> None:
+        """Start a car slow enough to stop for the line ahead of it.
+
+        Spawn spacing knows nothing of stop lines, and a car placed a metre
+        short of one at cruising speed rolls straight through it -- measured
+        on the 2.7 km Nob Hill loop, 0.42 s into the scene. Its position is
+        kept; its speed becomes what it would be had it been braking for the
+        line at comfort deceleration all along.
+        """
+        gap = self._next_stop_line_m(agent.route, agent.s)
+        if not math.isfinite(gap):
+            return
+        safe = math.sqrt(2 * _IDM_COMFORT_DECEL * max(gap, 0.0))
+        if agent.state.speed_mps > safe:
+            agent.state = replace(agent.state, speed_mps=safe)
 
     def step(self, dt: float, world: TrafficWorld | None = None) -> None:
         self._elapsed += dt
@@ -883,6 +900,12 @@ class IdmTraffic(ScriptedTraffic):
         it stood across both lanes for good with the ego queued behind it.
         """
         out = []
+        needed = 2 * self._merge_runout(agent)
+        # The ego's own rule (`BehaviorFSM._next_stop_line_m`): the car must
+        # be back in its lane to stop at the next line, so the slide in and
+        # out has to fit before it as well as before the lane ends.
+        if needed > self._next_stop_line_m(lanes.ego.route, here_s):
+            return [lane for lane in lanes.lanes if lane.id == EGO_LANE_ID and lane.id != agent.lane_id]
         for lane in lanes.lanes:
             if lane.id == agent.lane_id:
                 continue
@@ -890,10 +913,17 @@ class IdmTraffic(ScriptedTraffic):
                 out.append(lane)
                 continue
             direction = _sign(lane.offset_m)
-            needed = 2 * self._merge_runout(agent)
             if lanes.legal_for(here_s, direction, needed) >= needed:
                 out.append(lane)
         return out
+
+    def _next_stop_line_m(self, route: Route, s: float) -> float:
+        """Distance along `route` to its next control point, or inf."""
+        points = self._controls.get(id(route))
+        if not points:
+            return math.inf
+        loop = route.length_m
+        return min((cp.s - s) % loop for cp in points)
 
     @staticmethod
     def _merge_runout(agent: Agent) -> float:
@@ -1131,6 +1161,24 @@ def _nearest_behind(
         if 0 < gap < best_gap:
             best, best_gap = occupant, gap
     return best if best_gap <= _IDM_HORIZON_M else None
+
+
+#: A body's axles sit this fraction of its length either side of its centre.
+_AXLE_SPREAD = 0.3
+
+
+def _body_heading(route: Route, s: float, length: float) -> float:
+    """Which way a body centred at `s` points: along the chord between its
+    axles. `Route.heading_at` is the heading of the one segment under the
+    centre, which jumps at every fillet vertex -- 11-36 degrees in a tick,
+    measured. On a straight or a true arc the chord is the tangent, so this
+    changes nothing but the jumps."""
+    half = max(_AXLE_SPREAD * length, 0.5)
+    ax, ay = route.point_at(s - half)
+    bx, by = route.point_at(s + half)
+    if math.hypot(bx - ax, by - ay) < 1e-6:
+        return route.heading_at(s)
+    return math.atan2(by - ay, bx - ax)
 
 
 def lateral_unit(route: Route, s: float) -> tuple[float, float]:

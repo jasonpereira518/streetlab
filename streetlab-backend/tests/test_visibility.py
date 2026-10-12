@@ -94,3 +94,54 @@ def test_is_visible_thresholds_at_the_named_constant():
     assert is_visible(MIN_VISIBLE_FRACTION - 1e-9) is False
     assert is_visible(0.0) is False
     assert is_visible(1.0) is True
+
+
+def test_the_indexed_sight_line_agrees_with_checking_every_building(nob_hill_scene):
+    """`line_of_sight_clear` skips buildings whose box the ray cannot reach.
+    It must give exactly the answer of testing every building: 600 random
+    rays of up to 80 m across the real Nob Hill extract."""
+    import random
+
+    from perception.visibility import _blocked_at, line_of_sight_clear
+    buildings = nob_hill_scene.description.buildings
+    rng = random.Random(4)
+    b = nob_hill_scene.description.bounds
+    disagree = 0
+    for _ in range(600):
+        x0, y0 = rng.uniform(b.min_x, b.max_x), rng.uniform(b.min_y, b.max_y)
+        ang, reach = rng.uniform(0, 6.283), rng.uniform(5.0, 80.0)
+        import math
+
+        x1, y1 = x0 + math.cos(ang) * reach, y0 + math.sin(ang) * reach
+        cam = camera().model_copy(update={"x": x0, "y": y0})
+        z = rng.uniform(0.5, 6.0)
+        brute = not any(_blocked_at(cam, x1, y1, z, bd) for bd in buildings)
+        if line_of_sight_clear(cam, x1, y1, z, buildings) != brute:
+            disagree += 1
+    assert disagree == 0
+
+
+def test_the_indexed_visible_fraction_agrees_with_checking_every_building(nob_hill_scene):
+    """`visible_fraction` uses the same index; it must match the brute-force
+    fraction for 300 random vehicles across the real extract. Measured before
+    it was indexed: slow traffic bunched round the ego made a 600 s Nob Hill
+    run take minutes per simulated second."""
+    import math
+    import random
+
+    from perception.visibility import _blocked_at, visible_fraction
+    from perception.projection import box_corners
+
+    buildings = nob_hill_scene.description.buildings
+    b = nob_hill_scene.description.bounds
+    rng = random.Random(9)
+    for _ in range(300):
+        x0, y0 = rng.uniform(b.min_x, b.max_x), rng.uniform(b.min_y, b.max_y)
+        ang, reach = rng.uniform(0, 6.283), rng.uniform(5.0, 80.0)
+        x, y = x0 + math.cos(ang) * reach, y0 + math.sin(ang) * reach
+        cam = camera().model_copy(update={"x": x0, "y": y0})
+        samples = box_corners(x, y, ang, CAR) + [(x, y, CAR.height / 2)]
+        brute = sum(
+            1 for sx, sy, sz in samples if not any(_blocked_at(cam, sx, sy, sz, bd) for bd in buildings)
+        ) / len(samples)
+        assert visible_fraction(x, y, ang, CAR, cam, buildings) == brute
