@@ -399,6 +399,36 @@ class Route:
             )
         return worst
 
+    def curve_speed_ahead(
+        self,
+        s: float,
+        *,
+        look_m: float,
+        lateral_mps2: float,
+        decel_mps2: float,
+        lead_m: float = 0.0,
+        window_m: float = 4.0,
+        step_m: float = 1.0,
+    ) -> float:
+        """The fastest the car may be doing at `s` and still take every bend
+        within `look_m` at `lateral_mps2`, braking at `decel_mps2`: the minimum
+        of sqrt(lateral / k + 2 * decel * d) over the samples ahead, curvature
+        measured as in `peak_curvature`. inf when nothing ahead bends.
+
+        `lead_m` takes that much off every braking distance, for a controller
+        that reaches a falling target only after a lag."""
+        half = window_m / 2
+        best = math.inf
+        for i in range(int(look_m / step_m) + 1):
+            d = i * step_m
+            at = s + d
+            k = _menger_curvature(
+                self.point_at(at - half), self.point_at(at), self.point_at(at + half)
+            )
+            if k > 1e-6:
+                best = min(best, math.sqrt(lateral_mps2 / k + 2 * decel_mps2 * max(0.0, d - lead_m)))
+        return best
+
     def fillet(self, radius_m: float, *, segments: int = 8) -> Route:
         """Round every corner with a circular arc of at most `radius_m`.
 

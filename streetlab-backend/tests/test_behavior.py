@@ -25,11 +25,14 @@ from plan.behavior import (
     SLOW_LEAD_FRACTION,
     STOP_DWELL_S,
     STOP_MARGIN_M,
+    TRACKER_LAG_S,
+    YELLOW_STOP_DECEL_MPS2,
     OUTBOUND,
     PASSING,
     RETURNING,
     BehaviorFSM,
     BehaviorState,
+    stop_ceiling,
 )
 from schema import SignalState
 from sim.route import EGO_LANE_ID, ControlPoint, Route
@@ -93,18 +96,27 @@ def test_a_green_light_inside_the_window_does_not_slow_the_car(road):
 
 
 def test_a_red_light_produces_a_decelerating_ceiling(road):
-    """The ceiling zeroes out STOP_MARGIN_M short of the line (Task 7) --
-    see that constant's docstring for why: the tracker chasing it overshoots
-    by roughly that much, so the raw distance-to-line is not what the
-    formula uses.
-    """
+    """The ceiling zeroes out STOP_MARGIN_M short of the line, and is aimed
+    TRACKER_LAG_S of travel ahead so the lagging tracker brakes at comfort --
+    see `stop_ceiling`."""
     fsm = BehaviorFSM()
-    d = fsm.step(ego_at(0.0, 10.0), road, 0.0, light_at(20.0), signal("tl", "red"), DT)
+    d = fsm.step(ego_at(0.0, 10.0), road, 0.0, light_at(44.0), signal("tl", "red"), DT)
     assert d.state is BehaviorState.APPROACH
     assert d.maneuver == "stop"
     assert d.speed_ceiling_mps == pytest.approx(
-        math.sqrt(2 * COMFORT_DECEL_MPS2 * (20.0 - STOP_MARGIN_M))
+        math.sqrt(2 * COMFORT_DECEL_MPS2 * (44.0 - STOP_MARGIN_M - TRACKER_LAG_S * 10.0))
     )
+
+
+def test_a_stop_that_comfort_braking_no_longer_fits_is_braked_for_firmly(road):
+    """A light that turns yellow, or is read late, inside comfort range: the
+    firm yellow profile, not the comfort one chased on the 4.5 m/s^2 clamp."""
+    fsm = BehaviorFSM()
+    d = fsm.step(ego_at(0.0, 10.0), road, 0.0, light_at(30.0), signal("tl", "red"), DT)
+    assert d.speed_ceiling_mps == pytest.approx(stop_ceiling(30.0, 10.0, YELLOW_STOP_DECEL_MPS2))
+    # Latched for the rest of this stop, though comfort would fit again later.
+    d = fsm.step(ego_at(25.0, 1.0), road, 25.0, light_at(30.0), signal("tl", "red"), DT)
+    assert d.speed_ceiling_mps == pytest.approx(stop_ceiling(5.0, 1.0, YELLOW_STOP_DECEL_MPS2))
 
 
 def test_the_ceiling_tightens_as_the_line_approaches(road):
@@ -1261,4 +1273,19 @@ def test_a_light_that_turns_yellow_too_close_to_stop_firmly_is_driven_through(ro
         ego_at(0.0, 13.4), road, 0.0, cps,
         {"tl": SignalState(id="tl", phase="yellow", time_to_change_s=3.0)}, DT,
     )
+    assert d.state is BehaviorState.CRUISE
+
+
+def test_a_fast_car_starts_its_stop_where_comfort_braking_needs_it(road):
+    """At 35+5 mph a comfort stop needs ~80 m plus the margin and lag; a fixed
+    45 m window began the profile already 5.5 m/s under the car's speed, and the
+    tracker hit its 4.5 m/s^2 clamp and stopped past the line (measured on
+    the grid after per-street limits)."""
+    v = 17.9
+    d = BehaviorFSM().step(ego_at(0.0, v), road, 0.0, sign_at(100.0), {}, DT)
+    assert d.state is BehaviorState.APPROACH
+    assert d.speed_ceiling_mps == pytest.approx(stop_ceiling(100.0, v))
+    assert d.speed_ceiling_mps < v
+    # A slow car still ignores the same sign.
+    d = BehaviorFSM().step(ego_at(0.0, 8.0), road, 0.0, sign_at(100.0), {}, DT)
     assert d.state is BehaviorState.CRUISE

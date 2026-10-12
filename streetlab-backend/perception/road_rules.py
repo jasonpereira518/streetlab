@@ -27,10 +27,11 @@ from perception.visibility import line_of_sight_clear
 from schema import Building, CameraParams, SignalState, StopSign, TrafficLight
 from sim.vehicle import VehicleState
 
-#: How far ahead a control device can still be read. Comfortably beyond the
-#: behaviour layer's `APPROACH_M` (45 m) so a light is usually acquired before
-#: the FSM starts caring about it.
-MAX_DEVICE_RANGE_M = 70.0
+#: How far ahead a control device can still be read. Beyond the behaviour
+#: layer's approach window at 35+5 mph (`approach_m(17.9)`, ~103 m) so a light
+#: is usually acquired before the FSM starts caring about it -- an unread
+#: light counts as a stop, so a shorter range brakes for every green.
+MAX_DEVICE_RANGE_M = 120.0
 
 #: Half-angle of the forward windscreen cone. 70° each side is a wide but
 #: still forward-looking FOV — mirrors are not modelled here; rear devices

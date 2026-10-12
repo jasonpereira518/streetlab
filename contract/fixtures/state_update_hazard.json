@@ -9,14 +9,14 @@
   "scenario_id": "grid-merge",
   "ego": {
     "pose": {
-      "x": 1.5913067428843015,
-      "y": 15.005522796824772,
-      "heading": 1.527844461296628
+      "x": 1.5933645481463152,
+      "y": 15.054124457885957,
+      "heading": 1.5279482804021096
     },
-    "speed_mps": 6.3231184509658345,
+    "speed_mps": 6.340088199913634,
     "accel_mps2": -4.5,
-    "steering_angle": 0.00586980117003011,
-    "yaw_rate": 0.012798577363152451,
+    "steering_angle": 0.0061899828729464305,
+    "yaw_rate": 0.013532944349747972,
     "throttle": 0.0,
     "brake": 1.0,
     "gear": "D",
@@ -53,7 +53,7 @@
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
-      "ttc_s": 21.07387696399721,
+      "ttc_s": 20.931293809985956,
       "lane_offset": 0,
       "emergency": false
     },
@@ -61,9 +61,9 @@
       "id": "veh_05",
       "cls": "motorcycle",
       "pose": {
-        "x": 3.3835433072787096,
-        "y": 18.540524523563793,
-        "heading": 1.8150974768625068
+        "x": 3.382337334083277,
+        "y": 18.56745893598135,
+        "heading": 1.8149973155363388
       },
       "size": {
         "length": 2.1,
@@ -71,14 +71,14 @@
         "height": 1.3
       },
       "velocity": [
-        -1.1643679182320967,
-        4.670918983897543
+        -1.1643969846111903,
+        4.673029845720445
       ],
-      "speed_mps": 4.813858826673525,
+      "speed_mps": 4.815914064512124,
       "confidence": 1.0,
       "hazard": true,
       "hazard_label": "Closing on lead vehicle",
-      "ttc_s": 2.2977858548208117,
+      "ttc_s": 2.2629837721647745,
       "lane_offset": 0,
       "emergency": false
     }
@@ -88,67 +88,67 @@
     "polyline": [
       [
         1.7999999999999998,
-        14.90023516850119
+        14.948553818702102
       ],
       [
         1.7999999999999996,
-        17.90023516850119
+        17.948553818702102
       ],
       [
         1.7999999999999996,
-        20.90023516850119
+        20.948553818702102
       ],
       [
         1.7999999999999996,
-        23.90023516850119
+        23.948553818702102
       ],
       [
         1.7999999999999996,
-        26.90023516850119
+        26.948553818702102
       ],
       [
         1.7999999999999996,
-        29.90023516850119
+        29.948553818702102
       ],
       [
         1.7999999999999994,
-        32.90023516850118
+        32.948553818702095
       ],
       [
         1.7999999999999994,
-        35.90023516850118
+        35.948553818702095
       ],
       [
         1.7999999999999994,
-        38.90023516850118
+        38.948553818702095
       ],
       [
         1.7999999999999994,
-        41.90023516850118
+        41.948553818702095
       ],
       [
         1.7999999999999994,
-        44.90023516850118
+        44.948553818702095
       ],
       [
         1.7999999999999994,
-        47.90023516850118
+        47.948553818702095
       ],
       [
         1.7999999999999992,
-        50.90023516850118
+        50.948553818702095
       ],
       [
         1.7999999999999992,
-        53.90023516850118
+        53.948553818702095
       ],
       [
         1.7999999999999992,
-        56.90023516850118
+        56.948553818702095
       ],
       [
         1.7999999999999992,
-        59.90023516850118
+        59.948553818702095
       ]
     ],
     "target_speed_mps": 0.0,
@@ -160,17 +160,17 @@
     "radar": [
       {
         "id": "veh_00",
-        "azimuth": 0.0318,
-        "range_m": 59.48,
-        "range_rate_mps": -2.76,
-        "rcs_db": 7.24,
+        "azimuth": 0.0317,
+        "range_m": 59.43,
+        "range_rate_mps": -2.77,
+        "rcs_db": 7.25,
         "tracked": true
       },
       {
         "id": "veh_05",
-        "azimuth": -0.4263,
-        "range_m": 3.96,
-        "range_rate_mps": -1.51,
+        "azimuth": -0.4281,
+        "range_m": 3.94,
+        "range_rate_mps": -1.52,
         "rcs_db": 11.68,
         "tracked": true
       },
@@ -227,8 +227,8 @@
       "lane_index": 0,
       "lane_count": 2,
       "lane_width_m": 3.6,
-      "offset_m": 0.2086932571156983,
-      "heading_error": -0.04295186549826857,
+      "offset_m": 0.2066354518536846,
+      "heading_error": -0.04284804639278694,
       "left_marking": "double_yellow",
       "right_marking": "dashed_white",
       "neighbors": [
@@ -236,7 +236,7 @@
           "id": "veh_00",
           "cls": "car",
           "lane_offset": 0,
-          "longitudinal_m": 59.53,
+          "longitudinal_m": 59.49,
           "lateral_m": 0.0,
           "speed_mps": 3.5680684769194646,
           "hazard": false
@@ -245,14 +245,14 @@
           "id": "veh_05",
           "cls": "motorcycle",
           "lane_offset": 0,
-          "longitudinal_m": 3.54,
+          "longitudinal_m": 3.51,
           "lateral_m": 0.0,
-          "speed_mps": 4.813858826673525,
+          "speed_mps": 4.815914064512124,
           "hazard": true
         }
       ]
     },
-    "ttc_s": 2.298,
+    "ttc_s": 2.263,
     "vehicle": {
       "battery_pct": 91.89,
       "range_km": 404.3,
@@ -296,31 +296,31 @@
       "planned": [
         {
           "t": -2.0,
-          "lateral_m": 0.016
+          "lateral_m": 0.017
         },
         {
           "t": -1.983,
-          "lateral_m": 0.019
+          "lateral_m": 0.02
         },
         {
           "t": -1.967,
-          "lateral_m": 0.021
+          "lateral_m": 0.022
         },
         {
           "t": -1.95,
-          "lateral_m": 0.023
+          "lateral_m": 0.024
         },
         {
           "t": -1.933,
-          "lateral_m": 0.025
-        },
-        {
-          "t": -1.917,
           "lateral_m": 0.026
         },
         {
-          "t": -1.9,
+          "t": -1.917,
           "lateral_m": 0.027
+        },
+        {
+          "t": -1.9,
+          "lateral_m": 0.028
         },
         {
           "t": -1.883,
@@ -336,219 +336,219 @@
         },
         {
           "t": -1.833,
-          "lateral_m": 0.031
+          "lateral_m": 0.035
         },
         {
           "t": -1.817,
-          "lateral_m": 0.041
+          "lateral_m": 0.045
         },
         {
           "t": -1.8,
-          "lateral_m": 0.051
+          "lateral_m": 0.055
         },
         {
           "t": -1.783,
-          "lateral_m": 0.06
+          "lateral_m": 0.064
         },
         {
           "t": -1.767,
-          "lateral_m": 0.069
+          "lateral_m": 0.073
         },
         {
           "t": -1.75,
-          "lateral_m": 0.078
+          "lateral_m": 0.081
         },
         {
           "t": -1.733,
-          "lateral_m": 0.086
+          "lateral_m": 0.089
         },
         {
           "t": -1.717,
-          "lateral_m": 0.094
+          "lateral_m": 0.097
         },
         {
           "t": -1.7,
-          "lateral_m": 0.102
+          "lateral_m": 0.105
         },
         {
           "t": -1.683,
-          "lateral_m": 0.109
+          "lateral_m": 0.112
         },
         {
           "t": -1.667,
-          "lateral_m": 0.116
+          "lateral_m": 0.119
         },
         {
           "t": -1.65,
-          "lateral_m": 0.123
+          "lateral_m": 0.126
         },
         {
           "t": -1.633,
-          "lateral_m": 0.129
+          "lateral_m": 0.132
         },
         {
           "t": -1.617,
-          "lateral_m": 0.136
+          "lateral_m": 0.138
         },
         {
           "t": -1.6,
-          "lateral_m": 0.141
+          "lateral_m": 0.144
         },
         {
           "t": -1.583,
-          "lateral_m": 0.147
+          "lateral_m": 0.149
         },
         {
           "t": -1.567,
-          "lateral_m": 0.152
+          "lateral_m": 0.155
         },
         {
           "t": -1.55,
-          "lateral_m": 0.157
+          "lateral_m": 0.16
         },
         {
           "t": -1.533,
-          "lateral_m": 0.162
+          "lateral_m": 0.164
         },
         {
           "t": -1.517,
-          "lateral_m": 0.167
+          "lateral_m": 0.168
         },
         {
           "t": -1.5,
-          "lateral_m": 0.171
+          "lateral_m": 0.172
         },
         {
           "t": -1.483,
-          "lateral_m": 0.175
+          "lateral_m": 0.18
         },
         {
           "t": -1.467,
-          "lateral_m": 0.185
+          "lateral_m": 0.189
         },
         {
           "t": -1.45,
-          "lateral_m": 0.194
+          "lateral_m": 0.198
         },
         {
           "t": -1.433,
-          "lateral_m": 0.203
+          "lateral_m": 0.206
         },
         {
           "t": -1.417,
-          "lateral_m": 0.211
+          "lateral_m": 0.215
         },
         {
           "t": -1.4,
-          "lateral_m": 0.219
+          "lateral_m": 0.223
         },
         {
           "t": -1.383,
-          "lateral_m": 0.228
+          "lateral_m": 0.231
         },
         {
           "t": -1.367,
-          "lateral_m": 0.235
+          "lateral_m": 0.239
         },
         {
           "t": -1.35,
-          "lateral_m": 0.243
+          "lateral_m": 0.246
         },
         {
           "t": -1.333,
-          "lateral_m": 0.25
+          "lateral_m": 0.253
         },
         {
           "t": -1.317,
-          "lateral_m": 0.257
+          "lateral_m": 0.26
         },
         {
           "t": -1.3,
-          "lateral_m": 0.264
+          "lateral_m": 0.267
         },
         {
           "t": -1.283,
-          "lateral_m": 0.271
+          "lateral_m": 0.273
         },
         {
           "t": -1.267,
-          "lateral_m": 0.277
+          "lateral_m": 0.28
         },
         {
           "t": -1.25,
-          "lateral_m": 0.283
+          "lateral_m": 0.286
         },
         {
           "t": -1.233,
-          "lateral_m": 0.289
+          "lateral_m": 0.291
         },
         {
           "t": -1.217,
-          "lateral_m": 0.294
+          "lateral_m": 0.297
         },
         {
           "t": -1.2,
-          "lateral_m": 0.3
+          "lateral_m": 0.302
         },
         {
           "t": -1.183,
-          "lateral_m": 0.305
+          "lateral_m": 0.307
         },
         {
           "t": -1.167,
-          "lateral_m": 0.31
+          "lateral_m": 0.312
         },
         {
           "t": -1.15,
-          "lateral_m": 0.314
+          "lateral_m": 0.316
         },
         {
           "t": -1.133,
-          "lateral_m": 0.318
+          "lateral_m": 0.32
         },
         {
           "t": -1.117,
-          "lateral_m": 0.323
+          "lateral_m": 0.324
         },
         {
           "t": -1.1,
-          "lateral_m": 0.326
+          "lateral_m": 0.328
         },
         {
           "t": -1.083,
-          "lateral_m": 0.33
+          "lateral_m": 0.332
         },
         {
           "t": -1.067,
-          "lateral_m": 0.334
+          "lateral_m": 0.335
         },
         {
           "t": -1.05,
-          "lateral_m": 0.337
+          "lateral_m": 0.338
         },
         {
           "t": -1.033,
-          "lateral_m": 0.34
+          "lateral_m": 0.341
         },
         {
           "t": -1.017,
-          "lateral_m": 0.342
+          "lateral_m": 0.344
         },
         {
           "t": -1.0,
-          "lateral_m": 0.345
+          "lateral_m": 0.346
         },
         {
           "t": -0.983,
-          "lateral_m": 0.347
+          "lateral_m": 0.348
         },
         {
           "t": -0.967,
-          "lateral_m": 0.349
+          "lateral_m": 0.35
         },
         {
           "t": -0.95,
-          "lateral_m": 0.351
+          "lateral_m": 0.352
         },
         {
           "t": -0.933,
@@ -556,19 +556,19 @@
         },
         {
           "t": -0.917,
-          "lateral_m": 0.354
-        },
-        {
-          "t": -0.9,
           "lateral_m": 0.355
         },
         {
-          "t": -0.883,
+          "t": -0.9,
           "lateral_m": 0.356
         },
         {
-          "t": -0.867,
+          "t": -0.883,
           "lateral_m": 0.357
+        },
+        {
+          "t": -0.867,
+          "lateral_m": 0.358
         },
         {
           "t": -0.85,
@@ -580,7 +580,7 @@
         },
         {
           "t": -0.817,
-          "lateral_m": 0.358
+          "lateral_m": 0.359
         },
         {
           "t": -0.8,
@@ -600,211 +600,211 @@
         },
         {
           "t": -0.733,
-          "lateral_m": 0.357
-        },
-        {
-          "t": -0.717,
           "lateral_m": 0.356
         },
         {
-          "t": -0.7,
+          "t": -0.717,
           "lateral_m": 0.355
         },
         {
-          "t": -0.683,
+          "t": -0.7,
           "lateral_m": 0.354
         },
         {
-          "t": -0.667,
-          "lateral_m": 0.352
+          "t": -0.683,
+          "lateral_m": 0.353
         },
         {
-          "t": -0.65,
+          "t": -0.667,
           "lateral_m": 0.351
         },
         {
+          "t": -0.65,
+          "lateral_m": 0.35
+        },
+        {
           "t": -0.633,
-          "lateral_m": 0.349
+          "lateral_m": 0.348
         },
         {
           "t": -0.617,
-          "lateral_m": 0.347
+          "lateral_m": 0.346
         },
         {
           "t": -0.6,
-          "lateral_m": 0.345
+          "lateral_m": 0.344
         },
         {
           "t": -0.583,
-          "lateral_m": 0.343
+          "lateral_m": 0.342
         },
         {
           "t": -0.567,
-          "lateral_m": 0.341
+          "lateral_m": 0.34
         },
         {
           "t": -0.55,
-          "lateral_m": 0.338
+          "lateral_m": 0.337
         },
         {
           "t": -0.533,
-          "lateral_m": 0.336
+          "lateral_m": 0.334
         },
         {
           "t": -0.517,
-          "lateral_m": 0.333
+          "lateral_m": 0.332
         },
         {
           "t": -0.5,
-          "lateral_m": 0.33
+          "lateral_m": 0.329
         },
         {
           "t": -0.483,
-          "lateral_m": 0.327
+          "lateral_m": 0.326
         },
         {
           "t": -0.467,
-          "lateral_m": 0.324
+          "lateral_m": 0.323
         },
         {
           "t": -0.45,
-          "lateral_m": 0.321
+          "lateral_m": 0.319
         },
         {
           "t": -0.433,
-          "lateral_m": 0.318
+          "lateral_m": 0.316
         },
         {
           "t": -0.417,
-          "lateral_m": 0.314
+          "lateral_m": 0.313
         },
         {
           "t": -0.4,
-          "lateral_m": 0.311
+          "lateral_m": 0.309
         },
         {
           "t": -0.383,
-          "lateral_m": 0.307
+          "lateral_m": 0.306
         },
         {
           "t": -0.367,
-          "lateral_m": 0.304
+          "lateral_m": 0.302
         },
         {
           "t": -0.35,
-          "lateral_m": 0.3
+          "lateral_m": 0.298
         },
         {
           "t": -0.333,
-          "lateral_m": 0.296
+          "lateral_m": 0.294
         },
         {
           "t": -0.317,
-          "lateral_m": 0.292
+          "lateral_m": 0.29
         },
         {
           "t": -0.3,
-          "lateral_m": 0.288
+          "lateral_m": 0.286
         },
         {
           "t": -0.283,
-          "lateral_m": 0.284
+          "lateral_m": 0.282
         },
         {
           "t": -0.267,
-          "lateral_m": 0.28
+          "lateral_m": 0.278
         },
         {
           "t": -0.25,
-          "lateral_m": 0.276
+          "lateral_m": 0.274
         },
         {
           "t": -0.233,
-          "lateral_m": 0.272
+          "lateral_m": 0.27
         },
         {
           "t": -0.217,
-          "lateral_m": 0.267
+          "lateral_m": 0.265
         },
         {
           "t": -0.2,
-          "lateral_m": 0.263
+          "lateral_m": 0.261
         },
         {
           "t": -0.183,
-          "lateral_m": 0.259
+          "lateral_m": 0.257
         },
         {
           "t": -0.167,
-          "lateral_m": 0.254
+          "lateral_m": 0.252
         },
         {
           "t": -0.15,
-          "lateral_m": 0.25
+          "lateral_m": 0.248
         },
         {
           "t": -0.133,
-          "lateral_m": 0.245
+          "lateral_m": 0.243
         },
         {
           "t": -0.117,
-          "lateral_m": 0.241
+          "lateral_m": 0.239
         },
         {
           "t": -0.1,
-          "lateral_m": 0.236
+          "lateral_m": 0.234
         },
         {
           "t": -0.083,
-          "lateral_m": 0.232
+          "lateral_m": 0.23
         },
         {
           "t": -0.067,
-          "lateral_m": 0.227
+          "lateral_m": 0.225
         },
         {
           "t": -0.05,
-          "lateral_m": 0.222
+          "lateral_m": 0.22
         },
         {
           "t": -0.033,
-          "lateral_m": 0.218
+          "lateral_m": 0.216
         },
         {
           "t": -0.017,
-          "lateral_m": 0.213
+          "lateral_m": 0.211
         },
         {
           "t": 0.0,
-          "lateral_m": 0.209
+          "lateral_m": 0.207
         },
         {
           "t": 0.25,
-          "lateral_m": 0.169
+          "lateral_m": 0.168
         },
         {
           "t": 0.5,
-          "lateral_m": 0.138
+          "lateral_m": 0.136
         },
         {
           "t": 0.75,
-          "lateral_m": 0.112
+          "lateral_m": 0.111
         },
         {
           "t": 1.0,
-          "lateral_m": 0.091
+          "lateral_m": 0.09
         },
         {
           "t": 1.25,
-          "lateral_m": 0.074
+          "lateral_m": 0.073
         },
         {
           "t": 1.5,
-          "lateral_m": 0.06
+          "lateral_m": 0.059
         },
         {
           "t": 1.75,
-          "lateral_m": 0.049
+          "lateral_m": 0.048
         },
         {
           "t": 2.0,
@@ -917,9 +917,9 @@
     },
     "trip": {
       "route_length_m": 295.2385818865513,
-      "distance_driven_m": 16.560496214080153,
-      "distance_remaining_m": 278.6234136180887,
-      "eta_s": 56.86669978982394,
+      "distance_driven_m": 16.609189078157684,
+      "distance_remaining_m": 278.5748119570275,
+      "eta_s": 56.863546944058974,
       "laps": 0,
       "closed": true
     }

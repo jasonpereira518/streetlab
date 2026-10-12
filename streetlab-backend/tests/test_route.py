@@ -290,3 +290,23 @@ def test_resample_erases_the_stubs_that_points_carries():
         before = math.atan2(pts[i - 1][1] - pts[i - 2][1], pts[i - 1][0] - pts[i - 2][0])
         after = math.atan2(pts[i][1] - pts[i - 1][1], pts[i][0] - pts[i - 1][0])
         assert abs(math.remainder(after - before, math.tau)) < 1e-6
+
+
+def test_curve_speed_ahead_brakes_along_a_curve_into_a_corner():
+    """At 40 mph a 6 m corner needs ~77 m of comfort braking, far past a fixed
+    22 m preview. The cap is the braking curve sqrt(a_lat/k + 2*b*d) from the
+    corner back to the car, so it starts biting where braking must start."""
+    route = Route([(0.0, 0.0), (200.0, 0.0), (200.0, 100.0)], closed=False).fillet(radius_m=6.0)
+    corner_s = route.project((200.0, 0.0))
+    at_corner = math.sqrt(2.0 / (1 / 6.0))
+    speed = lambda back: route.curve_speed_ahead(  # noqa: E731
+        corner_s - back, look_m=120.0, lateral_mps2=2.0, decel_mps2=2.0
+    )
+    assert speed(0.0) == pytest.approx(at_corner, rel=0.15)
+    # 40 m back: well under 40 mph, and on the braking curve.
+    assert speed(40.0) < 14.0
+    assert speed(40.0) == pytest.approx(math.sqrt(at_corner**2 + 2 * 2.0 * 40.0), rel=0.1)
+    # Out of reach of the look-ahead, nothing caps it.
+    assert route.curve_speed_ahead(
+        corner_s - 150.0, look_m=50.0, lateral_mps2=2.0, decel_mps2=2.0
+    ) == math.inf

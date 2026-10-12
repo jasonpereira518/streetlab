@@ -28,19 +28,17 @@ from tests.driving_metrics import (
 
 #: (budget, run) -> why it fails today. Deleting a line is how a phase says "fixed".
 BASELINE_FAILS: dict[tuple[str, str], str] = {
-    ("ego_decel", "nobhill"): "peak decel 4.50 m/s2, on the clamp; Phase 3",
-    ("ego_decel", "grid"): "peak decel 4.50 m/s2, on the clamp; Phase 3",
-    ("ego_decel", "grid_slow"): "peak decel 4.50 m/s2, on the clamp; Phase 3",
-    ("ego_jerk", "nobhill"): "p99 6.5, max 286 m/s3; Phase 3",
-    ("ego_jerk", "grid"): "p99 7.6, max 169 m/s3; Phase 3",
-    ("ego_jerk", "grid_slow"): "p99 6.2, max 355 m/s3; Phase 3",
-    ("nose_gap", "nobhill"): "nose 0.78-0.99 m PAST the line at 7 of 8 stops; Phase 3",
-    ("nose_gap", "grid"): "nose 0.35 m short, needs 0.5-2.0; Phase 3",
-    ("stop_decel", "nobhill"): "peak 4.26-4.50 m/s2 at every stop; Phase 3",
-    ("stop_decel", "grid"): "peak 4.07 m/s2; Phase 3",
-    ("stop_decel", "grid_slow"): "peak 2.63 m/s2; Phase 3",
-    ("agent_heading", "grid"): "27.1 deg per tick at the start of a lane-change slide; Phase 4",
-    ("agent_heading", "grid_slow"): "36.4 deg per tick at the start of a lane-change slide; Phase 4",
+    # Re-measured 2026-10-12, after stops were led by the tracker's lag: every
+    # planned stop now brakes at ~2.0 m/s^2 and rests 0.98 m short. What is left
+    # on Nob Hill is three stops begun at a yellow onset 40-66 m out, braked at
+    # the 3.0 m/s^2 rate a yellow is designed around -- over a 2.5 budget.
+    ("ego_decel", "nobhill"): "2.98 m/s2, firm stops at 3 yellow onsets",
+    ("stop_decel", "nobhill"): "2.94-2.98 m/s2 at the 3 yellow-onset stops",
+    ("ego_jerk", "nobhill"): "p99 3.4, max 213 m/s3",
+    ("ego_jerk", "grid"): "p99 4.5, max 135 m/s3",
+    ("ego_jerk", "grid_slow"): "p99 4.3, max 179 m/s3",
+    ("agent_heading", "grid"): "15.0 deg per tick at the start of a lane-change slide; Phase 4",
+    ("agent_heading", "grid_slow"): "15.0 deg per tick at the start of a lane-change slide; Phase 4",
     ("agent_decel", "grid"): "p99 4.50 m/s2, the IDM floor; Phase 4",
 }
 

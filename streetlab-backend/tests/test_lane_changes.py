@@ -1021,11 +1021,12 @@ def test_a_completed_overtake_actually_passes_the_lead(nob_hill_replay):
     )
 
 
-#: Measured 2026-10-11, both scenes: every pass begun now fits before the
-#: lane ends and the next stop line, and each one completes -- the lead is
-#: passed and the car goes home -- so no episode turns round of its own accord
-#: and there is nothing for this test to judge. Strict, so a voluntary
-#: turn-back (a lead that speeds up mid-pass) shows up here.
+#: Measured 2026-10-11 on Nob Hill: every pass begun now fits before the lane
+#: ends and the next stop line, and each one completes -- the lead is passed
+#: and the car goes home -- so no episode turns round of its own accord and
+#: there is nothing for this test to judge. Strict, so a voluntary turn-back
+#: (a lead that speeds up mid-pass) shows up here. grid-overtake has one again
+#: since the faster limits (2026-10-12), and it holds the lane.
 _NO_VOLUNTARY_TURNAROUND = pytest.mark.xfail(
     strict=True,
     reason=(
@@ -1039,7 +1040,7 @@ _NO_VOLUNTARY_TURNAROUND = pytest.mark.xfail(
     "scene_name",
     [
         pytest.param("nob_hill", marks=_NO_VOLUNTARY_TURNAROUND),
-        pytest.param("grid_overtake", marks=_NO_VOLUNTARY_TURNAROUND),
+        "grid_overtake",
     ],
 )
 def test_a_traverse_that_reaches_the_lane_holds_it(
