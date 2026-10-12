@@ -79,6 +79,22 @@ describe('street sign posts', () => {
     expect(postMesh.count).toBeGreaterThan(0);
   });
 
+  it('draws each speed-limit value once and shares it across its blades', () => {
+    // Nob Hill posts ~110 limit signs; a canvas texture per blade was ~110
+    // 384x576 canvases for about six distinct values.
+    const limits = scene.street_signs
+      .map((s, i) => ({ s, blade: blades[i] }))
+      .filter(({ s }) => s.kind === 'speed_limit');
+    expect(limits.length).toBeGreaterThan(1);
+    const byText = new Map<string, Set<unknown>>();
+    for (const { s, blade } of limits) {
+      const mats = byText.get(s.text) ?? new Set<unknown>();
+      mats.add(blade.material);
+      byText.set(s.text, mats);
+    }
+    for (const mats of byText.values()) expect(mats.size).toBe(1);
+  });
+
   it('keeps the post out of the face of every blade it carries', () => {
     /**
      * Same defect as the stop sign, smaller: a blade centred on its own post

@@ -606,3 +606,16 @@ def test_planner_reports_arrived_and_holds_at_an_open_routes_end():
         t += dt
         assert result.plan.maneuver == "arrived"
         assert result.plan.target_speed_mps == 0.0
+
+
+def test_a_fast_car_brakes_for_a_corner_beyond_the_old_preview(ctx):
+    """Measured on Nob Hill after per-street limits: 35+5 mph into a 6 m
+    corner, 5.2 m/s at the apex and 4.2 m/s^2 lateral, because a fixed 22 m
+    curvature preview only saw the corner once braking could no longer make it."""
+    route = Route([(0.0, 0.0), (200.0, 0.0), (200.0, 100.0)], closed=False).fillet(radius_m=6.0)
+    s = route.project((200.0, 0.0)) - 35.0
+    fast = 17.9
+    limits = PlanLimits(speed_limit_mps=fast, speed_cap_mps=100.0)
+    result = CenterlineFollower().plan(start_state(route, fast, s=s), route, [], limits, ctx)
+    assert result.plan.target_speed_mps < 13.0
+    assert result.accel_mps2 < 0

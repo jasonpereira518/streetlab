@@ -139,6 +139,28 @@ class Route:
             s += step
         return total
 
+    def limit_ahead(self, s: float, look_m: float, decel_mps2: float) -> float | None:
+        """The fastest the car may be doing at `s` and still meet every posted
+        limit within `look_m` ahead braking at `decel_mps2`: the minimum over
+        those segments of sqrt(limit^2 + 2 * decel * distance-to-segment).
+        None when the route carries no limits."""
+        if not self.segment_limits:
+            return None
+        s = self.normalise(s)
+        last = len(self._cum) - 2
+        i = min(max(bisect_right(self._cum, s) - 1, 0), last)
+        best = self.segment_limits[i]
+        dist = self._cum[i + 1] - s
+        while dist < look_m:
+            i += 1
+            if i > last:
+                if not self.closed:
+                    break
+                i = 0
+            best = min(best, math.sqrt(self.segment_limits[i] ** 2 + 2 * decel_mps2 * dist))
+            dist += self._cum[i + 1] - self._cum[i]
+        return best
+
     def _locate(self, s: float) -> tuple[int, float]:
         """Return the leg index and the fraction along it for arc length `s`."""
         s = self.normalise(s)
@@ -377,6 +399,36 @@ class Route:
             )
         return worst
 
+    def curve_speed_ahead(
+        self,
+        s: float,
+        *,
+        look_m: float,
+        lateral_mps2: float,
+        decel_mps2: float,
+        lead_m: float = 0.0,
+        window_m: float = 4.0,
+        step_m: float = 1.0,
+    ) -> float:
+        """The fastest the car may be doing at `s` and still take every bend
+        within `look_m` at `lateral_mps2`, braking at `decel_mps2`: the minimum
+        of sqrt(lateral / k + 2 * decel * d) over the samples ahead, curvature
+        measured as in `peak_curvature`. inf when nothing ahead bends.
+
+        `lead_m` takes that much off every braking distance, for a controller
+        that reaches a falling target only after a lag."""
+        half = window_m / 2
+        best = math.inf
+        for i in range(int(look_m / step_m) + 1):
+            d = i * step_m
+            at = s + d
+            k = _menger_curvature(
+                self.point_at(at - half), self.point_at(at), self.point_at(at + half)
+            )
+            if k > 1e-6:
+                best = min(best, math.sqrt(lateral_mps2 / k + 2 * decel_mps2 * max(0.0, d - lead_m)))
+        return best
+
     def fillet(self, radius_m: float, *, segments: int = 8) -> Route:
         """Round every corner with a circular arc of at most `radius_m`.
 
@@ -451,15 +503,16 @@ def estimate_travel_s(
     fallback_mps: float,
     cap_mps: float = math.inf,
     control_points: Sequence["ControlPoint"] = (),
+    margin_mps: float = 0.0,
 ) -> float:
     """Expected seconds to drive `distance_m` from `s_from`.
 
     Free-flow at each segment's limit (the scene-wide `fallback_mps` where
-    unknown), capped, scaled by `ETA_FREE_FLOW_FACTOR`, plus the measured
+    unknown) plus `margin_mps`, capped, scaled by `ETA_FREE_FLOW_FACTOR`, plus the measured
     cost of each signal and stop sign in the span. The one estimate the HUD's
     ETA and the catalog's durations both use.
     """
-    speed = lambda limit: max(min(limit or fallback_mps, cap_mps), 0.1)  # noqa: E731
+    speed = lambda limit: max(min((limit or fallback_mps) + margin_mps, cap_mps), 0.1)  # noqa: E731
     total = route.travel_time_s(s_from, distance_m, speed) * ETA_FREE_FLOW_FACTOR
     length = route.length_m
     for cp in control_points:

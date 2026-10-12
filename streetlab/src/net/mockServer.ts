@@ -100,6 +100,7 @@ interface Params {
   traffic_speed_scale: number;
   assist_enabled: boolean;
   ego_speed_cap_mph: number;
+  speed_margin_mph: number;
 }
 
 const DEFAULT_PARAMS: Params = {
@@ -107,6 +108,7 @@ const DEFAULT_PARAMS: Params = {
   traffic_speed_scale: 1,
   assist_enabled: true,
   ego_speed_cap_mph: 45,
+  speed_margin_mph: 5,
 };
 
 interface ControlPoint {
@@ -462,7 +464,7 @@ export class MockSim {
 
   private stepEgo(dt: number): void {
     const limitCap = this.params.ego_speed_cap_mph * 0.44704;
-    const roadLimit = Math.min(this.currentSpeedLimit(), limitCap);
+    const roadLimit = this.targetLimit(limitCap);
 
     // Curve speed: hold lateral acceleration under a comfort ceiling.
     let maxCurv = 0;
@@ -811,7 +813,7 @@ export class MockSim {
         speed_limit_mps: this.currentSpeedLimit(),
         cruise: {
           mode: this.params.assist_enabled ? 'fsd' : 'off',
-          set_speed_mps: this.params.ego_speed_cap_mph * 0.44704,
+          set_speed_mps: this.targetLimit(this.params.ego_speed_cap_mph * 0.44704),
         },
         size: EGO_SIZE,
       },
@@ -821,10 +823,7 @@ export class MockSim {
       detections_shadow: null,
       plan: {
         polyline: plan,
-        target_speed_mps: Math.min(
-          this.currentSpeedLimit(),
-          this.params.ego_speed_cap_mph * 0.44704,
-        ),
+        target_speed_mps: this.targetLimit(this.params.ego_speed_cap_mph * 0.44704),
         maneuver,
         confidence: this.cutinPhase === 'merging' ? 0.71 : 0.94,
         reaction_source_id: null,
@@ -868,6 +867,12 @@ export class MockSim {
     };
 
     return frame;
+  }
+
+  /** The posted limit plus the margin, never past the Max speed cap -- the
+   * backend's `PlanLimits.target_limit_mps`. */
+  private targetLimit(cap: number): number {
+    return Math.min(this.currentSpeedLimit() + this.params.speed_margin_mph * 0.44704, cap);
   }
 
   /** The mock's loop, timed at the posted limit like the backend's free-flow ETA. */

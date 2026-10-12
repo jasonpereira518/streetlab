@@ -42,7 +42,7 @@ from perception.road_rules import RoadRulesObserver
 from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
-from plan.behavior import BehaviorState
+from plan.behavior import COMFORT_DECEL_MPS2, STOP_MARGIN_M, BehaviorState
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
 from schema import (
     Ack,
@@ -106,6 +106,8 @@ _TRAJECTORY_STEP_S = 0.25
 # Backend-honoured parameters and their defaults, in the units the wire uses.
 DEFAULT_PARAMS: dict[str, Any] = {
     "ego_speed_cap_mph": 45.0,
+    # How far over the posted limit the ego may drive, mph.
+    "speed_margin_mph": 5.0,
     "follow_distance_s": 1.5,
     "assist_enabled": True,
     "traffic_speed_scale": 1.0,
@@ -753,12 +755,26 @@ class Simulation:
         return route.limit_at(s) or self.scene.speed_limit_mps
 
     def _limits(self) -> PlanLimits:
+        """What the planner is held to. The limit is the posted one, lowered
+        along a comfort braking curve into any slower zone within braking
+        distance -- so the car slows before the sign, not after it. The HUD's
+        `Ego.speed_limit_mps` stays `posted_limit()`, what the street posts."""
         p = self.world.params
+        limit = self.posted_limit()
+        route = self.scene.ego_route
+        if route.segment_limits:
+            v = self.world.ego.speed_mps
+            look = v * v / (2 * COMFORT_DECEL_MPS2) + STOP_MARGIN_M
+            s = route.project((self.world.ego.x, self.world.ego.y))
+            ahead = route.limit_ahead(s, look, COMFORT_DECEL_MPS2)
+            if ahead is not None:
+                limit = min(limit, ahead)
         return PlanLimits(
-            speed_limit_mps=self.posted_limit(),
+            speed_limit_mps=limit,
             speed_cap_mps=float(p["ego_speed_cap_mph"]) * MPH,
             follow_distance_s=float(p["follow_distance_s"]),
             assist_enabled=bool(p["assist_enabled"]),
+            speed_margin_mps=float(p["speed_margin_mph"]) * MPH,
         )
 
     def _record_history(self) -> None:
@@ -1302,8 +1318,9 @@ def _trip(world: WorldState, scene: BuiltScene, ego_s: float, bad: list[str]) ->
     length = route.length_m
     remaining = max(0.0, length - ego_s)
     cap = float(world.params["ego_speed_cap_mph"]) * MPH
+    margin = float(world.params["speed_margin_mph"]) * MPH
     eta = estimate_travel_s(
-        route, ego_s, remaining, scene.speed_limit_mps, cap, scene.control_points
+        route, ego_s, remaining, scene.speed_limit_mps, cap, scene.control_points, margin
     )
     driven = max(0.0, _finite("trip.distance_driven_m", world.odometer_m, bad))
     return Trip(

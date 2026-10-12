@@ -42,6 +42,7 @@ from map.features import (
     junction_of,
     signal_groups,
     stop_node_id,
+    build_speed_limit_signs,
 )
 from map.geocode import GeocodeError, Geocoder, GeocodeNotFound, GeocodeUnavailable, NominatimGeocoder, Place
 from map.lanes import (
@@ -87,6 +88,10 @@ from schema import (
 from sim.route import Route, estimate_travel_s
 
 log = logging.getLogger("streetlab.map")
+
+#: The default "Speed margin" (sim.loop.DEFAULT_PARAMS), for catalog
+#: durations: a card's time is timed at what the car will actually drive.
+_DEFAULT_MARGIN_MPS = 5.0 * 0.44704
 
 # ODbL requires crediting OpenStreetMap wherever its data is shown.
 ATTRIBUTION = "© OpenStreetMap contributors"
@@ -555,7 +560,7 @@ class OsmSceneSource:
             traffic_lights=lights,
             stop_signs=stop_signs,
             trees=trees,
-            street_signs=[],
+            street_signs=build_speed_limit_signs(roads, keep_out),
             # Sampled after `select_ego_route` has offset and filleted, so this
             # is the line the car actually drives rather than the raw OSM
             # centreline it came from.
@@ -964,7 +969,7 @@ class OsmSceneSource:
             description=f"Real street geometry around {spec.name}, from OpenStreetMap.",
             duration_s=estimate_travel_s(
                 route, 0.0, route.length_m, scene.speed_limit_mps,
-                control_points=scene.control_points,
+                control_points=scene.control_points, margin_mps=_DEFAULT_MARGIN_MPS,
             ),
             route_length_m=route.length_m,
             bookmarked=index == 1,

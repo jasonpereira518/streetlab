@@ -17,7 +17,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-from plan.behavior import BehaviorFSM
+from plan.behavior import COMFORT_DECEL_MPS2, SPEED_GAIN, BehaviorFSM
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
@@ -47,12 +47,12 @@ _LOOKAHEAD_MAX_M = 10.0
 
 # Comfortable lateral acceleration through a bend, in m/s^2.
 _MAX_LATERAL_MPS2 = 2.0
-# How far ahead curvature is sampled, so the car slows before the corner.
+# The shortest look-ahead for bends, added to the comfort braking distance.
 _CURVATURE_PREVIEW_M = 22.0
 
 _MAX_ACCEL_MPS2 = 2.2
 _MAX_DECEL_MPS2 = 4.5
-_SPEED_GAIN = 0.9
+_SPEED_GAIN = SPEED_GAIN
 
 # Car-following spacing. `desired = standstill + follow_distance_s * speed`;
 # beyond `_IGNORE_LEAD_FACTOR` times that, the lead is too far to matter.
@@ -94,6 +94,14 @@ class PlanLimits:
     speed_cap_mps: float
     follow_distance_s: float = 1.5
     assist_enabled: bool = True
+    #: How far over the limit the car may go (the user's "Speed margin").
+    speed_margin_mps: float = 0.0
+
+    @property
+    def target_limit_mps(self) -> float:
+        """The fastest the planner will aim for: the limit plus the margin,
+        never past the Max speed cap. The one place this formula lives."""
+        return min(self.speed_limit_mps + self.speed_margin_mps, self.speed_cap_mps)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +194,7 @@ class CenterlineFollower:
             ego, route, s, context.control_points, context.signals, context.dt,
             lanes=context.lanes,
             detections=detections,
-            limit_mps=min(limits.speed_limit_mps, limits.speed_cap_mps),
+            limit_mps=limits.target_limit_mps,
         )
 
         # The blend is the FSM's, not derived here: going out and coming back it
@@ -202,16 +210,36 @@ class CenterlineFollower:
             self.last_steer + MAX_STEER_RATE_RAD_S * context.dt,
         )
         self.last_steer = steer
-        curvature = route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
+        # Bends are looked for over the whole comfort braking distance, not a
+        # fixed window: at 35+5 mph a 6 m corner needs ~77 m, and a 22 m preview
+        # met the Nob Hill corners at 5.2 m/s (4.2 m/s^2 lateral, measured).
+        # The speed loop is first order (time constant tau = 1 / _SPEED_GAIN), so it
+        # trails a falling target: aimed at the corner itself it arrived ~2 m/s fast
+        # (4.7 m/s^2 on the grid, measured), and aimed one tau ahead it still met the
+        # knee where the ramp flattens decel * tau / e = 0.8 m/s fast. Two tau leaves
+        # decel * tau / e^2 = 0.3 m/s.
+        look = ego.speed_mps**2 / (2 * COMFORT_DECEL_MPS2) + _CURVATURE_PREVIEW_M
+        lag_m = 2 * ego.speed_mps / _SPEED_GAIN
+        curve_speed = route.curve_speed_ahead(
+            s,
+            look_m=look + lag_m,
+            lateral_mps2=_MAX_LATERAL_MPS2,
+            decel_mps2=COMFORT_DECEL_MPS2,
+            lead_m=lag_m,
+        )
         if away is not None:
             # The lane being held can be the INSIDE of a corner. A 6 m fillet leaves
             # ~2.4 m there, below the car's 4.1 m minimum turning radius, and speed
             # planned from the ego lane alone drives the car at full steering lock
             # (7.9 m/s^2 at 5.7 m/s, measured) while it drifts off the lane.
-            curvature = max(
-                curvature,
-                away.route.peak_curvature(
-                    away.route.project((ego.x, ego.y)), distance_m=_CURVATURE_PREVIEW_M
+            curve_speed = min(
+                curve_speed,
+                away.route.curve_speed_ahead(
+                    away.route.project((ego.x, ego.y)),
+                    look_m=look + lag_m,
+                    lateral_mps2=_MAX_LATERAL_MPS2,
+                    decel_mps2=COMFORT_DECEL_MPS2,
+                    lead_m=lag_m,
                 ),
             )
         lc = self.fsm.lane_change
@@ -219,7 +247,7 @@ class CenterlineFollower:
             abs(route.lateral_offset((ego.x, ego.y))) > _OFF_LANE_M
         )
         target = self._target_speed(
-            limits, curvature, detections, ego, route, s, home_lane=returning_home
+            limits, curve_speed, detections, ego, route, s, home_lane=returning_home
         )
         # The route's curvature AHEAD says "straight" the moment the look-ahead window clears a
         # corner, while the car is still yawing out of it: it then accelerates at full authority
@@ -289,7 +317,7 @@ class CenterlineFollower:
     def _target_speed(
         self,
         limits: PlanLimits,
-        curvature: float,
+        curve_speed: float,
         detections: Sequence[Detection],
         ego: VehicleState,
         route: Route,
@@ -297,9 +325,7 @@ class CenterlineFollower:
         *,
         home_lane: bool = False,
     ) -> float:
-        target = min(limits.speed_limit_mps, limits.speed_cap_mps)
-        if curvature > 1e-6:
-            target = min(target, math.sqrt(_MAX_LATERAL_MPS2 / curvature))
+        target = min(limits.target_limit_mps, curve_speed)
 
         lead, gap = _closest_lead(detections, route, s, home_lane=home_lane)
         if lead is not None:

@@ -91,12 +91,29 @@ export function Speedometer() {
       baseline: 'middle',
     });
 
-    // Set-speed legend, top-right where the arc leaves the corner free.
+    // Set-speed legend, top-right where the arc leaves the corner free. "SET",
+    // not "MAX": it is what the planner is aiming for right now (the limit
+    // plus the margin, lower in a bend or behind a car), and "MAX" read as
+    // the posted limit.
     dot(ctx, width - 52, 9, 3, color.warn);
-    text(ctx, `${Math.round(setMph)} MAX`, width - 45, 9, {
+    text(ctx, `${Math.round(setMph)} SET`, width - 45, 9, {
       size: 9.5,
       weight: 700,
       color: color.textMuted,
+      baseline: 'middle',
+    });
+
+    // The posted limit, top-left, boxed like the sign it is.
+    const limitLabel = `LIMIT ${Math.round(limitMph)}`;
+    ctx.save();
+    ctx.strokeStyle = color.textMuted;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(6.5, 2.5, 52, 13);
+    ctx.restore();
+    text(ctx, limitLabel, 10, 9, {
+      size: 9.5,
+      weight: 700,
+      color: color.text,
       baseline: 'middle',
     });
   });

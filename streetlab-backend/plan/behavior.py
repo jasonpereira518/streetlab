@@ -31,10 +31,11 @@ from schema import Detection, SignalState
 from sim.route import ControlPoint, LaneSet, Route
 from sim.vehicle import VehicleState
 
-#: How far ahead a control point starts to matter. Comfortably more than the
-#: 30.6 m a car at the 11.18 m/s Nob Hill scene limit needs to stop at
-#: COMFORT_DECEL_MPS2, so the profile is never entered already too late.
+#: How far ahead a control point starts to matter at low speed. Comfortably
+#: more than the 30.6 m a car at the 11.18 m/s Nob Hill scene limit needs to
+#: stop at COMFORT_DECEL_MPS2; faster cars get `approach_m`.
 APPROACH_M = 45.0
+
 #: The deceleration a yellow interval is designed around: the ITE formula
 #: sizes the yellow so a driver who sees it can either stop at about this
 #: rate or clear the line before red. Firmer than comfort, well inside the
@@ -46,45 +47,54 @@ YELLOW_STOP_DECEL_MPS2 = 3.0
 #: rather than a demand it saturates against.
 COMFORT_DECEL_MPS2 = 2.0
 
-#: How far short of the line the ceiling actually reaches zero (Task 7).
+#: The tracker's speed law, `accel = SPEED_GAIN * (target - speed)`
+#: (`plan/control.py` imports it from here). A first-order loop: it trails a
+#: falling target by its time constant, `TRACKER_LAG_S`.
+SPEED_GAIN = 0.9
+TRACKER_LAG_S = 1 / SPEED_GAIN
+
+#: Where the car's centre comes to rest, short of the line. With the stop
+#: profile led by `TRACKER_LAG_S` (see `stop_ceiling`) the car rests where the
+#: ceiling reaches zero, measured to within 0.02 m on every stop of the grid,
+#: grid-overtake and Nob Hill runs: the nose then sits this less 2.02 m short,
+#: ~1 m, inside the 0.5-2.0 m budget.
 #:
-#: `sqrt(2 * COMFORT_DECEL_MPS2 * distance)` is the speed profile of a car
-#: under CONSTANT deceleration that arrives at `distance == 0` with `v == 0`
-#: -- but `CenterlineFollower` does not brake at a constant rate, it *chases*
-#: this shrinking ceiling with a proportional law
-#: (`accel = SPEED_GAIN * (target - speed)`, `plan/control.py`). A
-#: proportional controller always lags a falling target, and the ceiling
-#: falls fastest exactly where it matters most: its slope in `distance` is
-#: unbounded as `distance -> 0`. The tracker cannot keep pace with an
-#: infinitely steep target, so it is still moving -- and past the line --
-#: by the time it is slow enough to count as stopped.
-#:
-#: Measured on `grid-loop` with `CenterlineFollower` driving in, cruising to
-#: a stop naturally from beyond `APPROACH_M` (not dropped at the line already
-#: at speed), across 4-18 m/s and several approach distances: the car settles
-#: 3.7-4.7 m past where the RAW (un-margined) ceiling reaches zero, almost
-#: independent of approach speed -- the last few metres of the stop are
-#: governed by `COMFORT_DECEL_MPS2` and the tracker's gain, not by how the
-#: approach started. Subtracting `STOP_MARGIN_M` here moves the ceiling's
-#: zero point this far *before* the line, so the tracker's own overshoot
-#: lands close to the line instead of past it -- 6.5 m clears the measured
-#: range with margin. See `STOP_ZONE_M` for the other half of this: the rest
-#: position must also land inside it, or the car never reaches STOP.
-#:
-#: WARNING for whoever next retunes `COMFORT_DECEL_MPS2`, `SPEED_GAIN`
-#: (`plan/control.py`) or `_MAX_DECEL_MPS2` (`plan/control.py`): this
-#: constant is a fixed number standing in for an overshoot that is NOT
-#: constant -- it shrinks as approach speed rises (measured on the real Nob
-#: Hill route: rest gap 2.40 m at 6 m/s down to 0.46 m at 18 m/s, still
-#: positive but closing fast). It was tuned against the current values of
-#: all three of those constants. Retune any of them and this margin's
-#: headroom can shrink further or go negative -- silently reintroducing red-
-#: light crossings, exactly the defect this constant exists to fix, with no
-#: test failure until someone happens to sample a high-speed approach (see
-#: `test_the_ego_rests_before_the_line_across_approach_speeds` in
-#: `tests/test_control.py`, which does exactly that and is the test to
-#: re-run first). Re-measure this constant whenever any of the three change.
-STOP_MARGIN_M = 6.5
+#: It was 6.5 m when the profile was NOT led: the tracker overshot its zero
+#: point by 3.7-4.7 m, a margin was the stand-in, and the overshoot shrank as
+#: approach speed rose. At 35+5 mph it went past the line, braking on the
+#: 4.5 m/s^2 clamp. Re-measure this if `SPEED_GAIN`, `COMFORT_DECEL_MPS2` or
+#: `_MAX_DECEL_MPS2` (`plan/control.py`) change; `test_control.py`'s
+#: `test_the_ego_rests_before_the_line_across_approach_speeds` is the first test
+#: to re-run.
+STOP_MARGIN_M = 3.0
+
+
+def stop_ceiling(
+    distance_m: float, speed_mps: float, decel_mps2: float = COMFORT_DECEL_MPS2
+) -> float:
+    """The speed ceiling for a stop `distance_m` ahead: braking at `decel_mps2`
+    to rest `STOP_MARGIN_M` short of the line, aimed `TRACKER_LAG_S` ahead so
+    the lagging tracker brakes at that rate instead of catching up with the
+    ceiling on its clamp. 2.0 m/s^2 peak, measured, against 3.8-4.5."""
+    room = distance_m - STOP_MARGIN_M - TRACKER_LAG_S * speed_mps
+    return math.sqrt(2 * decel_mps2 * max(room, 0.0))
+
+
+#: A stop whose comfort profile is already this far under the car's speed
+#: (a light that turned yellow, or was read late) is braked for on the firm
+#: `YELLOW_STOP_DECEL_MPS2` profile instead: measured, the comfort one put a
+#: yellow-onset stop on the 4.5 m/s^2 clamp.
+FIRM_STOP_SLACK_MPS = 1.0
+
+
+def approach_m(speed_mps: float) -> float:
+    """How far ahead a control point starts to matter: where `stop_ceiling`
+    first reaches the car's own speed, so the profile is never entered below
+    it. A fixed 45 m met it 5.5 m/s low at 35+5 mph (17.9 m/s, ~103 m now)."""
+    return max(
+        APPROACH_M,
+        speed_mps**2 / (2 * COMFORT_DECEL_MPS2) + STOP_MARGIN_M + TRACKER_LAG_S * speed_mps,
+    )
 
 #: Close enough to the line, and slow enough, to count as stopped.
 #:
@@ -463,10 +473,14 @@ class BehaviorFSM:
     #: again. Written only by `_decline`, i.e. only after an attempt that
     #: achieved nothing; see `LANE_CHANGE_RETRY_COOLDOWN_S`.
     cooldown: dict[str, float] = field(default_factory=dict)
+    #: (control point, braking rate) of the stop under way, chosen once when
+    #: the stop is first required.
+    stop_profile: tuple[str, float] | None = None
 
     def reset(self) -> None:
         self.state = BehaviorState.CRUISE
         self.target_id = None
+        self.stop_profile = None
         self.dwell_s = 0.0
         self.honoured.clear()
         self.lane_change = None
@@ -518,12 +532,13 @@ class BehaviorFSM:
         detections: Sequence[Detection] = (),
     ) -> BehaviorDecision:
         self._expire(route, ego_s)
-        target = self._next_point(route, ego_s, control_points)
+        target = self._next_point(route, ego_s, control_points, approach_m(ego.speed_mps))
         if target is None:
             return self._cruise()
 
         if target.id != self.target_id:
             self.target_id = target.id
+            self.stop_profile = None
             self.dwell_s = 0.0
             self.state = BehaviorState.APPROACH
 
@@ -564,25 +579,39 @@ class BehaviorFSM:
         self.state = BehaviorState.APPROACH
         return BehaviorDecision(
             BehaviorState.APPROACH,
-            # Zero out STOP_MARGIN_M early -- see its docstring -- so the
-            # tracker's own lag overshoots toward the line rather than past it.
-            math.sqrt(2 * COMFORT_DECEL_MPS2 * max(distance - STOP_MARGIN_M, 0.0)),
+            self._stop_ceiling(target, distance, ego.speed_mps),
             "arrived" if target.kind == "arrival" else "stop",
             target,
         )
 
     # -- helpers ------------------------------------------------------------ #
 
+    def _stop_ceiling(self, target: ControlPoint, distance: float, speed: float) -> float:
+        """Comfort braking if it fits when the stop is first required; if not
+        (a yellow, a late read), the firm profile for the rest of this stop.
+        Judged once: judged every tick, the ordinary lag mid-approach tripped
+        it at every Nob Hill stop (2.9 m/s^2 instead of 2.0, measured)."""
+        if self.stop_profile is None or self.stop_profile[0] != target.id:
+            late = stop_ceiling(distance, speed) < speed - FIRM_STOP_SLACK_MPS
+            decel = YELLOW_STOP_DECEL_MPS2 if late else COMFORT_DECEL_MPS2
+            self.stop_profile = (target.id, decel)
+        return stop_ceiling(distance, speed, self.stop_profile[1])
+
     def _cruise(self) -> BehaviorDecision:
         self.state = BehaviorState.CRUISE
         self.target_id = None
+        self.stop_profile = None
         self.dwell_s = 0.0
         return _CRUISE
 
     def _next_point(
-        self, route: Route, ego_s: float, control_points: Sequence[ControlPoint]
+        self,
+        route: Route,
+        ego_s: float,
+        control_points: Sequence[ControlPoint],
+        window_m: float = APPROACH_M,
     ) -> ControlPoint | None:
-        """The nearest un-honoured line from just behind out to `APPROACH_M`.
+        """The nearest un-honoured line from just behind out to `window_m`.
 
         Just behind, rather than strictly ahead, so a car that is mid-CREEP
         keeps the same target as it crosses the line instead of losing it and
@@ -593,7 +622,7 @@ class BehaviorFSM:
             if cp.id in self.honoured:
                 continue
             gap = route.signed_gap(ego_s, cp.s)
-            if -CLEARED_M <= gap < min(best_gap, APPROACH_M):
+            if -CLEARED_M <= gap < min(best_gap, window_m):
                 best, best_gap = cp, gap
         return best
 

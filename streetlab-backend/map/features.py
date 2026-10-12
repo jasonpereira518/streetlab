@@ -74,7 +74,7 @@ from map.placement import (
 from map.osm_model import OsmGraph, OsmNode, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import has_sidewalk, lane_counts, oneway_direction, road_class
-from schema import Building, Crosswalk, StopSign, TrafficLight, Tree
+from schema import Building, Crosswalk, Road, StopSign, StreetSign, TrafficLight, Tree
 
 if TYPE_CHECKING:
     from map.clearance import KeepOut
@@ -1067,3 +1067,118 @@ def _fit_canopies(trees: list[Tree]) -> list[Tree]:
         else tree.model_copy(update={"canopy_radius_m": round(max(room[i], _MIN_CANOPY_M), 3)})
         for i, tree in enumerate(trees)
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Speed-limit signs                                                            #
+# --------------------------------------------------------------------------- #
+
+#: How far past a crossing where the limit changes its sign stands, metres.
+SIGN_AFTER_JUNCTION_M = 15.0
+#: A street that runs this far with no change gets a reminder.
+SIGN_REMINDER_M = 400.0
+#: Two signs of the same value facing the same way closer than this are one
+#: sign: a driver who just passed a "25" is not shown another a block later
+#: (measured on Nob Hill without it: 180 limit signs on 165 streets, most
+#: blocks posted), and OSM's doubly-mapped streets would post twice.
+_SAME_SIGN_SPACING_M = 120.0
+_MPH = 0.44704
+
+
+def build_speed_limit_signs(roads: list[Road], keep_out: "KeepOut") -> list[StreetSign]:
+    """Speed-limit signs for every street, from the road network alone.
+
+    Wherever a street crosses one with a different limit -- an end-to-end
+    continuation or a crossing mid-street, both are "a crossing" -- a sign
+    stands `SIGN_AFTER_JUNCTION_M` past it on the right-hand kerb of each
+    direction that drives the street, facing that traffic. A street that runs
+    `SIGN_REMINDER_M` with no change gets a reminder. Each sign is pushed
+    clear of the carriageway, crosswalks and buildings along its own street
+    and away from the road (`escape_offsets`); one with no clear spot is left
+    out rather than planted in the road.
+    """
+    from shapely.geometry import LineString, MultiPoint, Point
+    from shapely.strtree import STRtree
+
+    from map.clearance import half_width
+
+    lines = [LineString(r.centerline) for r in roads]
+    index = STRtree(lines) if lines else None
+    signs: list[StreetSign] = []
+    for i, road in enumerate(roads):
+        if road.road_class == "service":
+            # Alleys, driveways, parking aisles: no one posts a limit there
+            # (measured on Nob Hill without this: 47 "15" signs on alleys).
+            continue
+        line, length = lines[i], lines[i].length
+        mph = round(road.speed_limit_mps / _MPH)
+        changes: list[float] = []
+        for j in index.query(line.buffer(0.5)) if index is not None else ():
+            j = int(j)
+            if j == i or roads[j].road_class == "service":
+                continue  # crossing a driveway does not change the street's limit
+            if round(roads[j].speed_limit_mps / _MPH) == mph:
+                continue
+            meet = line.intersection(lines[j])
+            points = [meet] if isinstance(meet, Point) else list(getattr(meet, "geoms", []))
+            changes.extend(line.project(p) for p in points if isinstance(p, Point))
+        directions = [1] if road.oneway or road.lanes_backward == 0 else [1, -1]
+        for direction in directions:
+            stations = []
+            for at in changes:
+                # Measured from the start of this direction of travel.
+                start = at if direction > 0 else length - at
+                stations.append(start + SIGN_AFTER_JUNCTION_M)
+            k = SIGN_REMINDER_M
+            while k < length:
+                if not any(abs(k - st) < SIGN_REMINDER_M / 2 for st in stations):
+                    stations.append(k)
+                k += SIGN_REMINDER_M
+            for travelled in stations:
+                if not 0.0 < travelled < length:
+                    continue
+                along = travelled if direction > 0 else length - travelled
+                sign = _place_limit_sign(road, line, along, direction, mph, half_width(road), keep_out)
+                if sign is not None:
+                    signs.append(sign)
+    kept: list[StreetSign] = []
+    for sign in signs:
+        if not any(
+            k.text == sign.text
+            and math.cos(k.heading - sign.heading) > 0.9
+            and math.dist(k.position, sign.position) < _SAME_SIGN_SPACING_M
+            for k in kept
+        ):
+            kept.append(sign)
+    return kept
+
+
+def _place_limit_sign(road, line, along, direction, mph, half, keep_out) -> StreetSign | None:
+    a = line.interpolate(max(0.0, along - 1.0))
+    b = line.interpolate(min(line.length, along + 1.0))
+    dx, dy = (b.x - a.x) * direction, (b.y - a.y) * direction
+    norm = math.hypot(dx, dy)
+    if norm < 1e-9:
+        return None
+    travel = (dx / norm, dy / norm)
+    at_pt = line.interpolate(along)
+    at = (at_pt.x, at_pt.y)
+
+    def blocked(p):
+        return keep_out.blocks_post(p) or keep_out.on_crosswalk(p, 0.1)
+
+    position, _ = push_clear(
+        lambda o: kerb_offset(at, travel, half + o[1], along=o[0]),
+        blocked,
+        escape_offsets(1.0),
+    )
+    if blocked(position):
+        return None
+    tag = "f" if direction > 0 else "b"
+    return StreetSign(
+        id=f"sl_{road.id}_{tag}_{int(along)}",
+        position=position,
+        heading=facing(travel),
+        text=str(mph),
+        kind="speed_limit",
+    )

@@ -112,6 +112,18 @@ export const PARAM_DEFS: ParamDef[] = [
     hint: 'Upper bound the planner will target',
   },
   {
+    key: 'speed_margin_mph',
+    label: 'Speed margin',
+    kind: 'slider',
+    group: 'planner',
+    default: 5,
+    min: 0,
+    max: 15,
+    step: 1,
+    unit: 'mph',
+    hint: 'How far over the posted limit the planner may drive',
+  },
+  {
     key: 'follow_distance_s',
     label: 'Follow distance',
     kind: 'slider',
