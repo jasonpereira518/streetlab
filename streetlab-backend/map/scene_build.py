@@ -245,6 +245,19 @@ SCENARIOS: tuple[_Scenario, ...] = (
         (-80.0, 80.0, -80.0, 80.0),
         4,
     ),
+    _Scenario(
+        "grid-overtake",
+        "California Overtake",
+        "A two-block circuit whose long leg is four-lane California St: room to pass a slow car honestly.",
+        "moderate",
+        # Clockwise: north up Larkin, east along Sacramento, south down
+        # Leavenworth, then 160 m west along California straight through the
+        # Hyde junction -- the only grid leg long enough for a pass to get out,
+        # past and home before the next stop line (a pass needs 73-80 m; a
+        # one-block leg leaves 64 m of kerb lane).
+        (-80.0, 80.0, 0.0, 80.0),
+        4,
+    ),
 )
 
 _BUILDING_COLORS = (

@@ -300,8 +300,12 @@ def test_full_lap_route_projection_stays_continuous(tmp_path):
     smoke test, so nothing was guarding against a regression here. This test
     drives a full lap instead.
 
-    Tick count and dt: 20,000 ticks at the simulation's default 60 Hz dt
-    (~333 simulated seconds). This is not free-running headroom any more --
+    Tick count and dt: 42,000 ticks at the simulation's default 60 Hz dt
+    (700 simulated seconds) since the loop became the 2.7 km clockwise
+    circuit with 22 control points, whose compliant lap measures 460.8 s
+    (27,649 ticks; 2026-10-11) -- the same ~50 % headroom as before. The rest
+    of this paragraph is the history of the 20,000-tick figure for the old
+    1.2 km loop. This is not free-running headroom any more --
     since Cycle 3 Phase 1 (Task 7) wired the junction behaviour FSM into
     `CenterlineFollower`, the ego actually stops at every red light and stop
     sign on its route, of which this fixture's repaired lap has roughly 16.
@@ -371,7 +375,7 @@ def test_full_lap_route_projection_stays_continuous(tmp_path):
         "ego route self-intersects — remove_self_intersections regressed"
     )
 
-    TICKS = 20_000  # ~333 simulated seconds -- see the tick-count paragraph above
+    TICKS = 42_000  # 700 simulated seconds -- see the tick-count paragraph above
 
     prev_s = route.project((sim.ego.x, sim.ego.y))
     total_progress = 0.0

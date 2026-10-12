@@ -25,10 +25,11 @@ from sim.loop import Simulation
 DT = 1 / 60
 OVERPASS_FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
 
-#: The measured free-running Nob Hill lap is 132.6 s. Stopping at ~20 control
-#: points cannot plausibly cost more than this much again -- the bound exists to
-#: catch a permanent stall, not to grade smoothness.
-LAP_BUDGET_S = 400.0
+#: The measured compliant lap of the 2.7 km Nob Hill loop is 460.8 s (22
+#: control points; 2026-10-11). 700 s is ~50 % headroom -- the bound exists to
+#: catch a permanent stall, not to grade smoothness. (It was 400 s for the old
+#: 1.2 km loop.)
+LAP_BUDGET_S = 700.0
 
 
 def _osm_sim():

@@ -484,3 +484,64 @@ def test_no_agent_changes_into_a_lane_that_ends_before_it_could_change_back(scen
             assert "lane_right" in ids
             offered += 1
     assert offered and refused
+
+
+def test_an_agent_never_changes_lane_into_a_stop_line(scene):
+    """The ego's own rule, applied to traffic: a lane change needs room to
+    slide in and back out before the next stop line, not just before the
+    lane ends -- a car must be in its lane to stop at the line."""
+    from sim.agents import IdmTraffic
+
+    traffic = IdmTraffic(
+        scene.agent_routes,
+        scene.speed_limit_mps,
+        seed=1,
+        lanes=scene.lanes,
+        control_points=scene.control_points,
+        ego_route=scene.ego_route,
+    )
+    lanes = scene.lanes
+    route = lanes.ego.route
+    agent = traffic.agents[0]
+    place(traffic, agent, 0.0, speed=8.0)
+    needed = 2 * traffic._merge_runout(agent)
+    stops = [cp.s for cp in scene.control_points]
+    refused = offered = 0
+    for s in range(0, int(route.length_m), 2):
+        if lanes.legal_for(float(s), -1, 1000.0) < needed:
+            continue  # the lane-end rule decides here, not this one
+        to_line = min((c - s) % route.length_m for c in stops)
+        ids = {lane.id for lane in traffic._candidates(agent, lanes, float(s))}
+        if to_line < needed:
+            assert "lane_right" not in ids, f"offered {to_line:.0f} m before a stop line at s={s}"
+            refused += 1
+        else:
+            assert "lane_right" in ids
+            offered += 1
+    assert refused and offered
+
+
+def test_traffic_heading_turns_smoothly_through_a_filleted_corner(scene):
+    """A body points along its wheelbase -- the chord between its axles --
+    not along the one route segment under its centre, which jumps at every
+    fillet vertex (the `agent_heading` budget measured 11-36 degrees in one
+    tick). Driven at walking pace round a corner, no tick may turn more than
+    the budget's 2 degrees."""
+    traffic = make(scene)
+    agent = traffic.agents[0]
+    route = agent.route
+    # Start 15 m before the first corner fillet of the loop.
+    corner = next(
+        s for s in range(0, int(route.length_m))
+        if abs(math.remainder(route.heading_at(s + 1.0) - route.heading_at(float(s)), math.tau)) > 0.05
+    )
+    place(traffic, agent, corner - 15.0, speed=3.0)
+    agent.override_speed_mps = 3.0
+    agent.override_until_s = 1e9
+    last = agent.state.heading
+    worst = 0.0
+    for _ in range(int(12.0 * 60)):
+        traffic.step(1 / 60, world(scene))
+        worst = max(worst, abs(math.degrees(math.remainder(agent.state.heading - last, math.tau))))
+        last = agent.state.heading
+    assert worst <= 2.0, f"heading jumped {worst:.1f} degrees in one tick"

@@ -278,3 +278,22 @@ def test_traffic_obeys_real_osm_lights_and_stop_signs():
     assert crossings > 0, "traffic must actually get through junctions"
     assert not ran_red
     assert not ran_stop
+
+
+def test_no_car_is_spawned_too_fast_to_stop_for_the_line_ahead():
+    """Measured on the 2.7 km Nob Hill loop (22 lines, seed 3): a car spawned
+    at cruising speed a metre short of a stop sign rolled through it 0.42 s
+    into the scene. Spawn positions stay; a car that close starts slow enough
+    to stop at comfort braking, as if it had been braking for the line."""
+    from sim.agents import _IDM_COMFORT_DECEL
+
+    source = _nob_hill()
+    sim = Simulation(source, scenario_id="osm-nob-hill", seed=3)
+    route = sim.scene.ego_route
+    lines = [cp.s for cp in sim.scene.control_points]
+    for agent in sim._traffic.agents:
+        if agent.route is not route:
+            continue
+        gap = min((s - agent.s) % route.length_m for s in lines)
+        stopping = agent.state.speed_mps ** 2 / (2 * _IDM_COMFORT_DECEL)
+        assert stopping <= gap + 1e-6, (agent.id, round(gap, 2), round(agent.state.speed_mps, 2))

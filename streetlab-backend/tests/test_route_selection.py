@@ -426,7 +426,7 @@ def test_out_and_back_warns_when_the_search_budget_is_exhausted(caplog):
     assert "20000" in warnings[0].message
 
 
-def test_find_loop_warns_when_the_search_budget_is_exhausted(caplog):
+def test_find_loop_warns_when_the_search_budget_is_exhausted(caplog, monkeypatch):
     """Companion to the `_out_and_back` warning test above, for the case the
     controller flagged as most misleading: `_find_loop` returning `None`
     means two very different things -- "this graph has no such loop" and "the
@@ -442,9 +442,18 @@ def test_find_loop_warns_when_the_search_budget_is_exhausted(caplog):
     above closes a loop quickly instead, which is why `_out_and_back`'s test
     needs a different graph shape to reliably exhaust its own budget.
     """
+    # Pinned to the budget this mesh was measured to exhaust. The shipped
+    # budget is larger (`_MAX_EXPANSIONS`, raised when clockwise-only search
+    # made the loop search keep going after its first find); what this test
+    # owns is that running out is reported, not the number.
+    import map.lanes as lanes
+
+    monkeypatch.setattr(lanes, "_MAX_EXPANSIONS", 20000)
     rg, start = _mesh_grid(n=15, spacing=15.0, diagonals=True)
     with caplog.at_level(logging.WARNING, logger="streetlab.map"):
-        loop = _find_loop(rg, start)
+        # The 1.2 km band it was measured at: the shipped 4 km band lets this
+        # mesh close a loop inside the budget.
+        loop = _find_loop(rg, start, MIN_LOOP_M, 1200.0)
 
     assert loop is None
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -516,9 +525,12 @@ def test_a_neighbour_lane_route_can_also_be_repaired():
     ego_route = select_ego_route(build_route_graph(graph, ORIGIN), (13.91, 144.75))
     assert LinearRing(ego_route.points).is_simple  # the premise this test isolates
 
+    # Whichever loop the search picks, the repaired neighbour lane is simple.
+    # (Whether this particular one needs repair moves with route selection:
+    # it did, then didn't once short legs were merged, and does again on the
+    # 3.9 km loop -- so the real-work proof is the constructed ring below.)
     neighbour_raw = Route(ego_route.points, closed=True).offset(LANE_W)
-    assert LinearRing(neighbour_raw.points).is_simple
-    assert remove_self_intersections(neighbour_raw).points == neighbour_raw.points
+    assert LinearRing(remove_self_intersections(neighbour_raw).points).is_simple
 
     winged = [(0.0, 0.0), (80.0, 0.0), (80.0, 30.0), (25.0, 30.0), (25.0, 6.0), (0.0, 6.0)]
     folded = Route(winged, closed=True).offset(LANE_W)
@@ -726,3 +738,213 @@ def test_find_line_crossing_ignores_adjacent_segments():
     # Two segments sharing an endpoint are not a "crossing" in any useful
     # sense -- only non-adjacent segments should ever be reported.
     assert _find_line_crossing([(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]) is None
+
+
+# --------------------------------------------------------------------------- #
+# One-way streets and loop length                                              #
+# --------------------------------------------------------------------------- #
+
+
+def _square_with_oneway(oneway: str):
+    """`_square_graph` with its north side (way 101, nodes 2 -> 3) one-way."""
+    graph = _square_graph()
+    raw = {"elements": []}
+    d = 0.0018
+    raw["elements"] = [
+        {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+        {"type": "node", "id": 2, "lat": 37.7945 + d, "lon": -122.4156},
+        {"type": "node", "id": 3, "lat": 37.7945 + d, "lon": -122.4156 + d},
+        {"type": "node", "id": 4, "lat": 37.7945, "lon": -122.4156 + d},
+    ]
+    for i, (a, b) in enumerate([(1, 2), (2, 3), (3, 4), (4, 1)]):
+        tags = {"highway": "residential"}
+        if (a, b) == (2, 3):
+            tags["oneway"] = oneway
+        raw["elements"].append({"type": "way", "id": 100 + i, "nodes": [a, b], "tags": tags})
+    del graph
+    return parse_overpass(raw)
+
+
+@pytest.mark.parametrize("oneway,allowed,forbidden", [("yes", (2, 3), (3, 2)), ("-1", (3, 2), (2, 3))])
+def test_the_route_graph_has_no_edge_against_a_oneway(oneway, allowed, forbidden):
+    rg = build_route_graph(_square_with_oneway(oneway), ORIGIN)
+    tos = lambda a: {e.to for e in rg.adjacency.get(a, [])}  # noqa: E731
+    assert allowed[1] in tos(allowed[0])
+    assert forbidden[1] not in tos(forbidden[0])
+
+
+def test_a_loop_is_never_reversed_onto_the_wrong_way_of_a_oneway():
+    """The north side runs west only (`oneway=-1` on a way drawn 2 -> 3), so
+    the only legal circuit is counter-clockwise. It used to be found and then
+    REVERSED to clockwise -- driving the one-way backwards. A legal
+    counter-clockwise loop beats an illegal clockwise one."""
+    rg = build_route_graph(_square_with_oneway("-1"), ORIGIN)
+    route = select_ego_route(rg, (0.0, 0.0))
+    north = max(y for _, y in rg.points.values())
+    # Route points along the north side, away from the corner fillets.
+    xs = [x for x, y in rg.points.values()]
+    lo, hi = min(xs) + 30.0, max(xs) - 30.0
+    pts = route.points
+    on_north = [
+        (a, b) for a, b in zip(pts, pts[1:] + pts[:1])
+        if abs((a[1] + b[1]) / 2 - north) < 6.0 and lo < (a[0] + b[0]) / 2 < hi
+    ]
+    assert on_north, "the route never drives the north side"
+    for a, b in on_north:
+        assert b[0] - a[0] < 0.0, "the route drives the one-way north side eastbound"
+
+
+def test_out_and_back_never_reverses_along_a_oneway():
+    """A two-way stem 1-2 continues as a one-way 2-3. Driving out and back
+    reverses every edge it uses, so it must stop at the end of the two-way."""
+    elements = [
+        {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+        {"type": "node", "id": 2, "lat": 37.7965, "lon": -122.4156},
+        {"type": "node", "id": 3, "lat": 37.7995, "lon": -122.4156},
+        {"type": "way", "id": 100, "nodes": [1, 2], "tags": {"highway": "residential"}},
+        {"type": "way", "id": 101, "nodes": [2, 3], "tags": {"highway": "residential", "oneway": "yes"}},
+    ]
+    rg = build_route_graph(parse_overpass({"elements": elements}), ORIGIN)
+    path = _out_and_back(rg, nearest_junction(rg, (0.0, 0.0)))
+    far = rg.points[3]
+    assert all(math.dist(p, far) > 1.0 for p in path), "the stem drove the one-way out and back"
+
+
+def _oneway_segments(payload):
+    """Every one-way way segment in an extract, in its legal direction."""
+    from map.tags import oneway_direction
+
+    graph = parse_overpass(payload)
+    from map.lanes import drivable_ways, to_local
+
+    out = []
+    for way in drivable_ways(graph):
+        d = oneway_direction(way.tags)
+        if d == 0:
+            continue
+        pts = [to_local(graph.nodes[n].lat, graph.nodes[n].lon, ORIGIN) for n in way.node_ids if n in graph.nodes]
+        if d < 0:
+            pts = pts[::-1]
+        out.extend(zip(pts, pts[1:]))
+    return out
+
+
+def test_the_nob_hill_loop_is_a_clockwise_legal_circuit_of_several_km():
+    """Longer trips, and only legal ones: at least `TARGET_LOOP_M`, driven
+    clockwise (right turns at every corner), and never against a one-way."""
+    from map.lanes import TARGET_LOOP_M, signed_area_x2
+
+    payload = json.loads(FIXTURE.read_text())
+    rg = build_route_graph(parse_overpass(payload), ORIGIN)
+    route = select_ego_route(rg, (0.0, 0.0))
+    assert route.closed
+    assert TARGET_LOOP_M <= route.length_m <= MAX_LOOP_M
+    assert signed_area_x2(route.points) < 0, "the loop runs counter-clockwise"
+
+    oneways = _oneway_segments(payload)
+    wrong = 0
+    pts = route.points
+    for a, b in zip(pts, pts[1:] + pts[:1]):
+        length = math.dist(a, b)
+        if length < 5.0:
+            continue  # fillet pieces: no direction worth judging
+        mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        hx, hy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+        for p, q in oneways:
+            seg = math.dist(p, q)
+            if seg < 1e-6:
+                continue
+            ux, uy = (q[0] - p[0]) / seg, (q[1] - p[1]) / seg
+            if abs(hx * ux + hy * uy) < 0.9:
+                continue  # crossing it, not driving along it
+            if LineString([p, q]).distance(LineString([mid, mid]).buffer(0.01)) > 2.5:
+                continue
+            if hx * ux + hy * uy < 0:
+                wrong += 1
+    assert wrong == 0, f"{wrong} route segments run against a one-way"
+
+
+def test_a_junction_with_no_way_out_is_skipped_for_a_nearby_one_that_has_a_loop():
+    """The nearest junction can be a sink: the end of a one-way with no way
+    out. Measured on the Nob Hill extract geocoded to Springfield, where the
+    route starts at whichever junction is nearest -- no loop and no stem
+    started there, so the location failed to build. The search moves on to
+    the next nearest junction instead."""
+    d = 0.0018
+    elements = [
+        {"type": "node", "id": 1, "lat": 37.7945, "lon": -122.4156},
+        {"type": "node", "id": 2, "lat": 37.7945 + d, "lon": -122.4156},
+        {"type": "node", "id": 3, "lat": 37.7945 + d, "lon": -122.4156 + d},
+        {"type": "node", "id": 4, "lat": 37.7945, "lon": -122.4156 + d},
+        # A one-way spur out of the square's corner 1: 1 -> 5 -> 6, ending at
+        # a dead end. Node 5 is nearest the origin; its only way out leads to
+        # the dead end, so no loop and no reversible stem start there.
+        {"type": "node", "id": 5, "lat": 37.7945 - 0.0004, "lon": -122.4156 - 0.0004},
+        {"type": "node", "id": 6, "lat": 37.7945 - 0.0012, "lon": -122.4156 - 0.0012},
+    ]
+    for i, (a, b) in enumerate([(1, 2), (2, 3), (3, 4), (4, 1)]):
+        elements.append({"type": "way", "id": 100 + i, "nodes": [a, b], "tags": {"highway": "residential"}})
+    elements.append(
+        {"type": "way", "id": 200, "nodes": [1, 5], "tags": {"highway": "residential", "oneway": "yes"}}
+    )
+    elements.append(
+        {"type": "way", "id": 201, "nodes": [5, 6], "tags": {"highway": "residential", "oneway": "yes"}}
+    )
+    rg = build_route_graph(parse_overpass({"elements": elements}), ORIGIN)
+    origin = rg.points[5]
+    assert nearest_junction(rg, origin) == 5, "the premise: the trap is the nearest junction"
+    route = select_ego_route(rg, origin)
+    assert route.closed
+    assert route.length_m > 600.0  # the 800 m square, inset into its lane and rounded
+
+
+@pytest.mark.parametrize("tags", [{"tunnel": "yes"}, {"covered": "yes"}, {"layer": "-1"}])
+def test_the_route_graph_leaves_out_ways_mapped_underground(tags):
+    """Until tunnels are drawn as tunnels, a route through one drives under
+    buildings in plain view. Measured: lengthening the loop sent the ego
+    through the Broadway Tunnel, with five footprints standing on its lane."""
+    graph = _square_with_oneway("no")
+    for way in graph.ways.values() if isinstance(graph.ways, dict) else graph.ways:
+        if way.id == 101:
+            way.tags.update(tags)
+    rg = build_route_graph(graph, ORIGIN)
+    assert 3 not in {e.to for e in rg.adjacency.get(2, [])}
+    assert 2 not in {e.to for e in rg.adjacency.get(3, [])}
+
+
+def test_the_nob_hill_loop_stays_out_of_the_broadway_tunnel():
+    """Measured by route length running along a tunnel, not by tunnel nodes
+    near the route: the Broadway Tunnel ways are two nodes each, both at the
+    mouths, which sit on the streets the tunnel joins."""
+    from shapely.geometry import Point
+
+    from map.lanes import to_local
+
+    payload = json.loads(FIXTURE.read_text())
+    graph = parse_overpass(payload)
+    tunnels = [
+        LineString([to_local(graph.nodes[n].lat, graph.nodes[n].lon, ORIGIN) for n in e["nodes"] if n in graph.nodes])
+        for e in payload["elements"]
+        if e["type"] == "way" and e.get("tags", {}).get("tunnel") == "yes" and "highway" in e["tags"]
+    ]
+    assert tunnels, "the premise: the fixture maps the Broadway Tunnel"
+    route = select_ego_route(build_route_graph(graph, ORIGIN), (0.0, 0.0))
+    pts = route.points + route.points[:1]
+    along = 0.0
+    def along_tunnel(a, b, t):
+        """Driving along the tunnel, not crossing over it on a surface street."""
+        (x0, y0), (x1, y1) = t.coords[0], t.coords[-1]
+        tl = math.hypot(x1 - x0, y1 - y0)
+        sl = math.dist(a, b)
+        if tl < 1e-6 or sl < 1e-6:
+            return False
+        cos = abs((x1 - x0) * (b[0] - a[0]) + (y1 - y0) * (b[1] - a[1])) / (tl * sl)
+        return cos > 0.9
+
+    for a, b in zip(pts, pts[1:]):
+        mid = Point((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        if any(t.distance(mid) < 4.0 and t.length > 20.0 and along_tunnel(a, b, t) for t in tunnels):
+            # Only the interior counts: a mouth is a junction on the street.
+            if all(mid.distance(Point(t.coords[0])) > 15.0 and mid.distance(Point(t.coords[-1])) > 15.0 for t in tunnels):
+                along += math.dist(a, b)
+    assert along == 0.0, f"the loop drives {along:.0f} m through a tunnel"
