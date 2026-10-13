@@ -556,10 +556,10 @@ def _serve(args) -> int:
             src = source.fork() if isinstance(source, OsmSceneSource) else scene_source_for(
                 args.source, args.traffic
             )
-            return SimLoop(
-                Simulation(src, args.scenario, seed=args.seed, dt=1 / args.sim_hz),
-                hz=args.sim_hz,
-            )
+            session_sim = Simulation(src, args.scenario, seed=args.seed, dt=1 / args.sim_hz)
+            if args.perception == "noisy-truth":
+                session_sim.select_perception("noisy-truth")
+            return SimLoop(session_sim, hz=args.sim_hz)
 
         app = create_app(
             tick_hz=args.tick_hz,

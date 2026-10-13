@@ -81,6 +81,21 @@ async def test_sessions_do_not_share_a_world(hosted):
     assert len(made) == 2 and made[0] is not made[1]
 
 
+async def test_presets_are_per_session(hosted):
+    """Loading a walkthrough preset in one tab must not swap the other tab's world."""
+    url, made, _ = hosted
+    async with connect(url) as a, connect(url) as b:
+        await _next(a, "scene_description")
+        await _next(b, "scene_description")
+        await a.send(json.dumps({"id": "lp", "cmd": "load_preset", "preset_id": "control", "seed": 7}))
+        ack = await _next(a, "ack")
+        assert ack["ok"] is True
+        # A's world is now the preset; B's is untouched (a shared world would flip B too).
+        assert sorted(lp.sim._preset is not None for lp in made) == [False, True]
+        for _ in range(30):
+            assert all(e["code"] != "preset_loaded" for e in (await _next(b, "state_update"))["events"])
+
+
 async def test_over_capacity_is_refused_with_busy_then_frees(hosted):
     url, made, _ = hosted
     async with connect(url) as a, connect(url) as b:

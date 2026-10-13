@@ -237,14 +237,13 @@ Lead-vehicle pressure on a pinned seed.
   The detector has no positive-detection curve to fit them to. Read its
   precision and recall as "what this model of a sensor does to the planner",
   not as a prediction of any real sensor.
-- **The hosted world is shared.** The Fly backend runs one simulation for
-  every visitor.
-  - Another visitor's Run swaps the shared simulation under you mid-run, but
-    your page is not sent their scene description until you reconnect or
-    reload. Until then your Run tab keeps showing your own preset and seed,
-    which no longer describe what is driving, and their scorecard is filed
-    under their preset, not yours. The `preset_loaded` entry in the Events
-    tab is the only sign it happened.
+- **Hosted: one private world per tab, and a cap.** Each browser connection to
+  the Fly backend gets its own simulation, so another visitor's Run, Reset or
+  address load never swaps yours. A preset's scorecard, seed and replay are
+  yours alone. Details in [`hosted-sessions.md`](hosted-sessions.md).
+  - At most `STREETLAB_MAX_SESSIONS` (2) tabs run at once; the next gets a
+    "server busy" overlay with Retry.
+  - A reload or reconnect starts a fresh world, so a run in progress is lost.
   - On the hosted backend every preset runs on the Nob Hill scene
     (`--source osm`).
   - If numbers look wrong there, run locally.

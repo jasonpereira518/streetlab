@@ -95,8 +95,8 @@ curated example runs: a scene, a seed, a perception mode and a hazard
 timeline. Press **Run** on a card. The right panel switches to its **Run**
 tab, and a scorecard lands when the run ends. **Replay** reruns the same
 seed, so you can compare the two columns. What each preset is for, what a
-good scorecard looks like, and the honest limits (shared hosted world,
-assumed noisy-truth parameters, a detector with no vehicle true positives)
+good scorecard looks like, and the honest limits (per-tab hosted worlds with
+a session cap, assumed noisy-truth parameters, a detector with no vehicle true positives)
 are in [`docs/walkthrough.md`](docs/walkthrough.md).
 
 ## Load any address
