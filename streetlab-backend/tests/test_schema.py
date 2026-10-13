@@ -272,7 +272,7 @@ def test_perception_health_is_required_and_never_null():
     from schema import PerceptionStats
 
     base = dict(
-        mode="ml", detector_ms=None, server_e2e_ms=None, frames_received=0,
+        mode="ml", pipeline=True, detector_ms=None, server_e2e_ms=None, frames_received=0,
         frames_dropped=0, precision=None, recall=None, mean_pos_err_m=None,
     )
     with pytest.raises(ValueError):

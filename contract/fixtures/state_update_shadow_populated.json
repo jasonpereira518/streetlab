@@ -1229,6 +1229,7 @@
   "events": [],
   "perception": {
     "mode": "ground-truth",
+    "pipeline": true,
     "detector_ms": 41.5,
     "server_e2e_ms": 63.0,
     "frames_received": 120,

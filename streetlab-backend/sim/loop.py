@@ -1572,6 +1572,7 @@ def _noisy_stats(quality: ScoreResult | None) -> PerceptionStats:
         precision=None if quality is None else quality.precision,
         recall=None if quality is None else quality.recall,
         mean_pos_err_m=None if quality is None else quality.mean_pos_err_m,
+        health="ok",
     )
 
 

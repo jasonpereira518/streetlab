@@ -270,7 +270,7 @@ describe('StateUpdate', () => {
     expect(StateUpdateSchema.safeParse({ ...sample, world_agents: [] }).success).toBe(true);
 
     const stats = {
-      mode: 'ml', detector_ms: null, server_e2e_ms: null, frames_received: 0,
+      mode: 'ml', pipeline: true, detector_ms: null, server_e2e_ms: null, frames_received: 0,
       frames_dropped: 0, precision: null, recall: null, mean_pos_err_m: null,
     };
     const withHealth = (health: unknown) =>
@@ -434,6 +434,7 @@ describe('Walkthrough presets wire', () => {
         precision: 0.9,
         recall: 0.7,
         mean_pos_err_m: 0.4,
+        health: 'ok',
       },
     };
     expect(StateUpdateSchema.safeParse(frame).success).toBe(true);
