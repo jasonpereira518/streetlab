@@ -8,9 +8,9 @@ reason; reaction (the plan named the hazard, or the ego's speed departs from the
 same run without it); outline separation above zero.
 
 The measurement behind the expectations is
-`docs/measurements/2026-10-09-hazard-matrix.md` (5 seeds per cell; this gate
-runs seed 1, which that table includes). Regenerate it with
-`uv run python ../scripts/hazard_matrix.py --write`.
+`docs/measurements/2026-10-13-hazard-matrix-after.md` (5 seeds per cell; this
+gate runs seed 1, which that table includes). Regenerate it with
+`uv run python ../scripts/hazard_matrix.py --write hazard-matrix-after`.
 """
 
 from __future__ import annotations
@@ -37,25 +37,23 @@ FROM_BEHIND = frozenset({"emergency_vehicle", "tailgater"})
 #: why. Strict: when one starts passing the xfail must be removed, so this list
 #: can only get shorter.
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("cut_in", "grid_slow"): (
-        "contact ~12 s AFTER the cut-in, not in reacting to it: the ego returns to its "
-        "lane while the cut-in car is beside it, outside both driving-feed cones "
-        "(forward +-75 deg, rear +-40 deg). 3 of 5 seeds, all unseen in the second "
-        "before contact. Needs a side-mirror zone in perception/driver_view.py"
-    ),
-    ("tailgater", "grid"): (
-        "the ego changes lane while the tailgater is alongside, in the same driving-feed "
-        "blind spot as cut_in/grid_slow; 5 of 5 seeds, 4 unseen before contact"
-    ),
-    ("emergency_vehicle", "grid_slow"): (
-        "the emergency car swings through a junction past a stopped ego and clips it "
-        "(seen; 2 of 5 seeds). The ego has no reaction to a vehicle behind it until "
-        "Cycle 6 Phase 3's pull_over"
+    ("red_light_runner", "grid"): (
+        "every signal on the grid loop is a turn for the ego, and the runner is staged across "
+        "the route at `cp.s + RUNNER_PAST_LINE_M`, which is on the turn's arc: it meets the "
+        "turning ego in the junction, outside the forward cone. 4 of 5 seeds overlap, all "
+        "unseen before contact. Crossing it perpendicular to the approach instead was tried: "
+        "the ego then sees and slows (max 2.9 m/s) but still overlaps by 2.3 m. Needs the "
+        "runner timed to the ego's turn, not its straight-line distance"
     ),
     ("red_light_runner", "grid_slow"): (
-        "timed on the ego's speed at staging; at 0.45x traffic the ego slows for the "
-        "corner and the runner has crossed first: inert in 3 of 5 seeds, and 1 of 5 "
-        "overlaps the ego after being seen 0.2 s before contact"
+        "same turn geometry at 0.45x traffic: 1 of 5 seeds overlaps unseen and 2 of 5 are "
+        "inert (the runner has crossed before the slowed ego arrives)"
+    ),
+    ("red_light_runner", "nob_hill"): (
+        "staged and in the driving feed, but the ego is turning right at that signal and the "
+        "runner (seed 1: seen only 0.5 s before it passes) clears it by 3.4 m: 0 of 5 seeds "
+        "react or overlap (closest 2.9 m), so there is nothing to react to. Same turn "
+        "geometry as the grid"
     ),
 }
 

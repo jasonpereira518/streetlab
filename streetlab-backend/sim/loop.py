@@ -512,8 +512,13 @@ class Simulation:
             self._next_cutin_at = None
             return
         if self._next_cutin_at is not None and t >= self._next_cutin_at:
-            self.inject_hazard("cut_in")
-            self._next_cutin_at = None
+            # A cut-in needs a legal lane beside the ego, which a scene has only
+            # part of the time (grid-merge: ~10% of ticks): a declined one is
+            # retried like a scheduled hazard, not lost for a whole interval.
+            if self.inject_hazard("cut_in").ok:
+                self._next_cutin_at = None
+            else:
+                self._next_cutin_at = t + _HAZARD_RETRY_S
         if self._next_cutin_at is None:
             rate = 1.0 / max(period, _CUTIN_MIN_PERIOD_S)
             self._next_cutin_at = t + self.rng.expovariate(rate)

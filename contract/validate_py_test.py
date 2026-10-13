@@ -34,11 +34,8 @@ VALID_NAMES = [
     "state_update_moving",
     "state_update_hazard",
     "state_update_events",
-<<<<<<< HEAD
     "state_update_run_summary",
-=======
     "state_update_reaction",
->>>>>>> 7e0f487 (Regenerate the contract fixtures; add state_update_reaction)
     "ack_ok",
     "ack_error",
 ]
@@ -85,7 +82,16 @@ def generate() -> dict[str, dict]:
     # handling it and the planner is not "reacting". `state_update_hazard`
     # proves the TTC/flag fields; `state_update_reaction` proves
     # `plan.reaction_source_id` and the `threat` series.
-    sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
+    # A cut-in needs a legal lane beside the ego, which grid-merge has only part
+    # of the time: step until the scene accepts it.
+    def stage_cut_in(s: Simulation) -> None:
+        for _ in range(60 * 30):
+            if s.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"}).ok:
+                return
+            s.step()
+        raise AssertionError("no cut-in could be staged in 30 s")
+
+    stage_cut_in(sim)
     # The frame an event lands on is the ONLY one that carries it:
     # `state_update()` drains `world.events` into the frame it builds. Every
     # other fixture here is therefore captured with an empty `events` array,
@@ -93,23 +99,32 @@ def generate() -> dict[str, dict]:
     # against schema.ts at all -- a contract suite cannot catch drift in a
     # field it never puts on the wire. Captured here, before the settle loop
     # below consumes it.
-    hazard = sim.state_update()
-    out["state_update_events"] = hazard.model_dump(mode="json")
+    out["state_update_events"] = sim.state_update().model_dump(mode="json")
     reaction = None
     for _ in range(60 * 30):
         sim.step()
-        hazard = sim.state_update()
-        if (
-            reaction is None
-            and hazard.plan.reaction_source_id is not None
-            and hazard.telemetry.trajectory.threat
-        ):
-            reaction = hazard
-        if hazard.telemetry.ttc_s is not None and any(d.hazard for d in hazard.detections):
+        frame = sim.state_update()
+        if frame.plan.reaction_source_id is not None and frame.telemetry.trajectory.threat:
+            reaction = frame
             break
     assert reaction is not None, "the planner never reacted to the injected cut-in"
-    out["state_update_hazard"] = hazard.model_dump(mode="json")
     out["state_update_reaction"] = reaction.model_dump(mode="json")
+
+    # The hazard frame comes from the same scene with the threat layer off: a
+    # reacting ego brakes before the cut-in car closes, so TTC and the `hazard`
+    # flag (what this fixture proves) never co-occur in the run above.
+    twin = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    twin._planner.assessor.rules.clear()
+    for _ in range(180):
+        twin.step()
+    stage_cut_in(twin)
+    hazard = twin.state_update()
+    for _ in range(60 * 30):
+        twin.step()
+        hazard = twin.state_update()
+        if hazard.telemetry.ttc_s is not None and any(d.hazard for d in hazard.detections):
+            break
+    out["state_update_hazard"] = hazard.model_dump(mode="json")
 
     # A scorecard mid-run, carrying the hazard and its reaction from above.
     sim.apply_dict({"id": "rs", "cmd": "run_summary"})

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, Sequence
 
 from perception.service import MAX_RANGE_M
-from plan.behavior import stop_line_ceiling
+from plan.behavior import stop_ceiling
 from plan.ttc import HAZARD_TTC_S
 from schema import Detection, Maneuver
 from sim.route import Route
@@ -465,7 +465,7 @@ class YieldToEntryRule:
     """Yield to something about to enter the ego's path.
 
     The predicted conflict point is a virtual stop line: the junction FSM's own
-    ceiling (`stop_line_ceiling`) is applied toward it, with `maneuver="yield"`.
+    ceiling (`stop_ceiling`, lag-aware) is applied toward it, with `maneuver="yield"`.
     Only detections currently OUTSIDE the strip qualify (`t_in > 0`): one
     already inside is a lead, and `_closest_lead`'s following law owns it --
     yielding to a slower car in the lane would stop the ego behind traffic it
@@ -505,7 +505,7 @@ class YieldToEntryRule:
         distance = line_s - inp.ego_s - EGO_LENGTH_M / 2
         return Reaction(
             kind="yield_to_entry",
-            speed_ceiling_mps=stop_line_ceiling(max(distance, 0.0)),
+            speed_ceiling_mps=stop_ceiling(max(distance, 0.0), inp.ego.speed_mps),
             source_id=w.detection_id,
             maneuver="yield",
             source_window=w,

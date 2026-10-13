@@ -265,7 +265,7 @@ def test_window_dataclass_is_frozen(route):
 
 # --- Reaction, rules and the assessor --------------------------------------- #
 
-from plan.behavior import stop_line_ceiling  # noqa: E402
+from plan.behavior import stop_ceiling  # noqa: E402
 from plan.hazard import (  # noqa: E402
     AEB_RELEASE_S,
     AEB_TRIGGER_MPS2,
@@ -445,7 +445,7 @@ def test_yield_fires_on_a_pedestrian_about_to_step_out_and_aims_at_the_conflict(
     r = YieldToEntryRule().step(rule_input(route, [w], 10.0))
     assert r.kind == "yield_to_entry" and r.maneuver == "yield" and r.source_id == "p1"
     distance = (130.0 - 0.3) - EGO_S - EGO_LENGTH_M / 2
-    assert r.speed_ceiling_mps == pytest.approx(stop_line_ceiling(distance))
+    assert r.speed_ceiling_mps == pytest.approx(stop_ceiling(distance, 10.0))
     assert 0.0 < r.speed_ceiling_mps < 10.0
 
 
