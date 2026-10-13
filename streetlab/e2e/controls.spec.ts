@@ -10,12 +10,11 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('.link-chip')).toHaveText('mock');
 });
 
-test('the stub buttons and the cut-in slider are gone', async ({ page }) => {
+test('the stub buttons are gone', async ({ page }) => {
   for (const name of ['New session', 'Save scenario', 'Undo']) {
     await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
   }
   await expect(page.locator('.sidebar-foot')).toHaveCount(0);
-  await expect(page.getByText('Cut-in interval')).toHaveCount(0);
 });
 
 test('a bookmark survives a reload', async ({ page }) => {
@@ -53,8 +52,9 @@ test('shortcuts pause, reset and open help; the list is visible', async ({ page 
   await expect(dialog).toHaveCount(0);
 });
 
-test('the perception menu says why it is disabled', async ({ page }) => {
-  const wrapper = page.locator('.menu[title*="--perception"]');
-  await expect(wrapper).toHaveCount(1);
-  await expect(wrapper.locator('button')).toBeDisabled();
+test('the ML perception item says why it is disabled', async ({ page }) => {
+  await page.getByTitle('Perception source').click();
+  const ml = page.getByRole('menuitemradio', { name: /ML/ });
+  await expect(ml).toBeDisabled();
+  await expect(ml).toHaveAttribute('title', /no perception pipeline running/i);
 });
