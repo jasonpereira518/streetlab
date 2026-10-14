@@ -348,6 +348,13 @@ class ScriptedTraffic:
             # The body points where the car is going, not where the lane does.
             heading = _wrap(heading + math.atan2(lateral_rate, speed))
 
+        # A body turns at a bounded rate. Both inputs above step: the route's heading by a whole
+        # vertex (11 degrees on an 8-segment fillet) and the crab from 0 to atan(1.2 / v) the
+        # tick a lane change starts (27 degrees at 2.5 m/s). Followed through, as a real
+        # chassis would, they cost a few ticks of lag instead of a visible snap.
+        before = agent.state.heading
+        heading = _wrap(before + max(-_MAX_YAW_STEP_RAD, min(_MAX_YAW_STEP_RAD, _wrap(heading - before))))
+
         agent.s = s
         agent.state = VehicleState(
             x=x,
@@ -379,6 +386,18 @@ _IDM_DELTA = 4.0
 #: `_IDM_COMFORT_DECEL` stays at 2.0 and is what car-following actually uses --
 #: this is the emergency floor, not the working rate.
 _IDM_MAX_BRAKE = 4.5
+
+#: The floor on the free term (no leader): it brakes for a corner or a speed-scale change, and
+#: should not reach the emergency floor above. 3.0 m/s^2, under the 3.5 p99 traffic budget
+#: (`tests/driving_metrics.py`); measured on `grid`, p99 4.50 -> 3.31 with the yaw bound.
+#: The interaction term adds on top, to `_IDM_MAX_BRAKE`. `traffic_speed_scale=0` still halts
+#: traffic: it needs 3.7 s from 11 m/s.
+_IDM_FREE_BRAKE = 3.0
+
+#: The most an agent's body may turn in one tick, radians: 1.8 degrees, under the 2.0 budget
+#: (`tests/driving_metrics.py`). The tightest corner traffic takes (3.1 m radius, at 2.6 m/s)
+#: needs 0.84.
+_MAX_YAW_STEP_RAD = math.radians(1.8)
 
 #: Beyond this there is no leader worth modelling. Bounding the search is not
 #: a performance dodge -- it is what stops an agent on a short closed loop from
@@ -1252,8 +1271,12 @@ def _idm_accel(
     actually produce.
     """
     free = 1.0 - (speed / desired) ** _IDM_DELTA if desired > 0 else -math.inf
+    # The free term alone never asks for more than `_IDM_FREE_BRAKE`; only the interaction with
+    # something ahead can take the total to the emergency floor.
+    # A desired speed of zero (`traffic_speed_scale=0`) is a halt, not a corner: the emergency floor.
+    free_accel = max(_IDM_MAX_ACCEL * free, -(_IDM_FREE_BRAKE if desired > 0 else _IDM_MAX_BRAKE))
     if not math.isfinite(gap):
-        return max(_IDM_MAX_ACCEL * free, -_IDM_MAX_BRAKE)
+        return free_accel
     closing = speed - lead_speed
     s_star = _IDM_MIN_GAP_M + max(
         0.0,
@@ -1263,7 +1286,7 @@ def _idm_accel(
     # A gap that has closed to nothing would divide by zero; the floor makes
     # the interaction term merely enormous, which is the same command.
     interaction = (s_star / max(gap, 0.1)) ** 2
-    return max(_IDM_MAX_ACCEL * (free - interaction), -_IDM_MAX_BRAKE)
+    return max(free_accel - _IDM_MAX_ACCEL * interaction, -_IDM_MAX_BRAKE)
 
 
 def _approach(value: float, target: float, max_delta: float) -> float:
