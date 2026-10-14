@@ -161,6 +161,19 @@ export const StreetSignSchema = z.object({
   kind: z.enum(['street_name', 'speed_limit', 'no_parking']),
 });
 
+/**
+ * A rounded junction corner: the kite `corner` -> `tangent_a` -> `center` ->
+ * `tangent_b`, less the disc of `radius_m` about `center`. Computed once by
+ * the backend from the final roads, so placement and paint agree.
+ */
+export const KerbReturnSchema = z.object({
+  corner: Vec2Schema,
+  tangent_a: Vec2Schema,
+  center: Vec2Schema,
+  tangent_b: Vec2Schema,
+  radius_m: z.number().positive(),
+});
+
 /** One entry in the left sidebar's saved-scenario list. */
 export const ScenarioSummarySchema = z.object({
   id: z.string(),
@@ -256,6 +269,7 @@ export const SceneDescriptionSchema = z.object({
   stop_signs: z.array(StopSignSchema),
   trees: z.array(TreeSchema),
   street_signs: z.array(StreetSignSchema),
+  kerb_returns: z.array(KerbReturnSchema).default([]),
   /**
    * The line the car drives: its lane centre, straight along each block and
    * curved through every corner. Distinct from `Plan.polyline`, which is the
@@ -738,6 +752,7 @@ export type HazardSummary = z.infer<typeof HazardSummarySchema>;
 export type PresetSummary = z.infer<typeof PresetSummarySchema>;
 export type Terrain = z.infer<typeof TerrainSchema>;
 export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
+export type KerbReturn = z.infer<typeof KerbReturnSchema>;
 
 export type DetectionClass = z.infer<typeof DetectionClassSchema>;
 export type Detection = z.infer<typeof DetectionSchema>;

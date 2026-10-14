@@ -20,16 +20,18 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Protocol, runtime_checkable
 
-from map.clearance import KeepOut
+from map.clearance import KERB_RETURN_M, KeepOut, kerb_returns
 from map.features import build_speed_limit_signs
 from map.lanes import derive_lanes, project_control_points, speed_limits_along
 from map.placement import (
     KERB_CLEARANCE_M,
     SIDEWALK_W_M,
+    STOP_BAR_SETBACK_M,
     TREE_VERGE_M,
     faces_the_route,
     facing,
     kerb_offset,
+    stop_line_setback,
 )
 from schema import (
     PROTOCOL_VERSION,
@@ -119,11 +121,6 @@ SIDEWALK_W = SIDEWALK_W_M
 # so anything above roughly 6 m puts the racing line over the kerb and through
 # the buildings behind it. `test_world_sanity.py` pins this.
 TURN_RADIUS_M = 6.0
-
-# How far back from the crossing carriageway the painted stop bar sits, and
-# with it the sign that announces it. Matches the bar the renderer paints
-# (`world.ts`, `c.s - dir * (c.half + 2.2)`) so sign and paint agree.
-STOP_BAR_SETBACK_M = 2.2
 
 # How far before a junction centre the car halts. Clears the widest crossing
 # carriageway here (an arterial's 7.2 m half-width) with room to spare.
@@ -350,6 +347,7 @@ class SyntheticGrid:
             roads=self._roads(),
             buildings=buildings,
             crosswalks=self._crosswalks(),
+            kerb_returns=kerb_returns(self._roads()),
             traffic_lights=self._traffic_lights(),
             stop_signs=self._stop_signs(),
             trees=trees,
@@ -555,7 +553,10 @@ class SyntheticGrid:
                             (cx, cy),
                             travel,
                             approach.half_width,
-                            along=crossing.half_width + KERB_CLEARANCE_M,
+                            # Past the kerb return, where the corner's kerb runs
+                            # straight again: at the old square corner the pole
+                            # stood on the rounded tarmac.
+                            along=crossing.half_width + KERB_RETURN_M,
                         ),
                         heading=facing(travel),
                         centre=(cx, cy),
@@ -567,8 +568,8 @@ class SyntheticGrid:
     def _stop_sign_heads(self) -> list[_Head]:
         """One sign per uncontrolled approach, at its NEAR right corner.
 
-        Set back from the junction by the crossing carriageway plus
-        `STOP_BAR_SETBACK_M`, so the driver reads it on the approach rather
+        Level with the stop bar (`STOP_BAR_SETBACK_M` past the crossing kerb),
+        so the driver reads it on the approach rather
         than after crossing the intersection -- the old placement put every
         sign a crossing carriageway PAST its junction and on the left-hand
         kerb, which is both sides of wrong at once.
@@ -587,6 +588,8 @@ class SyntheticGrid:
                             (cx, cy),
                             travel,
                             approach.half_width,
+                            # Level with the stop bar, behind the crosswalk and
+                            # clear of the kerb return.
                             along=-(crossing.half_width + STOP_BAR_SETBACK_M),
                         ),
                         heading=facing(travel),
@@ -633,14 +636,17 @@ class SyntheticGrid:
         them, so `lamp_heading + pi` is the direction that driver travels; the
         route heading at the junction picks it out.
         """
+        roads = self._roads()
         candidates = []
         for head in self._signal_heads():
             if self._faces_the_route(ego_route, head.heading, head.centre):
-                candidates.append((head.id, "signal", head.centre, STOP_LINE_SETBACK_M))
+                candidates.append(
+                    (head.id, "signal", head.centre, stop_line_setback(ego_route, head.centre, roads))
+                )
         for head in self._stop_sign_heads():
             if self._faces_the_route(ego_route, head.heading, head.centre):
                 candidates.append(
-                    (head.id, "stop_sign", head.centre, STOP_LINE_SETBACK_M)
+                    (head.id, "stop_sign", head.centre, stop_line_setback(ego_route, head.centre, roads))
                 )
         return project_control_points(ego_route, candidates)
 

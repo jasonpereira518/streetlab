@@ -22,7 +22,7 @@ from typing import Iterable, Sequence
 from shapely.geometry import LineString, Point, Polygon
 from shapely.strtree import STRtree
 
-from schema import Building, Crosswalk, Road, Tree
+from schema import Building, Crosswalk, KerbReturn, Road, Tree
 
 log = logging.getLogger("streetlab.map")
 
@@ -144,6 +144,136 @@ def encroachments(road: Road, half: float, polys, index) -> list[tuple[int, floa
     return out
 
 
+#: Kerb-return radius at a street corner. San Francisco builds 4-6 m; with a
+#: 1.8 m half-lane it puts the kerb lane's centre on ~6.3 m, the ego route's
+#: own `TURN_RADIUS_M` (6 m) fillet.
+KERB_RETURN_M = 4.5
+#: An alley or driveway mouth gets a small flare, not a street corner.
+SERVICE_RETURN_M = 1.5
+#: Legs meeting more squarely than this leave a corner to round; shallower
+#: (or near-straight, past 180 - this) do not. Matches the renderer's 35 deg
+#: junction test.
+_MIN_CORNER_RAD = math.radians(35.0)
+#: Crossing points this close are one junction.
+_JUNCTION_MERGE_M = 1.5
+#: A leg must run at least this far from the junction to have a corner.
+_MIN_LEG_M = 1.0
+
+
+def _leg_dirs(line: LineString, s: float) -> list[tuple[Vec2, float]]:
+    """(unit direction, length) of each way `line` leaves the point at `s`."""
+    out = []
+    for sign, length in ((1.0, line.length - s), (-1.0, s)):
+        if length < _MIN_LEG_M:
+            continue
+        a = line.interpolate(s)
+        b = line.interpolate(s + sign * min(1.0, length))
+        d = math.hypot(b.x - a.x, b.y - a.y)
+        if d > 1e-9:
+            out.append((((b.x - a.x) / d, (b.y - a.y) / d), length))
+    return out
+
+
+def kerb_returns(
+    roads: Sequence[Road], passes_under: frozenset[str] = frozenset()
+) -> list[KerbReturn]:
+    """One `KerbReturn` for each corner between two angularly neighbouring
+    legs of every junction.
+
+    A junction is wherever two roads cross or meet, except two ways of one
+    street meeting end to end at a shallow angle -- OSM splits a street at
+    every tag change, and that joint is a continuation (the renderer's
+    `findCrossings` rule). Each road through the point contributes a leg each
+    way it runs on; neighbouring legs are joined by a fillet tangent to both
+    kerbs. A leg too short for the whole fillet gets a smaller one. Ways in
+    `passes_under` (tunnels) cross the streets above without meeting them.
+    """
+    roads = [r for r in roads if r.id not in passes_under]
+    lines = [LineString(r.centerline) for r in roads]
+    index = STRtree(lines)
+    # junction point -> {(road index, direction): (unit dir, leg length)}
+    junctions: list[tuple[Vec2, dict]] = []
+    for i, li in enumerate(lines):
+        for j in index.query(li, predicate="intersects"):
+            j = int(j)
+            if j <= i:
+                continue
+            lj = lines[j]
+            hit = li.intersection(lj)
+            points = [g for g in getattr(hit, "geoms", [hit]) if g.geom_type == "Point"]
+            for p in points:
+                si, sj = li.project(p), lj.project(p)
+                at_end = lambda s, ln: s < 1e-6 or s > ln.length - 1e-6  # noqa: E731
+                if at_end(si, li) and at_end(sj, lj) and roads[i].name == roads[j].name:
+                    di, dj = _leg_dirs(li, si), _leg_dirs(lj, sj)
+                    if di and dj:
+                        cos = abs(di[0][0][0] * dj[0][0][0] + di[0][0][1] * dj[0][0][1])
+                        if math.sqrt(max(0.0, 1 - cos * cos)) < math.sin(_MIN_CORNER_RAD):
+                            continue
+                key = (p.x, p.y)
+                legs = None
+                for at, found in junctions:
+                    if math.dist(at, key) < _JUNCTION_MERGE_M:
+                        legs = found
+                        break
+                if legs is None:
+                    legs = {}
+                    junctions.append((key, legs))
+                for k, s, ln in ((i, si, li), (j, sj, lj)):
+                    for n, (u, length) in enumerate(_leg_dirs(ln, s)):
+                        legs[(k, n)] = (u, length)
+
+    out: list[KerbReturn] = []
+    for at, legs in junctions:
+        ordered = sorted(
+            ((math.atan2(u[1], u[0]), k, u, length) for (k, _), (u, length) in legs.items()),
+        )
+        for n, (ang_a, ka, a, len_a) in enumerate(ordered):
+            if len(ordered) < 2:
+                break
+            ang_b, kb, b, len_b = ordered[(n + 1) % len(ordered)]
+            theta = (ang_b - ang_a) % math.tau
+            if not _MIN_CORNER_RAD <= theta <= math.pi - _MIN_CORNER_RAD:
+                continue
+            sin = math.sin(theta)
+            ha, hb = half_width(roads[ka]), half_width(roads[kb])
+            # Where the two straight kerbs meet: hb off leg b's kerb along a,
+            # ha off leg a's kerb along b.
+            x, y = hb / sin, ha / sin
+            reach = 1 / math.tan(theta / 2)
+            radius = KERB_RETURN_M
+            if "service" in (roads[ka].road_class, roads[kb].road_class):
+                radius = SERVICE_RETURN_M
+            radius = min(radius, (len_a - x) / reach, (len_b - y) / reach)
+            if radius < 0.5:
+                continue
+            cx, cy = at[0] + x * a[0] + y * b[0], at[1] + x * a[1] + y * b[1]
+            t = radius * reach
+            k = radius / sin
+            out.append(
+                KerbReturn(
+                    corner=(cx, cy),
+                    tangent_a=(cx + t * a[0], cy + t * a[1]),
+                    center=(cx + k * (a[0] + b[0]), cy + k * (a[1] + b[1])),
+                    tangent_b=(cx + t * b[0], cy + t * b[1]),
+                    radius_m=radius,
+                )
+            )
+    return out
+
+
+def kerb_return_polygon(kr: KerbReturn) -> Polygon:
+    kite = Polygon([kr.corner, kr.tangent_a, kr.center, kr.tangent_b])
+    return kite.difference(Point(kr.center).buffer(kr.radius_m, quad_segs=16))
+
+
+def carriageway(roads: Sequence[Road], returns: Sequence[KerbReturn]) -> list[Polygon]:
+    """Every piece of tarmac: each road's strip and each junction's returns."""
+    return [LineString(r.centerline).buffer(half_width(r)) for r in roads] + [
+        kerb_return_polygon(kr) for kr in returns
+    ]
+
+
 class KeepOut:
     """Every surface a placed object must stay off, indexed for point probes."""
 
@@ -152,8 +282,13 @@ class KeepOut:
         roads: Iterable[Road],
         crosswalks: Iterable[Crosswalk] = (),
         buildings: Iterable[Building] = (),
+        passes_under: frozenset[str] = frozenset(),
     ) -> None:
-        self._roads = [LineString(r.centerline).buffer(half_width(r)) for r in roads]
+        roads = list(roads)
+        #: The scene's kerb returns, computed once here and sent on the wire as
+        #: they are, so the renderer draws the corners placement was judged on.
+        self.kerb_returns = kerb_returns(roads, passes_under)
+        self._roads = carriageway(roads, self.kerb_returns)
         self._walks = [crosswalk_polygon(c) for c in crosswalks]
         self._blds = [_footprint(b) for b in buildings]
         self._road_index = STRtree(self._roads) if self._roads else None

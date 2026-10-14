@@ -65,7 +65,7 @@ from map.lanes import (
 from map.overpass import BBox, HttpxFetcher, OverpassClient, OverpassError
 from map.projection import LatLon, to_local
 from map.tags import passes_under
-from map.placement import faces_the_route
+from map.placement import faces_the_route, stop_line_setback
 from map.scene_build import (
     REFERENCE_STEP_M,
     STOP_AT_BAR_SETBACK_M,
@@ -508,7 +508,7 @@ class OsmSceneSource:
         under = frozenset(f"osm_w{w.id}" for w in drivable_ways(graph) if passes_under(w.tags))
         roads = fit_road_widths(roads, buildings, under)
         crosswalks = build_crosswalks(graph, origin)
-        keep_out = KeepOut(roads, crosswalks, buildings)
+        keep_out = KeepOut(roads, crosswalks, buildings, under)
         lights = build_traffic_lights(graph, origin, keep_out)
         stop_signs = build_stop_signs(graph, origin, keep_out)
         trees = clear_trees(build_trees(graph, origin, buildings), keep_out)
@@ -561,6 +561,7 @@ class OsmSceneSource:
             stop_signs=stop_signs,
             trees=trees,
             street_signs=build_speed_limit_signs(roads, keep_out),
+            kerb_returns=keep_out.kerb_returns,
             # Sampled after `select_ego_route` has offset and filleted, so this
             # is the line the car actually drives rather than the raw OSM
             # centreline it came from.
@@ -605,7 +606,7 @@ class OsmSceneSource:
                 continue
             if faces_the_route(ego_route, light.heading, at, STOP_LINE_SETBACK_M):
                 seen_junctions.add(junction)
-                candidates.append((light.id, "signal", at, STOP_LINE_SETBACK_M))
+                candidates.append((light.id, "signal", at, stop_line_setback(ego_route, at, roads)))
         # A stop sign's anchor is its own OSM node, and where that node sits
         # decides the setback. 139 of Nob Hill's 145 are tagged part-way down a
         # street, which IS the painted bar -- measuring a junction's width back
@@ -618,7 +619,7 @@ class OsmSceneSource:
             if at is None:
                 continue
             setback = (
-                STOP_LINE_SETBACK_M
+                stop_line_setback(ego_route, at, roads)
                 if stop_node_id(sign.id) in junctions
                 else STOP_AT_BAR_SETBACK_M
             )

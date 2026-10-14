@@ -29,6 +29,47 @@ Vec2 = tuple[float, float]
 #: enough that it does not read as standing in a front garden.
 KERB_CLEARANCE_M = 1.2
 
+#: Where the stop bar is painted, past the crossing street's kerb: a 4 m
+#: crosswalk and the 4 ft (1.2 m) MUTCD gap behind it. `world.ts` paints its
+#: bar here (`STOP_BAR_SETBACK_M`) and the car's stop line is measured to it.
+STOP_BAR_SETBACK_M = 5.2
+
+#: A road crossing the approach more squarely than this is the street being
+#: crossed; shallower is the approach itself, or its continuation.
+_CROSSING_MIN_SIN = math.sin(math.radians(35.0))
+
+
+def stop_line_setback(route, centre: Vec2, roads, fallback_m: float = 9.0) -> float:
+    """How far before junction `centre` the ego's stop line is: the crossing
+    street's reach along the approach -- its half-width over the sine of the
+    crossing angle, so a skewed junction is not cut short -- plus
+    `STOP_BAR_SETBACK_M`. `fallback_m` when no crossing street runs through
+    `centre`. A fixed 9 m held the car 3 m behind the bar of a residential
+    crossing and put its nose on the crosswalk of an arterial one."""
+    from shapely.geometry import LineString, Point
+
+    s = route.project(centre)
+    h = route.heading_at(s - fallback_m)
+    ax, ay = math.cos(h), math.sin(h)
+    here = Point(centre)
+    reach = 0.0
+    for road in roads:
+        line = LineString(road.centerline)
+        if line.distance(here) > 1.5:
+            continue
+        d = line.project(here)
+        a, b = line.interpolate(max(0.0, d - 1.0)), line.interpolate(min(line.length, d + 1.0))
+        n = math.hypot(b.x - a.x, b.y - a.y)
+        if n < 1e-9:
+            continue
+        sin = abs(ax * (b.y - a.y) - ay * (b.x - a.x)) / n
+        if sin < _CROSSING_MIN_SIN:
+            continue
+        half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+        reach = max(reach, half / sin)
+    return reach + STOP_BAR_SETBACK_M if reach > 0 else fallback_m
+
+
 #: Width of the pavement drawn beside a kerbed road. Matches the renderers --
 #: `world.ts` and `mockCity.ts` both use 2.8 -- so a setback computed here and
 #: a pavement drawn there agree. `scene_build.py` used to say 2.4 while the
