@@ -1252,14 +1252,18 @@ def test_a_light_that_turns_yellow_inside_the_comfort_distance_is_still_stopped_
     committed 43 m out on green, because it could not stop at COMFORT braking
     there; the light went yellow at 39.5 m, the latch kept it from looking
     again, and a 3 s yellow covers 40 m -- it crossed 0.1 s into red, twice
-    per lap. A yellow is designed around a firm stop (ITE: ~3 m/s2), and at
-    39.5 m that stop fits, so the car must take it."""
+    per lap. The latch must not form on green, so the yellow is still judged.
+
+    With 2.5 s of yellow the line cannot be reached before red, so the car
+    stops. (With 3 s it now goes, correctly: as the car actually brakes --
+    tracker lag included -- a stop no longer fits at 39.5 m, and it reaches the
+    line in 2.95 s; see `_committed_at_yellow`.)"""
     fsm = BehaviorFSM()
     cps = light_at(43.0)
     d = fsm.step(ego_at(0.0, 13.4), road, 0.0, cps, signal("tl", "green"), DT)
     assert d.state is BehaviorState.CRUISE
     ego = ego_at(3.5, 13.4)
-    d = fsm.step(ego, road, 3.5, cps, {"tl": SignalState(id="tl", phase="yellow", time_to_change_s=3.0)}, DT)
+    d = fsm.step(ego, road, 3.5, cps, {"tl": SignalState(id="tl", phase="yellow", time_to_change_s=2.5)}, DT)
     assert d.state is BehaviorState.APPROACH, d
     assert d.maneuver == "stop"
 
@@ -1289,3 +1293,17 @@ def test_a_fast_car_starts_its_stop_where_comfort_braking_needs_it(road):
     # A slow car still ignores the same sign.
     d = BehaviorFSM().step(ego_at(0.0, 8.0), road, 0.0, sign_at(100.0), {}, DT)
     assert d.state is BehaviorState.CRUISE
+
+
+def test_a_yellow_the_tracker_cannot_stop_for_is_driven_through(road):
+    """Measured on grid_slow: yellow 4.7 m out at 4.4 m/s. A 3 m/s^2 stop needs
+    3.2 m on paper, but the tracker reaches a braking profile only after its
+    lag (TRACKER_LAG_S * v = 4.9 m more), and the car stopped 2.2 m over the
+    line. Committed means it cannot stop as it actually brakes."""
+    fsm = BehaviorFSM()
+    yellow = {"tl": SignalState(id="tl", phase="yellow", time_to_change_s=3.0)}
+    d = fsm.step(ego_at(0.0, 4.4), road, 0.0, light_at(4.7), yellow, DT)
+    assert d.state is BehaviorState.CRUISE
+    # Far enough to stop as it brakes: it stops.
+    d = BehaviorFSM().step(ego_at(0.0, 4.4), road, 0.0, light_at(9.0), yellow, DT)
+    assert d.state is BehaviorState.APPROACH

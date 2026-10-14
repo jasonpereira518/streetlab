@@ -734,7 +734,7 @@ class BehaviorFSM:
             # `test_a_yellow_that_cannot_be_cleared_in_time_must_stop_even_though_committed`
             # in `tests/test_behavior.py`, which reproduces this with the
             # measured numbers.
-            if not self._committed(distance, ego):
+            if not self._committed_at_yellow(distance, ego):
                 return True
             return not self._can_clear(target, signals, distance, ego)
         # green, flashing_yellow, or off.
@@ -830,6 +830,17 @@ class BehaviorFSM:
         a lap, though a firm stop fitted when the yellow came on.
         """
         return distance <= ego.speed_mps**2 / (2 * YELLOW_STOP_DECEL_MPS2)
+
+    @staticmethod
+    def _committed_at_yellow(distance: float, ego: VehicleState) -> bool:
+        """`_committed`, as the car actually brakes: the tracker reaches the
+        firm profile only after `TRACKER_LAG_S`, travelling that much further.
+        Measured on grid_slow: yellow 4.7 m out at 4.4 m/s fitted 3.2 m on
+        paper, and the car stopped 2.2 m over the line. Not used for the green
+        latch, which would then latch at 45 m and run reds (see `_committed`).
+        """
+        v = ego.speed_mps
+        return distance <= v * v / (2 * YELLOW_STOP_DECEL_MPS2) + TRACKER_LAG_S * v
 
     # -- lane change ---------------------------------------------------------- #
 

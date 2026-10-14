@@ -109,6 +109,7 @@ describe('pavement is drawn only on the sides that have one', () => {
       stop_signs: [],
       traffic_lights: [],
       street_signs: [],
+      kerb_returns: [],
       reference_path: [],
       roads: [
         {
@@ -161,5 +162,80 @@ describe('pavement is drawn only on the sides that have one', () => {
     const only = sidesOf(true, false);
     expect(only.left).toBeGreaterThan(0);
     expect(only.right).toBe(0);
+  });
+});
+
+/** How far inside a kerb return a point is (beyond its arc), or -Infinity. */
+function depthIntoReturns(scene: SceneDescription, x: number, y: number): number {
+  let worst = -Infinity;
+  for (const kr of scene.kerb_returns) {
+    const quad = [kr.corner, kr.tangent_a, kr.center, kr.tangent_b];
+    let inside = true;
+    let sign = 0;
+    for (let i = 0; i < 4 && inside; i++) {
+      const [ax, ay] = quad[i];
+      const [bx, by] = quad[(i + 1) % 4];
+      const cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+      if (Math.abs(cross) < 1e-9) continue;
+      if (sign === 0) sign = Math.sign(cross);
+      else if (Math.sign(cross) !== sign) inside = false;
+    }
+    if (!inside) continue;
+    worst = Math.max(worst, Math.hypot(x - kr.center[0], y - kr.center[1]) - kr.radius_m);
+  }
+  return worst;
+}
+
+/** Whether any triangle of the named mesh covers the world point. */
+function meshCovers(scene: SceneDescription, name: string, x: number, y: number): boolean {
+  const mesh = buildWorld(scene).root.getObjectByName(name) as THREE.Mesh;
+  const pos = mesh.geometry.getAttribute('position');
+  const index = mesh.geometry.getIndex();
+  const n = index ? index.count : pos.count;
+  const at = (k: number) => {
+    const i = index ? index.getX(k) : k;
+    return [pos.getX(i), -pos.getZ(i)];
+  };
+  for (let k = 0; k < n; k += 3) {
+    const [a, b, c] = [at(k), at(k + 1), at(k + 2)];
+    const d1 = (x - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (y - b[1]);
+    const d2 = (x - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (y - c[1]);
+    const d3 = (x - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (y - a[1]);
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos_ = d1 > 0 || d2 > 0 || d3 > 0;
+    if (!(neg && pos_)) return true;
+  }
+  return false;
+}
+
+describe('kerb returns', () => {
+  /**
+   * Junction corners used to be square, and a car turning on its 6 m lane
+   * radius crossed the pavement corner by 0.46-0.52 m on every grid right
+   * turn. The backend now rounds each corner (`KerbReturn`, 4.5 m) and both
+   * placement and the renderer use those exact shapes.
+   */
+  it.each([
+    ['the real Nob Hill extract', osmScene],
+    ['the synthetic grid', gridScene],
+  ])('pavement stays off them on %s', (_label, load) => {
+    const scene = load();
+    expect(scene.kerb_returns.length).toBeGreaterThan(0);
+    const offenders = pavementSamples(scene)
+      .map(([x, y]) => depthIntoReturns(scene, x, y))
+      // Within 5 cm of the arc is the kerb line, drawn from both sides.
+      .filter((d) => d > 0.05);
+    expect(offenders.length).toBe(0);
+  });
+
+  it('each one on the grid is drawn as tarmac', () => {
+    const scene = gridScene();
+    const missing = scene.kerb_returns.filter((kr) => {
+      // A point just off the old square corner: pavement before, road now.
+      const x = kr.corner[0] + 0.15 * (kr.center[0] - kr.corner[0]);
+      const y = kr.corner[1] + 0.15 * (kr.center[1] - kr.corner[1]);
+      return !meshCovers(scene, 'roads', x, y);
+    });
+    expect(missing.length).toBe(0);
   });
 });
