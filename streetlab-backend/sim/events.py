@@ -158,9 +158,9 @@ CYCLIST_LIFE_S = 30.0
 #: A car crosses the next signal against its red, timed to reach the crossing
 #: point when the ego does. Measured while planning Cycle 6 Phase 1: centres
 #: 2.60 m apart on grid-loop, 0.22 m on Nob Hill -- a collision course.
-#: Re-measured 2026-10-14: 3.35 m on grid-loop (pinned), but 6.5 m on Nob
-#: Hill -- it had already drifted to 5.87 m on main with the longer loop, so
-#: there it no longer meets the ego.
+#: Timed once at staging it drifted (6.4 m on both scenes by 2026-10-14), so
+#: it now re-times every tick (`IdmTraffic._retime`): 0.14 m on grid-loop and
+#: 0.26 m on Nob Hill, both pinned.
 RUNNER_SEARCH_M = 80.0
 RUNNER_MIN_EGO_MPS = 2.0
 #: The crossing point: this far before the junction centre, in the near half
@@ -715,6 +715,8 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
         # Gone before the end of its open route, where arc length wraps.
         lifetime_s=(crossing.length_m - 1.0) / (speed * scale),
     )
+    agent.meet_s = approach
+    agent.meet_ego_s = at
     return f"{agent.id} running the red {gap:.0f} m ahead"
 
 

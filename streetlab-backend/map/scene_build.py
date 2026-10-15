@@ -47,7 +47,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import ControlPoint, LaneSet, Route, estimate_travel_s
+from sim.route import AmbientLane, ControlPoint, LaneSet, Route, estimate_travel_s
 
 # --------------------------------------------------------------------------- #
 # The seam                                                                     #
@@ -85,6 +85,9 @@ class BuiltScene:
     # already covers those). Empty for every scene built before this existed,
     # including every `SyntheticGrid` scenario.
     build_notes: list[tuple[str, str]] = field(default_factory=list)
+    # Every lane of every street, each way, for ambient traffic. Empty for a
+    # source that does not build them yet (OSM, until phase 6).
+    ambient_lanes: list[AmbientLane] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -372,7 +375,19 @@ class SyntheticGrid:
             traffic_count=traffic,
             control_points=self._control_points(ego_route),
             lanes=derive_lanes(ego_route, description.roads),
+            ambient_lanes=self._ambient_lanes(),
         )
+
+    def _ambient_lanes(self) -> list[AmbientLane]:
+        """Each street, each way, each lane: right of travel, end to end."""
+        out = []
+        for s in STREETS:
+            a, b = self._street_ends(s)
+            for p, q in ((a, b), (b, a)):
+                for k in range(s.lanes):
+                    route = Route([p, q], closed=False).offset(-LANE_W * (k + 0.5))
+                    out.append(AmbientLane(route, self._control_points(route)))
+        return out
 
     # -- catalog ----------------------------------------------------------- #
 
