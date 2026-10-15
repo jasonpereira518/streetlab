@@ -142,6 +142,17 @@ export const PARAM_DEFS: ParamDef[] = [
     default: true,
   },
   {
+    key: 'traffic_density',
+    label: 'Traffic density',
+    kind: 'slider',
+    group: 'traffic',
+    default: 12,
+    min: 0,
+    max: 40,
+    step: 1,
+    unit: '/lane-km',
+  },
+  {
     key: 'traffic_speed_scale',
     label: 'Traffic speed',
     kind: 'slider',

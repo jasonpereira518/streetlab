@@ -1307,3 +1307,48 @@ def test_a_yellow_the_tracker_cannot_stop_for_is_driven_through(road):
     # Far enough to stop as it brakes: it stops.
     d = BehaviorFSM().step(ego_at(0.0, 4.4), road, 0.0, light_at(9.0), yellow, DT)
     assert d.state is BehaviorState.APPROACH
+
+
+def _waiting_car(x, y, heading):
+    from schema import Detection, Pose, Size
+
+    return Detection(
+        id="waiting", cls="car", pose=Pose(x=x, y=y, heading=heading),
+        size=Size(length=4.6, width=1.9, height=1.45), velocity=(0.0, 0.0),
+        speed_mps=0.0, confidence=1.0, hazard=False, hazard_label=None,
+        ttc_s=None, lane_offset=None, emergency=False,
+    )
+
+
+def test_at_an_all_way_stop_a_car_that_stopped_first_goes_first(road):
+    """First to stop goes first. Before this the ego went as soon as its own
+    dwell ended and nothing was MOVING in the box -- straight into a car that
+    had been waiting longer and went at the same moment."""
+    centre = (59.0, 0.0)
+    cps = [ControlPoint(id="ss", kind="stop_sign", s=50.0, position=centre)]
+    first = _waiting_car(57.2, 10.0, -math.pi / 2)  # north approach, waiting
+    fsm = BehaviorFSM()
+    # Approaching for two seconds while it already waits.
+    for _ in range(int(2.0 / DT)):
+        fsm.step(ego_at(40.0, 3.0), road, 40.0, cps, {}, DT, detections=[first])
+    for _ in range(int(3.0 / DT)):
+        d = fsm.step(ego_at(47.0, 0.0), road, 47.0, cps, {}, DT, detections=[first])
+    assert d.state is BehaviorState.STOP
+    # It has gone: the ego's turn.
+    for _ in range(3):
+        d = fsm.step(ego_at(47.0, 0.0), road, 47.0, cps, {}, DT, detections=[])
+    assert d.state is BehaviorState.CREEP
+
+
+def test_at_an_all_way_stop_a_car_that_stopped_later_waits_for_the_ego(road):
+    centre = (59.0, 0.0)
+    cps = [ControlPoint(id="ss", kind="stop_sign", s=50.0, position=centre)]
+    fsm = BehaviorFSM()
+    for _ in range(int(1.0 / DT)):
+        fsm.step(ego_at(47.0, 0.0), road, 47.0, cps, {}, DT, detections=[])
+    later = _waiting_car(57.2, 10.0, -math.pi / 2)
+    for _ in range(int(2.0 / DT)):
+        d = fsm.step(ego_at(47.0, 0.0), road, 47.0, cps, {}, DT, detections=[later])
+        if d.state is BehaviorState.CREEP:
+            break
+    assert d.state is BehaviorState.CREEP

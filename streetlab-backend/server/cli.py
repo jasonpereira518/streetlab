@@ -104,6 +104,10 @@ MODEL_CACHE_BUDGET_BYTES = 128 * 1024 * 1024
 DETECTOR_SCORE_THRESHOLD = 0.5
 
 
+#: What `serve` drives at unless told otherwise: dense. `Simulation` itself
+#: defaults to none, so tests, contract fixtures and benchmarks stay pinned.
+DEFAULT_SERVE_DENSITY = 12.0
+
 def scene_source_for(source: str, traffic: int | None = None) -> SceneSource:
     """Pick a world. The seam that makes real map data a one-flag change.
 
@@ -282,6 +286,13 @@ def build_parser() -> argparse.ArgumentParser:
         "reports it (shadow mode)",
     )
     serve.add_argument("--detector-model", default=None, help=_DETECTOR_MODEL_HELP)
+    serve.add_argument(
+        "--traffic-density",
+        type=float,
+        default=DEFAULT_SERVE_DENSITY,
+        help="ambient cars per lane-km on every street, both ways (0 = only the "
+        "ego-lane traffic the scenario defines); the slider changes it live",
+    )
     serve.add_argument(
         "--capture",
         default=None,
@@ -522,6 +533,7 @@ def _serve(args) -> int:
         return 1
     if args.perception == "noisy-truth":
         sim.select_perception("noisy-truth")
+    sim.apply_dict({"id": "cli", "cmd": "set_param", "key": "traffic_density", "value": args.traffic_density})
 
     port = _resolve_port(args.port)
     sock = _bind(args.host, port)
