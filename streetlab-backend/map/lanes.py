@@ -22,7 +22,11 @@ from shapely.geometry import LinearRing, LineString
 from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import (
+    carriageway_width_m,
+    edge_width_m,
     is_oneway,
+    layer_of,
+    structure,
     passes_under,
     lane_counts,
     oneway_direction,
@@ -37,6 +41,10 @@ from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
 log = logging.getLogger("streetlab.map")
 
 LANE_W = 3.6
+#: Where a surveyed `width` may put a lane: a tag claiming 1.5 m lanes or 8 m
+#: ones is a mis-tag, not a road.
+MIN_SURVEYED_LANE_M = 2.7
+MAX_SURVEYED_LANE_M = 4.5
 # Below a lane's own width, simplification cannot move the driving line
 # anywhere a driver would notice.
 SIMPLIFY_TOLERANCE_M = 1.0
@@ -138,6 +146,13 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
         forward, backward = lane_counts(way.tags, cls)
         sides = sidewalk_sides(way.tags, cls)
         oneway = is_oneway(way.tags)
+        edge = edge_width_m(way.tags)
+        lane_w = LANE_W
+        surveyed = carriageway_width_m(way.tags)
+        if surveyed is not None:
+            # A surveyed kerb-to-kerb width sets the lanes, within real bounds.
+            lane_w = min(max((surveyed - 2 * edge) / (forward + backward), MIN_SURVEYED_LANE_M), MAX_SURVEYED_LANE_M)
+        kind = structure(way.tags)
         roads.append(
             Road(
                 id=f"osm_w{way.id}",
@@ -146,12 +161,16 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
                 centerline=points,
                 lanes_forward=forward,
                 lanes_backward=backward,
-                lane_width_m=LANE_W,
+                lane_width_m=lane_w,
                 speed_limit_mps=speed_limit_mps(way.tags, cls),
                 oneway=oneway,
                 center_marking=_center_marking(cls, oneway, forward, backward),
                 sidewalk_left=sides[0],
                 sidewalk_right=sides[1],
+                layer=layer_of(way.tags),
+                bridge=kind == "bridge",
+                tunnel=kind == "tunnel",
+                edge_m=edge,
             )
         )
     if dropped:
@@ -859,7 +878,7 @@ def lane_inset(road: Road) -> float:
     Washington Streets: 250 m of the Nob Hill loop driven with one side on
     the pavement).
     """
-    half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+    half = road.half_width_m
     return min(road.lane_width_m / 2, max(0.0, half - road.lane_width_m / 2))
 
 

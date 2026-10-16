@@ -5,5 +5,5 @@
   "cmd": "load_scenario",
   "ok": false,
   "message": "unknown scenario: atlantis",
-  "t": 5.35
+  "t": 4.0
 }
