@@ -25,7 +25,7 @@ from map.cache import DiskCache
 from map.geocode import Place, StubGeocoder
 from map.osm_source import OsmSceneSource
 from map.overpass import OverpassClient
-from map.clearance import encroachments, floor_half_width
+from map.clearance import carriageway, encroachments, floor_half_width
 from map.scene_build import SyntheticGrid
 from map.tags import passes_under
 
@@ -74,7 +74,9 @@ def _half(road) -> float:
 
 
 def _carriageways(scene):
-    return [LineString(r.centerline).buffer(_half(r)) for r in scene.roads]
+    """The tarmac as `KeepOut` judges it and the renderer draws it: strips and
+    the scene's own kerb returns."""
+    return carriageway(scene.roads, scene.kerb_returns)
 
 
 def _crosswalks(scene):

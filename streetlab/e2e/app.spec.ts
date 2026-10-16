@@ -144,7 +144,9 @@ test('a parameter slider round-trips through an ack', async ({ page }) => {
 test('an unreachable ?backend= degrades without crashing the app', async ({ page }) => {
   // Port 9 (discard) refuses connections, so this exercises the retry path.
   await page.goto('/?backend=ws://127.0.0.1:9');
-  await expect(page.locator('.link-chip')).toHaveText('ws://127.0.0.1:9');
+  // #34 labels the not-yet-open states "Connecting to backend…"; the URL moved to the title.
+  await expect(page.locator('.link-chip')).toHaveText('Connecting to backend…');
+  await expect(page.locator('.link-chip')).toHaveAttribute('title', /ws:\/\/127\.0\.0\.1:9/);
   // No frames arrive, so the widgets sit in their placeholder state — but the
   // shell, the 3D canvas and the controls are all still up.
   await expect(page.locator('canvas.viewport-canvas')).toBeVisible();

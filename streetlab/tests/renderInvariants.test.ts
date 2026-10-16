@@ -81,6 +81,8 @@ function curvyScene(): SceneDescription {
     stop_signs: [],
     trees: [],
     street_signs: [],
+    // The grid's corners, not these roads'.
+    kerb_returns: [],
   };
 }
 

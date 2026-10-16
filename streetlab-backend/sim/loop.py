@@ -111,6 +111,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "follow_distance_s": 1.5,
     "assist_enabled": True,
     "traffic_speed_scale": 1.0,
+    # Ambient cars per lane-kilometre on every street, both ways. 0 here keeps
+    # tests, contract fixtures and benchmarks pinned; `serve` defaults dense.
+    "traffic_density": 0.0,
     # Mean seconds between spontaneous cut-ins; 0 is off, so no scene gains
     # them unasked. Floored at `_CUTIN_MIN_PERIOD_S` when on.
     "cutin_period_s": 0.0,
@@ -315,6 +318,8 @@ class Simulation:
             lanes=self.scene.lanes,
             control_points=self.scene.control_points,
             ego_route=self.scene.ego_route,
+            ambient=self.scene.ambient_lanes,
+            density_per_lane_km=float(self.world.params["traffic_density"]),
         )
         self._signals = SignalController(self.scene.signal_groups)
         # Every scene-scoped draw -- hazard schedule, placement jitter,
@@ -1113,7 +1118,7 @@ class Simulation:
             # Render-only and unknown keys are accepted and ignored, so a newer
             # frontend cannot break an older backend.
             return CommandOutcome(ok=True, message=f"{command.key} ignored by the backend")
-        if command.key == "cutin_period_s":
+        if command.key in ("cutin_period_s", "traffic_density"):
             # Read every tick by `_fire_due_hazards`, on the sim thread: a
             # string or a non-finite float would raise there and stop the
             # world. Zero or negative is a valid "off".
@@ -1124,11 +1129,13 @@ class Simulation:
                 finite = False
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not finite:
                 return CommandOutcome(
-                    ok=False, message=f"cutin_period_s must be a finite number, not {value!r}"
+                    ok=False, message=f"{command.key} must be a finite number, not {value!r}"
                 )
         self.world.params[command.key] = command.value
         if command.key == "traffic_speed_scale":
             self._traffic.set_speed_scale(float(command.value))
+        if command.key == "traffic_density":
+            self._traffic.set_density(float(command.value))
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
 
     def _cmd_set_perception(self, command) -> CommandOutcome:

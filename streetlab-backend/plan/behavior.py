@@ -143,6 +143,14 @@ STOP_DWELL_S = 1.0
 #: waiting for cars a block away.
 JUNCTION_CLEAR_M = 14.0
 
+#: All-way stops, shared with traffic (`sim/agents.py`): a vehicle at rest
+#: this far from a junction's centre, facing it, is waiting at a line; arrivals
+#: this close count as together; a box this long empty breaks a tie all round.
+WAIT_MIN_M = 6.0
+WAIT_MAX_M = 18.0
+STOP_TIE_S = 0.5
+BOX_TIMEOUT_S = 3.0
+
 #: Heading difference (radians) above which another vehicle is treated as
 #: crossing or opposing rather than same-direction traffic ahead of us.
 CROSS_TRAFFIC_HEADING_RAD = 0.7
@@ -476,11 +484,21 @@ class BehaviorFSM:
     #: (control point, braking rate) of the stop under way, chosen once when
     #: the stop is first required.
     stop_profile: tuple[str, float] | None = None
+    #: All-way stops: the FSM's own clock, when the ego came to rest at the
+    #: line, when each other vehicle seen waiting at the junction did, and
+    #: since when the box has stood empty.
+    clock_s: float = 0.0
+    stopped_at_s: float | None = None
+    waiters: dict[str, float] = field(default_factory=dict)
+    box_clear_since_s: float | None = None
 
     def reset(self) -> None:
         self.state = BehaviorState.CRUISE
         self.target_id = None
         self.stop_profile = None
+        self.stopped_at_s = None
+        self.waiters.clear()
+        self.box_clear_since_s = None
         self.dwell_s = 0.0
         self.honoured.clear()
         self.lane_change = None
@@ -503,6 +521,7 @@ class BehaviorFSM:
         # constraint returns before reaching: a lead declined at a red light
         # would otherwise stay declined for as long as the light held.
         self._tick_cooldown(dt)
+        self.clock_s += dt
 
         # Junction constraints outrank everything: a car about to stop at a
         # red has no business changing lane, and the two ceilings would
@@ -539,10 +558,16 @@ class BehaviorFSM:
         if target.id != self.target_id:
             self.target_id = target.id
             self.stop_profile = None
+            self.stopped_at_s = None
+            self.waiters.clear()
+            self.box_clear_since_s = None
             self.dwell_s = 0.0
             self.state = BehaviorState.APPROACH
 
         distance = route.signed_gap(ego_s, target.s)
+        if target.kind == "stop_sign":
+            self._track_waiters(target, detections)
+            self._note_own_wait(ego, target)
 
         # Already committed and moving through: re-check clearance so a late
         # crosser can put us back to a hold, the way a human driver would.
@@ -597,10 +622,65 @@ class BehaviorFSM:
             self.stop_profile = (target.id, decel)
         return stop_ceiling(distance, speed, self.stop_profile[1])
 
+    def _track_waiters(self, target: ControlPoint, detections: Sequence[Detection]) -> None:
+        """Note when each vehicle came to rest at another line of this
+        all-way stop: at rest, facing the junction, `WAIT_MIN_M`-`WAIT_MAX_M`
+        from its centre. One that leaves the zone is forgotten."""
+        cx, cy = target.position
+        here = set()
+        for d in detections:
+            dist = math.hypot(d.pose.x - cx, d.pose.y - cy)
+            toward = math.cos(math.atan2(cy - d.pose.y, cx - d.pose.x) - d.pose.heading)
+            if dist > WAIT_MAX_M or toward <= 0.7:
+                continue
+            # Kept while it edges up the queue; first noted when at rest.
+            if d.id in self.waiters:
+                here.add(d.id)
+            elif d.speed_mps < MOVING_MPS and dist >= WAIT_MIN_M:
+                here.add(d.id)
+                self.waiters[d.id] = self.clock_s
+        for gone in set(self.waiters) - here:
+            del self.waiters[gone]
+
+    def _note_own_wait(self, ego: VehicleState, target: ControlPoint) -> None:
+        """When the ego came to rest at this all-way stop, by the same rule as
+        everyone else -- and the rule traffic keeps for it."""
+        if self.stopped_at_s is not None:
+            return
+        cx, cy = target.position
+        dist = math.hypot(ego.x - cx, ego.y - cy)
+        toward = math.cos(math.atan2(cy - ego.y, cx - ego.x) - ego.heading)
+        if ego.speed_mps < MOVING_MPS and WAIT_MIN_M <= dist <= WAIT_MAX_M and toward > 0.7:
+            self.stopped_at_s = self.clock_s
+
+    def _my_turn(self, ego: VehicleState, detections: Sequence[Detection]) -> bool:
+        """First to stop goes first. A vehicle that came to rest more than
+        `STOP_TIE_S` before the ego goes before it; one within that goes first
+        if it is on the ego's right, until the box has stood empty
+        `BOX_TIMEOUT_S` (a tie all round, each with a car on its right).
+        Traffic keeps the same clock for the ego (`sim/agents.py`)."""
+        mine = self.stopped_at_s if self.stopped_at_s is not None else self.clock_s
+        free_for = self.clock_s - (self.box_clear_since_s or self.clock_s)
+        where = {d.id: d for d in detections}
+        for det_id, since in self.waiters.items():
+            if since < mine - STOP_TIE_S:
+                return False
+            if since <= mine + STOP_TIE_S and free_for < BOX_TIMEOUT_S:
+                d = where.get(det_id)
+                if d is None:
+                    continue
+                dx, dy = d.pose.x - ego.x, d.pose.y - ego.y
+                if math.cos(ego.heading) * dy - math.sin(ego.heading) * dx < 0:
+                    return False
+        return True
+
     def _cruise(self) -> BehaviorDecision:
         self.state = BehaviorState.CRUISE
         self.target_id = None
         self.stop_profile = None
+        self.stopped_at_s = None
+        self.waiters.clear()
+        self.box_clear_since_s = None
         self.dwell_s = 0.0
         return _CRUISE
 
@@ -734,7 +814,7 @@ class BehaviorFSM:
             # `test_a_yellow_that_cannot_be_cleared_in_time_must_stop_even_though_committed`
             # in `tests/test_behavior.py`, which reproduces this with the
             # measured numbers.
-            if not self._committed(distance, ego):
+            if not self._committed_at_yellow(distance, ego):
                 return True
             return not self._can_clear(target, signals, distance, ego)
         # green, flashing_yellow, or off.
@@ -780,9 +860,14 @@ class BehaviorFSM:
         if target.kind == "arrival":
             return False  # the trip's own end: holds forever, by design
         if target.kind == "stop_sign":
+            if not self._intersection_clear(ego, target, detections):
+                self.box_clear_since_s = None
+                return False
+            if self.box_clear_since_s is None:
+                self.box_clear_since_s = self.clock_s
             if self.dwell_s < STOP_DWELL_S:
                 return False
-            return self._intersection_clear(ego, target, detections)
+            return self._my_turn(ego, detections)
         phase = self._phase(target, signals)
         # Past the stop line: we already released into the box once. An
         # unresolved phase (lamp behind us) must not re-trap the car —
@@ -830,6 +915,17 @@ class BehaviorFSM:
         a lap, though a firm stop fitted when the yellow came on.
         """
         return distance <= ego.speed_mps**2 / (2 * YELLOW_STOP_DECEL_MPS2)
+
+    @staticmethod
+    def _committed_at_yellow(distance: float, ego: VehicleState) -> bool:
+        """`_committed`, as the car actually brakes: the tracker reaches the
+        firm profile only after `TRACKER_LAG_S`, travelling that much further.
+        Measured on grid_slow: yellow 4.7 m out at 4.4 m/s fitted 3.2 m on
+        paper, and the car stopped 2.2 m over the line. Not used for the green
+        latch, which would then latch at 45 m and run reds (see `_committed`).
+        """
+        v = ego.speed_mps
+        return distance <= v * v / (2 * YELLOW_STOP_DECEL_MPS2) + TRACKER_LAG_S * v
 
     # -- lane change ---------------------------------------------------------- #
 

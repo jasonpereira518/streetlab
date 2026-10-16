@@ -116,6 +116,23 @@ def trim(fresh: dict, keep: dict) -> tuple[dict, dict[str, list[str]]]:
         missing = wanted - {item["id"] for item in out[key]}
         if missing:
             gone[key] = sorted(missing)
+    # Kerb returns carry no id; keep the ones both of whose tangent points sit
+    # on a trimmed road's kerb.
+    from shapely.geometry import LineString, Point
+
+    kerbs = [
+        (LineString(r["centerline"]), (r["lanes_forward"] + r["lanes_backward"]) * r["lane_width_m"] / 2)
+        for r in out["roads"]
+    ]
+
+    def on_a_kerb(p) -> bool:
+        return any(abs(line.distance(Point(p)) - half) < 0.05 for line, half in kerbs)
+
+    out["kerb_returns"] = [
+        kr
+        for kr in fresh.get("kerb_returns", [])
+        if on_a_kerb(kr["tangent_a"]) and on_a_kerb(kr["tangent_b"])
+    ]
     out["catalog"] = []
     out["terrain"] = crop_terrain(fresh.get("terrain"), _member_points(out))
     return out, gone

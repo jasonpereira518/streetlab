@@ -310,7 +310,7 @@ def record(sim: Simulation, seconds: float, label: str) -> Run:
 
 
 def standard_runs(
-    nob_hill_scene, *, nobhill_s: float = 340.0, grid_s: float = 150.0, grid_slow_s: float = 300.0
+    nob_hill_scene, *, nobhill_s: float = 340.0, grid_s: float = 150.0, grid_slow_s: float = 400.0
 ) -> dict[str, Run]:
     """The three hazard-free recordings the budgets and the report are built on.
 
@@ -319,10 +319,10 @@ def standard_runs(
     does), so it runs 340 s.
     `grid-loop` at default traffic changes lane within 150 s; at 0.45 traffic (the
     setting `test_lane_changes.py` uses for the same reason) it follows and
-    follows a slow car round the block. It runs 300 s: since stops brake at
-    comfort and rest a metre short, the ego first queues behind a STOPPED lead
-    at ~260 s (measured 2026-10-12; before that it only waits at its own line
-    12 m back), and the standstill-gap budget needs that queue.
+    follows a slow car round the block. It runs 400 s: the standstill-gap
+    budget needs the ego queued behind a STOPPED lead, and that first happens
+    at ~373 s since stop lines sit at the bar (measured 2026-10-14; ~260 s
+    before). Until then it only ever waits at its own line.
     """
     nob = Simulation(SyntheticGrid(), "grid-loop", seed=1)
     nob.adopt_scene(nob_hill_scene)
