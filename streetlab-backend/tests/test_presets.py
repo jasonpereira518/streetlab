@@ -178,7 +178,7 @@ def test_a_windowed_red_light_runner_waits_for_its_green():
 
 
 def _cut_ins(period, seconds=60):
-    sim = Simulation(SyntheticGrid(), "grid-arterial", seed=3)
+    sim = Simulation(SyntheticGrid(), "grid-merge", seed=3)
     sim.apply_dict({"id": "c", "cmd": "set_param", "key": "cutin_period_s", "value": period})
     return sum(1 for e in run(sim, seconds) if e.code == "cut_in")
 

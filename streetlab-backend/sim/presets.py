@@ -177,7 +177,7 @@ PRESETS: dict[str, Preset] = {
                 "Cut-in arrival times: exponential, a mean of 12 s apart, set by the "
                 "cut-in interval slider."
             ),
-            scene="arterial",
+            scene="merge",
             seed=None,
             perception="ground-truth",
             params={"cutin_period_s": 12},
