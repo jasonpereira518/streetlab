@@ -19,6 +19,14 @@ const COPY: Record<ConnectionFailureKind, { title: string; body: string }> = {
     title: 'The simulator is busy',
     body: 'Every simulator slot is in use right now. Try again in a minute.',
   },
+  idle_kicked: {
+    title: 'Disconnected for inactivity',
+    body: 'Your simulator was freed for others after a few minutes without input. Rejoin to get back in.',
+  },
+  time_up: {
+    title: 'Your session ended so others could drive',
+    body: 'Sessions are capped while people are waiting. Rejoin to take another turn.',
+  },
   protocol_mismatch: {
     title: 'Version mismatch',
     body: 'This page and the simulator speak different protocol versions. Reload to pick up the latest page; if it persists, the two deployments are out of sync.',
@@ -45,7 +53,7 @@ export function ConnectionErrorOverlay({ failure, onRetry, onUseMock }: Props) {
         <p className="startup-body">{copy.body}</p>
         <p className="startup-reason">{failure.detail}</p>
         <button type="button" className="startup-fallback" onClick={onRetry}>
-          Retry
+          {failure.kind === 'idle_kicked' || failure.kind === 'time_up' ? 'Rejoin the line' : 'Retry'}
         </button>
         <button type="button" className="startup-secondary" onClick={onUseMock}>
           Use offline demo instead

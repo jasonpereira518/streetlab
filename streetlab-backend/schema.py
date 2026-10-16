@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 10
+PROTOCOL_VERSION = 11
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -765,6 +765,14 @@ class SuggestAddress(_Cmd):
     query: Annotated[str, Field(min_length=1)]
 
 
+class Heartbeat(_Cmd):
+    """"I'm still here" from a hosted client: user input that sends no other
+    command (orbiting the camera) must still count against the idle timeout.
+    Answered by nobody -- the connection handler only notes the time."""
+
+    cmd: Literal["heartbeat"] = "heartbeat"
+
+
 class SetParam(_Cmd):
     cmd: Literal["set_param"] = "set_param"
     key: str
@@ -821,6 +829,7 @@ Command = Annotated[
         InjectHazard,
         SetPerception,
         CameraFrameCmd,
+        Heartbeat,
     ],
     Field(discriminator="cmd"),
 ]
@@ -860,12 +869,36 @@ class AddressSuggestions(Wire):
     suggestions: list[AddressSuggestion]
 
 
+class QueueStatus(Wire):
+    """Hosted waitlist: sent instead of a scene while every session slot is
+    taken, and again whenever this client's place in line changes. The
+    `scene_description` that follows admission is what ends the wait."""
+
+    type: Literal["queue_status"] = "queue_status"
+    protocol: int = PROTOCOL_VERSION
+    # 1 = next in line.
+    position: Annotated[int, Field(ge=1)]
+    size: Annotated[int, Field(ge=1)]
+    # A rough estimate; always present, never null.
+    eta_s: NonNeg
+
+
+class SessionNotice(Wire):
+    """Hosted mode: the session is about to be closed (`idle`: no input;
+    `time_up`: others are waiting), or the warning no longer applies (`ok`)."""
+
+    type: Literal["session_notice"] = "session_notice"
+    protocol: int = PROTOCOL_VERSION
+    kind: Literal["idle", "time_up", "ok"]
+    seconds_left: NonNeg
+
+
 # --------------------------------------------------------------------------- #
 # Envelope + helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 ServerMessage = Annotated[
-    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions],
+    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions, QueueStatus, SessionNotice],
     Field(discriminator="type"),
 ]
 
