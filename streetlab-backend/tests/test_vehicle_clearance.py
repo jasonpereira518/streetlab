@@ -22,6 +22,7 @@ from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
 from map.cache import DiskCache
+from map.clearance import carriageway
 from map.geocode import Place, StubGeocoder
 from map.osm_source import OsmSceneSource
 from map.overpass import OverpassClient
@@ -44,15 +45,14 @@ SEEDS = [7, 11]
 #: the build alone costs seconds.
 OSM_CASES = [("osm-nob-hill", 7, 120.0)]
 
-#: How far a footprint corner may poke past the kerb line. Two measured
-#: ceilings sit under it. Junction corners are square and the ego rounds them
-#: on a 6 m fillet with a tracker that cuts inside the arc, so its inside
-#: rear corner crosses the pavement corner by 0.46-0.52 m on every grid
-#: right turn; a kerb return radius would make that zero. And a 7.8 m truck
-#: turning from Hyde St into Clay St -- one lane, 3.6 m kerb to kerb in this
-#: model, because parking lanes are not modelled -- swings its nose 0.64 m
-#: over the far kerb, which on the real street is the parking lane.
-KERB_CUT_M = 0.7
+#: How far a footprint corner may poke past the kerb line: not at all.
+#: Measured 2026-10-14 over every case here: 0.00 m. Before kerb returns,
+#: junction corners were square and the ego rounded them on a 6 m fillet, so
+#: its inside rear corner crossed the pavement corner by 0.46-0.52 m on every
+#: grid right turn (0.51 m re-measured with the returns taken out), and a car
+#: on Nob Hill by 0.24 m. A 7.8 m truck there also clipped a stop-sign post on
+#: the square Union St corner; that is gone too.
+KERB_CUT_M = 0.0
 
 _EGO = BicycleModel()
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -94,7 +94,7 @@ class _World:
     """The static geometry a vehicle must respect, the way the renderer draws it."""
 
     def __init__(self, scene):
-        self.roads = unary_union([LineString(r.centerline).buffer(_half(r)) for r in scene.roads])
+        self.roads = unary_union(carriageway(scene.roads, scene.kerb_returns))
         self.buildings = [Polygon(b.footprint).buffer(0) for b in scene.buildings]
         self.props = (
             [Point(t.position).buffer(t.trunk_radius_m) for t in scene.trees]
@@ -107,12 +107,14 @@ class _World:
 
 
 @lru_cache(maxsize=None)
-def measure(scenario_id: str, seed: int, run_s: float = RUN_S):
+def measure(scenario_id: str, seed: int, run_s: float = RUN_S, density: float = 0.0):
     """Worst (vehicle separation, kerb overhang, building overlap, prop overlap)
     over one run, each with where it happened. One simulation serves every
     test below."""
     source = SyntheticGrid() if scenario_id.startswith("grid-") else _nob_hill_source()
     sim = Simulation(source, scenario_id, seed=seed)
+    if density:
+        sim.apply_dict({"id": "d", "cmd": "set_param", "key": "traffic_density", "value": density})
     world = _World(sim.scene.description)
     steps = int(run_s / sim.dt)
     worst_sep = (math.inf, None)
@@ -201,31 +203,7 @@ def test_no_vehicle_ever_leaves_the_carriageway(scenario_id, seed, run_s):
     )
 
 
-#: Measured 2026-10-11 on the 2.7 km Nob Hill loop: a 7.8 m truck turning at
-#: the Union St corner sweeps its body across the square kerb corner and
-#: clips the stop-sign post standing there (osm_ss_65312672) by 0.01 m2 at
-#: t=82.8 s. Square corners are the cause; kerb returns (plan phase 4) round
-#: the corner and move the post with it. Strict, so it is removed the moment
-#: that lands.
-_PROP_CLIPS = {
-    ("osm-nob-hill", 7): "truck clips a stop-sign post on a square kerb corner; kerb returns fix it",
-}
-
-
-@pytest.mark.parametrize(
-    "scenario_id,seed,run_s",
-    [
-        pytest.param(
-            *case,
-            marks=(
-                [pytest.mark.xfail(strict=True, reason=_PROP_CLIPS[case[:2]])]
-                if case[:2] in _PROP_CLIPS
-                else []
-            ),
-        )
-        for case in ALL_CASES
-    ],
-)
+@pytest.mark.parametrize("scenario_id,seed,run_s", ALL_CASES)
 def test_no_vehicle_ever_enters_a_building_or_a_prop(scenario_id, seed, run_s):
     _, _, (bld, where_b), (prop, where_p) = measure(scenario_id, seed, run_s)
     assert bld == 0.0, (
@@ -236,3 +214,33 @@ def test_no_vehicle_ever_enters_a_building_or_a_prop(scenario_id, seed, run_s):
         f"{scenario_id} seed {seed}: {where_p[1]} overlaps prop #{where_p[2]} "
         f"by {prop:.2f} m^2 at t={where_p[0]:.1f} s"
     )
+
+
+#: Dense ambient traffic: cars on every street both ways, crossing at every
+#: junction. Measured 2026-10-14 at 12 per lane-km over 180 s: no two bodies
+#: ever touch, but a turning bus or the ego sweeps within 0.07-0.19 m of a car
+#: waiting at its stop line on the cross street -- tighter than `MARGIN_M`,
+#: which the sparse runs keep, so dense runs are held to this.
+DENSE_MARGIN_M = 0.05
+DENSE_CASES = [
+    ("grid-loop", 7),
+    # Measured 2026-10-14: the 11.5 m bus on the ego's block loop (veh_04),
+    # turning right on its 6 m fillet, swings its body 0.38 m into a car
+    # waiting at the cross street's stop line (t=137.4 s). The body pivots
+    # about its centre; a real bus off-tracks (rear axle inside the path,
+    # front overhang out) and would not turn a block corner like a car.
+    pytest.param(
+        "grid-merge",
+        7,
+        marks=pytest.mark.xfail(strict=True, reason="loop bus swings into a car waiting at its line"),
+    ),
+    ("grid-signals", 7),
+]
+
+
+@pytest.mark.parametrize("scenario_id,seed", DENSE_CASES)
+def test_dense_traffic_never_touches_leaves_the_road_or_enters_anything(scenario_id, seed):
+    (sep, where), (off, where_off), (bld, _), (prop, _) = measure(scenario_id, seed, RUN_S, 12.0)
+    assert sep > DENSE_MARGIN_M, f"{where[1]} and {where[2]} {sep:+.2f} m apart at t={where[0]:.1f} s"
+    assert off <= KERB_CUT_M, f"{where_off[1]} {off:.2f} m over the kerb at t={where_off[0]:.1f} s"
+    assert bld == 0.0 and prop == 0.0

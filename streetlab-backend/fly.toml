@@ -1,7 +1,11 @@
-# One machine, scaled to zero when idle: the simulation is a single shared world
-# per process, so never scale this above 1. The browser's WebSocket (or any HTTP
-# request) wakes it; "suspend" snapshots RAM so the world survives idle periods.
-# Fly keeps it running while a WebSocket is open.
+# One machine, scaled to zero when idle (kept from #34). Each WebSocket connection
+# gets its own private simulation (STREETLAB_MAX_SESSIONS caps how many at once),
+# so visitors do not share a world. Never scale this above 1 machine: sessions
+# live in one process's memory, and a second machine would not know about the
+# first one's cap. Fly keeps the machine running while a WebSocket is open;
+# "suspend" only happens once every session has closed, so no live session is
+# dropped. Cost of scale-to-zero: the first visitor after idle waits for the
+# machine to resume. See docs/hosted-sessions.md.
 app = "streetlab-sim"
 primary_region = "iad"
 
@@ -9,8 +13,11 @@ primary_region = "iad"
   dockerfile = "Dockerfile"
 
 [env]
-  # Browser origins allowed to open the WebSocket. Set the real value with
-  # `fly secrets set STREETLAB_ALLOWED_ORIGINS=https://<your-vercel-domain>`.
+  STREETLAB_MAX_SESSIONS = "2"
+  # Browser origins allowed to open the WebSocket is NOT set here: it is a
+  # deploy-time decision. Set it with
+  # `fly secrets set STREETLAB_ALLOWED_ORIGINS=https://<your-vercel-domain>`
+  # and read the startup log line "origin policy: ALLOWLIST" to confirm it took.
 
 [http_service]
   internal_port = 8080

@@ -46,6 +46,16 @@ class ControlPoint:
     position: Point
 
 
+@dataclass(frozen=True, slots=True)
+class AmbientLane:
+    """One lane of one street, one way, end to end: what ambient traffic
+    drives. Open, and carrying its own stop lines (each street crosses
+    junctions the ego's route never visits)."""
+
+    route: "Route"
+    control_points: list[ControlPoint]
+
+
 @dataclass(slots=True)
 class Route:
     """A polyline with cumulative arc length. Closed routes wrap; open ones clamp."""

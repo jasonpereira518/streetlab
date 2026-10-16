@@ -235,6 +235,19 @@ canvas {
   background: var(--c-accent-dark, #0a8da0);
 }
 
+.startup-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--c-text, #141d28);
+}
+
+.startup-secondary {
+  font-size: 11.5px;
+  color: var(--c-text-muted, #5f6e80);
+  text-decoration: underline;
+}
+
 .perf-overlay {
   position: fixed;
   /* Inside the viewport, on the same inset as the stats chip opposite it —
