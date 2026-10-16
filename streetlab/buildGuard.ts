@@ -19,7 +19,7 @@ export function backendUrlProblem(env: Record<string, string | undefined>): stri
       'VITE_BACKEND_WS_URL is not set for this Vercel production build. ' +
       'Without it the deployed page tries ws://127.0.0.1:8765 on every visitor\'s own machine. ' +
       'Set it in Vercel -> Project Settings -> Environment Variables (Production) to the ' +
-      'backend\'s wss:// URL, e.g. wss://streetlab-sim.fly.dev, then redeploy.'
+      'backend\'s wss:// URL, e.g. wss://streetlab-sim-<hash>.us-east1.run.app, then redeploy.'
     );
   }
   if (production && !/^wss:\/\//i.test(url)) {

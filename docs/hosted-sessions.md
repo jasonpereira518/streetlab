@@ -1,11 +1,12 @@
 # Hosted deployment: per-connection sessions
 
-Status: implemented, default cap **2** pending Jason's decision on machine size (see "Decision needed"). Rebased onto main after #34 (scale-to-zero), #36-#40; `fly.toml` keeps scale-to-zero.
+Status: implemented, default cap **2** (see "Machine size and the cap"). Hosted on **Google Cloud Run** (moved from
+Fly.io when its free trial ended); scale-to-zero is kept.
 
 ## Problem
 
 `streetlab serve` ran one `Simulation` per process and every WebSocket client drove it. Fine for the desktop
-sidecar (one client). On Fly, any visitor's Reset / pause / `load_location` / walkthrough-preset Run hit every other
+sidecar (one client). When hosted, any visitor's Reset / pause / `load_location` / walkthrough-preset Run hit every other
 visitor.
 
 ## Design
@@ -38,7 +39,7 @@ Trade-offs considered:
 
 ## Measurements (re-measured on the rebased branch)
 
-Docker image built from this branch, run with `--memory 1g --cpus 2` (Fly `shared-cpu-2x` / 1 GB shape),
+Measured on Fly's old `shared-cpu-2x` / 1 GB shape (not re-measured on Cloud Run): Docker image built from this branch, run with `--memory 1g --cpus 2`,
 `STREETLAB_MAX_SESSIONS=4`, 12 s windows, two rounds (A/B) per session count. The Mac's load average was 9-430 from
 other agents' work, so absolute CPU and frame rates are pessimistic; treat the paired ratios as the finding.
 
@@ -62,49 +63,66 @@ Reading it: **memory is not the constraint** (1 GB holds hundreds of sessions); 
 Python process, so the GIL caps the whole server at about one core no matter how many vCPUs it has; 4 sessions are
 already at ~85 % of that.
 
-## Decision needed: machine size and the cap
+## Machine size and the cap
 
-Fly's CPU docs (fly.io/docs/machines/cpu-performance, checked this session): a `shared` vCPU is allowed 5 ms per 80 ms
-period (6.25 %), pooled across vCPUs, so **`shared-cpu-2x` sustains 12.5 % of one core**, with a burst balance of at most
-500 s above that. Using the CPU figures above:
+`deploy-cloudrun.sh` sets **1 vCPU / 1 GiB**. Unlike the old Fly `shared-cpu-2x` (which sustained only 12.5 % of a
+core and then throttled the sim), a Cloud Run vCPU is a full core while an instance is active, so the measured
+~27 % / ~36 % / ~78 % of a core for 1 / 2 / 4 sessions all run at full speed. The GIL still caps the whole server at about
+one core, so 4 sessions are close to the ceiling.
 
-| concurrent sessions | CPU use | time until the burst balance is gone (continuous) | after that |
-|---|---|---|---|
-| 1 | ~27 % | ~57 min | sim at ~46 % real time |
-| 2 | ~36 % | ~35 min | ~35 % real time |
-| 4 | ~78 % | ~13 min | ~16 % real time |
+The free tier is billed per instance-second, not per session: reported allowances are about 180,000 vCPU-seconds and
+360,000 GiB-seconds a month (check Google's pricing page), which is **about 50 hours a month of instance-active
+time** at 1 vCPU. Two sessions in one instance cost the same as one, so a higher cap spends no extra free-tier budget
+but leaves less CPU headroom per session. The default stays **2**; the cap is one env var (`STREETLAB_MAX_SESSIONS` in
+`deploy-cloudrun.sh`, then redeploy). Memory is not the constraint (see Measurements).
 
-Idle machines refill the balance (about 67 min idle for a full 500 s). Per-session sims also mean an idle machine simulates nothing (~0.2 % CPU).
+## Scale-to-zero, timeout and cache
 
-So I set the default cap to **2**, which needs no size change and is fine for short demo visits. A cap of 3-4
-that stays smooth under sustained use needs a dedicated-CPU machine (`performance-1x`, which costs real money and is
-Jason's call; this PR does not change `[[vm]]`). Memory would still not need to grow. The cap is one env var, so changing
-it later is `fly secrets`-free: edit `STREETLAB_MAX_SESSIONS` in `fly.toml [env]` and `fly deploy`.
-
-## Scale-to-zero vs always-on
-
-Main's `fly.toml` (#34) auto-suspends the machine when idle; this PR keeps that. Fly does not suspend while a WebSocket
-is open, so a live session is never dropped. The trade-off: the first visitor after an idle period waits for the
-machine to resume (a few seconds). Per-session worlds mean there is no shared state to preserve across a suspend, so
-the old reason for always-on (keep one world alive) is gone; `min_machines_running = 1` is only worth it to remove that
-cold start, at the cost of paying for an idle machine.
+- `--min-instances 0`: the instance is removed when idle and the first visitor after that waits for a cold start
+  (container start plus Python imports, a few seconds). `--min-instances 1` would remove that wait but bills the idle
+  instance around the clock, which exceeds the free tier.
+- `--max-instances 1` is **mandatory**: sessions and the cap live in one process's memory, so a second instance would
+  not know about the first one's sessions.
+- An instance with an open WebSocket counts as active, so it is not scaled down mid-session.
+- Cloud Run closes a WebSocket when the service request timeout is reached (`--timeout 3600`, the maximum, 60 min).
+  The frontend reconnects with backoff (`wsClient.ts`), but the visitor gets a **fresh session**: in-progress
+  simulation state is not preserved.
+- The instance filesystem is in-memory and wiped on every cold start, so the OSM / elevation cache is lost; a typed
+  address outside the bundled Nob Hill data is re-fetched from Overpass / Nominatim after each cold start.
+- Shutdown: Cloud Run sends SIGTERM, then SIGKILL after 10 s. Open sockets just drop and reconnect.
 
 ## Deploy runbook (Jason runs these; nothing here was run)
 
+One-time Google Cloud setup (needs a billing account with a card; the free tier still applies):
+
+```bash
+gcloud auth login
+gcloud projects create <project-id>                 # then link billing in the console
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com --project <project-id>
+```
+
+Also add a small **budget alert** (about $1) under Billing > Budgets so a misconfiguration cannot charge you silently.
+
 ```bash
 # 1. Backend. Origin allowlist: exact Vercel production URL; optional preview pattern (fnmatch *).
-fly secrets set -a streetlab-sim \
-  STREETLAB_ALLOWED_ORIGINS="https://<production-domain>,https://<project>-*-<team>.vercel.app"
-cd streetlab-backend && fly deploy          # `secrets set` already restarts; deploy ships this branch
+cd streetlab-backend
+PROJECT_ID=<project-id> \
+ALLOWED_ORIGINS="https://<production-domain>,https://<project>-*-<team>.vercel.app" \
+  ./deploy-cloudrun.sh        # builds in Cloud Build (so an Apple-silicon Mac does not produce an arm64 image)
 
 # 2. Confirm the mode in the startup log and that /health reports the new fields
-fly logs -a streetlab-sim --no-tail | grep -E "origin policy|sessions:"
-curl -s https://streetlab-sim.fly.dev/health
+gcloud run services logs read streetlab-sim --project <project-id> --region us-east1 --limit 50 \
+  | grep -E "origin policy|sessions:"
+curl -s https://<service-url>/health
 
-# 3. Smoke test the live thing (Origin must be on the allowlist)
+# 3. Smoke test the live thing (Origin must be on the allowlist; the first call can hit a cold start)
 uv run --project streetlab-backend python scripts/smoke_hosted.py \
-  --url wss://streetlab-sim.fly.dev --origin https://<production-domain>
+  --url wss://<service-host> --origin https://<production-domain> --timeout 60
 ```
+
+`<service-url>` is printed by step 1 (`https://streetlab-sim-<hash>.us-east1.run.app`). To retire the old Fly app after
+the move works: `fly apps destroy streetlab-sim`.
 
 Vercel (Project Settings in the dashboard):
 
@@ -112,7 +130,7 @@ Vercel (Project Settings in the dashboard):
    `streetlab/vercel.json` (branch `claude/portfolio-credibility-plan-cbca8d`, no `services` key) and fails with
    "missing services declaration".
 2. **Framework Preset: Services.** Build / Install / Output command overrides: all off.
-3. **Environment Variables:** `VITE_BACKEND_WS_URL = wss://streetlab-sim.fly.dev` for Production (and Preview if previews
+3. **Environment Variables:** `VITE_BACKEND_WS_URL = wss://<service-host>` (the Cloud Run URL with `wss://`, no path) for Production (and Preview if previews
    should work). A Production build now fails with a clear message if it is unset or not `wss://`.
 4. Production Branch: `main`. Node 20+ (24.x is what Vercel picked).
 5. Deployment Protection: leave Production public; preview URLs behind Vercel Auth cannot be opened by strangers.

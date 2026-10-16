@@ -174,10 +174,10 @@ frontend + backend as two dev processes).
 [`docs/walkthrough.md`](docs/walkthrough.md) covers the walkthrough presets:
 curated runs with a scorecard you can compare from seed to seed.
 
-### Hosted (Vercel frontend + Fly backend)
+### Hosted (Vercel frontend + Google Cloud Run backend)
 
 The browser build finds its simulator through **`VITE_BACKEND_WS_URL`**, baked in at
-build time (e.g. `wss://streetlab-sim.fly.dev`; see [`streetlab/.env.example`](streetlab/.env.example)).
+build time (e.g. `wss://streetlab-sim-<hash>.us-east1.run.app`; see [`streetlab/.env.example`](streetlab/.env.example)).
 A Vercel *production* build fails with a clear message if it is unset, because the
 fallback (`ws://127.0.0.1:8765`) would point every visitor at their own machine. For
 testing, `?backend=ws://…` / `?backend=wss://…` in the page URL overrides it, and
