@@ -361,6 +361,23 @@ describe('connection failures', () => {
     expect(failures.at(-1)).toBeNull();
   });
 
+  it.each([
+    [4408, 'idle_kicked'],
+    [4409, 'time_up'],
+  ])('close %i is a waitlist eviction (%s) and does not auto-rejoin', async (code, kind) => {
+    vi.useFakeTimers();
+    try {
+      const { failures, socket } = connect();
+      socket().open();
+      socket().serverClose(code);
+      expect(failures.at(-1)).toEqual(expect.objectContaining({ kind }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports backend_down on the second consecutive failed attempt, clears on open', async () => {
     vi.useFakeTimers();
     try {

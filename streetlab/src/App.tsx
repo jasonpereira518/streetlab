@@ -13,6 +13,7 @@ import { ConnectionErrorOverlay } from './ui/ConnectionErrorOverlay';
 import { StartupOverlay } from './ui/StartupOverlay';
 import { TelemetryRow } from './ui/TelemetryRow';
 import { TopToolbar } from './ui/TopToolbar';
+import { QueueOverlay, SessionNoticeBanner, useWaitlistEffects } from './ui/Waitlist';
 
 type BootPhase = 'starting' | 'ready' | 'error';
 
@@ -20,6 +21,7 @@ export default function App() {
   const attach = useSimStore((s) => s.attach);
   const collapsed = useSimStore((s) => s.collapsed);
   useShortcuts();
+  useWaitlistEffects();
   const failure = useSimStore((s) => s.failure);
   const retryConnection = useSimStore((s) => s.retryConnection);
   const [boot, setBoot] = useState<BootPhase>('starting');
@@ -87,6 +89,8 @@ export default function App() {
       <PerfOverlay />
       <AckToast />
       <HelpDialog />
+      <SessionNoticeBanner />
+      {boot === 'ready' && !failure && <QueueOverlay onUseMock={useMock} />}
       {boot === 'ready' && failure && (
         <ConnectionErrorOverlay
           failure={failure}
