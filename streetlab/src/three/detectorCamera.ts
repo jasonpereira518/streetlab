@@ -11,6 +11,7 @@
 
 import * as THREE from 'three/webgpu';
 import type { CameraParams } from '../schema';
+import { setDetectorLayers } from './layers';
 
 /**
  * Which of the two renderer backends `createRenderer` (Renderer.tsx) settled
@@ -231,6 +232,8 @@ export function createDetectorCamera(
   // Defaults to UnsignedByteType. `capture()` reinterprets the readback's raw
   // bytes as a Uint8Array directly (no per-channel conversion) — switching this
   // to FloatType/HalfFloatType would make that reinterpretation silent garbage.
+  // World geometry only: no overlays, no ego, whatever the UI toggles say.
+  setDetectorLayers(camera);
   const target = new THREE.RenderTarget(width, height);
   const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d');

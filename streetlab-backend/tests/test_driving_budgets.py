@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from map.scene_build import SyntheticGrid
-from tests.driving_metrics import (
+from evaluation.driving_metrics import (
     BUDGET,
     RUN_KEYS,
     agent_heading_step_deg,

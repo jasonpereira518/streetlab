@@ -39,7 +39,7 @@ asyncio_mode = "auto"
 filterwarnings = ["error"]
 
 [tool.setuptools]
-packages = ["server", "sim", "map", "perception", "plan"]
+packages = ["server", "sim", "map", "perception", "plan", "evaluation"]
 py-modules = ["schema"]
 
 [build-system]

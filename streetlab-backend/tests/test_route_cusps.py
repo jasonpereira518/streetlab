@@ -36,7 +36,7 @@ from map.lanes import (
 from map.osm_model import parse_overpass
 from map.projection import LatLon
 from sim.route import Route
-from tests.driving_metrics import max_turning_deg
+from evaluation.driving_metrics import max_turning_deg
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overpass_nob_hill.json"
 ORIGIN = LatLon(lat=37.7945, lon=-122.4156)
