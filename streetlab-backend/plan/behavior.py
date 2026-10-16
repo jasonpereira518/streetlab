@@ -146,8 +146,11 @@ JUNCTION_CLEAR_M = 14.0
 #: All-way stops, shared with traffic (`sim/agents.py`): a vehicle at rest
 #: this far from a junction's centre, facing it, is waiting at a line; arrivals
 #: this close count as together; a box this long empty breaks a tie all round.
+#: `WAIT_MAX_M` must reach `STOP_ZONE_M` past the furthest line (12.0 m out,
+#: on a turning route): at 18 the ego stood in STOP 6.9 m short of one for
+#: 44.7 s, waiting to itself and to nobody else.
 WAIT_MIN_M = 6.0
-WAIT_MAX_M = 18.0
+WAIT_MAX_M = 19.5
 STOP_TIE_S = 0.5
 BOX_TIMEOUT_S = 3.0
 

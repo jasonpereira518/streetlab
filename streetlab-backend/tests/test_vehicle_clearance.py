@@ -225,15 +225,10 @@ DENSE_MARGIN_M = 0.05
 DENSE_CASES = [
     ("grid-loop", 7),
     # Measured 2026-10-14: the 11.5 m bus on the ego's block loop (veh_04),
-    # turning right on its 6 m fillet, swings its body 0.38 m into a car
-    # waiting at the cross street's stop line (t=137.4 s). The body pivots
-    # about its centre; a real bus off-tracks (rear axle inside the path,
-    # front overhang out) and would not turn a block corner like a car.
-    pytest.param(
-        "grid-merge",
-        7,
-        marks=pytest.mark.xfail(strict=True, reason="loop bus swings into a car waiting at its line"),
-    ),
+    # turning right on its 6 m fillet, swung its body 0.38 m into a car
+    # waiting at the cross street's stop line (t=137.4 s). Buses now stay off
+    # routes with corners tighter than they turn (`_MIN_TURN_RADIUS_M`).
+    ("grid-merge", 7),
     ("grid-signals", 7),
 ]
 

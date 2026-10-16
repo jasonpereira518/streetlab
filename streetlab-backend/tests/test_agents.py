@@ -283,3 +283,22 @@ def test_a_crowded_scene_never_spawns_two_vehicles_on_top_of_each_other(built):
             assert apart >= (len_a + len_b) / 2 + 1.0, (
                 f"{id_a} and {id_b} spawned {apart:.1f} m apart, centre to centre"
             )
+
+
+def test_no_bus_is_put_on_a_route_with_corners_tighter_than_it_can_turn(built):
+    """An 11.5 m bus posed as a rigid box on a 6 m block fillet swings its
+    body into the opposing lane (measured: 0.38 m into a car waiting at the
+    cross street's stop line, grid-merge seed 7, dense traffic). Profile 4 is
+    the bus, so on grid-merge's five block loops veh_04 would be one."""
+    from sim.agents import _MIN_TURN_RADIUS_M
+    from sim.route import Route
+
+    tight = Route([(0, 0), (60, 0), (60, 60), (0, 60)]).fillet(6.0)
+    straight = Route([(0, 0), (300, 0)], closed=False)
+    corners = [a.cls for a in ScriptedTraffic([tight] * 6, 13.4).agents]
+    open_road = [a.cls for a in ScriptedTraffic([straight] * 6, 13.4).agents]
+    assert "bus" not in corners, corners
+    assert open_road[4] == "bus", open_road
+    assert 6.0 < _MIN_TURN_RADIUS_M["bus"]
+    assert {a.cls for a in make(built).agents} >= {"car", "truck"}
+    assert "bus" not in {a.cls for a in make(built).agents}
