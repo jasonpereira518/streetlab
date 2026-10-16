@@ -41,7 +41,11 @@ describe('mock scene_description parity with the backend', () => {
   it('has exactly the backend scene_description shape', () => {
     // A preset's `params` is a sparse override map (only what the preset moves),
     // so its key set legitimately differs per preset and per implementation.
-    const sparse = ([k]: [string, string]) => !k.startsWith('scene.presets[].params.');
+    // The mock deliberately keeps square corners (`kerb_returns: []`, see
+    // mockCity.ts), so the backend's per-corner element shape is not mirrored;
+    // the array itself must still exist.
+    const sparse = ([k]: [string, string]) =>
+      !k.startsWith('scene.presets[].params.') && !k.startsWith('scene.kerb_returns[]');
     const a = new Map([...shape(mock, 'scene', new Map())].filter(sparse));
     const b = new Map([...shape(real, 'scene', new Map())].filter(sparse));
     const diff = [
