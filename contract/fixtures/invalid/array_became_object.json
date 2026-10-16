@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 9,
+  "protocol": 10,
   "seq": 180,
   "t": 2.9999999999999942,
   "sim_rate_hz": 60.0,
@@ -37,7 +37,7 @@
       "cls": "car",
       "pose": {
         "x": 1.799999999999999,
-        "y": 64.28565755100048,
+        "y": 64.28642676026129,
         "heading": 1.5707963267948968
       },
       "size": {
@@ -46,16 +46,108 @@
         "height": 1.45
       },
       "velocity": [
-        -1.1758209642540319e-15,
-        7.311761727194549
+        -1.1759038840250741e-15,
+        7.312277358082895
       ],
-      "speed_mps": 7.311761727194549,
+      "speed_mps": 7.312277358082895,
       "confidence": 1.0,
       "hazard": false,
       "hazard_label": null,
       "ttc_s": null,
       "lane_offset": 0,
       "emergency": false
+    }
+  ],
+  "world_agents": [
+    {
+      "id": "veh_00",
+      "cls": "car",
+      "pose": {
+        "x": 1.799999999999999,
+        "y": 64.28642676026129,
+        "heading": 1.5707963267948968
+      },
+      "size": {
+        "length": 4.6,
+        "width": 1.9,
+        "height": 1.45
+      },
+      "speed_mps": 7.312277358082895
+    },
+    {
+      "id": "veh_01",
+      "cls": "car",
+      "pose": {
+        "x": 31.565243398355136,
+        "y": 78.2,
+        "heading": 0.0
+      },
+      "size": {
+        "length": 4.9,
+        "width": 1.95,
+        "height": 1.5
+      },
+      "speed_mps": 7.811936210373221
+    },
+    {
+      "id": "veh_02",
+      "cls": "truck",
+      "pose": {
+        "x": 59.40462842786776,
+        "y": 78.2,
+        "heading": 0.0
+      },
+      "size": {
+        "length": 7.8,
+        "width": 2.4,
+        "height": 3.1
+      },
+      "speed_mps": 3.92470377772939
+    },
+    {
+      "id": "veh_03",
+      "cls": "car",
+      "pose": {
+        "x": 78.2,
+        "y": 22.65997235520551,
+        "heading": -1.5707963267948966
+      },
+      "size": {
+        "length": 4.3,
+        "width": 1.82,
+        "height": 1.42
+      },
+      "speed_mps": 7.17478854497013
+    },
+    {
+      "id": "veh_04",
+      "cls": "bus",
+      "pose": {
+        "x": 73.05301150558913,
+        "y": 1.8840143002652798,
+        "heading": -2.914998959597082
+      },
+      "size": {
+        "length": 11.5,
+        "width": 2.55,
+        "height": 3.3
+      },
+      "speed_mps": 3.641913980296016
+    },
+    {
+      "id": "veh_05",
+      "cls": "motorcycle",
+      "pose": {
+        "x": 25.373462194949276,
+        "y": 1.799999999999999,
+        "heading": 3.141592653589793
+      },
+      "size": {
+        "length": 2.1,
+        "width": 0.8,
+        "height": 1.3
+      },
+      "speed_mps": 4.99064521903939
     }
   ],
   "detections_shadow": null,
@@ -148,7 +240,7 @@
           "lane_offset": 0,
           "longitudinal_m": 59.29,
           "lateral_m": 0.0,
-          "speed_mps": 7.311761727194549,
+          "speed_mps": 7.312277358082895,
           "hazard": false
         }
       ]

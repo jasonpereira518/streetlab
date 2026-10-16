@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 10
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -121,6 +121,19 @@ class Road(Wire):
     # Hill extract's 264 drivable ways say, so the renderer drew both.
     sidewalk_left: bool = True
     sidewalk_right: bool = True
+
+
+class KerbReturn(Wire):
+    """The rounded tarmac where two kerbs meet at a junction corner: the kite
+    `corner` -> `tangent_a` -> `center` -> `tangent_b`, less the disc of
+    `radius_m` about `center`. `corner` is where the two straight kerbs would
+    have met; the arc from `tangent_a` to `tangent_b` is the kerb now."""
+
+    corner: Vec2
+    tangent_a: Vec2
+    center: Vec2
+    tangent_b: Vec2
+    radius_m: Pos
 
 
 class Building(Wire):
@@ -289,6 +302,9 @@ class SceneDescription(Wire):
     stop_signs: list[StopSign]
     trees: list[Tree]
     street_signs: list[StreetSign]
+    # Rounded junction corners, computed once from the final roads so the
+    # renderer and every placement check agree on where the kerb is.
+    kerb_returns: list[KerbReturn] = []
     # The line the car drives: its lane centre, straight along each block and
     # curved through every corner. Distinct from `Plan.polyline`, which is the
     # live lookahead the planner recomputes every tick -- this is the whole
@@ -347,6 +363,19 @@ class Detection(Wire):
     emergency: bool
 
 
+class WorldAgent(Wire):
+    """One simulated agent as the world has it: ground truth, independent of
+    what perception sees. Rendering reads this; `detections` is only what the
+    driving source reported (an overlay), so a missed car never vanishes from
+    the scene the detector camera photographs."""
+
+    id: str
+    cls: DetectionClass
+    pose: Pose
+    size: Size
+    speed_mps: Num
+
+
 class CameraParams(Wire):
     """The camera that produced one frame, in wire world coordinates:
     +x east, +y north, +z up, ground plane at z = 0. The frontend converts out
@@ -395,6 +424,9 @@ class PerceptionStats(Wire):
     precision: Unit | None
     recall: Unit | None
     mean_pos_err_m: NonNeg | None
+    # Required, never null: "degraded" while the detector is a stub or its most
+    # recent frame failed. The planner's degraded mode (M1) keys off this.
+    health: Literal["ok", "degraded"]
 
 
 class RadarPoint(Wire):
@@ -607,6 +639,9 @@ class StateUpdate(Wire):
     scenario_id: str
     ego: Ego
     detections: list[Detection]
+    # Every agent's ground truth, not range-gated and independent of perception
+    # mode. Required and never null: an empty list when there is no traffic.
+    world_agents: list[WorldAgent]
     # The perception source that is NOT driving, when both are running.
     # `None` when there is no second source at all (no ML pipeline running)
     # -- distinct from `[]`, which means the other source ran and saw
@@ -637,6 +672,7 @@ class StateUpdate(Wire):
 LayerKey = Literal[
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",
@@ -865,6 +901,7 @@ def parse_command(raw: Any) -> ParseResult:
 LAYER_KEYS: tuple[str, ...] = (
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",

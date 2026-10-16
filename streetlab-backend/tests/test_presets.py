@@ -169,12 +169,6 @@ def test_a_zero_window_hazard_the_scene_declines_is_reported():
     assert "no lane model" in declined[0].message
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="measured 2026-10-13: with the staging refusing a runner the ego cannot stop for, hide from "
-    "it, or time to its green, no seed 1-8 stages one on grid-signals in a 181 s window "
-    "(main staged one 0 m ahead, with the ego at the line)",
-)
 def test_a_windowed_red_light_runner_waits_for_its_green():
     sim = Simulation(SyntheticGrid(), "grid-signals", seed=5)
     sim._timeline = [(1.0, 61.0, "red_light_runner")]

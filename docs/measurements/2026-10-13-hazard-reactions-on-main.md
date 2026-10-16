@@ -74,3 +74,37 @@ Nothing was loosened.
 2. Nob Hill runner: staged and seen, no reaction and no contact (closest 2.9 m); the ego is turning there too.
 3. `stopping_distance` over-reads at 15 m/s by 1.38x; refit the table.
 4. A cut-in needs a legal lane beside the ego, so the gauntlet depends on the scene (`merge`).
+
+## After #47-#49 (re-measured 2026-10-16, main 4b11ee6)
+
+Merged `origin/main` (#41 hosted sessions, #42 ML foundation / PROTOCOL 10, #43 UI, #47 kerb returns, #48 ambient
+traffic and all-way stops, #49 kinematic car-following ceiling) into this branch and re-ran the same 150-run
+paired matrix. Tables: `2026-10-16-hazard-matrix-main-before-47-49.md` (plain main, no reactions) and
+`2026-10-16-hazard-matrix-after-47-49.{md,json}` (this branch). Protocol stays 10.
+
+| runs ending in contact, 5 seeds per cell | main | with reactions |
+|---|---|---|
+| cut_in grid / grid_slow / nob_hill | 5 / 5 / 4 | 0 / 0 / 0 |
+| jaywalker grid_slow | 2 | 0 |
+| oncoming_drift grid / grid_slow | 1 / 1 | 0 / 0 |
+| red_light_runner grid / grid_slow / nob_hill | 5 / 5 / 5 | 5 / 1 / 5 |
+| everything else | 0 | 0 |
+
+Total 33 of 150 on main, 11 of 150 here (2026-10-13 tables: 23 and 5).
+
+What changed since the 2026-10-13 numbers:
+- Main's runner (#48) crosses `RUNNER_BEFORE_CENTRE_M` short of the junction centre and is re-timed every tick
+  to reach it when the ego does (`sim/agents.py _retime`), so on main alone it now overlaps the ego in 15 of 15
+  runs (was 5 of 15). It is a collision course by design. With reactions the ego sees and reacts to it in 15
+  of 15 runs and avoids it only on grid_slow (4 of 5); grid (5 of 5, -2.27 m on four seeds) and Nob Hill
+  (5 of 5, -3.22 m) still overlap. The earlier "unseen" overlaps are gone. This is worse than the 2026-10-13
+  residual on the grid (4 of 5) only because that staging was less adversarial; against main the reactions
+  take the runner from 15 contacts to 11.
+- Merge of the two stagings: #30's stop-distance floor, speed-law ETA, pace and visibility checks are kept on
+  top of main's crossing point and retiming (`meet_s`, `meet_ego_s`).
+- The windowed red-light-runner preset test (a strict xfail on 2026-10-13) now stages on grid-signals in its
+  61 s window, so the xfail was removed.
+- Cut-in contacts stay at 0 of 15 with ambient traffic; jaywalker contacts 0 of 15. tailgater now declines in 2 of
+  10 grid runs ("no car behind the ego to tailgate with"), the same reason as before on grid_slow.
+- Gate xfails re-pinned to the measured cells: red_light_runner on grid and on Nob Hill (seed 1 overlaps);
+  grid_slow seed 1 passes, so its xfail was dropped.

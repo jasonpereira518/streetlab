@@ -69,6 +69,7 @@ from schema import (
     TrajectorySample,
     Trip,
     VehicleStatus,
+    WorldAgent,
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
@@ -112,6 +113,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "follow_distance_s": 1.5,
     "assist_enabled": True,
     "traffic_speed_scale": 1.0,
+    # Ambient cars per lane-kilometre on every street, both ways. 0 here keeps
+    # tests, contract fixtures and benchmarks pinned; `serve` defaults dense.
+    "traffic_density": 0.0,
     # Mean seconds between spontaneous cut-ins; 0 is off, so no scene gains
     # them unasked. Floored at `_CUTIN_MIN_PERIOD_S` when on.
     "cutin_period_s": 0.0,
@@ -316,6 +320,8 @@ class Simulation:
             lanes=self.scene.lanes,
             control_points=self.scene.control_points,
             ego_route=self.scene.ego_route,
+            ambient=self.scene.ambient_lanes,
+            density_per_lane_km=float(self.world.params["traffic_density"]),
         )
         self._signals = SignalController(self.scene.signal_groups)
         # Every scene-scoped draw -- hazard schedule, placement jitter,
@@ -908,6 +914,19 @@ class Simulation:
 
     # -- frame assembly ---------------------------------------------------- #
 
+    def _world_agents(self) -> list[WorldAgent]:
+        """Ground truth for every agent: not range-gated, not perception-gated."""
+        return [
+            WorldAgent(
+                id=a.id,
+                cls=a.cls,
+                pose=Pose(x=a.state.x, y=a.state.y, heading=a.state.heading),
+                size=Size(length=a.size.length, width=a.size.width, height=a.size.height),
+                speed_mps=a.state.speed_mps,
+            )
+            for a in self._traffic.agents
+        ]
+
     def state_update(self) -> StateUpdate:
         self._guard_world()
         # Reuse this tick's plan rather than computing a second one. The frame
@@ -925,6 +944,7 @@ class Simulation:
             world=self.world,
             scene=self.scene,
             detections=detections,
+            world_agents=self._world_agents(),
             detections_shadow=self.world.detections_shadow,
             plan=plan.plan,
             # Reused from `_plan()` rather than recomputed, for the same
@@ -1119,7 +1139,7 @@ class Simulation:
             # Render-only and unknown keys are accepted and ignored, so a newer
             # frontend cannot break an older backend.
             return CommandOutcome(ok=True, message=f"{command.key} ignored by the backend")
-        if command.key == "cutin_period_s":
+        if command.key in ("cutin_period_s", "traffic_density"):
             # Read every tick by `_fire_due_hazards`, on the sim thread: a
             # string or a non-finite float would raise there and stop the
             # world. Zero or negative is a valid "off".
@@ -1130,11 +1150,13 @@ class Simulation:
                 finite = False
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not finite:
                 return CommandOutcome(
-                    ok=False, message=f"cutin_period_s must be a finite number, not {value!r}"
+                    ok=False, message=f"{command.key} must be a finite number, not {value!r}"
                 )
         self.world.params[command.key] = command.value
         if command.key == "traffic_speed_scale":
             self._traffic.set_speed_scale(float(command.value))
+        if command.key == "traffic_density":
+            self._traffic.set_density(float(command.value))
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
 
     def _cmd_set_perception(self, command) -> CommandOutcome:
@@ -1344,6 +1366,7 @@ def assemble_state_update(
     world: WorldState,
     scene: BuiltScene,
     detections: Sequence[Detection],
+    world_agents: Sequence[WorldAgent],
     detections_shadow: Sequence[Detection] | None,
     plan: Plan,
     signals: Sequence[SignalState],
@@ -1420,6 +1443,7 @@ def assemble_state_update(
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
         detections=list(detections),
+        world_agents=list(world_agents),
         # Null when there is no second source at all; a real (possibly
         # empty) list whenever both sources ran -- see `_observe`'s
         # docstring. Never collapse `None` into `[]` here.
@@ -1561,6 +1585,7 @@ def _noisy_stats(quality: ScoreResult | None) -> PerceptionStats:
         precision=None if quality is None else quality.precision,
         recall=None if quality is None else quality.recall,
         mean_pos_err_m=None if quality is None else quality.mean_pos_err_m,
+        health="ok",
     )
 
 

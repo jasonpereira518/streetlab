@@ -38,22 +38,15 @@ FROM_BEHIND = frozenset({"emergency_vehicle", "tailgater"})
 #: can only get shorter.
 KNOWN_GAPS: dict[tuple[str, str], str] = {
     ("red_light_runner", "grid"): (
-        "every signal on the grid loop is a turn for the ego, and the runner is staged across "
-        "the route at `cp.s + RUNNER_PAST_LINE_M`, which is on the turn's arc: it meets the "
-        "turning ego in the junction, outside the forward cone. 4 of 5 seeds overlap, all "
-        "unseen before contact. Crossing it perpendicular to the approach instead was tried: "
-        "the ego then sees and slows (max 2.9 m/s) but still overlaps by 2.3 m. Needs the "
-        "runner timed to the ego's turn, not its straight-line distance"
-    ),
-    ("red_light_runner", "grid_slow"): (
-        "same turn geometry at 0.45x traffic: 1 of 5 seeds overlaps unseen and 2 of 5 are "
-        "inert (the runner has crossed before the slowed ego arrives)"
+        "measured 2026-10-16 after #47-#49: the runner is re-timed every tick to meet the ego at "
+        "the junction (sim/agents.py `_retime`), the ego sees it and slows in 5 of 5 seeds, and "
+        "still overlaps in 5 of 5 (-2.27 m on 4 seeds, -0.35 m on one): the ego is mid-turn "
+        "inside the junction when it arrives. Needs the ego to stop short of a conflict it has "
+        "already seen, not slow into it"
     ),
     ("red_light_runner", "nob_hill"): (
-        "staged and in the driving feed, but the ego is turning right at that signal and the "
-        "runner (seed 1: seen only 0.5 s before it passes) clears it by 3.4 m: 0 of 5 seeds "
-        "react or overlap (closest 2.9 m), so there is nothing to react to. Same turn "
-        "geometry as the grid"
+        "measured 2026-10-16: seen and reacted to in 5 of 5 seeds, overlaps in 5 of 5 (-3.22 m "
+        "on every seed). Same retimed collision course as the grid; the ego is turning at the signal"
     ),
 }
 

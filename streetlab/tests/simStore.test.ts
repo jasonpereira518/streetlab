@@ -89,6 +89,7 @@ describe('perception change-gate', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 
@@ -481,6 +482,7 @@ describe('walkthrough presets', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
     expect(useSimStore.getState().perceptionMode).toBe('noisy-truth');
@@ -498,6 +500,7 @@ describe('perception fix round', () => {
     precision: null,
     recall: null,
     mean_pos_err_m: null,
+    health: 'ok',
   });
 
   it('hasPipeline (the camera-frame gate and the ML option) reads the explicit flag', () => {

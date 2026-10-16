@@ -286,6 +286,7 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 
@@ -312,6 +313,7 @@ describe('TopToolbar', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
 
@@ -1090,6 +1092,7 @@ describe('RightPanel', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     };
     harness.emit(frame);
@@ -1388,6 +1391,7 @@ describe('Perception menu pipeline flag', () => {
         precision: null,
         recall: null,
         mean_pos_err_m: null,
+        health: 'ok',
       },
     });
   };

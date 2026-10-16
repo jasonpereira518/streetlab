@@ -12,6 +12,7 @@ import * as THREE from 'three/webgpu';
 import { attribute, mix, normalLocal, smoothstep, uv, float } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type {
+  KerbReturn,
   LayerKey,
   Road,
   SceneDescription,
@@ -28,6 +29,7 @@ import {
   subtractIntervals,
 } from './meshBuilder';
 import type { Interval, P3 } from './meshBuilder';
+import { CH, TOGGLE_CHANNEL, assignChannel } from './layers';
 import { speedLimitTexture, stopFaceTexture, streetNameTexture } from './labels';
 import { TerrainField, type HeightFn } from './terrain';
 
@@ -87,6 +89,12 @@ const DOUBLE_GAP_M = 0.2;
 const EDGE_INSET_M = 0.28;
 /** Stop bar depth, along the direction of travel. 12-24 in. */
 const STOP_BAR_M = 0.5;
+/**
+ * Stop bar past the crossing kerb: a 4 m crosswalk and the 1.2 m MUTCD gap
+ * behind it. The backend's `STOP_BAR_SETBACK_M` (`map/placement.py`), which
+ * the car's stop line is measured to. It was 2.2, inside the crosswalk.
+ */
+const STOP_BAR_SETBACK_M = 5.2;
 /** The transverse rail at each edge of a ladder or transverse crossing. */
 const CROSSING_RAIL_W = 0.2;
 
@@ -128,7 +136,6 @@ export interface World {
   groundMin: number;
   /** Drive signal lamps from the live frame. */
   updateSignals(states: SignalState[], time: number): void;
-  setLayerVisible(layer: LayerKey, visible: boolean): void;
   dispose(): void;
 }
 
@@ -346,10 +353,41 @@ function pointToSeg(px: number, py: number, s: RoadSeg): number {
  * against ALL of them at emit time — the one rule that holds whatever angle
  * two streets cross at, and whatever OSM has mapped twice.
  */
+/** Is `(x, y)` inside the convex kite `corner, tangent_a, center, tangent_b`? */
+function inKite(kr: KerbReturn, x: number, y: number): boolean {
+  const q = [kr.corner, kr.tangent_a, kr.center, kr.tangent_b];
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = q[i];
+    const [bx, by] = q[(i + 1) % 4];
+    const cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+    if (Math.abs(cross) < 1e-9) continue;
+    if (sign === 0) sign = Math.sign(cross);
+    else if (Math.sign(cross) !== sign) return false;
+  }
+  return true;
+}
+
 class RoadSurfaces {
   private cells = new Map<number, RoadSeg[]>();
+  private returnCells = new Map<number, KerbReturn[]>();
+  /** Every kerb-return tangent point: where a pavement run must break. */
+  readonly tangents: Vec2[] = [];
 
-  constructor(roads: Road[], lines: Polyline[]) {
+  constructor(roads: Road[], lines: Polyline[], returns: KerbReturn[] = []) {
+    for (const kr of returns) {
+      this.tangents.push(kr.tangent_a, kr.tangent_b);
+      const xs = [kr.corner[0], kr.tangent_a[0], kr.center[0], kr.tangent_b[0]];
+      const ys = [kr.corner[1], kr.tangent_a[1], kr.center[1], kr.tangent_b[1]];
+      for (let cx = Math.floor(Math.min(...xs) / CELL_M); cx <= Math.floor(Math.max(...xs) / CELL_M); cx++) {
+        for (let cy = Math.floor(Math.min(...ys) / CELL_M); cy <= Math.floor(Math.max(...ys) / CELL_M); cy++) {
+          const key = cx * 100000 + cy;
+          const list = this.returnCells.get(key);
+          if (list) list.push(kr);
+          else this.returnCells.set(key, [kr]);
+        }
+      }
+    }
     roads.forEach((road, i) => {
       const half = carriagewayHalfWidth(road);
       const pts = lines[i].points;
@@ -382,10 +420,14 @@ class RoadSurfaces {
   /** True when the point is on tarmac, beyond `slack` metres of the kerb. */
   covers(x: number, y: number, slack = 0.0): boolean {
     const key = Math.floor(x / CELL_M) * 100000 + Math.floor(y / CELL_M);
-    const list = this.cells.get(key);
-    if (!list) return false;
-    for (const seg of list) {
+    for (const seg of this.cells.get(key) ?? []) {
       if (pointToSeg(x, y, seg) < seg.half - slack) return true;
+    }
+    // A kerb return is tarmac outside its arc; the arc is the kerb.
+    for (const kr of this.returnCells.get(key) ?? []) {
+      if (inKite(kr, x, y) && Math.hypot(x - kr.center[0], y - kr.center[1]) > kr.radius_m + slack) {
+        return true;
+      }
     }
     return false;
   }
@@ -424,22 +466,45 @@ function keptRuns(
   length: number,
   step: number,
   keep: (from: number, to: number) => boolean,
+  breaks: number[] = [],
 ): Array<[number, number]> {
-  const n = Math.max(1, Math.ceil(length / step));
+  // Steps never straddle a break: a kerb return's tangent point, where the
+  // pavement must stop exactly rather than a whole step early.
+  const cuts = [0, ...breaks.filter((d) => d > 1e-6 && d < length - 1e-6).sort((p, q) => p - q), length];
   const runs: Array<[number, number]> = [];
   let open: number | null = null;
-  for (let i = 0; i < n; i++) {
-    const a = (length * i) / n;
-    const b = (length * (i + 1)) / n;
-    if (keep(a, b)) {
-      if (open === null) open = a;
-    } else if (open !== null) {
-      runs.push([open, a]);
-      open = null;
+  for (let c = 1; c < cuts.length; c++) {
+    const span = cuts[c] - cuts[c - 1];
+    const n = Math.max(1, Math.ceil(span / step));
+    for (let i = 0; i < n; i++) {
+      const a = cuts[c - 1] + (span * i) / n;
+      const b = cuts[c - 1] + (span * (i + 1)) / n;
+      if (keep(a, b)) {
+        if (open === null) open = a;
+      } else if (open !== null) {
+        runs.push([open, a]);
+        open = null;
+      }
     }
   }
   if (open !== null) runs.push([open, length]);
   return runs;
+}
+
+/** Arc lengths along a segment where a kerb-return tangent point sits beside it. */
+function tangentBreaks(
+  seg: { ox: number; oy: number; tx: number; ty: number; len: number },
+  roads: RoadSurfaces,
+  reach: number,
+): number[] {
+  const out: number[] = [];
+  for (const [x, y] of roads.tangents) {
+    const d = (x - seg.ox) * seg.tx + (y - seg.oy) * seg.ty;
+    if (d <= 0 || d >= seg.len) continue;
+    const lat = Math.abs((x - seg.ox) * -seg.ty + (y - seg.oy) * seg.tx);
+    if (lat <= reach) out.push(d);
+  }
+  return out;
 }
 
 /** Each straight segment of a polyline, as origin, unit tangent and length. */
@@ -486,7 +551,8 @@ function pavedStrip(
       at(b, outer),
       at(a, outer),
     ];
-    for (const [a, b] of keptRuns(seg.len, PAVE_STEP_M, (f, t) => !roads.coversQuad(quad(f, t)))) {
+    const breaks = tangentBreaks(seg, roads, Math.max(Math.abs(inner), Math.abs(outer)) + 0.1);
+    for (const [a, b] of keptRuns(seg.len, PAVE_STEP_M, (f, t) => !roads.coversQuad(quad(f, t)), breaks)) {
       builder.flatQuad(quad(a, b), height, color);
     }
   }
@@ -579,6 +645,7 @@ function pavedKerb(
       PAVE_STEP_M,
       (f, t) =>
         !roads.coversQuad([at(f, lateral), at(t, lateral), at(t, lateral + probe), at(f, lateral + probe)]),
+      tangentBreaks(seg, roads, Math.abs(lateral) + 0.5),
     );
     for (const [a, b] of runs) {
       const p = at(a, lateral);
@@ -633,6 +700,70 @@ function junctionApron(
       if (roads.coversQuad(corners)) continue;
       builder.flatQuad(corners, height, color);
     }
+  }
+}
+
+/** Arc samples of a kerb return, `tangent_a` to `tangent_b` the short way. */
+const RETURN_SEGMENTS = 10;
+
+function returnArc(kr: KerbReturn): Vec2[] {
+  const [ox, oy] = kr.center;
+  const a0 = Math.atan2(kr.tangent_a[1] - oy, kr.tangent_a[0] - ox);
+  const a1 = Math.atan2(kr.tangent_b[1] - oy, kr.tangent_b[0] - ox);
+  const sweep = Math.atan2(Math.sin(a1 - a0), Math.cos(a1 - a0));
+  const out: Vec2[] = [];
+  for (let i = 0; i <= RETURN_SEGMENTS; i++) {
+    const a = a0 + (sweep * i) / RETURN_SEGMENTS;
+    out.push([ox + Math.cos(a) * kr.radius_m, oy + Math.sin(a) * kr.radius_m]);
+  }
+  return out;
+}
+
+/** Triangle `a b c` as a counter-clockwise (upward-facing) degenerate quad. */
+function flatTri(builder: MeshBuilder, a: Vec2, b: Vec2, c: Vec2, h: number, color: THREE.Color): void {
+  const ccw = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0;
+  builder.flatQuad(ccw ? [a, b, c, c] : [a, c, b, b], h, color);
+}
+
+/** Whether any of a grid of points across triangle `a b c` is on tarmac. */
+function triangleTouches(roads: RoadSurfaces, a: Vec2, b: Vec2, c: Vec2): boolean {
+  const N = 6;
+  for (let i = 0; i <= N; i++) {
+    for (let j = 0; i + j <= N; j++) {
+      const u = i / N;
+      const v = j / N;
+      const w = 1 - u - v;
+      const x = a[0] * w + b[0] * u + c[0] * v;
+      const y = a[1] * w + b[1] * u + c[1] * v;
+      if (roads.covers(x, y, 1e-3)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * One rounded junction corner: tarmac from the old square corner out to the
+ * arc, pavement from the arc back to where the square corner's pavement was,
+ * and the kerb face along the arc between them.
+ */
+function kerbReturn(surface: MeshBuilder, paving: MeshBuilder, kr: KerbReturn, roads: RoadSurfaces): void {
+  const arc = returnArc(kr);
+  for (let i = 1; i < arc.length; i++) {
+    flatTri(surface, kr.corner, arc[i - 1], arc[i], Y.road, C.asphalt);
+    // Behind the arc: pavement, unless another street's tarmac is there. The
+    // triangle is long and thin, so it is probed on a grid, not at its corners.
+    if (!triangleTouches(roads, kr.center, arc[i - 1], arc[i])) {
+      flatTri(paving, kr.center, arc[i - 1], arc[i], Y.sidewalk, C.sidewalk);
+    }
+    const [p, q] = [arc[i - 1], arc[i]];
+    // At an irregular junction the arc can run onto a third street's tarmac.
+    if ([p, q, [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2] as Vec2].some(([x, y]) => roads.covers(x, y, 1e-3))) {
+      continue;
+    }
+    const mx = (p[0] + q[0]) / 2 - kr.center[0];
+    const my = (p[1] + q[1]) / 2 - kr.center[1];
+    const len = Math.hypot(mx, my) || 1;
+    paving.wall(p, q, Y.road, Y.sidewalk, [mx / len, 0, -my / len], C.kerb);
   }
 }
 
@@ -701,6 +832,8 @@ export function buildWorld(scene: SceneDescription): World {
   const ground = terrain.flat ? null : heightAt;
 
   const lines = scene.roads.map((r) => new Polyline(r.centerline));
+  // Absent from scenes built before kerb returns (zod defaults it on the wire).
+  const kerbReturns = scene.kerb_returns ?? [];
   const crossings = findCrossings(scene.roads, lines);
   const controlled = controlledApproaches(scene, lines, crossings);
 
@@ -710,7 +843,7 @@ export function buildWorld(scene: SceneDescription): World {
   const paving = new MeshBuilder();
   surface.ground = ground;
   paving.ground = ground;
-  const roadSurfaces = new RoadSurfaces(scene.roads, lines);
+  const roadSurfaces = new RoadSurfaces(scene.roads, lines, kerbReturns);
 
   scene.roads.forEach((road, i) => {
     const line = lines[i];
@@ -743,6 +876,8 @@ export function buildWorld(scene: SceneDescription): World {
       pavedKerb(paving, line, side * (half + 0.02), yRoad, roadSurfaces);
     }
   });
+
+  for (const kr of kerbReturns) kerbReturn(surface, paving, kr, roadSurfaces);
 
   // Pavement wrapping each junction, so the strips either side of it join up.
   const aprons = new Map<string, { at: Vec2; r0: number; r1: number }>();
@@ -865,7 +1000,7 @@ export function buildWorld(scene: SceneDescription): World {
           [backward, divide, -1],
         ] as const) {
           if (lanes === 0 || !controlled.has(approachKey(i, ci, sign))) continue;
-          const at = c.s - sign * (c.reach + h * c.skew + 2.2);
+          const at = c.s - sign * (c.reach + h * c.skew + STOP_BAR_SETBACK_M);
           if (at < span.from || at > span.to) continue;
           solid(
             { from: at - STOP_BAR_M / 2, to: at + STOP_BAR_M / 2 },
@@ -1120,15 +1255,20 @@ export function buildWorld(scene: SceneDescription): World {
     disposables.push(mesh.geometry, mesh.material as THREE.Material);
   }
 
+  // UI toggles hide a category from the MAIN camera only (layers.ts); the
+  // detector keeps seeing it. Real geometry therefore moves onto a channel of
+  // its own rather than flipping `visible`, which every camera obeys.
+  for (const [layer, nodes] of layerNodes) {
+    const channel = layer === 'reference_path' ? CH.OVERLAY : TOGGLE_CHANNEL[layer];
+    if (channel !== undefined) for (const n of nodes) assignChannel(n, channel);
+  }
+
   return {
     root,
     heightAt,
     groundMin: terrain.min,
     updateSignals(states, time) {
       signals?.update(states, time);
-    },
-    setLayerVisible(layer, visible) {
-      for (const node of layerNodes.get(layer) ?? []) node.visible = visible;
     },
     dispose() {
       for (const d of disposables) d.dispose();

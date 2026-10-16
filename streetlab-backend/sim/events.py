@@ -177,10 +177,16 @@ CYCLIST_LIFE_S = 30.0
 #: A car crosses the next signal against its red, timed to reach the crossing
 #: point when the ego does. Measured while planning Cycle 6 Phase 1: centres
 #: 2.60 m apart on grid-loop, 0.22 m on Nob Hill -- a collision course.
+#: Timed once at staging it drifted (6.4 m on both scenes by 2026-10-14), so
+#: it now re-times every tick (`IdmTraffic._retime`): 0.14 m on grid-loop and
+#: 0.26 m on Nob Hill, both pinned.
 RUNNER_SEARCH_M = 80.0
 RUNNER_MIN_EGO_MPS = 2.0
-#: The crossing point: this far past the stop line, inside the junction.
-RUNNER_PAST_LINE_M = 6.0
+#: The crossing point: this far before the junction centre, in the near half
+#: of the box. Was 6 m past a stop line that sat a fixed 9 m back; stop lines
+#: now sit at the bar, a crossing-dependent distance, so it is anchored to the
+#: junction itself.
+RUNNER_BEFORE_CENTRE_M = 3.0
 #: The ego's green must outlast its arrival by this much, or it stops for the
 #: change and the runner crosses an empty junction.
 RUNNER_GREEN_MARGIN_S = 2.0
@@ -835,8 +841,8 @@ def _runner_hidden(
 def _red_light_runner(sim: "Simulation") -> str | Declined:
     """A car runs the red across the ego's green, arriving when the ego does.
 
-    Its route crosses the ego's path `RUNNER_PAST_LINE_M` past the next signal's
-    stop line, from the ego's right, starting as far out as the limit covers in
+    Its route crosses the ego's path `RUNNER_BEFORE_CENTRE_M` short of the next
+    signal's junction centre, from the ego's right, starting as far out as the limit covers in
     the ego's time to get there. Cycle 3 taught the ego to obey lights; this is
     the first thing that tests whether it trusts everyone else to.
     """
@@ -855,6 +861,8 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
     if not ahead:
         return Declined(f"no signal within {RUNNER_SEARCH_M:.0f} m ahead")
     gap, cp = min(ahead, key=lambda pair: pair[0])
+    at = route.project(cp.position) - RUNNER_BEFORE_CENTRE_M
+    to_cross = route.signed_gap(ego_s, at)
     signal = next((sig for sig in sim.world.signals if sig.id == cp.id), None)
     if signal is None or signal.phase != "green":
         return Declined("the signal ahead is not green for the ego")
@@ -864,9 +872,8 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
     if gap < stopping_distance(ego_speed) + RUNNER_STOP_MARGIN_M:
         return Declined("the ego is too close to the signal to stop for a car at it")
 
-    # Distance from the ego's centre to the crossing point, and when the ego gets
+    # `to_cross` (the ego's centre to the crossing point, from main) and when the ego gets
     # there: along its own speed law, which slows for the junction's turn.
-    to_cross = gap + RUNNER_PAST_LINE_M
     eta = next((t for t, d, _v in _ego_path(sim, hold_speed=True) if d >= to_cross), None)
     if eta is None:
         return Declined("the ego would not reach the junction within 30 s")
@@ -875,7 +882,6 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
 
     pace = _pace(sim)
     speed = sim.scene.speed_limit_mps * pace
-    at = cp.s + RUNNER_PAST_LINE_M
     cx, cy = route.point_at(at)
     heading = route.heading_at(at)
     nx, ny = -math.sin(heading), math.cos(heading)
@@ -904,6 +910,8 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
         lifetime_s=(crossing.length_m - 1.0) / speed,
     )
     _start_at_pace(agent, speed)
+    agent.meet_s = approach
+    agent.meet_ego_s = at
     return f"{agent.id} running the red {gap:.0f} m ahead"
 
 
