@@ -261,6 +261,12 @@ export const DEFAULT_RELOAD_PAGE = (): void => {
 /* Store                                                               */
 /* ------------------------------------------------------------------ */
 
+/** Coordinates of a suggestion the user picked, per address field. */
+export interface LocationPicks {
+  start?: { lat: number; lon: number } | null;
+  destination?: { lat: number; lon: number } | null;
+}
+
 /**
  * Right-panel tab identifiers. Defined once here — rather than as a
  * separately-typed literal union duplicated in `RightPanel.tsx` — so a tab
@@ -268,12 +274,6 @@ export const DEFAULT_RELOAD_PAGE = (): void => {
  * runtime surprise (`setRightTab('events')` compiling while the panel has
  * nothing registered for it, or vice versa).
  */
-/** Coordinates of a suggestion the user picked, per address field. */
-export interface LocationPicks {
-  start?: { lat: number; lon: number } | null;
-  destination?: { lat: number; lon: number } | null;
-}
-
 export type RightTab = 'parameters' | 'run' | 'map' | 'layers' | 'events';
 
 /** Scorecards kept per preset (newest first) — what the Run tab compares. */
