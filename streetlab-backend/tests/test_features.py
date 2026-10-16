@@ -300,8 +300,10 @@ def test_procedural_verge_trees_supplement_sparse_tagged_coverage(graph):
     #     8 land inside some drivable way's carriageway (see
     #       `test_procedural_verge_trees_clear_the_carriageway`),
     #    30 land inside a building footprint,
-    # leaving 565.
-    assert len(procedural) == 565
+    # leaving 565 -- and 545 since the roads carry their parking and bus lanes
+    # (2026-10-16): the 9 widened ways' verges moved out by their edge, and
+    # 19 of their 66 trees now land in buildings (one more falls to spacing).
+    assert len(procedural) == 545
 
 
 def test_build_trees_combines_tagged_and_procedural_even_when_both_exist():
@@ -399,7 +401,7 @@ def test_procedural_verge_trees_clear_the_carriageway(graph):
     # Sanity: the real, filtered set. Was 763 before verge trees were checked
     # against building footprints (144 stood inside one), spaced against each
     # other, and confined to ways that actually carry a pavement.
-    assert len(procedural) == 565
+    assert len(procedural) == 545  # see the test above
 
     for t in procedural:
         for name, points, half_width in ways_geometry:

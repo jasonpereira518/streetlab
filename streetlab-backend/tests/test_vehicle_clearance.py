@@ -87,7 +87,7 @@ def footprints(sim: Simulation):
 
 
 def _half(road) -> float:
-    return (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+    return road.half_width_m
 
 
 class _World:

@@ -104,6 +104,12 @@ export const RoadSchema = z.object({
    */
   sidewalk_left: z.boolean(),
   sidewalk_right: z.boolean(),
+  /** OSM vertical order (+1 bridge / -1 tunnel by default) and the structure. */
+  layer: z.number().int().default(0),
+  bridge: z.boolean().default(false),
+  tunnel: z.boolean().default(false),
+  /** Parking / bus lane beyond the driven lanes, each side. Not driven. */
+  edge_m: z.number().min(0).default(0),
 });
 
 export const BuildingSchema = z.object({
@@ -769,6 +775,14 @@ export type HazardSummary = z.infer<typeof HazardSummarySchema>;
 export type PresetSummary = z.infer<typeof PresetSummarySchema>;
 export type Terrain = z.infer<typeof TerrainSchema>;
 export type SceneDescription = z.infer<typeof SceneDescriptionSchema>;
+
+/**
+ * Centreline to kerb: the driven lanes plus the parking / bus edge. THE
+ * half-width, the backend's `Road.half_width_m`; `edge_m` is absent on a
+ * scene built before it existed.
+ */
+export const roadHalfWidth = (r: Road): number =>
+  ((r.lanes_forward + r.lanes_backward) * r.lane_width_m) / 2 + (r.edge_m ?? 0);
 export type KerbReturn = z.infer<typeof KerbReturnSchema>;
 
 export type DetectionClass = z.infer<typeof DetectionClassSchema>;

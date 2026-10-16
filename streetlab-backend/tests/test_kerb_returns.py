@@ -81,3 +81,9 @@ def test_the_square_corner_is_tarmac_and_the_pavement_behind_the_arc_is_not():
     centre = 3.6 + KERB_RETURN_M
     assert not keep_out.in_carriageway((centre - 0.5, centre - 0.5))
     assert not kerb_return_polygon(kerb_returns(PLUS)[0]).contains(Point(0.0, 0.0))
+
+
+def test_a_bridge_over_a_street_makes_no_corners():
+    """Hyde St crosses Nob Hill on a bridge: two layers are no junction."""
+    over = road("ns", [(0.0, -60.0), (0.0, 60.0)]).model_copy(update={"layer": 1, "bridge": True})
+    assert kerb_returns([PLUS[0], over]) == []

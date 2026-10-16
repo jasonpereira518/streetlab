@@ -1352,3 +1352,22 @@ def test_at_an_all_way_stop_a_car_that_stopped_later_waits_for_the_ego(road):
         if d.state is BehaviorState.CREEP:
             break
     assert d.state is BehaviorState.CREEP
+
+
+def test_an_ego_stopped_at_a_far_line_still_counts_as_first(road):
+    """Measured on grid-arterial with dense traffic: the ego's route turns at
+    the junction, its line sits further out, and resting at it put the ego
+    18.9 m from the centre -- outside the 18 m waiting zone. Its arrival was
+    never noted, every later car counted as earlier, and it waited 45 s."""
+    centre = (59.0 + 15.0, 0.0)  # line at 50, the centre 24 m on
+    cps = [ControlPoint(id="ss", kind="stop_sign", s=50.0, position=centre)]
+    fsm = BehaviorFSM()
+    for _ in range(int(0.7 / DT)):  # the ego stops first, beyond the tie...
+        fsm.step(ego_at(47.0, 0.0), road, 47.0, cps, {}, DT, detections=[])
+    # Arriving later, from the ego's right: a tie would make the ego give way.
+    later = _waiting_car(centre[0] + 1.8, -10.0, math.pi / 2)
+    for _ in range(int(1.0 / DT)):  # ...the other arrives during its dwell
+        d = fsm.step(ego_at(47.0, 0.0), road, 47.0, cps, {}, DT, detections=[later])
+        if d.state is BehaviorState.CREEP:
+            break
+    assert d.state is BehaviorState.CREEP
