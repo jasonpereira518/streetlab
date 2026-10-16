@@ -34,7 +34,7 @@ test('two tabs get independent simulations', async ({ browser }) => {
   await ctx.close();
 });
 
-test('a third tab beyond the cap sees the busy state', async ({ browser }) => {
+test('a third tab beyond the cap waits in line and is admitted automatically', async ({ browser }) => {
   const cap = Number(process.env.STREETLAB_E2E_CAP ?? '2');
   const ctx = await browser.newContext();
   const open = [];
@@ -48,12 +48,12 @@ test('a third tab beyond the cap sees the busy state', async ({ browser }) => {
   }
   const extra = await ctx.newPage();
   await extra.goto(`/?backend=${BACKEND}`);
-  await expect(extra.getByTestId('connection-error')).toHaveAttribute('data-kind', 'server_busy');
+  await expect(extra.getByTestId('queue-overlay')).toBeVisible({ timeout: 20_000 });
+  await expect(extra.getByTestId('queue-position')).toContainText('#1');
 
-  // Free a slot; Retry on the refused tab now gets in.
+  // Free a slot: the queued tab gets it with no click.
   await open[0].close();
-  await extra.waitForTimeout(500);
-  await extra.getByRole('button', { name: 'Retry' }).click();
+  await expect(extra.getByTestId('queue-overlay')).toBeHidden({ timeout: 20_000 });
   await expect(extra.getByRole('button', { name: 'Pause simulation' })).toBeVisible({
     timeout: 20_000,
   });

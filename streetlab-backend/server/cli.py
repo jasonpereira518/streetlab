@@ -273,11 +273,34 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(os.environ.get("STREETLAB_MAX_SESSIONS", "0")),
         help="hosted mode: give every WebSocket connection its own private "
-        "simulation, at most this many at once (further connections are "
-        "closed with code 4429 'server busy'). 0, the default, is the "
+        "simulation, at most this many at once (further connections wait in "
+        "line, see --queue-max). 0, the default, is the "
         "desktop sidecar's single shared world. Defaults to "
         "$STREETLAB_MAX_SESSIONS. Not combinable with --perception ml or "
         "--capture, which own a single process-wide pipeline.",
+    )
+    serve.add_argument(
+        "--queue-max",
+        type=int,
+        default=int(os.environ.get("STREETLAB_QUEUE_MAX", "20")),
+        help="hosted mode: connections over --max-sessions wait in a FIFO line "
+        "of at most this many; beyond it they get 4429. Defaults to "
+        "$STREETLAB_QUEUE_MAX or 20.",
+    )
+    serve.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=float(os.environ.get("STREETLAB_IDLE_TIMEOUT", "180")),
+        help="hosted mode: close a session (4408) after this many seconds with "
+        "no input. Defaults to $STREETLAB_IDLE_TIMEOUT or 180.",
+    )
+    serve.add_argument(
+        "--session-max",
+        type=float,
+        default=float(os.environ.get("STREETLAB_SESSION_MAX", "900")),
+        help="hosted mode: close a session (4409) after this many seconds, but "
+        "only while someone is waiting in line. Defaults to "
+        "$STREETLAB_SESSION_MAX or 900.",
     )
     serve.add_argument("--source", choices=("synthetic", "osm"), default="synthetic")
     serve.add_argument(
@@ -392,6 +415,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.max_sessions < 0:
             parser.error("--max-sessions must be >= 0")
+        if args.queue_max < 0 or args.idle_timeout <= 0 or args.session_max <= 0:
+            parser.error("--queue-max must be >= 0; --idle-timeout and --session-max > 0")
         if args.max_sessions and (args.perception == "ml" or args.capture):
             parser.error(
                 "--max-sessions cannot be combined with --perception ml or --capture: "
@@ -578,6 +603,9 @@ def _serve(args) -> int:
             geocoder=geocoder,
             session_factory=make_session,
             max_sessions=args.max_sessions,
+            queue_max=args.queue_max,
+            idle_timeout_s=args.idle_timeout,
+            session_max_s=args.session_max,
         )
     else:
         loop = SimLoop(sim, hz=args.sim_hz, capture_sink=sink)

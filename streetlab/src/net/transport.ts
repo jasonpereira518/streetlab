@@ -23,7 +23,11 @@ export type ConnectionFailureKind =
   | 'backend_down'
   | 'origin_rejected'
   | 'server_busy'
-  | 'protocol_mismatch';
+  | 'protocol_mismatch'
+  /** Hosted waitlist evictions: no input for too long, or the session cap
+   * while others wait. Halting matters: auto-retry would silently rejoin. */
+  | 'idle_kicked'
+  | 'time_up';
 
 export interface ConnectionFailure {
   kind: ConnectionFailureKind;
@@ -33,6 +37,8 @@ export interface ConnectionFailure {
 /** WebSocket close codes the backend uses on purpose (server/ws_server.py). */
 export const CLOSE_ORIGIN_REJECTED = 1008;
 export const CLOSE_SERVER_BUSY = 4429;
+export const CLOSE_IDLE = 4408;
+export const CLOSE_TIME_UP = 4409;
 
 export interface TransportHandlers {
   /** A schema-valid message arrived. */
