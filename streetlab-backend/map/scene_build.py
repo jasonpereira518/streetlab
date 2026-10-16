@@ -213,7 +213,7 @@ SCENARIOS: tuple[_Scenario, ...] = (
     _Scenario(
         "grid-loop",
         "Nob Hill Loop",
-        "A single block circuit with two signalised corners. The gentlest way in.",
+        "A single block circuit. The gentlest way in.",
         "easy",
         (0.0, 80.0, 0.0, 80.0),
         3,
@@ -222,7 +222,7 @@ SCENARIOS: tuple[_Scenario, ...] = (
     _Scenario(
         "grid-arterial",
         "California Arterial",
-        "The long way round on the two arterials, at 35 mph with cross traffic.",
+        "The long way round the outer streets, with cross traffic.",
         "moderate",
         (-80.0, 80.0, -80.0, 80.0),
         5,
@@ -230,7 +230,7 @@ SCENARIOS: tuple[_Scenario, ...] = (
     _Scenario(
         "grid-signals",
         "Signal Ladder",
-        "North-west block: every corner is signalised, so the light cycle drives.",
+        "North-west block, where the light cycle drives.",
         "moderate",
         (-80.0, 0.0, 0.0, 80.0),
         4,
@@ -238,7 +238,7 @@ SCENARIOS: tuple[_Scenario, ...] = (
     _Scenario(
         "grid-merge",
         "Hyde Street Merge",
-        "The tight block with heavy traffic — lead vehicles cut in without warning.",
+        "The tight block with heavy traffic. Inject a cut-in from the hazard menu.",
         "hard",
         (0.0, 80.0, 0.0, 80.0),
         6,
@@ -247,7 +247,7 @@ SCENARIOS: tuple[_Scenario, ...] = (
     _Scenario(
         "grid-night",
         "Outer Circuit",
-        "The full perimeter. Long straights, four-way stops at the quiet corners.",
+        "The full perimeter. Long straights.",
         "moderate",
         (-80.0, 80.0, -80.0, 80.0),
         4,
@@ -409,7 +409,7 @@ class SyntheticGrid:
             index=index,
             name=scenario.name,
             location="Synthetic Grid",
-            description=scenario.description,
+            description=f"{scenario.description} {self._route_facts(scenario.block)}",
             duration_s=estimate_travel_s(
                 route, 0.0, route.length_m, limit,
                 control_points=self._control_points(route), margin_mps=_DEFAULT_MARGIN_MPS,
@@ -479,6 +479,27 @@ class SyntheticGrid:
         corners = [(x0, y0), (x0, y1), (x1, y1), (x1, y0)]
         lane = Route(corners, closed=True).offset(-EGO_LANE_INSET)
         return lane.fillet(radius_m=TURN_RADIUS_M)
+
+    def _route_facts(self, block: tuple[float, float, float, float]) -> str:
+        """Corner controls and limits read off the street tables, so the catalog text cannot rot."""
+        x0, x1, y0, y1 = block
+        corners = [
+            (ns, ew)
+            for ns in NS_STREETS
+            for ew in EW_STREETS
+            if ns.at in (x0, x1) and ew.at in (y0, y1)
+        ]
+        lights = sum(self._is_signalised(ns, ew) for ns, ew in corners)
+        stops = len(corners) - lights
+        parts = []
+        if lights:
+            parts.append(f"{lights} signalised corner{'s' * (lights != 1)}")
+        if stops:
+            parts.append(f"{stops} all-way stop{'s' * (stops != 1)}")
+        used = [s for s in NS_STREETS if s.at in (x0, x1)]
+        used += [s for s in EW_STREETS if s.at in (y0, y1)]
+        mph = sorted({int(s.speed_mph) for s in used})
+        return f"{', '.join(parts)}; {'-'.join(map(str, mph))} mph."
 
     def _route_speed_limit(self, block: tuple[float, float, float, float]) -> float:
         """The lowest limit on the streets the loop uses — the binding one."""

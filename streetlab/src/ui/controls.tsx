@@ -118,6 +118,7 @@ export function Slider({
         max={max}
         step={step}
         value={value}
+        aria-valuetext={`${value.toFixed(decimals)}${unit ? ` ${unit}` : ''}`}
         onChange={(e) => onChange(Number(e.target.value))}
         style={{ ['--fill' as string]: `${pct}%` }}
       />

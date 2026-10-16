@@ -3,6 +3,8 @@ import { createMockTransport } from './net/mockServer';
 import { createTransportFromLocation } from './net/wsClient';
 import { useSimStore } from './store/simStore';
 import { Renderer } from './three/Renderer';
+import { AckToast } from './ui/AckToast';
+import { HelpDialog, useShortcuts } from './ui/HelpDialog';
 import { LeftScenarioSidebar } from './ui/LeftScenarioSidebar';
 import { PanelHandle } from './ui/PanelHandle';
 import { PerfOverlay } from './ui/PerfOverlay';
@@ -17,6 +19,7 @@ type BootPhase = 'starting' | 'ready' | 'error';
 export default function App() {
   const attach = useSimStore((s) => s.attach);
   const collapsed = useSimStore((s) => s.collapsed);
+  useShortcuts();
   const failure = useSimStore((s) => s.failure);
   const retryConnection = useSimStore((s) => s.retryConnection);
   const [boot, setBoot] = useState<BootPhase>('starting');
@@ -82,6 +85,8 @@ export default function App() {
       </div>
       {!collapsed.telemetry && <TelemetryRow />}
       <PerfOverlay />
+      <AckToast />
+      <HelpDialog />
       {boot === 'ready' && failure && (
         <ConnectionErrorOverlay
           failure={failure}
