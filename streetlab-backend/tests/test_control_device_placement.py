@@ -97,7 +97,7 @@ def road_surfaces(scene):
     return [
         (
             r.centerline,
-            (r.lanes_forward + r.lanes_backward) * r.lane_width_m / 2,
+            r.half_width_m,
         )
         for r in scene.roads
     ]

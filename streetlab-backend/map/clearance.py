@@ -48,7 +48,7 @@ WALL_GAP_M = 0.05
 
 
 def half_width(road: Road) -> float:
-    return (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+    return road.half_width_m
 
 
 def _footprint(building: Building) -> Polygon:
@@ -121,8 +121,13 @@ def floor_half_width(road: Road) -> float:
 
 
 def _with_half_width(road: Road, fitted: float) -> Road:
+    """`road` at half-width `fitted`: its parking / bus edge gives way first,
+    then the driven lanes narrow."""
     lanes = road.lanes_forward + road.lanes_backward
-    update: dict = {"lane_width_m": round(2 * fitted / lanes, 3)}
+    driven = lanes * road.lane_width_m / 2
+    if fitted >= driven:
+        return road.model_copy(update={"edge_m": round(fitted - driven, 3)})
+    update: dict = {"lane_width_m": round(2 * fitted / lanes, 3), "edge_m": 0.0}
     if road.road_class not in ("arterial", "collector") and 2 * fitted < 2 * MIN_LANE_W_M:
         update["center_marking"] = "none"
     return road.model_copy(update=update)
@@ -196,8 +201,8 @@ def kerb_returns(
     for i, li in enumerate(lines):
         for j in index.query(li, predicate="intersects"):
             j = int(j)
-            if j <= i:
-                continue
+            if j <= i or roads[i].layer != roads[j].layer:
+                continue  # a bridge over a street meets nothing
             lj = lines[j]
             hit = li.intersection(lj)
             points = [g for g in getattr(hit, "geoms", [hit]) if g.geom_type == "Point"]

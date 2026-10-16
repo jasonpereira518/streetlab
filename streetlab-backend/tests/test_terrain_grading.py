@@ -94,7 +94,7 @@ def _near_junction(scene, x, y, road, margin):
     for other in scene.roads:
         if other.id == road.id:
             continue
-        half = (other.lanes_forward + other.lanes_backward) * other.lane_width_m / 2
+        half = other.half_width_m
         if LineString(other.centerline).distance(p) < half + margin:
             return True
     return False
@@ -128,7 +128,7 @@ def test_roads_run_level_across_their_width(hilly):
     field = from_wire(scene.terrain)
     slopes = []
     for road in scene.roads:
-        half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+        half = road.half_width_m
         for x, y, tx, ty, _ in _clear_stations(scene, road, under, 4.0):
             left = field.sample(x - ty * half, y + tx * half)
             right = field.sample(x + ty * half, y - tx * half)

@@ -14,6 +14,7 @@ import { resolve } from 'node:path';
 import * as THREE from 'three/webgpu';
 import { buildWorld } from '../src/three/world';
 import type { SceneDescription } from '../src/schema';
+import { roadHalfWidth } from '../src/schema';
 
 const osmScene = (): SceneDescription =>
   JSON.parse(readFileSync(resolve(__dirname, 'fixtures/nobHillScene.json'), 'utf8'));
@@ -35,7 +36,7 @@ function segDist(px: number, py: number, ax: number, ay: number, bx: number, by:
 function depthIntoRoad(scene: SceneDescription, x: number, y: number): number {
   let worst = -Infinity;
   for (const r of scene.roads) {
-    const half = ((r.lanes_forward + r.lanes_backward) * r.lane_width_m) / 2;
+    const half = roadHalfWidth(r);
     for (let i = 1; i < r.centerline.length; i++) {
       const a = r.centerline[i - 1];
       const b = r.centerline[i];
@@ -128,6 +129,10 @@ describe('pavement is drawn only on the sides that have one', () => {
           center_marking: 'broken_yellow',
           sidewalk_left: left,
           sidewalk_right: right,
+          layer: 0,
+          bridge: false,
+          tunnel: false,
+          edge_m: 0,
         },
       ],
     };

@@ -121,6 +121,19 @@ class Road(Wire):
     # Hill extract's 264 drivable ways say, so the renderer drew both.
     sidewalk_left: bool = True
     sidewalk_right: bool = True
+    # OSM's vertical order (`layer`, or +1 bridge / -1 tunnel by default), and
+    # which structure carries the way, if any. Defaulted: the grid has none.
+    layer: int = 0
+    bridge: bool = False
+    tunnel: bool = False
+    # Carriageway beyond the driven lanes on each side: parking lanes and
+    # kerbside bus lanes. Not driven; it widens the kerb to kerb width.
+    edge_m: NonNeg = 0.0
+
+    @property
+    def half_width_m(self) -> float:
+        """Centreline to kerb. THE half-width: every consumer asks this."""
+        return (self.lanes_forward + self.lanes_backward) * self.lane_width_m / 2 + self.edge_m
 
 
 class KerbReturn(Wire):

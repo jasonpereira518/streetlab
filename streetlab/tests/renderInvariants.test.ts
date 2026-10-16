@@ -15,13 +15,14 @@ import * as THREE from 'three/webgpu';
 import { buildWorld } from '../src/three/world';
 import { TerrainField, attitudeOn } from '../src/three/terrain';
 import type { Road, SceneDescription, Vec2 } from '../src/schema';
+import { roadHalfWidth } from '../src/schema';
 
 const gridScene = (): SceneDescription =>
   JSON.parse(
     readFileSync(resolve(__dirname, '../../contract/fixtures/scene_description.json'), 'utf8'),
   );
 
-const half = (r: Road) => ((r.lanes_forward + r.lanes_backward) * r.lane_width_m) / 2;
+const half = roadHalfWidth;
 
 function road(id: string, centerline: Vec2[], extra: Partial<Road> = {}): Road {
   return {
@@ -37,6 +38,10 @@ function road(id: string, centerline: Vec2[], extra: Partial<Road> = {}): Road {
     center_marking: 'broken_yellow',
     sidewalk_left: true,
     sidewalk_right: true,
+    layer: 0,
+    bridge: false,
+    tunnel: false,
+    edge_m: 0,
     ...extra,
   };
 }

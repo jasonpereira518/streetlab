@@ -508,7 +508,7 @@ def test_the_nob_hill_ego_lane_keeps_half_a_lane_from_the_kerb(nob_hill_scene):
     turning = _turn_segments(lanes.ego.route)
     bad = []
     for i, road in enumerate(lanes.road_along):
-        half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+        half = road.half_width_m
         if half <= road.lane_width_m or turning[i]:
             # Narrower than one lane there is nothing to keep inside; on a
             # turn the governing road is the one being turned across.
