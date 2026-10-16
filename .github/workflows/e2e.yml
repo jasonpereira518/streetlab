@@ -6,14 +6,15 @@ name: E2E (advisory)
 # are slow and occasionally exceed their timeout there (measured on the first
 # hosted run: 15 passed, 2 failed, 3 flaky, 1 skipped of 21; see
 # docs/measurements/2026-10-04-e2e-flake-rate.md). On a developer machine the
-# full suite passes (`cd streetlab && npm run test:e2e`). This workflow still
-# runs and reports on every push, but it must not turn the main CI status red
+# full suite passes (`cd streetlab && npm run test:e2e`). It must not turn the main CI status red
 # for a runner limitation.
+#
+# It takes about 27 minutes there, so it runs nightly and on demand rather than
+# on every push: a red advisory job on each pull request reads as a failure.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  schedule:
+    - cron: '47 6 * * *'
   workflow_dispatch:
 
 concurrency:

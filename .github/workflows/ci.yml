@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * *'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -33,7 +35,7 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: streetlab-backend
@@ -48,5 +50,27 @@ jobs:
       # wire-contract break in about a minute instead of after the full suite.
       - name: Contract tests
         run: uv run pytest -q ../contract
-      - name: Backend tests
-        run: uv run pytest -q tests
+      # Whole-scenario replays are marked `slow` (tests/conftest.py SLOW_FILES).
+      # The full suite did not finish inside 30 minutes on a hosted runner (it
+      # was cancelled at 35%), so a pull request runs the rest and the slow set
+      # has its own job below.
+      - name: Backend tests (fast)
+        run: uv run pytest -q -m "not slow" --durations=15 tests
+
+  backend-slow:
+    # Not on pull requests: main, the nightly schedule and manual runs.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: streetlab-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: streetlab-backend/uv.lock
+      - run: uv sync --frozen
+      - name: Backend tests (slow replays)
+        run: uv run pytest -q -m slow tests

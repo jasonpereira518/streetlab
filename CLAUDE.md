@@ -20,6 +20,7 @@ implies otherwise.
 ```bash
 cd streetlab-backend && uv run pytest -q tests ../contract   # ~10 min on a quiet machine
 cd streetlab-backend && uv run pytest --collect-only -q      # ~2 s, to count or find tests
+cd streetlab-backend && uv run pytest -q -m "not slow" tests ../contract   # what a PR runs; `-m slow` is the whole-scenario replays
 cd streetlab && npm ci && npx vitest run && npx tsc --noEmit
 cd streetlab && npm run test:e2e                              # Playwright
 bash scripts/build_app.sh                                     # packaged .app (needs Rust, Node, uv)

@@ -27,6 +27,33 @@ FIXTURES = Path(__file__).resolve().parents[2] / "contract" / "fixtures"
 BENCHMARK_DIR = Path(__file__).resolve().parents[2] / "contract" / "benchmark"
 
 
+# Files that replay whole scenarios for minutes. CI cannot finish the full suite
+# inside a job timeout (it was cancelled at 35% after 30 minutes), so a pull
+# request runs `-m "not slow"` and the slow set runs on main and nightly.
+# Listed here, not decorated per file, so the split stays in one place.
+SLOW_FILES = frozenset({
+    "test_ambient_traffic.py",
+    "test_closed_loop_metrics.py",
+    "test_driving_budgets.py",
+    "test_hazard_closed_loop.py",
+    "test_hazard_reactions.py",
+    "test_lane_changes.py",
+    "test_noisy_truth.py",
+    "test_presets.py",
+    "test_scorecard.py",
+    "test_traffic_signals_npc.py",
+    "test_trip_signals.py",
+    "test_vehicle_clearance.py",
+    "test_world_sanity.py",
+})
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if Path(str(item.fspath)).name in SLOW_FILES:
+            item.add_marker(pytest.mark.slow)
+
+
 def load_fixture(name: str) -> dict:
     """Read a wire fixture from the canonical contract fixture set."""
     return json.loads((FIXTURES / f"{name}.json").read_text())
