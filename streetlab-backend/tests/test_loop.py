@@ -303,15 +303,16 @@ def test_the_world_recovers_after_an_injected_hazard(sim):
     assert min(d.speed_mps for d in sim.state_update().detections) < 1.0
 
     advance(sim, 20.0)
-    # Sampled over a window, not at one instant: traffic now obeys stop signs
-    # and lights too, so any single frame may legitimately find the ego waiting
-    # at one (seed 7 puts it at the grid's stop sign at t=31 s).
+    # Sampled over a whole signal cycle, not an instant or a few seconds:
+    # traffic obeys stop signs and lights, so the ego may legitimately be held
+    # by one (seed 7 meets tl_0_80_n's 17 s red from t=15 to t=32 s since stop
+    # lines sit at the bar, measured 2026-10-14).
     ego_best = agent_best = 0.0
-    for _ in range(int(5.0 / DT)):
+    for _ in range(int(25.0 / DT)):
         sim.step()
         ego_best = max(ego_best, sim.ego.speed_mps)
         agent_best = max(
-            agent_best, max(d.speed_mps for d in sim.state_update().detections)
+            agent_best, max((d.speed_mps for d in sim.state_update().detections), default=0.0)
         )
     assert agent_best > 1.0
     assert ego_best > 0.5, "ego never resumed after the hazard cleared"

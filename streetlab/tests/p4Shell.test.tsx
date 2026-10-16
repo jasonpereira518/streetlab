@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { AckToast } from '../src/ui/AckToast';
 import { HelpDialog, SHORTCUTS, useShortcuts } from '../src/ui/HelpDialog';
+import { ConnectionErrorOverlay } from '../src/ui/ConnectionErrorOverlay';
 import { LeftScenarioSidebar } from '../src/ui/LeftScenarioSidebar';
 import { RightPanel } from '../src/ui/RightPanel';
 import { TelemetryRow } from '../src/ui/TelemetryRow';
@@ -166,6 +167,25 @@ describe('keyboard shortcuts and help', () => {
     fireEvent.keyDown(screen.getByLabelText('q'), { key: 'r' });
     fireEvent.keyDown(screen.getByRole('button', { name: 'b' }), { key: ' ' });
     expect(harness.sent).toHaveLength(before);
+  });
+
+  it('ignores every shortcut while the connection-error overlay blocks the UI', () => {
+    harness = createHarness();
+    render(
+      <>
+        <Keys />
+        <ConnectionErrorOverlay failure={{ kind: 'backend_down', detail: 'x' }} onRetry={() => {}} onUseMock={() => {}} />
+      </>,
+    );
+    harness.emitScene();
+    act(() => useSimStore.setState({ failure: { kind: 'backend_down', detail: 'x' } }));
+    const before = harness.sent.length;
+    const retry = screen.getByRole('button', { name: /retry/i });
+    retry.focus();
+    for (const key of [' ', 'r', '?']) fireEvent.keyDown(retry, { key });
+    fireEvent.keyDown(window, { key: 'r' });
+    expect(harness.sent).toHaveLength(before);
+    expect(useSimStore.getState().helpOpen).toBe(false);
   });
 
   it('the toolbar help button opens the dialog', () => {

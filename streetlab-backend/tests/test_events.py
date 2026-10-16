@@ -444,11 +444,12 @@ def _stage_when_possible(sim, kind, within_s=120.0):
     raise AssertionError(f"{kind} never staged in {within_s:.0f} s; last: {outcome.message}")
 
 
-def test_a_red_light_runner_meets_the_ego_at_the_junction():
-    """A collision course is the point. Calibrated while planning: centres
-    2.60 m apart on grid-loop, 0.22 m on Nob Hill; two ~4.6 m outlines touch
-    below 4.65 m."""
-    sim = _loop_sim()
+@pytest.mark.parametrize("scene", ["grid-loop", "nob-hill"])
+def test_a_red_light_runner_meets_the_ego_at_the_junction(scene, nob_hill_sim):
+    """A collision course is the point; two ~4.6 m outlines touch below
+    4.65 m. Re-timed every tick since 2026-10-14 (timed once at staging it had
+    drifted to 6.4 m on both scenes): 0.14 m on grid-loop, 0.26 m on Nob Hill."""
+    sim = _loop_sim() if scene == "grid-loop" else nob_hill_sim()
     _stage_when_possible(sim, "red_light_runner")
     (runner,) = _spawned(sim, "red_light_runner")
     closest = math.inf

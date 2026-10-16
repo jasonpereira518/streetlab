@@ -17,7 +17,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
-from plan.behavior import COMFORT_DECEL_MPS2, SPEED_GAIN, BehaviorFSM
+from plan.behavior import COMFORT_DECEL_MPS2, SPEED_GAIN, TRACKER_LAG_S, BehaviorFSM
 from schema import Detection, Plan, SignalState
 from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
@@ -357,18 +357,40 @@ def _closest_lead(
 def _following_speed(
     lead: Detection, gap: float, ego: VehicleState, limits: PlanLimits
 ) -> float:
-    """A linear spacing law: hold `desired_gap`, then match the lead's speed.
+    """A linear spacing law: hold `desired_gap`, then match the lead's speed,
+    under a kinematic ceiling.
 
-    Not IDM — that arrives in Cycle 3 behind this same protocol. This is the
-    minimum that makes `follow_distance_s` mean something and stops the car
-    driving through stationary traffic.
+    The linear law makes `follow_distance_s` mean something but has no idea
+    how fast the car can stop: far behind a slow lead it asks for speed that
+    then takes more than comfort braking to shed (2.56 m/s^2 on grid_slow,
+    accelerating from 4.7 to 9.6 m/s toward a 3 m/s lead 43 m off). The
+    ceiling is the speed from which braking at `COMFORT_DECEL_MPS2` meets the
+    lead's own comfort stop `_STANDSTILL_GAP_M` behind it, led by the tracker's
+    lag like `stop_ceiling` -- on the CLOSING speed, so with a stopped lead it
+    is exactly that profile, and in steady following it never binds.
+
+    Capping the approach alone left 2.37 m/s^2: closing on the slow lead, the
+    linear law's own target falls faster than comfort. So the spacing law may
+    brake no harder than `COMFORT_DECEL_MPS2` on its own; harder braking comes
+    only from the ceiling, when stopping behind the lead really needs it, or
+    from the law itself once the car is already inside the standstill gap.
+    Emergency braking is the FSM's ceiling, folded in after this.
     """
     desired = _STANDSTILL_GAP_M + max(limits.follow_distance_s, 0.6) * ego.speed_mps
     if gap > desired * _IGNORE_LEAD_FACTOR:
         return math.inf
     # Bumper-to-bumper distance, so a long lead vehicle is accounted for.
     clear = gap - lead.size.length / 2
-    return max(0.0, lead.speed_mps + _GAP_GAIN * (clear - desired))
+    linear = lead.speed_mps + _GAP_GAIN * (clear - desired)
+    closing = max(ego.speed_mps - lead.speed_mps, 0.0)
+    room = clear - _STANDSTILL_GAP_M - TRACKER_LAG_S * closing
+    ceiling = math.sqrt(lead.speed_mps**2 + 2 * COMFORT_DECEL_MPS2 * max(room, 0.0))
+    if room <= 0.0:
+        # Inside the standstill gap (a cut-in 0.6 m off the nose, in the contract
+        # fixture) the clipped ceiling says nothing; the law keeps full authority.
+        return max(0.0, min(linear, ceiling))
+    comfort_floor = ego.speed_mps - COMFORT_DECEL_MPS2 / _SPEED_GAIN
+    return max(0.0, min(ceiling, max(linear, comfort_floor)))
 
 
 def _maneuver(route: Route, s: float) -> str:

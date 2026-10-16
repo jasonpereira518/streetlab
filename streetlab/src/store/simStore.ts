@@ -35,7 +35,7 @@ import type {
   StateUpdate,
 } from '../schema';
 import { LAYER_KEYS } from '../schema';
-import type { ConnectionStatus, Transport } from '../net/transport';
+import type { ConnectionFailure, ConnectionStatus, Transport } from '../net/transport';
 import { httpUrlForWsLabel, perfMetrics } from '../perf/perfMetrics';
 
 /** Whether the server has an ML perception pipeline. Not `perception !==
@@ -140,6 +140,17 @@ export const PARAM_DEFS: ParamDef[] = [
     kind: 'toggle',
     group: 'planner',
     default: true,
+  },
+  {
+    key: 'traffic_density',
+    label: 'Traffic density',
+    kind: 'slider',
+    group: 'traffic',
+    default: 12,
+    min: 0,
+    max: 40,
+    step: 1,
+    unit: '/lane-km',
   },
   {
     key: 'traffic_speed_scale',
@@ -273,6 +284,10 @@ export interface SimStoreState {
   /* connection */
   status: ConnectionStatus;
   statusDetail: string;
+  /** Set while the backend is unreachable or has refused us; drives the error overlay. */
+  failure: ConnectionFailure | null;
+  /** Ask the transport to reconnect now (the overlay's Retry button). */
+  retryConnection(): void;
   sourceKind: 'mock' | 'ws';
   sourceLabel: string;
 
@@ -406,6 +421,7 @@ const MAX_ADDRESS_SUGGESTIONS = 8;
 export const useSimStore = create<SimStoreState>((set, get) => ({
   status: 'idle',
   statusDetail: '',
+  failure: null,
   sourceKind: 'mock',
   sourceLabel: 'mock',
 
@@ -455,11 +471,13 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       sourceKind: transport.kind,
       sourceLabel: transport.label,
       status: 'connecting',
+      failure: null,
       hasFrames: false,
     });
 
     transport.connect({
       onMessage: (msg) => applyServerMessage(msg, set, get),
+      onFailure: (failure) => set({ failure }),
       onStatus: (status, detail) =>
         set((s) => ({
           status,
@@ -491,6 +509,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       perfMetrics.watchHealth(null);
       if (transportRef === transport) transportRef = null;
     };
+  },
+
+  retryConnection() {
+    transportRef?.retry?.();
   },
 
   send(partial) {

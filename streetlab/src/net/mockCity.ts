@@ -648,6 +648,8 @@ export function buildScene(scenarioId: string): SceneDescription {
     stop_signs: buildStopSigns(),
     trees: buildTrees(),
     street_signs: buildStreetSigns(),
+    // The offline mock keeps square corners; the backend computes returns.
+    kerb_returns: [],
     reference_path: (() => {
       const r = makeEgoRoute();
       return r.polyline(0, r.length, 2);

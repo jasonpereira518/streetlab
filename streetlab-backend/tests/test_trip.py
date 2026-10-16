@@ -143,26 +143,26 @@ def test_laps_increment_on_a_closed_route():
     assert sim.state_update().telemetry.trip.laps == 1
 
 
-#: Measured 2026-10-11 (grid-loop and grid-signals 2026-10-12), one seed-1 lap each: the ETA at t=0 against the lap
+#: Measured 2026-10-11 (grid-loop 2026-10-12, grid-signals 2026-10-14), one seed-1 lap each: the ETA at t=0 against the lap
 #: actually driven, with per-street limits and the default 5 mph margin.
 #: Traffic is the residual (see `sim.route.ETA_FREE_FLOW_FACTOR`): grid-merge
 #: runs 6 cars on a 295 m block and laps 30 % slower than the route alone
 #: predicts, which no route-only estimate can see -- it gets its own bound.
-#: Signal phase is the other residual: re-measured 2026-10-12 after stops were
-#: led by the tracker's lag, grid-signals meets a yellow 14.2 m out at 7 m/s,
-#: stops (as it must) and waits out one whole 16 s red, a lap of 83.2 s against
-#: 59.9 s the run before. A per-signal average can't know the phase on one lap.
+#: Signal phase is the other residual: a per-signal average can't know the
+#: phase on one lap. On 2026-10-12 grid-signals met a yellow and waited out a
+#: whole 16 s red (30 % error); since stop lines sit at the bar and yellows are
+#: judged as the car actually brakes (2026-10-14) it does not, and is 1.3 %.
 #: A jump past the bound anywhere means the model, the stop costs or the
 #: driving changed -- re-fit, don't widen.
 ETA_START_ERROR = {
     "grid-loop": 0.017,
     "grid-arterial": 0.099,
-    "grid-signals": 0.304,
+    "grid-signals": 0.013,
     "grid-merge": 0.305,
     "grid-night": 0.053,
     "grid-overtake": 0.021,
 }
-ETA_ERROR_BOUND = {"grid-merge": 0.35, "grid-signals": 0.35}
+ETA_ERROR_BOUND = {"grid-merge": 0.35}
 
 
 @pytest.mark.parametrize("scenario_id", sorted(ETA_START_ERROR))

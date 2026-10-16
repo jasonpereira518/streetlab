@@ -36,6 +36,8 @@ export function useShortcuts(): void {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const s = useSimStore.getState();
+      // The connection-error overlay blocks the UI: no pause/reset behind it.
+      if (s.failure) return;
       if (e.key === 'Escape') {
         if (s.helpOpen) s.setHelpOpen(false);
         return;

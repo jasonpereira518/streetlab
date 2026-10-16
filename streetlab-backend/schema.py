@@ -123,6 +123,19 @@ class Road(Wire):
     sidewalk_right: bool = True
 
 
+class KerbReturn(Wire):
+    """The rounded tarmac where two kerbs meet at a junction corner: the kite
+    `corner` -> `tangent_a` -> `center` -> `tangent_b`, less the disc of
+    `radius_m` about `center`. `corner` is where the two straight kerbs would
+    have met; the arc from `tangent_a` to `tangent_b` is the kerb now."""
+
+    corner: Vec2
+    tangent_a: Vec2
+    center: Vec2
+    tangent_b: Vec2
+    radius_m: Pos
+
+
 class Building(Wire):
     id: str
     # CCW footprint ring; not closed (first point is not repeated).
@@ -289,6 +302,9 @@ class SceneDescription(Wire):
     stop_signs: list[StopSign]
     trees: list[Tree]
     street_signs: list[StreetSign]
+    # Rounded junction corners, computed once from the final roads so the
+    # renderer and every placement check agree on where the kerb is.
+    kerb_returns: list[KerbReturn] = []
     # The line the car drives: its lane centre, straight along each block and
     # curved through every corner. Distinct from `Plan.polyline`, which is the
     # live lookahead the planner recomputes every tick -- this is the whole
