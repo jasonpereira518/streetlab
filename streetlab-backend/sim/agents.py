@@ -196,6 +196,26 @@ _PROFILES = (
     ("motorcycle", 2.1, 0.8, 1.30, 1.10),
 )
 
+#: Tightest corner, as a centreline radius, a class can be posed through as a
+#: rigid box without its body leaving its lane. The bus is AASHTO's CITY-BUS
+#: (centreline turning radius ~11.5 m); on a 6 m block fillet its chord pose
+#: swung 0.38 m into a car waiting at the cross street's line (grid-merge seed
+#: 7, dense). Unlisted classes measure clean on every shipped corner, the
+#: 7.8 m truck included.
+_MIN_TURN_RADIUS_M = {"bus": 11.0}
+
+
+def _profile_for(i: int, route: Route) -> tuple[str, float, float, float, float]:
+    """`_PROFILES[i]`, or the next one round that can turn every corner of `route`.
+    ponytail: whole-route test, so one tight corner keeps buses off a long route;
+    pose long bodies by their axles if buses must run block loops."""
+    for k in range(len(_PROFILES)):
+        profile = _PROFILES[(i + k) % len(_PROFILES)]
+        r = _MIN_TURN_RADIUS_M.get(profile[0])
+        if r is None or route.peak_curvature(0.0, distance_m=route.length_m) * r <= 1.0:
+            return profile
+    raise AssertionError("no profile in _PROFILES can turn this route")
+
 
 class ScriptedTraffic:
     """One agent per route, spaced out and cruising at a fraction of the limit."""
@@ -222,7 +242,7 @@ class ScriptedTraffic:
         # length of spawn space and nothing else.
         taken: dict[int, list[tuple[float, float]]] = {}
         for i, route in enumerate(routes):
-            cls, length, width, height, mult = _PROFILES[i % len(_PROFILES)]
+            cls, length, width, height, mult = _profile_for(i, route)
             # Spread agents around the loop so ego meets them at intervals
             # rather than all at once, with a seeded nudge so two runs with
             # different seeds diverge.
@@ -647,7 +667,7 @@ class IdmTraffic(ScriptedTraffic):
 
     def _spawn_ambient(self, route: Route, s: float, speed: float | None = None) -> Agent | None:
         """One ambient car at `s` on `route`, unless its lane is taken there."""
-        cls, length, width, height, mult = _PROFILES[self._next_ambient % len(_PROFILES)]
+        cls, length, width, height, mult = _profile_for(self._next_ambient, route)
         if self._lane_taken(route, s, length):
             return None
         if self._ego_start is not None and _in_lane(route, s, length, self._ego_start, _EGO_LENGTH_M):

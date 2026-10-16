@@ -96,3 +96,26 @@ def test_dense_traffic_never_holds_the_ego_for_good(scenario_id):
         longest = max(longest, still)
     assert longest < 40.0
     assert sim.world.odometer_m > 300.0
+
+
+@pytest.mark.parametrize("scenario_id", ["grid-loop", "grid-merge", "grid-arterial"])
+def test_anyone_the_fsm_counts_as_stopped_at_a_line_counts_as_waiting(scenario_id):
+    """`STOP_ZONE_M` counts the ego as stopped anywhere up to that far short of
+    its line, and the all-way-stop queue only knows who rests within
+    `WAIT_MAX_M` of the centre. A turning route puts its line 12 m out, so at
+    18 the ego could stand 6.9 m short of it, behind a truck that had since
+    gone, in STOP for 44.7 s: stopped to itself, never waiting to anyone, so
+    never its turn (grid-arterial, dense, measured)."""
+    from plan.behavior import STOP_ZONE_M, WAIT_MAX_M
+
+    built = SyntheticGrid().build(scenario_id)
+    routes = [(built.ego_route, built.control_points)] + [
+        (lane.route, lane.control_points) for lane in built.ambient_lanes
+    ]
+    furthest = max(
+        math.dist(route.point_at(cp.s), cp.position)
+        for route, points in routes
+        for cp in points
+        if cp.kind == "stop_sign"
+    )
+    assert furthest + STOP_ZONE_M <= WAIT_MAX_M, (furthest, STOP_ZONE_M, WAIT_MAX_M)
