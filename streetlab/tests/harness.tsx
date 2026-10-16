@@ -97,7 +97,12 @@ export function createHarness(scenarioId?: string): Harness {
       // command/ack path entirely. Tests exercise `suggest_address` by
       // emitting an `address_suggestions` message directly via `h.emit(...)`,
       // the same way they drive `location_progress`/`location_failed`.
-      if (command.cmd === 'camera_frame' || command.cmd === 'suggest_address') return;
+      if (
+        command.cmd === 'camera_frame' ||
+        command.cmd === 'suggest_address' ||
+        command.cmd === 'heartbeat'
+      )
+        return;
       const res = sim.apply(command);
       handlers?.onMessage({
         type: 'ack',

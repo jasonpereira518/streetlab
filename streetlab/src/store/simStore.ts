@@ -33,6 +33,8 @@ import type {
   ServerMessage,
   SimEvent,
   StateUpdate,
+  QueueStatus,
+  SessionNotice,
 } from '../schema';
 import { LAYER_KEYS } from '../schema';
 import type { ConnectionFailure, ConnectionStatus, Transport } from '../net/transport';
@@ -292,6 +294,12 @@ export interface SimStoreState {
   statusDetail: string;
   /** Set while the backend is unreachable or has refused us; drives the error overlay. */
   failure: ConnectionFailure | null;
+  /** Hosted waitlist: our place in line while every slot is taken; null once
+   * admitted (or not queued). Drives the queue overlay. */
+  queue: QueueStatus | null;
+  /** Hosted mode: a pending idle / time-up close, with when it arrived (ms,
+   * `Date.now()`) so the banner can count down. Null when nothing is pending. */
+  notice: (SessionNotice & { at: number }) | null;
   /** Ask the transport to reconnect now (the overlay's Retry button). */
   retryConnection(): void;
   sourceKind: 'mock' | 'ws';
@@ -428,6 +436,8 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   status: 'idle',
   statusDetail: '',
   failure: null,
+  queue: null,
+  notice: null,
   sourceKind: 'mock',
   sourceLabel: 'mock',
 
@@ -478,6 +488,8 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       sourceLabel: transport.label,
       status: 'connecting',
       failure: null,
+      queue: null,
+      notice: null,
       hasFrames: false,
     });
 
@@ -488,6 +500,9 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
         set((s) => ({
           status,
           statusDetail: detail ?? '',
+          // A dropped socket loses its place in line and any pending notice;
+          // a reconnect is told afresh.
+          ...(status === 'open' ? {} : { queue: null, notice: null }),
           // A transport that has given up for good (`closed`) will never
           // deliver the scene_description or location_failed event that
           // would otherwise clear this. `closed` isn't reachable today from
@@ -534,7 +549,13 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     // `suggest_address` is excluded for the same reason at a smaller
     // scale: it fires on every debounced keystroke in an address field and
     // never gets an ack, so it would just be noise among real commands.
-    if (command.cmd === 'camera_frame' || command.cmd === 'suggest_address') return id;
+    // `heartbeat` likewise: periodic, never acked, pure noise in the log.
+    if (
+      command.cmd === 'camera_frame' ||
+      command.cmd === 'suggest_address' ||
+      command.cmd === 'heartbeat'
+    )
+      return id;
     set((s) => ({
       commandLog: [
         { id, cmd: command.cmd, at: Date.now() },
@@ -716,6 +737,8 @@ function applyServerMessage(
         return {
           scene: msg,
           sceneEpoch: s.sceneEpoch + 1,
+          // A scene is what admission from the waitlist looks like.
+          queue: null,
           catalog: msg.catalog,
           activeScenarioId: msg.scenario_id,
           hasFrames: false,
@@ -841,6 +864,14 @@ function applyServerMessage(
         return;
       }
       set({ lastAck: msg });
+      return;
+
+    case 'queue_status':
+      set({ queue: msg });
+      return;
+
+    case 'session_notice':
+      set({ notice: msg.kind === 'ok' ? null : { ...msg, at: Date.now() } });
       return;
 
     case 'address_suggestions':
