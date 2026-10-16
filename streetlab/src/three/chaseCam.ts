@@ -94,13 +94,8 @@ export class ChaseCamera {
   /** Where `pullback` is heading, as of the last cast, and the time since it. */
   private targetPullback = 0;
   private sinceCast = 0;
-  // Buildings and trees sit on their own layer channels (layers.ts); a default
-  // Raycaster only tests channel 0 and would never see them.
-  private readonly raycaster = (() => {
-    const r = new THREE.Raycaster();
-    r.layers.enableAll();
-    return r;
-  })();
+  /** Cast with this camera's own layer mask; see `castBothSides`. */
+  private readonly raycaster = new THREE.Raycaster();
   private readonly rayOrigin = new THREE.Vector3();
   private readonly rayDir = new THREE.Vector3();
 
@@ -232,7 +227,6 @@ export class ChaseCamera {
       : [blockers as THREE.Object3D];
     const saved: [THREE.Material, THREE.Side][] = [];
     for (const root of list) {
-      // A layer the user has switched off cannot hide the car.
       if (!root.visible) continue;
       root.traverse((o: THREE.Object3D) => {
         const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
@@ -243,6 +237,10 @@ export class ChaseCamera {
         }
       });
     }
+    // See what this camera sees: buildings and trees live on their own layer
+    // channels (`layers.ts`), which Raycaster's default mask -- layer 0 only --
+    // never hits, and a layer the user has toggled off is off this mask.
+    this.raycaster.layers.mask = this.camera.layers.mask;
     try {
       return this.raycaster.intersectObjects(
         list.filter((r) => r.visible),

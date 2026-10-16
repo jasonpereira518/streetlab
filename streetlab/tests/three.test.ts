@@ -13,10 +13,11 @@ import { HazardOverlay } from '../src/three/hazardOverlay';
 import { PathRibbon } from '../src/three/pathRibbon';
 import { ChaseCamera } from '../src/three/chaseCam';
 import { TrafficFleet } from '../src/three/agents';
-import { CH } from '../src/three/layers';
+import { CH, applyMainLayers, assignChannel } from '../src/three/layers';
 import { EgoVehicle } from '../src/three/ego';
 import { Polyline, subtractIntervals, worldToThree } from '../src/three/meshBuilder';
-import type { Detection, StateUpdate } from '../src/schema';
+import type { Detection, LayerKey, StateUpdate } from '../src/schema';
+import { LAYER_KEYS } from '../src/schema';
 
 /** Objects that would each cost at least one draw call. */
 function drawables(root: THREE.Object3D): THREE.Object3D[] {
@@ -394,8 +395,31 @@ describe('PathRibbon', () => {
   });
 });
 
+/** Every UI layer on: what the main camera sees by default (`Renderer.tsx`). */
+const ALL_LAYERS_ON = Object.fromEntries(LAYER_KEYS.map((k) => [k, true])) as Record<LayerKey, boolean>;
+
 describe('ChaseCamera', () => {
   const pose = (x: number, y: number, heading: number) => ({ x, y, heading });
+
+  it('pulls in for a wall on its own layer channel, unless that layer is off', () => {
+    // Buildings and trees moved to their own THREE.Layers channels so the UI
+    // can hide them from the main camera alone. The occlusion ray kept
+    // Raycaster's default mask -- layer 0 only -- and stopped seeing either.
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(20, 10, 0.5), new THREE.MeshBasicMaterial());
+    wall.position.set(0, 5, 4); // 4 m behind a car facing north (+z is south)
+    assignChannel(wall, CH.BUILDINGS);
+    wall.updateMatrixWorld(true);
+    const settle = (buildingsOn: boolean) => {
+      const cam = new ChaseCamera(16 / 9);
+      applyMainLayers(cam.camera, { ...ALL_LAYERS_ON, buildings: buildingsOn });
+      const p = pose(0, 0, Math.PI / 2);
+      cam.reset(p, [wall]);
+      for (let i = 0; i < 300; i++) cam.update(p, 12, 'chase', 1 / 60, [wall]);
+      return cam.camera.position.z;
+    };
+    expect(settle(true)).toBeLessThan(4);
+    expect(settle(false)).toBeGreaterThan(6);
+  });
 
   it('settles behind the ego and looks ahead of it', () => {
     const cam = new ChaseCamera(16 / 9);
@@ -779,8 +803,10 @@ describe('ChaseCamera on the real Nob Hill route', () => {
     expect(blockers).not.toBeNull();
 
     const cam = new ChaseCamera(16 / 9);
+    applyMainLayers(cam.camera, ALL_LAYERS_ON); // as Renderer.tsx does
     cam.reset(fixture.poses[0].pose, blockers);
     const ray = new THREE.Raycaster();
+    ray.layers.enableAll(); // measure every channel the camera might miss
     const dir = new THREE.Vector3();
     const ego = new THREE.Vector3();
     let inside = 0;
@@ -839,6 +865,11 @@ describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
    * written: 53 of 3273 frames with the buildings alone as blockers, 21 with
    * the trees too. Not zero -- the camera is damped behind the target -- so
    * the bound is "at least halved", not "none".
+   *
+   * It read 0 and 0 once buildings and trees moved to their own layer
+   * channels: both this test's ray and the camera's occlusion ray kept
+   * Raycaster's default layer-0 mask and hit nothing. Re-measured with both
+   * fixed (2026-10-16): 53 and 21 again.
    */
   it('hides the car behind a canopy far less often when trees are blockers', () => {
     const scene = JSON.parse(
@@ -870,9 +901,10 @@ describe('ChaseCamera and tree canopies on the real Nob Hill scene', () => {
 
     const blockedFrames = (blockers: THREE.Object3D[], speed = 24 * 0.44704) => {
       const cam = new ChaseCamera(16 / 9);
+      applyMainLayers(cam.camera, ALL_LAYERS_ON); // as Renderer.tsx does
       cam.setGround(world.heightAt);
       const ray = new THREE.Raycaster();
-      ray.layers.enableAll(); // trees live on their own layer channel
+      ray.layers.enableAll(); // measure every channel the camera might miss
       const dir = new THREE.Vector3();
       let blocked = 0;
       let first = true;
