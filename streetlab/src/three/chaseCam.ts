@@ -94,6 +94,7 @@ export class ChaseCamera {
   /** Where `pullback` is heading, as of the last cast, and the time since it. */
   private targetPullback = 0;
   private sinceCast = 0;
+  /** Cast with this camera's own layer mask; see `castBothSides`. */
   private readonly raycaster = new THREE.Raycaster();
   private readonly rayOrigin = new THREE.Vector3();
   private readonly rayDir = new THREE.Vector3();
