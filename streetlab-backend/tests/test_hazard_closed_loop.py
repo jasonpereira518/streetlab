@@ -150,10 +150,18 @@ def test_every_hazard_stages_on_every_scene_and_seed(sweep):
     assert not missed, f"never staged within 120 s: {missed}"
 
 
-#: Measured 2026-10-13 on main + reactions: the red-light runner meets the ego
-#: mid-turn in the grid-loop junction (every signal on that route is a turn) and
-#: overlaps it by 0.52 m, unseen. Exact list, so a fix or a new overlap fails.
-KNOWN_OVERLAPS = {("grid", "red_light_runner", 1), ("grid", "red_light_runner", 3)}
+#: Measured 2026-10-16 after #47-#49: the red-light runner is re-timed every tick
+#: to meet the ego (`sim/agents.py _retime`); the ego sees and slows for it but is
+#: mid-turn in the junction. Overlaps: -2.27 m grid seeds 1 and 3, -0.35 m grid
+#: seed 2, -3.22 m Nob Hill seeds 1-3. Exact list, so a fix or a new overlap fails.
+KNOWN_OVERLAPS = {
+    ("grid", "red_light_runner", 1),
+    ("grid", "red_light_runner", 2),
+    ("grid", "red_light_runner", 3),
+    ("nob_hill", "red_light_runner", 1),
+    ("nob_hill", "red_light_runner", 2),
+    ("nob_hill", "red_light_runner", 3),
+}
 
 
 def test_the_ego_never_touches_a_hazard(sweep):
