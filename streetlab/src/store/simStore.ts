@@ -263,6 +263,12 @@ export const DEFAULT_RELOAD_PAGE = (): void => {
 /* Store                                                               */
 /* ------------------------------------------------------------------ */
 
+/** Coordinates of a suggestion the user picked, per address field. */
+export interface LocationPicks {
+  start?: { lat: number; lon: number } | null;
+  destination?: { lat: number; lon: number } | null;
+}
+
 /**
  * Right-panel tab identifiers. Defined once here — rather than as a
  * separately-typed literal union duplicated in `RightPanel.tsx` — so a tab
@@ -400,7 +406,7 @@ export interface SimStoreState {
   send(command: CommandInput): string;
   togglePaused(): void;
   loadScenario(scenarioId: string): void;
-  loadLocation(query: string, destination?: string): void;
+  loadLocation(query: string, destination?: string, picks?: LocationPicks): void;
   /** Run a preset: no seed follows its policy; a seed replays that run. */
   loadPreset(presetId: string, seed?: number): void;
   /** Fire off a `suggest_address` request and return its command id, so the
@@ -574,7 +580,7 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     get().send({ cmd: 'load_scenario', scenario_id: scenarioId });
   },
 
-  loadLocation(query, destination) {
+  loadLocation(query, destination, picks) {
     const trimmedQuery = query.trim();
     if (!trimmedQuery) return;
     const trimmedDest = destination?.trim() || undefined;
@@ -589,6 +595,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
       cmd: 'load_location',
       query: trimmedQuery,
       ...(trimmedDest ? { destination: trimmedDest } : {}),
+      ...(picks?.start ? { lat: picks.start.lat, lon: picks.start.lon } : {}),
+      ...(trimmedDest && picks?.destination
+        ? { destination_lat: picks.destination.lat, destination_lon: picks.destination.lon }
+        : {}),
     });
   },
 
