@@ -14,6 +14,24 @@ import type { HeightFn } from './terrain';
 /** Closest a floating camera may get to the ground beneath it. */
 const MIN_CLEARANCE_M = 1.2;
 
+/** Where on the car the camera's line of sight lands, above the ground under it. */
+const EGO_EYE_M = 1.0;
+
+/**
+ * The occlusion ray is re-cast at most this often. It is the one expensive
+ * thing the rig does -- a raycast over the merged building mesh, ~0.7 ms on
+ * 450 buildings and several times that on Nob Hill's 2,224 -- and its answer
+ * only feeds a damped pull-in, so at 100+ fps casting every frame bought
+ * nothing but frame time. 30 Hz is under 0.4 m of travel at 24 mph.
+ */
+const RAY_INTERVAL_S = 1 / 30;
+
+/**
+ * What may hide the car: the merged building mesh, and (optionally) the tree
+ * group. One object or several; none means an open scene.
+ */
+export type Blockers = THREE.Object3D | readonly THREE.Object3D[] | null | undefined;
+
 const CHASE = {
   /** Trail distance at 0 m/s and at 30 m/s. */
   distNear: 8.4,
@@ -73,6 +91,9 @@ export class ChaseCamera {
    * per-frame cost of this feature.
    */
   private pullback = 0;
+  /** Where `pullback` is heading, as of the last cast, and the time since it. */
+  private targetPullback = 0;
+  private sinceCast = 0;
   private readonly raycaster = new THREE.Raycaster();
   private readonly rayOrigin = new THREE.Vector3();
   private readonly rayDir = new THREE.Vector3();
@@ -115,7 +136,7 @@ export class ChaseCamera {
     return this.ground ? this.ground(x, -z) : 0;
   }
 
-  reset(pose: Pose, blockers?: THREE.Object3D | null): void {
+  reset(pose: Pose, blockers?: Blockers): void {
     const g = this.groundAt(pose.x, -pose.y);
     this.vx = pose.x;
     this.vz = -pose.y;
@@ -131,9 +152,12 @@ export class ChaseCamera {
       fz,
       CHASE.distNear,
       g + CHASE.heightNear,
+      g + EGO_EYE_M,
       blockers,
     );
     this.pullback = CHASE.distNear - dist;
+    this.targetPullback = this.pullback;
+    this.sinceCast = 0;
     this.camPos.set(pose.x - fx * dist, g + CHASE.heightNear, -pose.y - fz * dist);
     this.camPos.y = Math.max(this.camPos.y, this.groundAt(this.camPos.x, this.camPos.z) + MIN_CLEARANCE_M);
     this.lookAt.set(
@@ -146,30 +170,25 @@ export class ChaseCamera {
   }
 
   /**
-   * How far the trail can sit before a blocker gets in the way. Casts a
-   * single ray, horizontal at the given height, from `(ex, height, ez)`
-   * toward the trail point `desiredDist` behind it along `(-fx, -fz)` — the
-   * exact segment the chase view would otherwise place the camera on.
-   * Buildings are uniform vertical extrusions (`world.ts`'s
-   * `ExtrudeGeometry`), so testing at the camera's own height is exact: if a
-   * building's footprint covers this point it fills that height too, and if
-   * the camera height already clears the roof there is nothing to catch.
+   * How far the trail can sit before a blocker gets in the way. Casts one
+   * ray along the actual line of sight: from the car's eye point
+   * `(ex, eyeY, ez)` to the trail point `desiredDist` behind it along
+   * `(-fx, -fz)` at camera `height`. The old ray ran level at camera height,
+   * which is exact for buildings taller than the camera but passes over a
+   * low wall or a tree canopy that still hides the car from a camera looking
+   * down at it. The returned figure is still a HORIZONTAL trail distance.
    *
    * Returns `desiredDist` unchanged when there is nothing to hit, so this is
    * a no-op (not just a coincidentally-large clamp) on scenes with no
    * blocker geometry or with geometry farther away than the trail — i.e. the
    * synthetic grid, which insets buildings behind sidewalks and lot margins.
    *
-   * Known limitation: this only sees a ray *entering* a blocker from
-   * outside. `world.ts`'s `buildingMaterial()` sets no `side`, so it
-   * defaults to `THREE.FrontSide` — if the car's own position is ever
-   * inside a blocker's volume (e.g. an OSM building footprint that overlaps
-   * the drivable lane), the exit face is back-facing from the ray's point of
-   * view and gets culled, so this silently returns `desiredDist` unclamped.
-   * Deliberately not covered by a second ray here: see task-8-report.md's
-   * fix-report section for the reachability assessment and cost tradeoff.
-   * Pinned (not asserted-fixed) by the "known limitation" test in
-   * `three.test.ts`.
+   * Blockers are tested double-sided (`castBothSides`). The real building
+   * material is single-sided, so a car already inside a footprint (an OSM
+   * extract can overlap a lane) used to see only back faces on the way out
+   * and got an unclamped trail on the far side of the wall. Now the exit
+   * face is a hit and the camera stays in the volume with the car. A ray
+   * that starts outside meets a front face first, so nothing changes there.
    */
   private clampTrailDistance(
     ex: number,
@@ -178,17 +197,54 @@ export class ChaseCamera {
     fz: number,
     desiredDist: number,
     height: number,
-    blockers: THREE.Object3D | null | undefined,
+    eyeY: number,
+    blockers: Blockers,
   ): number {
     if (!blockers || desiredDist <= 0) return desiredDist;
-    this.rayOrigin.set(ex, height, ez);
-    this.rayDir.set(-fx, 0, -fz);
+    this.rayOrigin.set(ex, eyeY, ez);
+    this.rayDir.set(-fx * desiredDist, height - eyeY, -fz * desiredDist);
+    const length = this.rayDir.length();
+    this.rayDir.divideScalar(length);
     this.raycaster.set(this.rayOrigin, this.rayDir);
     this.raycaster.near = 0;
-    this.raycaster.far = desiredDist;
-    const hits = this.raycaster.intersectObject(blockers, true);
+    this.raycaster.far = length;
+    const hits = this.castBothSides(blockers);
     if (!hits.length) return desiredDist;
-    return clamp(hits[0].distance - CHASE.clipMargin, CHASE.minTrailDist, desiredDist);
+    // 3D distance along the sight line back to horizontal trail distance.
+    const horizontal = hits[0].distance * (desiredDist / length);
+    return clamp(horizontal - CHASE.clipMargin, CHASE.minTrailDist, desiredDist);
+  }
+
+  /**
+   * Raycast with every blocker material temporarily double-sided, restored
+   * before returning so the renderer never sees the change. Three's raycast
+   * reads `material.side` to cull back faces; there is no per-call override.
+   */
+  private castBothSides(blockers: Blockers): THREE.Intersection[] {
+    const list: THREE.Object3D[] = Array.isArray(blockers)
+      ? [...(blockers as readonly THREE.Object3D[])]
+      : [blockers as THREE.Object3D];
+    const saved: [THREE.Material, THREE.Side][] = [];
+    for (const root of list) {
+      // A layer the user has switched off cannot hide the car.
+      if (!root.visible) continue;
+      root.traverse((o: THREE.Object3D) => {
+        const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+        if (!m) return;
+        for (const mat of Array.isArray(m) ? m : [m]) {
+          saved.push([mat, mat.side]);
+          mat.side = THREE.DoubleSide;
+        }
+      });
+    }
+    try {
+      return this.raycaster.intersectObjects(
+        list.filter((r) => r.visible),
+        true,
+      );
+    } finally {
+      for (const [mat, side] of saved) mat.side = side;
+    }
   }
 
   /**
@@ -204,7 +260,7 @@ export class ChaseCamera {
     speed: number,
     view: CameraView,
     dt: number,
-    blockers?: THREE.Object3D | null,
+    blockers?: Blockers,
   ): void {
     const ex = pose.x;
     const ez = -pose.y;
@@ -226,13 +282,31 @@ export class ChaseCamera {
 
     switch (view) {
       case 'chase': {
-        const targetDist = this.clampTrailDistance(this.vx, this.vz, fx, fz, dist, g + height, blockers);
+        this.sinceCast += dt;
+        if (!blockers) {
+          this.targetPullback = 0; // nothing to cast against, nothing to wait for
+        } else if (this.sinceCast >= RAY_INTERVAL_S - 1e-9) {
+          this.sinceCast = 0;
+          this.targetPullback =
+            dist -
+            this.clampTrailDistance(
+              this.vx,
+              this.vz,
+              fx,
+              fz,
+              dist,
+              g + height,
+              g + EGO_EYE_M,
+              blockers,
+            );
+        }
         // Ease the *pullback* (how far short of the natural distance we're
         // sitting), not the distance itself — so when nothing is occluded
         // (targetPullback stays 0 every frame) `pullback` never leaves 0 and
         // the trail distance is exactly `dist`, unchanged from before this
-        // feature existed.
-        const targetPullback = dist - targetDist;
+        // feature existed. A held target is clamped to the CURRENT natural
+        // distance, which speed can shrink between casts.
+        const targetPullback = Math.min(this.targetPullback, dist - CHASE.minTrailDist);
         const smoothing =
           targetPullback > this.pullback ? CHASE.occlusionPullIn : CHASE.occlusionEaseOut;
         this.pullback = damp(this.pullback, targetPullback, smoothing, dt);

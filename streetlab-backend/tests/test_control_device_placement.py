@@ -530,3 +530,33 @@ def test_every_osm_signal_lamp_hangs_over_the_lanes_not_the_pavement(osm_scene):
             f"centreline with its pole at {pole_offset:.2f} m -- it should hang "
             f"between the two, over the lanes it governs"
         )
+
+
+# --------------------------------------------------------------------------- #
+# A dropped post must not take its junction's control with it                  #
+# --------------------------------------------------------------------------- #
+
+
+def _controls_with_posts_blocked(monkeypatch, blocked: bool):
+    from map.clearance import KeepOut
+
+    monkeypatch.setattr(KeepOut, "blocks_post", lambda self, p: blocked)
+    payload = json.loads(FIXTURE.read_text())
+    client = OverpassClient(ReplayFetcher(payload), DiskCache(Path(tempfile.mkdtemp())))
+    return OsmSceneSource(StubGeocoder(NOB_HILL), client).build("osm-nob-hill")
+
+
+def test_controls_survive_every_post_being_dropped(monkeypatch):
+    """Measured on Nob Hill only osm_ss_10962117627 loses its post (off the default
+    loop), so force the case: with no clear kerb anywhere, no post is drawn, yet
+    the ego must still get the same stop lines and every signal one a phase."""
+    clear = _controls_with_posts_blocked(monkeypatch, False)
+    crowded = _controls_with_posts_blocked(monkeypatch, True)
+    assert clear.control_points, "Nob Hill's route should pass controls"
+    assert not crowded.description.traffic_lights and not crowded.description.stop_signs
+    assert [(c.id, c.kind, c.s) for c in crowded.control_points] == [
+        (c.id, c.kind, c.s) for c in clear.control_points
+    ]
+    for cp in crowded.control_points:
+        if cp.kind == "signal":
+            assert cp.id in crowded.signal_groups
