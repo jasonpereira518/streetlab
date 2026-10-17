@@ -65,7 +65,7 @@ def stop_line_setback(route, centre: Vec2, roads, fallback_m: float = 9.0) -> fl
         sin = abs(ax * (b.y - a.y) - ay * (b.x - a.x)) / n
         if sin < _CROSSING_MIN_SIN:
             continue
-        half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+        half = road.half_width_m
         reach = max(reach, half / sin)
     return reach + STOP_BAR_SETBACK_M if reach > 0 else fallback_m
 

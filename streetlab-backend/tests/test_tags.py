@@ -130,3 +130,65 @@ def test_infinite_or_nan_maxspeed_falls_back_to_the_class_default(junk):
 def test_whitespace_only_name_falls_back_like_a_missing_name():
     assert street_name({"name": "   ", "ref": "US 101"}) == "US 101"
     assert street_name({"name": "\t\n"}) == "Unnamed Road"
+
+
+# -- what a way maps beyond its driven lanes (realism plan phase 6) --------- #
+
+from map.tags import edge_width_m, layer_of, lane_counts as _lane_counts, structure  # noqa: E402
+
+
+def test_bus_lanes_are_not_driven_lanes():
+    """Clay St: `lanes=2` + `lanes:psv=1` is one general lane and a bus lane.
+    Counting the bus lane as driven put traffic in it."""
+    assert _lane_counts({"lanes": "2", "lanes:psv": "1", "oneway": "yes"}, "collector") == (1, 0)
+    assert _lane_counts({"lanes": "4", "lanes:bus": "2"}, "arterial") == (1, 1)
+
+
+def test_a_bus_lane_widens_the_carriageway_and_parking_does_too():
+    # One bus lane, split across both kerbs: 3.3 m more kerb to kerb.
+    assert edge_width_m({"lanes": "2", "lanes:psv": "1", "oneway": "yes"}) == pytest.approx(1.65)
+    assert edge_width_m({"parking:right": "lane"}) == pytest.approx(1.1)
+    # Clay St: its one lane IS the (shared) bus lane -- nothing extra.
+    assert edge_width_m({"lanes": "1", "lanes:psv": "1", "oneway": "yes"}) == 0.0
+    assert edge_width_m({"lanes:psv": "1", "oneway": "yes"}) == pytest.approx(1.65)
+    assert edge_width_m({"parking:lane:both": "parallel"}) == pytest.approx(2.2)
+    assert edge_width_m({"parking:both": "lane", "parking:both:orientation": "diagonal"}) == pytest.approx(4.5)
+    assert edge_width_m({"parking:left": "separate"}) == 0.0
+    assert edge_width_m({"parking:lane:both": "no"}) == 0.0
+    assert edge_width_m({}) == 0.0
+
+
+def test_layer_bridge_and_tunnel():
+    assert layer_of({"layer": "1", "bridge": "yes"}) == 1
+    assert layer_of({"bridge": "yes"}) == 1
+    assert layer_of({"tunnel": "yes"}) == -1
+    assert layer_of({"layer": "junk"}) == 0
+    assert structure({"bridge": "viaduct"}) == "bridge"
+    assert structure({"tunnel": "building_passage"}) == "tunnel"
+    assert structure({"covered": "yes"}) == "tunnel"
+    assert structure({}) is None
+
+
+def test_a_crowded_road_gives_up_its_parking_before_its_lanes():
+    from map.clearance import _with_half_width
+    from schema import Road
+
+    road = Road(
+        id="r", name="r", road_class="collector", centerline=[(0.0, 0.0), (50.0, 0.0)],
+        lanes_forward=1, lanes_backward=1, lane_width_m=3.6, speed_limit_mps=11.0,
+        oneway=False, center_marking="broken_yellow", edge_m=2.2,
+    )
+    assert _with_half_width(road, 4.6).lane_width_m == 3.6
+    assert _with_half_width(road, 4.6).edge_m == pytest.approx(1.0)
+    assert _with_half_width(road, 3.0).edge_m == 0.0
+    assert _with_half_width(road, 3.0).lane_width_m == pytest.approx(3.0)
+
+
+def test_a_surveyed_width_is_read_in_metres_or_feet():
+    from map.tags import carriageway_width_m
+
+    assert carriageway_width_m({"width": "7.5"}) == 7.5
+    assert carriageway_width_m({"width": "7.5 m"}) == 7.5
+    assert carriageway_width_m({"width": "24'"}) == pytest.approx(7.3152)
+    assert carriageway_width_m({"width": "wide"}) is None
+    assert carriageway_width_m({}) is None

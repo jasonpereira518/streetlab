@@ -980,7 +980,7 @@ export class MockSim {
   // see either. `createMockTransport`'s `send()` below is the mock's
   // equivalent of `_handle` and does the intercepting.
   apply(
-    command: Exclude<Command, { cmd: 'camera_frame' | 'suggest_address' }>,
+    command: Exclude<Command, { cmd: 'camera_frame' | 'suggest_address' | 'heartbeat' }>,
   ): { ok: boolean; message: string | null; scene?: SceneDescription } {
     switch (command.cmd) {
       case 'set_paused':
@@ -1231,6 +1231,8 @@ export function createMockTransport(
       // perception pipeline don't exist client-side — so the faithful
       // behaviour is the same early return, not a fabricated ack.
       if (command.cmd === 'camera_frame') return;
+      // Likewise `heartbeat`: the backend only notes the time, never acks.
+      if (command.cmd === 'heartbeat') return;
       // Same bypass as `camera_frame`, mirroring `ws_server.py`'s
       // `suggest_address` early-out: answered directly, never acked, never
       // routed through `sim.apply()`.

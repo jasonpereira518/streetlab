@@ -1,9 +1,9 @@
 {
   "type": "ack",
-  "protocol": 10,
+  "protocol": 11,
   "id": "a2",
   "cmd": "load_scenario",
   "ok": false,
   "message": "unknown scenario: atlantis",
-  "t": 5.35
+  "t": 4.0
 }

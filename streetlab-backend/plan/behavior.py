@@ -147,7 +147,9 @@ JUNCTION_CLEAR_M = 14.0
 #: this far from a junction's centre, facing it, is waiting at a line; arrivals
 #: this close count as together; a box this long empty breaks a tie all round.
 WAIT_MIN_M = 6.0
-WAIT_MAX_M = 18.0
+#: 22 m, not 18: a route turning at the junction puts its line further out,
+#: and a car resting at it sat 18.9 m from the centre (measured, grid-arterial).
+WAIT_MAX_M = 22.0
 STOP_TIE_S = 0.5
 BOX_TIMEOUT_S = 3.0
 
@@ -865,6 +867,10 @@ class BehaviorFSM:
                 return False
             if self.box_clear_since_s is None:
                 self.box_clear_since_s = self.clock_s
+            if self.stopped_at_s is None:
+                # At its own line is waiting, wherever that line is: a route
+                # turning at the junction puts it further out than the zone.
+                self.stopped_at_s = self.clock_s
             if self.dwell_s < STOP_DWELL_S:
                 return False
             return self._my_turn(ego, detections)

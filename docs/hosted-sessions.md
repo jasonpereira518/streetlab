@@ -16,7 +16,8 @@ visitor.
 - Each accepted socket gets its own `Simulation` + `SimLoop` (one sim thread each), built off the event loop
   (`asyncio.to_thread`) so a connect does not stall the other sessions' frame streams.
 - The slot is reserved synchronously before the build, so two simultaneous connects cannot both take the last slot.
-  Over the cap the server `accept()`s then closes with **4429 "server busy"**. (Accept-then-close because a handshake
+  Over the cap the connection **waits in a FIFO line** (see "Waitlist" below); only past `--queue-max` does the
+  server `accept()` then close with **4429 "server busy"**. (Accept-then-close because a handshake
   refused before accept reaches a browser as a bare 1006, indistinguishable from "backend down". Origin rejection
   got the same treatment: close **1008**, which is a behaviour change from the old HTTP 403.)
 - When the socket closes the session's `SimLoop` is **stopped and discarded**, not merely paused: a paused sim nobody
@@ -25,8 +26,30 @@ visitor.
   the already-built, frozen scenes, but not the catalog. One visitor's typed address no longer appears in another's
   sidebar, and its scene is freed with its session instead of accumulating for the life of the process.
 - Not combinable with `--perception ml` / `--capture` (one process-wide pipeline); refused at startup.
-- No wire change: no `PROTOCOL_VERSION` bump, no new message type. "Busy" and "origin" ride WebSocket close codes.
-- `/health` gains `sessions` / `max_sessions`; step percentiles are the worst session's.
+- "Busy" and "origin" ride WebSocket close codes. (The waitlist below is the first wire change: protocol 11.)
+- `/health` gains `sessions` / `max_sessions` / `waiting`; step percentiles are the worst session's.
+
+## Waitlist (protocol 11)
+
+- Over the cap, the accepted socket is held in a FIFO line (`_wait_in_line`) and sent
+  `queue_status {position, size, eta_s}` on joining and whenever its place changes. Admission is the ordinary
+  `scene_description`: no reconnect, no click.
+- A freed slot is **handed straight to the head of the line** (`_Sessions.release` keeps `reserved` unchanged), so a
+  newcomer arriving at that instant cannot jump the queue. A waiter that leaves (or was handed a slot and left before
+  using it) passes its place on.
+- Slots free up three ways:
+  - **Idle** (`--idle-timeout`, default 180 s, env `STREETLAB_IDLE_TIMEOUT`): no inbound message for that long →
+    `session_notice{kind:"idle"}` 30 s before, then close **4408**. The client sends a `heartbeat` command (at most
+    once per 30 s) on pointer/key/wheel input, because orbiting the camera sends nothing else.
+  - **Session cap** (`--session-max`, default 900 s, env `STREETLAB_SESSION_MAX`): applies **only while someone is
+    waiting**, and always with the full 60 s `session_notice{kind:"time_up"}` warning first — a line that forms at
+    minute 20 does not evict instantly. Close **4409**. If the line empties in the meantime, `kind:"ok"` cancels it.
+  - Disconnect, as before.
+- 4408 / 4409 halt the client's auto-retry (a kicked user must not silently rejoin); the overlay offers
+  "Rejoin the line".
+- `--queue-max` (default 20, env `STREETLAB_QUEUE_MAX`) bounds the line; beyond it, 4429 as before.
+- ETA = `ceil(position / max_sessions) × mean(last 10 session lengths)`, falling back to `session_max / 2`.
+- Not built: keeping your place while playing the offline demo (the demo button leaves the line).
 
 Trade-offs considered:
 
@@ -35,7 +58,7 @@ Trade-offs considered:
 | Keep one shared world, make commands per-client | Needs per-client state in the sim itself; far larger change and still one world's physics. |
 | One process per session | Costs ~115 MB each (interpreter + numpy/shapely/pydantic) vs ~0-9 MB here. |
 | Pause on close and keep the session for resume | Holds a slot for a tab that is gone. A reconnect after a blip starts a fresh world; resume-within-N-seconds is a possible follow-up. |
-| Idle-timeout to evict forgotten tabs | Not built (see residuals). Dead sockets are reaped by uvicorn's WebSocket ping (20 s / 20 s); a live but idle tab keeps its slot. |
+| Idle-timeout to evict forgotten tabs | Built with the waitlist (protocol 11): see "Waitlist". |
 
 ## Measurements (re-measured on the rebased branch)
 

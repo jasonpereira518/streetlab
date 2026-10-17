@@ -12,6 +12,8 @@ import type { Command } from '../schema';
 import {
   CLOSE_ORIGIN_REJECTED,
   CLOSE_SERVER_BUSY,
+  CLOSE_IDLE,
+  CLOSE_TIME_UP,
 } from './transport';
 import type {
   ConnectionFailure,
@@ -176,6 +178,14 @@ export function createWebSocketTransport(
         halt({ kind: 'server_busy', detail: `${url} is at capacity (close ${ev.code})` });
         return;
       }
+      if (ev.code === CLOSE_IDLE) {
+        halt({ kind: 'idle_kicked', detail: `no input for too long (close ${ev.code})` });
+        return;
+      }
+      if (ev.code === CLOSE_TIME_UP) {
+        halt({ kind: 'time_up', detail: `session limit reached (close ${ev.code})` });
+        return;
+      }
       if (attempt + 1 >= DOWN_AFTER_ATTEMPTS) {
         fail({ kind: 'backend_down', detail: `no answer from ${url} (close ${ev.code})` });
       }
@@ -229,6 +239,8 @@ export function createWebSocketTransport(
       // Same logic for a suggestion request: by the time the socket
       // reconnects, the user has kept typing and the query is stale.
       if (res.value.cmd === 'suggest_address') return;
+      // A heartbeat queued during a disconnect proves nothing about now.
+      if (res.value.cmd === 'heartbeat') return;
       queue.push(res.value);
       while (queue.length > queueLimit) queue.shift();
     },

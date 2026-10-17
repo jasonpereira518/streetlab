@@ -35,6 +35,7 @@ VALID_NAMES = [
     "state_update_hazard",
     "state_update_events",
     "state_update_run_summary",
+    "state_update_reaction",
     "ack_ok",
     "ack_error",
 ]
@@ -72,7 +73,25 @@ def generate() -> dict[str, dict]:
     # inside `plan.ttc.HAZARD_TTC_S` at all, the best TTC in 300 s being 4.03 s
     # against a 4.0 s threshold. A fixture named for `threat`/`threat_label`
     # asking for a cut-in is also simply the honest version.
-    sim.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"})
+    #
+    # Two fixtures come out of this one injection, because since Cycle 6 Phase 2
+    # they cannot be the same frame. The planner reacts to a cut-in by braking
+    # before the car reaches its lane, which collapses the closing speed, so
+    # TTC (and with it the `hazard` flag) is undefined exactly while the
+    # planner is reacting; and while TTC flags the car, the following law is
+    # handling it and the planner is not "reacting". `state_update_hazard`
+    # proves the TTC/flag fields; `state_update_reaction` proves
+    # `plan.reaction_source_id` and the `threat` series.
+    # A cut-in needs a legal lane beside the ego, which grid-merge has only part
+    # of the time: step until the scene accepts it.
+    def stage_cut_in(s: Simulation) -> None:
+        for _ in range(60 * 30):
+            if s.apply_dict({"id": "cx", "cmd": "inject_hazard", "kind": "cut_in"}).ok:
+                return
+            s.step()
+        raise AssertionError("no cut-in could be staged in 30 s")
+
+    stage_cut_in(sim)
     # The frame an event lands on is the ONLY one that carries it:
     # `state_update()` drains `world.events` into the frame it builds. Every
     # other fixture here is therefore captured with an empty `events` array,
@@ -80,11 +99,29 @@ def generate() -> dict[str, dict]:
     # against schema.ts at all -- a contract suite cannot catch drift in a
     # field it never puts on the wire. Captured here, before the settle loop
     # below consumes it.
-    hazard = sim.state_update()
-    out["state_update_events"] = hazard.model_dump(mode="json")
+    out["state_update_events"] = sim.state_update().model_dump(mode="json")
+    reaction = None
     for _ in range(60 * 30):
         sim.step()
-        hazard = sim.state_update()
+        frame = sim.state_update()
+        if frame.plan.reaction_source_id is not None and frame.telemetry.trajectory.threat:
+            reaction = frame
+            break
+    assert reaction is not None, "the planner never reacted to the injected cut-in"
+    out["state_update_reaction"] = reaction.model_dump(mode="json")
+
+    # The hazard frame comes from the same scene with the threat layer off: a
+    # reacting ego brakes before the cut-in car closes, so TTC and the `hazard`
+    # flag (what this fixture proves) never co-occur in the run above.
+    twin = Simulation(SyntheticGrid(), "grid-merge", seed=4)
+    twin._planner.assessor.rules.clear()
+    for _ in range(180):
+        twin.step()
+    stage_cut_in(twin)
+    hazard = twin.state_update()
+    for _ in range(60 * 30):
+        twin.step()
+        hazard = twin.state_update()
         if hazard.telemetry.ttc_s is not None and any(d.hazard for d in hazard.detections):
             break
     out["state_update_hazard"] = hazard.model_dump(mode="json")
@@ -174,8 +211,17 @@ def test_the_hazard_fixture_exercises_non_null_optionals(generated):
     assert frame.telemetry.ttc_s is not None, "no TTC — the frame proves little"
     assert any(d.ttc_s is not None for d in frame.detections)
     assert any(d.hazard and d.hazard_label is not None for d in frame.detections)
+
+
+def test_the_reaction_fixture_exercises_the_planner_reaction_fields(generated):
+    """`plan.reaction_source_id` and `threat` are nullable; a fixture where both
+    are null proves neither survives the wire."""
+    frame = StateUpdate.model_validate(generated["state_update_reaction"])
+    assert frame.plan.reaction_source_id is not None
+    assert frame.plan.maneuver in {"emergency_brake", "yield"}
     assert frame.telemetry.trajectory.threat, "threat is null — nullable path untested"
     assert frame.telemetry.trajectory.threat_label is not None
+    assert frame.plan.reaction_source_id in {d.id for d in frame.detections}
 
 
 def test_the_events_fixture_actually_carries_an_event(generated):

@@ -20,6 +20,7 @@ import type {
   SignalState,
   Vec2,
 } from '../schema';
+import { roadHalfWidth } from '../schema';
 import { signalColor } from '../ui/theme';
 import {
   MeshBuilder,
@@ -139,8 +140,7 @@ export interface World {
   dispose(): void;
 }
 
-const carriagewayHalfWidth = (r: Road): number =>
-  ((r.lanes_forward + r.lanes_backward) * r.lane_width_m) / 2;
+const carriagewayHalfWidth = roadHalfWidth;
 
 /* ------------------------------------------------------------------ */
 /* Intersections                                                       */
@@ -920,7 +920,8 @@ export function buildWorld(scene: SceneDescription): World {
   markings.ground = ground;
   scene.roads.forEach((road, i) => {
     const line = lines[i];
-    const h = carriagewayHalfWidth(road);
+    // Markings span the DRIVEN lanes; a parking or bus edge lies outside them.
+    const h = carriagewayHalfWidth(road) - (road.edge_m ?? 0);
     const w = road.lane_width_m;
     const forward = road.lanes_forward;
     const backward = road.lanes_backward;

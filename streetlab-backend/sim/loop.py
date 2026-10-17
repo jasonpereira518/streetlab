@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from random import Random, SystemRandom
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from map.geocode import Place
 from map.lanes import ARRIVAL_CONTROL_ID
 from map.osm_source import describe_build_failure
 from map.scene_build import LANE_W, BuiltScene, SceneSource
@@ -44,6 +45,7 @@ from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSou
 from perception.tracker import Tracker
 from plan.behavior import COMFORT_DECEL_MPS2, STOP_MARGIN_M, BehaviorState
 from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
+from plan.hazard import Reaction
 from schema import (
     Ack,
     Cruise,
@@ -517,8 +519,13 @@ class Simulation:
             self._next_cutin_at = None
             return
         if self._next_cutin_at is not None and t >= self._next_cutin_at:
-            self.inject_hazard("cut_in")
-            self._next_cutin_at = None
+            # A cut-in needs a legal lane beside the ego, which a scene has only
+            # part of the time (grid-merge: ~10% of ticks): a declined one is
+            # retried like a scheduled hazard, not lost for a whole interval.
+            if self.inject_hazard("cut_in").ok:
+                self._next_cutin_at = None
+            else:
+                self._next_cutin_at = t + _HAZARD_RETRY_S
         if self._next_cutin_at is None:
             rate = 1.0 / max(period, _CUTIN_MIN_PERIOD_S)
             self._next_cutin_at = t + self.rng.expovariate(rate)
@@ -1119,9 +1126,18 @@ class Simulation:
             return CommandOutcome(ok=False, message="no build executor attached")
 
         query, radius, destination = command.query, command.radius_m, command.destination
+        # A picked suggestion's coordinates skip the second geocode. The label
+        # text is the display name; the pair is both-or-neither (schema).
+        picks: dict = {}
+        if command.lat is not None and command.lon is not None:
+            picks["place"] = Place(lat=command.lat, lon=command.lon, display_name=query)
+        if destination and command.destination_lat is not None and command.destination_lon is not None:
+            picks["destination_place"] = Place(
+                lat=command.destination_lat, lon=command.destination_lon, display_name=destination
+            )
         self._build_sink(
             lambda on_progress: builder(
-                query, radius, destination=destination, on_progress=on_progress
+                query, radius, destination=destination, on_progress=on_progress, **picks
             )
         )
         label = f"{query} → {destination}" if destination else query
@@ -1450,7 +1466,7 @@ def assemble_state_update(
             lane=_lane_state(scene, route, ego_s, offset, heading_error, detections),
             ttc_s=ttc,
             vehicle=_vehicle_status(world, perception_mode),
-            trajectory=_trajectory(world, offset, detections),
+            trajectory=_trajectory(world, offset),
             trip=_trip(world, scene, ego_s, bad),
         ),
         signals=list(signals),
@@ -1616,10 +1632,9 @@ def _vehicle_status(world: WorldState, mode: PerceptionMode) -> VehicleStatus:
     )
 
 
-def _trajectory(
-    world: WorldState, offset: float, detections: Sequence[Detection]
-) -> TrajectoryPrediction:
-    """Observed lateral history (t < 0) followed by a decay toward the centreline."""
+def _trajectory(world: WorldState, offset: float) -> TrajectoryPrediction:
+    """Observed lateral history (t < 0) followed by a decay toward the centreline,
+    plus the prediction the planner is currently reacting to, if it is."""
     samples = [
         TrajectorySample(t=round(t - world.t, 3), lateral_m=round(d, 3))
         for t, d in world.history
@@ -1634,24 +1649,44 @@ def _trajectory(
             TrajectorySample(t=round(t, 3), lateral_m=round(offset * math.exp(-t / 1.2), 3))
         )
 
-    reacting_to = next((d for d in detections if d.hazard), None)
-    threat = None
-    if reacting_to is not None:
-        start = (reacting_to.lane_offset or 1) * LANE_W
-        threat = [
-            TrajectorySample(
-                t=round(i * _TRAJECTORY_STEP_S, 3),
-                lateral_m=round(start * math.exp(-i * _TRAJECTORY_STEP_S / 1.5), 3),
-            )
-            for i in range(steps + 1)
-        ]
-
+    threat, label = _threat_series(world.plan_result.reaction if world.plan_result else None, steps)
     return TrajectoryPrediction(
         horizon_s=_TRAJECTORY_HORIZON_S,
         planned=samples,
         threat=threat,
-        threat_label=(reacting_to.hazard_label if reacting_to else None),
+        threat_label=label,
     )
+
+
+_REACTION_VERBS = {"aeb": "Emergency braking", "yield_to_entry": "Yielding"}
+
+
+def _threat_series(
+    reaction: Reaction | None, steps: int
+) -> tuple[list[TrajectorySample] | None, str | None]:
+    """The sideways path of the thing the planner is reacting to, over the horizon.
+
+    This is the prediction the planner acts on -- `plan/hazard.py`'s strip
+    window for its source -- not a separate guess: `offset + v_lat * t` relative
+    to the line the ego is steering along, stopped at the far edge of the strip
+    once it has crossed (it is no longer a threat beyond it). It replaced an
+    exponential decay drawn for any detection flagged `hazard`, which showed a
+    curve the planner knew nothing about.
+    """
+    if reaction is None or reaction.source_window is None:
+        return None, None
+    w = reaction.source_window
+    series = []
+    for i in range(steps + 1):
+        t = i * _TRAJECTORY_STEP_S
+        lateral = w.offset_m + w.lateral_speed_mps * t
+        if w.lateral_speed_mps < 0:
+            lateral = max(lateral, -w.strip_half_m)
+        elif w.lateral_speed_mps > 0:
+            lateral = min(lateral, w.strip_half_m)
+        series.append(TrajectorySample(t=round(t, 3), lateral_m=round(lateral, 3)))
+    verb = _REACTION_VERBS.get(reaction.kind, "Reacting")
+    return series, f"{verb} for {w.cls}"
 
 
 # --------------------------------------------------------------------------- #

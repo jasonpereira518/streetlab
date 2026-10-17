@@ -319,7 +319,8 @@ def test_the_world_recovers_after_an_injected_hazard(sim):
 
 
 def test_events_are_drained_after_being_reported(sim):
-    sim.apply_dict({"id": "a", "cmd": "inject_hazard", "kind": "cut_in"})
+    # `obstacle`, not `cut_in`: a cut-in is declined when no lane lies beside the ego.
+    sim.apply_dict({"id": "a", "cmd": "inject_hazard", "kind": "obstacle"})
     assert sim.state_update().events
     sim.step()
     assert sim.state_update().events == []

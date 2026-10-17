@@ -5,7 +5,7 @@
  * the renderer or the simulator directly.
  */
 import type { HazardSummary, LayerKey, ParamValue } from '../schema';
-import { LAYER_KEYS } from '../schema';
+import { LAYER_KEYS, roadHalfWidth } from '../schema';
 import { useTelemetryCanvas } from '../store/hooks';
 import { PARAM_DEFS, useSimStore } from '../store/simStore';
 import type { ParamDef, RightTab } from '../store/simStore';
@@ -335,7 +335,7 @@ function MapTab() {
     for (const r of scene.roads) {
       ctx.lineWidth = Math.max(
         2,
-        (r.lanes_forward + r.lanes_backward) * r.lane_width_m * scale,
+        2 * roadHalfWidth(r) * scale,
       );
       ctx.beginPath();
       r.centerline.forEach(([x, y], i) =>
