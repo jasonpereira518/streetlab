@@ -96,3 +96,71 @@ def test_dense_traffic_never_holds_the_ego_for_good(scenario_id):
         longest = max(longest, still)
     assert longest < 40.0
     assert sim.world.odometer_m > 300.0
+
+
+# -- the real Nob Hill extract --------------------------------------------- #
+
+
+def test_nob_hill_has_ambient_lanes_down_its_streets_and_never_up_a_one_way(nob_hill_scene):
+    from shapely.geometry import LineString, Point
+
+    lanes = nob_hill_scene.ambient_lanes
+    assert len(lanes) >= 10
+    roads = nob_hill_scene.description.roads
+    for lane in lanes:
+        assert not lane.route.closed
+        assert lane.route.length_m >= 60.0
+        mid = lane.route.point_at(lane.route.length_m / 2)
+        road = min(roads, key=lambda r: LineString(r.centerline).distance(Point(mid)))
+        assert not (road.tunnel or road.bridge), road.id
+        if road.oneway:
+            line = LineString(road.centerline)
+            s0 = line.project(Point(lane.route.point_at(lane.route.length_m / 2 - 5)))
+            s1 = line.project(Point(lane.route.point_at(lane.route.length_m / 2 + 5)))
+            assert s1 > s0, f"{road.name} driven against its one-way"
+
+
+def test_nob_hill_density_is_capped(nob_hill_scene):
+    from sim.agents import MAX_AMBIENT_AGENTS
+
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim.apply_dict({"id": "d", "cmd": "set_param", "key": "traffic_density", "value": 40.0})
+    sim.adopt_scene(nob_hill_scene)
+    cars = _ambient(sim)
+    assert 20 < len(cars) <= MAX_AMBIENT_AGENTS
+
+
+def test_a_street_split_into_ways_drawn_both_ways_chains_without_doubling_back():
+    """OSM draws the ways of one street in whatever direction each mapper
+    did. A chain that spliced one in backwards zigzagged over itself, and the
+    lanes built on it ran head-on into their own street (measured on Green
+    St and California St, dense Nob Hill)."""
+    from map.lanes import street_chains
+    from tests.test_kerb_returns import road
+
+    ways = [
+        road("a", [(0.0, 0.0), (50.0, 0.0)], name="Green St"),
+        road("b", [(100.0, 0.0), (50.0, 0.0)], name="Green St"),
+        road("c", [(100.0, 0.0), (160.0, 0.0)], name="Green St"),
+    ]
+    (chain, _), = street_chains(ways)
+    xs = [p[0] for p in chain]
+    assert xs == sorted(xs) or xs == sorted(xs, reverse=True), chain
+    assert {xs[0], xs[-1]} == {0.0, 160.0}
+
+
+def test_dense_nob_hill_never_holds_the_ego_for_good(nob_hill_scene):
+    """Measured before the street-end turn: a car at the end of a street
+    ending at a T-junction waited there to come round, out of the ego's sight
+    only, with the ego queued 10 m behind it -- 119 s. After: 12.6 s at most,
+    0.81 km in 180 s."""
+    sim = Simulation(SyntheticGrid(), "grid-loop", seed=7)
+    sim.apply_dict({"id": "d", "cmd": "set_param", "key": "traffic_density", "value": 12.0})
+    sim.adopt_scene(nob_hill_scene)
+    still = longest = 0.0
+    for _ in range(int(180.0 / sim.dt)):
+        sim.step()
+        still = still + sim.dt if sim.world.ego.speed_mps < 0.1 else 0.0
+        longest = max(longest, still)
+    assert longest < 40.0
+    assert sim.world.odometer_m > 400.0
