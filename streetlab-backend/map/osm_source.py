@@ -32,6 +32,7 @@ from map.elevation import ElevationClient, HttpxTileFetcher
 from map.terrain import TERRAIN_CELL_M, grade
 from map.terrain import to_wire as terrain_to_wire
 from map.clearance import KeepOut, clear_trees, fit_road_widths
+from map.clearance import junctions as find_junctions
 from map.features import (
     build_buildings,
     build_crosswalks,
@@ -46,6 +47,8 @@ from map.features import (
 )
 from map.geocode import GeocodeError, Geocoder, GeocodeNotFound, GeocodeUnavailable, NominatimGeocoder, Place
 from map.lanes import (
+    CONTROL_POINT_MATCH_M,
+    street_chains,
     Junction,
     NoDrivableRoad,
     NoRouteFound,
@@ -85,9 +88,13 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import Route, estimate_travel_s
+from sim.route import AmbientLane, ControlPoint, Route, estimate_travel_s
 
 log = logging.getLogger("streetlab.map")
+
+#: Where a chained street's ways meet at an angle, its ambient lanes are
+#: rounded to this radius (`_ambient_lanes`).
+AMBIENT_BEND_RADIUS_M = 25.0
 
 #: The default "Speed margin" (sim.loop.DEFAULT_PARAMS), for catalog
 #: durations: a card's time is timed at what the car will actually drive.
@@ -626,35 +633,50 @@ class OsmSceneSource:
         # one point per crossroads exactly as it did when every head sat on the
         # node.
         anchors = control_anchors(graph, origin)
-        candidates = []
-        seen_junctions = set()
-        for light in control_lights:
-            junction = junction_of(light.id)
-            at = anchors.get(junction)
-            if at is None or junction in seen_junctions:
-                continue
-            if faces_the_route(ego_route, light.heading, at, STOP_LINE_SETBACK_M):
-                seen_junctions.add(junction)
-                candidates.append((light.id, "signal", at, stop_line_setback(ego_route, at, roads)))
-        # A stop sign's anchor is its own OSM node, and where that node sits
-        # decides the setback. 139 of Nob Hill's 145 are tagged part-way down a
-        # street, which IS the painted bar -- measuring a junction's width back
-        # from there stopped the car ~9 m short of the line every time. The
-        # remaining few are tagged on the junction node itself, where the full
-        # setback is exactly right.
         junctions = junction_node_ids(graph)
-        for sign in control_signs:
-            at = anchors.get(sign.id)
-            if at is None:
-                continue
-            setback = (
-                stop_line_setback(ego_route, at, roads)
-                if stop_node_id(sign.id) in junctions
-                else STOP_AT_BAR_SETBACK_M
-            )
-            if faces_the_route(ego_route, sign.heading, at, setback):
-                candidates.append((sign.id, "stop_sign", at, setback))
-        control_points = project_control_points(ego_route, candidates)
+
+        def route_controls(route: Route) -> list[ControlPoint]:
+            """The lines `route` must obey: one head per junction facing it."""
+            from shapely.geometry import LineString, Point
+
+            line = LineString(route.points)
+
+            def near(at) -> bool:
+                # `project_control_points` drops anything further off the
+                # route than this anyway; skipping it first is what keeps a
+                # build with a hundred ambient lanes from taking 8 s.
+                return line.distance(Point(at)) <= CONTROL_POINT_MATCH_M
+
+            candidates = []
+            seen_junctions = set()
+            for light in control_lights:
+                junction = junction_of(light.id)
+                at = anchors.get(junction)
+                if at is None or junction in seen_junctions or not near(at):
+                    continue
+                if faces_the_route(route, light.heading, at, STOP_LINE_SETBACK_M):
+                    seen_junctions.add(junction)
+                    candidates.append((light.id, "signal", at, stop_line_setback(route, at, roads)))
+            # A stop sign's anchor is its own OSM node, and where that node sits
+            # decides the setback. 139 of Nob Hill's 145 are tagged part-way down
+            # a street, which IS the painted bar -- measuring a junction's width
+            # back from there stopped the car ~9 m short of the line every time.
+            # The remaining few are tagged on the junction node itself, where
+            # the full setback is exactly right.
+            for sign in control_signs:
+                at = anchors.get(sign.id)
+                if at is None or not near(at):
+                    continue
+                setback = (
+                    stop_line_setback(route, at, roads)
+                    if stop_node_id(sign.id) in junctions
+                    else STOP_AT_BAR_SETBACK_M
+                )
+                if faces_the_route(route, sign.heading, at, setback):
+                    candidates.append((sign.id, "stop_sign", at, setback))
+            return project_control_points(route, candidates)
+
+        control_points = route_controls(ego_route)
         # An open, point-to-point route needs one more stop the planner
         # already knows how to bisect towards: the trip's own end. A closed
         # loop has no such end -- `arrival_control_point` returns `None` for
@@ -665,6 +687,7 @@ class OsmSceneSource:
 
         _report(on_progress, "Finalizing scene", 0.9)
         traffic_loops = self._traffic_loops(rg, ego_route)
+        ambient = self._ambient_lanes(roads, under, ego_route, route_controls)
 
         return BuiltScene(
             description=description,
@@ -676,7 +699,34 @@ class OsmSceneSource:
             control_points=control_points,
             lanes=derive_lanes(ego_route, roads),
             build_notes=build_notes,
+            ambient_lanes=ambient,
+            junctions=find_junctions(roads, under),
         )
+
+    @staticmethod
+    def _ambient_lanes(roads, under, ego_route: Route, route_controls) -> list[AmbientLane]:
+        """Every driven lane of every chained street, each way it runs, nearest
+        the ego's route first -- traffic fills them in this order up to its
+        cap, so the cars that exist are the ones the ego meets."""
+        lanes = []
+        ego = ego_route.resample(20.0)
+        for points, road in street_chains(roads, under):
+            total = road.lanes_forward + road.lanes_backward
+            w = road.lane_width_m
+            for pts, count in ((points, road.lanes_forward), (points[::-1], road.lanes_backward)):
+                for k in range(count):
+                    # Kerb lane first, left-positive offset from the centreline.
+                    # Rounded where the chain's ways meet: a rigid 7.8 m truck
+                    # on a 12 deg kink in Green St swung 0.11 m over the kerb.
+                    route = (
+                        Route(list(pts), closed=False)
+                        .offset(-total * w / 2 + (k + 0.5) * w)
+                        .fillet(radius_m=AMBIENT_BEND_RADIUS_M, segments=3)
+                    )
+                    route.segment_limits = speed_limits_along(route, roads)
+                    near = min(math.dist(p, q) for p in route.resample(20.0) for q in ego)
+                    lanes.append((near, AmbientLane(route, route_controls(route))))
+        return [lane for _, lane in sorted(lanes, key=lambda pair: pair[0])]
 
     def _bounds(
         self,

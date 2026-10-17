@@ -1608,6 +1608,81 @@ def _neighbour_lane(ego_route: Route, roads: list[Road], direction: int) -> Rout
     return lane
 
 
+#: A chained street shorter than this is not worth a lane of traffic: a car
+#: would come round before anyone saw it move.
+MIN_AMBIENT_STREET_M = 60.0
+#: Same-name ways meeting at sharper than this are two streets, not one.
+_CHAIN_MAX_TURN_RAD = math.radians(60.0)
+
+
+def street_chains(
+    roads: list[Road], passes_under: frozenset[str] = frozenset()
+) -> list[tuple[list[tuple[float, float]], Road]]:
+    """Whole streets for ambient traffic: OSM splits a street into a way per
+    block (at every tag change), and a car that came round at each block's
+    end would teleport every 80 m. Same-name ways are chained end to end, a
+    one-way only ever onward. Tunnels and bridges (not yet drawn as such) and
+    service roads are left out. Each chain comes with the way it started from,
+    whose lanes it is driven by.
+    ponytail: one lane layout per chain, its first way's; per-segment counts
+    if a street changes lane count mid-chain matters."""
+    usable = [
+        r for r in roads
+        if r.name and r.road_class != "service" and not (r.tunnel or r.bridge) and r.id not in passes_under
+    ]
+    ends: dict[tuple[int, int], list[int]] = {}
+    key = lambda p: (round(p[0] * 2), round(p[1] * 2))  # noqa: E731  half-metre
+    for i, r in enumerate(usable):
+        for p in (r.centerline[0], r.centerline[-1]):
+            ends.setdefault(key(p), []).append(i)
+    used: set[int] = set()
+
+    def heading(a, b):
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def extend(chain: list, oneway: bool, name: str, forward: bool) -> None:
+        while True:
+            tip, prev = (chain[-1], chain[-2]) if forward else (chain[0], chain[1])
+            best = None
+            for j in ends.get(key(tip), []):
+                if j in used or usable[j].name != name or usable[j].oneway != oneway:
+                    continue
+                pts = list(usable[j].centerline)
+                starts_here = key(pts[0]) == key(tip)
+                # Onward the piece must start at the tip, backward end at it.
+                if forward != starts_here:
+                    if oneway:
+                        continue  # never up a one-way
+                    pts.reverse()
+                nxt = pts[1] if forward else pts[-2]
+                turn = abs(math.remainder(heading(tip, nxt) - heading(prev, tip), math.tau)) if forward else abs(
+                    math.remainder(heading(nxt, tip) - heading(tip, prev), math.tau)
+                )
+                if turn <= _CHAIN_MAX_TURN_RAD and (best is None or turn < best[0]):
+                    best = (turn, j, pts)
+            if best is None:
+                return
+            _, j, pts = best
+            used.add(j)
+            if forward:
+                chain.extend(pts[1:])
+            else:
+                chain[:0] = pts[:-1]
+
+    out = []
+    for i in sorted(range(len(usable)), key=lambda k: -LineString(usable[k].centerline).length):
+        if i in used:
+            continue
+        used.add(i)
+        road = usable[i]
+        chain = list(road.centerline)
+        extend(chain, road.oneway, road.name, True)
+        extend(chain, road.oneway, road.name, False)
+        if LineString(chain).length >= MIN_AMBIENT_STREET_M:
+            out.append((chain, road))
+    return out
+
+
 def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
     """The ego's lane and the one either side of it, plus where each is legal.
 

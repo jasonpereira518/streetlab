@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Protocol, runtime_checkable
 
-from map.clearance import KERB_RETURN_M, KeepOut, kerb_returns
+from map.clearance import KERB_RETURN_M, KeepOut, junctions, kerb_returns
 from map.features import build_speed_limit_signs
 from map.lanes import derive_lanes, project_control_points, speed_limits_along
 from map.placement import (
@@ -47,7 +47,7 @@ from schema import (
     TrafficLight,
     Tree,
 )
-from sim.route import AmbientLane, ControlPoint, LaneSet, Route, estimate_travel_s
+from sim.route import AmbientLane, ControlPoint, Junction, LaneSet, Route, estimate_travel_s
 
 # --------------------------------------------------------------------------- #
 # The seam                                                                     #
@@ -88,6 +88,9 @@ class BuiltScene:
     # Every lane of every street, each way, for ambient traffic. Empty for a
     # source that does not build them yet (OSM, until phase 6).
     ambient_lanes: list[AmbientLane] = field(default_factory=list)
+    # Where roads cross or meet, for traffic to take turns at (right of way
+    # where no sign or signal says who goes).
+    junctions: list[Junction] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -376,6 +379,7 @@ class SyntheticGrid:
             control_points=self._control_points(ego_route),
             lanes=derive_lanes(ego_route, description.roads),
             ambient_lanes=self._ambient_lanes(),
+            junctions=junctions(description.roads),
         )
 
     def _ambient_lanes(self) -> list[AmbientLane]:

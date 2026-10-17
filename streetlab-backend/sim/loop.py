@@ -322,6 +322,7 @@ class Simulation:
             ego_route=self.scene.ego_route,
             ambient=self.scene.ambient_lanes,
             density_per_lane_km=float(self.world.params["traffic_density"]),
+            junctions=self.scene.junctions,
         )
         self._signals = SignalController(self.scene.signal_groups)
         # Every scene-scoped draw -- hazard schedule, placement jitter,
