@@ -4,25 +4,17 @@
  * of the input are readable at a glance.
  */
 import { useTelemetryCanvas } from '../../store/hooks';
-import { RAD_TO_DEG, clamp } from '../../units';
+import { clamp, handWheelDeg } from '../../units';
 import { TelemetryCard } from '../controls';
 import { color } from '../theme';
 import { arc, placeholder, text } from './draw';
-
-/** Road-wheel angle to hand-wheel angle. */
-const STEERING_RATIO = 14;
-const MAX_WHEEL_DEG = 450;
 
 export function SteeringWheel() {
   const ref = useTelemetryCanvas(({ ctx, width, height, frame }) => {
     if (!frame) return placeholder(ctx, width, height);
 
     // Positive steering is left; on screen, left is counter-clockwise.
-    const wheelDeg = clamp(
-      frame.ego.steering_angle * RAD_TO_DEG * STEERING_RATIO,
-      -MAX_WHEEL_DEG,
-      MAX_WHEEL_DEG,
-    );
+    const wheelDeg = handWheelDeg(frame.ego.steering_angle);
     const rot = -wheelDeg * (Math.PI / 180);
 
     const cx = width / 2;

@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 11
+PROTOCOL_VERSION = 12
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -573,6 +573,9 @@ class Cruise(Wire):
     set_speed_mps: NonNeg
 
 
+TurnSignal = Literal["off", "left", "right"]
+
+
 class Ego(Wire):
     pose: Pose
     speed_mps: Num
@@ -586,6 +589,8 @@ class Ego(Wire):
     speed_limit_mps: NonNeg
     cruise: Cruise
     size: Size
+    # Indicator state, decided by the planner ahead of the turn it announces.
+    turn_signal: TurnSignal
 
 
 class SignalState(Wire):
