@@ -110,6 +110,9 @@ export const RoadSchema = z.object({
   tunnel: z.boolean().default(false),
   /** Parking / bus lane beyond the driven lanes, each side. Not driven. */
   edge_m: z.number().min(0).default(0),
+  /** Surface height at each centreline vertex of a bridge deck or tunnel
+   *  floor. Empty: the way lies on the terrain. */
+  elevation_m: z.array(z.number()).default([]),
 });
 
 export const BuildingSchema = z.object({

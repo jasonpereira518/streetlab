@@ -42,7 +42,8 @@
       "layer": 0,
       "bridge": false,
       "tunnel": false,
-      "edge_m": 0.0
+      "edge_m": 0.0,
+      "elevation_m": []
     },
     {
       "id": "st_hyde",
@@ -69,7 +70,8 @@
       "layer": 0,
       "bridge": false,
       "tunnel": false,
-      "edge_m": 0.0
+      "edge_m": 0.0,
+      "elevation_m": []
     },
     {
       "id": "st_leavenworth",
@@ -96,7 +98,8 @@
       "layer": 0,
       "bridge": false,
       "tunnel": false,
-      "edge_m": 0.0
+      "edge_m": 0.0,
+      "elevation_m": []
     },
     {
       "id": "st_pine",
@@ -123,7 +126,8 @@
       "layer": 0,
       "bridge": false,
       "tunnel": false,
-      "edge_m": 0.0
+      "edge_m": 0.0,
+      "elevation_m": []
     },
     {
       "id": "st_california",
@@ -150,7 +154,8 @@
       "layer": 0,
       "bridge": false,
       "tunnel": false,
-      "edge_m": 0.0
+      "edge_m": 0.0,
+      "elevation_m": []
     },
     {
       "id": "st_sacramento",
@@ -177,7 +182,8 @@
       "layer": 0,
       "bridge": false,
       "tunnel": false,
-      "edge_m": 0.0
+      "edge_m": 0.0,
+      "elevation_m": []
     }
   ],
   "buildings": [

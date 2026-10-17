@@ -59,7 +59,8 @@ export class TrafficFleet {
     return geo;
   }
 
-  update(agents: WorldAgent[], dt: number, ground: HeightFn | null = null): void {
+  /** `groundFor(heading)` is what a car heading that way stands on (World.groundFor). */
+  update(agents: WorldAgent[], dt: number, groundFor: ((heading: number) => HeightFn | null) | null = null): void {
     for (const slot of this.slots.values()) slot.seen = false;
 
     for (const d of agents) {
@@ -102,7 +103,7 @@ export class TrafficFleet {
       slot.x += (d.pose.x - slot.x) * k;
       slot.z += (-d.pose.y - slot.z) * k;
       slot.heading = dampAngle(slot.heading, d.pose.heading, 0.0001, dt);
-      const a = attitudeOn(ground, slot.x, -slot.z, slot.heading, d.size.length, d.size.width);
+      const a = attitudeOn(groundFor?.(slot.heading) ?? null, slot.x, -slot.z, slot.heading, d.size.length, d.size.width);
       slot.group.position.set(slot.x, a.y, slot.z);
       slot.group.rotation.order = 'YZX';
       slot.group.rotation.set(a.roll, slot.heading, a.pitch);

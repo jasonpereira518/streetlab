@@ -42,6 +42,7 @@ function road(id: string, centerline: Vec2[], extra: Partial<Road> = {}): Road {
     bridge: false,
     tunnel: false,
     edge_m: 0,
+    elevation_m: [],
     ...extra,
   };
 }
@@ -454,5 +455,64 @@ describe('vehicles ride the slope', () => {
     const west = attitudeOn(ground, 0, 0, Math.PI, 4.6, 1.9);
     expect(west.pitch).toBeCloseTo(-Math.atan(0.1), 3);
     expect(west.roll).toBeCloseTo(-Math.atan(0.05), 3);
+  });
+});
+
+describe('bridges and tunnels', () => {
+  const DECK = 6;
+  /** A street on the ground, and a cross street carried over it on a deck. */
+  function overpass(): SceneDescription {
+    const scene = curvyScene();
+    scene.roads = [
+      road('under', [[-100, 0], [100, 0]], { center_marking: 'double_yellow' }),
+      road('deck', [[0, -20], [0, 20]], { layer: 1, bridge: true, elevation_m: [DECK, DECK] }),
+    ];
+    return scene;
+  }
+  /** Over the origin, where the two cross: x spans 0 within `w` of y = 0, or y spans 0. */
+  const over = (t: Tri, axis: 0 | 1) =>
+    Math.min(...t.p.map((p) => p[axis])) <= 0 &&
+    Math.max(...t.p.map((p) => p[axis])) >= 0 &&
+    t.p.every((p) => Math.abs(p[1 - axis]) < 4);
+
+  it('draws the deck at its own height and the street beneath on the ground', () => {
+    const roads = tris(overpass(), 'roads').filter((t) => over(t, 0) || over(t, 1));
+    expect(roads.some((t) => t.h.every((h) => h > DECK))).toBe(true);
+    expect(roads.some((t) => t.h.every((h) => h < 0.1))).toBe(true);
+  });
+
+  it('is no junction: the street beneath keeps its centre line and gets no stop bar', () => {
+    const paint = tris(overpass(), 'lane-markings').filter((t) => over(t, 0) && t.h.every((h) => h < 0.1));
+    expect(paint.length).toBeGreaterThan(0);
+    for (const t of paint) {
+      const ys = t.p.map((p) => p[1]);
+      expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(1.0);
+    }
+  });
+
+  it('puts railings on the deck', () => {
+    const struct = tris(overpass(), 'structures');
+    expect(struct.some((t) => t.h.some((h) => h > DECK + 1))).toBe(true);
+  });
+
+  it('carries a car driving along the deck, not one crossing beneath it', () => {
+    const world = buildWorld(overpass());
+    expect(world.groundFor(Math.PI / 2)?.(0, 0)).toBeCloseTo(DECK, 6);
+    expect(world.groundFor(0)?.(0, 0)).toBeCloseTo(0, 6);
+  });
+
+  it('hides a tunnel under the hill and draws its portals', () => {
+    const scene = curvyScene();
+    scene.roads = [
+      road('approach', [[-100, 0], [-30, 0]]),
+      road('bore', [[-30, 0], [30, 0]], { layer: -1, tunnel: true, elevation_m: [0, 0] }),
+    ];
+    const tarmac = tris(scene, 'roads').filter((t) => t.p.every(([x]) => x > -25 && x < 25));
+    expect(tarmac).toHaveLength(0);
+    const portal = tris(scene, 'structures');
+    // One portal at each open end, standing taller than a truck.
+    for (const end of [-30, 30]) {
+      expect(portal.some((t) => t.p.every(([x]) => Math.abs(x - end) < 2) && t.h.some((h) => h > 5))).toBe(true);
+    }
   });
 });

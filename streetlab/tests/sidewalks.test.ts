@@ -133,6 +133,7 @@ describe('pavement is drawn only on the sides that have one', () => {
           bridge: false,
           tunnel: false,
           edge_m: 0,
+          elevation_m: [],
         },
       ],
     };

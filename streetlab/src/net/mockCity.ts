@@ -151,6 +151,7 @@ function buildRoads(): Road[] {
       bridge: false,
       tunnel: false,
       edge_m: 0,
+      elevation_m: [],
     };
   });
 }
