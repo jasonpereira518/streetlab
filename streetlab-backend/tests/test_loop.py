@@ -1326,7 +1326,15 @@ def test_snapshot_returns_the_epoch_and_a_frame_from_the_same_read():
         loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         epoch, frame = loop.snapshot()
-        while epoch == before and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            # Never AHEAD: a frame for the new scenario must not be paired
+            # with the old epoch. The epoch is bumped before `step()`, so for
+            # one step the pair is (new epoch, previous frame); that gap is
+            # real and a slow runner widens it (a CI run caught it), so this
+            # waits for the new frame instead of demanding it at once.
+            if frame is not None and frame.scenario_id == "grid-arterial":
+                assert epoch == before + 1
+                break
             time.sleep(0.005)
             epoch, frame = loop.snapshot()
         assert epoch == before + 1
