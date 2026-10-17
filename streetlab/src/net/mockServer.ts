@@ -864,6 +864,9 @@ export class MockSim {
           fsd_available: true,
         },
         size: EGO_SIZE,
+        // No lookahead here: the mock signals only while the turn or lane
+        // change is its current manoeuvre. The real planner signals ahead.
+        turn_signal: maneuver.endsWith('_left') ? 'left' : maneuver.endsWith('_right') ? 'right' : 'off',
       },
       detections,
       world_agents: detections.map((d) => ({

@@ -78,21 +78,22 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 12
+    assert dumped["protocol"] == PROTOCOL_VERSION == 13
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
 
-def test_protocol_is_12():
-    """Bumped to 12 for drive modes (`set_drive_mode`, `drive_input`,
-    `Cruise.fsd_available`); 10 added `StateUpdate.world_agents` and
-    `PerceptionStats.health`, 9 `SceneDescription.terrain`, 8 `reference_path`.
+def test_protocol_is_13():
+    """13 added drive modes (`set_drive_mode`, `drive_input`,
+    `Cruise.fsd_available`); 12 the required `Ego.turn_signal`; 10
+    `StateUpdate.world_agents` and `PerceptionStats.health` (9 added
+    `SceneDescription.terrain`, 8 `reference_path`).
 
     `wsClient.ts` rejects a backend whose `protocol` differs from its own, so
     this and `PROTOCOL_VERSION` in `schema.ts` must move together -- which is
     exactly what an exact-match assertion is here to force.
     """
-    assert PROTOCOL_VERSION == 12
+    assert PROTOCOL_VERSION == 13
 
 
 def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
@@ -404,7 +405,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 12
+    assert PROTOCOL_VERSION == 13
 
     raw = {
         "id": "f1",

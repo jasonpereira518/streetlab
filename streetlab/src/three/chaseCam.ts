@@ -99,9 +99,21 @@ export class ChaseCamera {
   private readonly rayOrigin = new THREE.Vector3();
   private readonly rayDir = new THREE.Vector3();
 
+  /** The driver's eye in the ego's cabin; the cockpit view rides on it. */
+  private mount: THREE.Object3D | null = null;
+  private readonly fwd = new THREE.Vector3();
+
   constructor(aspect = 16 / 9) {
     this.camera = new THREE.PerspectiveCamera(52, aspect, 0.3, 1400);
     this.camera.position.set(0, 12, 24);
+  }
+
+  /**
+   * Mount the cockpit view on an object (the cabin's eye anchor) instead of
+   * placing it from the heading alone, so it pitches and rolls with the body.
+   */
+  setCockpitMount(mount: THREE.Object3D | null): void {
+    this.mount = mount;
   }
 
   setAspect(aspect: number): void {
@@ -354,7 +366,27 @@ export class ChaseCamera {
       }
     }
 
+    // The nearest cabin surface (the roof) is ~0.2 m above the eye and the
+    // wheel ~0.45 m ahead. 0.05 cost so much depth precision at range that the
+    // road and ground z-fought from the cockpit; 0.15 clears every cabin
+    // surface (a 0.07 m half-height at the near plane) at half that loss.
+    const near = view === 'cockpit' && this.mount ? 0.15 : 0.3;
+    if (this.camera.near !== near) {
+      this.camera.near = near;
+      this.camera.updateProjectionMatrix();
+    }
+
     // The cockpit is rigidly mounted; every other view floats.
+    if (view === 'cockpit' && this.mount) {
+      this.mount.updateWorldMatrix(true, false);
+      this.mount.matrixWorld.decompose(this.camera.position, this.camera.quaternion, this.fwd);
+      // Keep the floating views' state where the eye is, so switching back
+      // eases out from the driver's seat rather than from a stale spot.
+      this.camPos.copy(this.camera.position);
+      this.fwd.set(0, 0, -40).applyQuaternion(this.camera.quaternion);
+      this.lookAt.copy(this.camPos).add(this.fwd);
+      return;
+    }
     if (view === 'cockpit') {
       this.camPos.copy(this.desired);
       this.lookAt.copy(this.desiredLook);

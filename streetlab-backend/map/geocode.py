@@ -259,6 +259,11 @@ class CompositeGeocoder:
     def suggest(self, query: str, limit: int = 5) -> list[Place]:
         return self.suggester.suggest(query, limit)
 
+    def remember(self, query: str, place: Place) -> None:
+        remember = getattr(self.resolver, "remember", None)
+        if remember is not None:
+            remember(query, place)
+
 
 #: Nominatim asks that results be cached. Addresses move rarely; 30 days.
 GEOCODE_TTL_S = 30 * 24 * 3600.0
@@ -291,8 +296,16 @@ class CachedGeocoder:
             except (KeyError, TypeError, ValueError):
                 pass  # corrupt entry: fall through and refetch
         place = self.inner.lookup(query)
-        self.cache.put(key, {"lat": place.lat, "lon": place.lon, "display_name": place.display_name, "ts": self._clock()})
+        self.remember(query, place)
         return place
+
+    def remember(self, query: str, place: Place) -> None:
+        """Store a place the user already resolved (a picked suggestion skips
+        `lookup`), so typing the same address later works with no network."""
+        self.cache.put(
+            f"geocode:v1:{_normalise(query)}",
+            {"lat": place.lat, "lon": place.lon, "display_name": place.display_name, "ts": self._clock()},
+        )
 
     def suggest(self, query: str, limit: int = 5) -> list[Place]:
         return self.inner.suggest(query, limit)

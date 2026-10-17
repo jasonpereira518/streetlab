@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 12,
+  "protocol": 13,
   "seq": 0,
   "t": 0.0,
   "sim_rate_hz": 60.0,
@@ -30,7 +30,8 @@
       "length": 4.7,
       "width": 1.9,
       "height": 1.45
-    }
+    },
+    "turn_signal": "right"
   },
   "detections": [
     {

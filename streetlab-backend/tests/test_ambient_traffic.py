@@ -98,6 +98,33 @@ def test_dense_traffic_never_holds_the_ego_for_good(scenario_id):
     assert sim.world.odometer_m > 300.0
 
 
+@pytest.mark.parametrize("scenario_id", ["grid-loop", "grid-merge", "grid-arterial"])
+def test_anyone_the_fsm_counts_as_stopped_at_a_line_counts_as_waiting(scenario_id):
+    """`STOP_ZONE_M` counts the ego as stopped anywhere up to that far short of
+    its line, and the all-way-stop queue only knows who rests within
+    `WAIT_MAX_M` of the centre. A turning route puts its line 12 m out, so at
+    18 the ego could stand 6.9 m short of it, behind a truck that had since
+    gone, in STOP for 44.7 s: stopped to itself, never waiting to anyone, so
+    never its turn (grid-arterial, dense, measured)."""
+    from plan.behavior import STOP_ZONE_M, WAIT_MAX_M
+    from sim.agents import _STOP_ZONE_M as TRAFFIC_STOP_ZONE_M
+
+    built = SyntheticGrid().build(scenario_id)
+
+    def furthest(pairs):
+        return max(
+            (math.dist(route.point_at(cp.s), cp.position) for route, points in pairs for cp in points if cp.kind == "stop_sign"),
+            default=0.0,
+        )
+
+    # Each by its own idea of "at the line": the ego's STOP_ZONE_M, traffic's
+    # own (smaller) zone -- lines set back for a bus are traffic's only.
+    ego = furthest([(built.ego_route, built.control_points)])
+    traffic = furthest([(lane.route, lane.control_points) for lane in built.ambient_lanes])
+    assert ego + STOP_ZONE_M <= WAIT_MAX_M, (ego, STOP_ZONE_M, WAIT_MAX_M)
+    assert traffic + TRAFFIC_STOP_ZONE_M <= WAIT_MAX_M, (traffic, TRAFFIC_STOP_ZONE_M, WAIT_MAX_M)
+
+
 # -- the real Nob Hill extract --------------------------------------------- #
 
 
@@ -164,3 +191,54 @@ def test_dense_nob_hill_never_holds_the_ego_for_good(nob_hill_scene):
         longest = max(longest, still)
     assert longest < 40.0
     assert sim.world.odometer_m > 400.0
+
+
+def test_traffic_does_not_take_a_box_the_ego_is_rolling_into():
+    """Measured, grid-merge dense: the ego stopped 6.3 m behind its line at
+    the (80, 80) all-way stop, won the tie (the truck was on its left) and
+    crept in -- so slowly the box stood empty `BOX_TIMEOUT_S`, the tie-break
+    for a stand-off all round, and the truck took the box across its path."""
+    from sim.agents import IdmTraffic, TrafficWorld
+    from sim.vehicle import VehicleState
+
+    built = SyntheticGrid().build("grid-merge")
+    traffic = IdmTraffic([], built.speed_limit_mps, ego_route=built.ego_route, ambient=built.ambient_lanes)
+    lane = next(
+        lane for lane in built.ambient_lanes
+        if any(cp.position == (80.0, 80.0) for cp in lane.control_points)
+        and lane.route.heading_at(0.0) < -1.0  # southbound
+    )
+    target = next(cp for cp in lane.control_points if cp.position == (80.0, 80.0))
+    truck = traffic._spawn_ambient(lane.route, target.s - 1.0, speed=0.0)
+    traffic._elapsed = 10.0
+    traffic._waiting[truck.id] = ((80.0, 80.0), 5.0)
+    traffic._ego_waiting[(80, 80)] = 5.2  # a tie, and the ego is on the truck's right
+    rolling = VehicleState(x=67.0, y=78.2, heading=0.0, speed_mps=1.9)
+    world = TrafficWorld(ego=rolling, ego_route=built.ego_route, t=10.0)
+    assert not traffic._may_take_box(truck, target, world)
+
+
+def test_a_car_queued_behind_you_is_not_ahead_of_you_at_an_all_way_stop():
+    """A car queued behind this one on its own approach, inside the waiting
+    ring and noted as stopped first, cannot go before it -- but it beat it
+    for the turn, and the junction waited on a car that could not move
+    (measured, grid-arterial dense: 44.9 s)."""
+    from sim.agents import IdmTraffic, TrafficWorld
+    from sim.vehicle import VehicleState
+
+    built = SyntheticGrid().build("grid-arterial")
+    traffic = IdmTraffic([], built.speed_limit_mps, ego_route=built.ego_route, ambient=built.ambient_lanes)
+    lane = next(
+        lane for lane in built.ambient_lanes
+        if any(cp.position == (-80.0, -80.0) for cp in lane.control_points)
+        and abs(lane.route.heading_at(0.0)) < 0.1  # eastbound
+    )
+    target = next(cp for cp in lane.control_points if cp.position == (-80.0, -80.0))
+    front = traffic._spawn_ambient(lane.route, target.s - 1.0, speed=0.0)
+    behind = traffic._spawn_ambient(lane.route, target.s - 11.0, speed=0.0)
+    traffic._elapsed = 10.0
+    traffic._waiting[front.id] = ((-80.0, -80.0), 5.0)
+    traffic._waiting[behind.id] = ((-80.0, -80.0), 4.0)
+    far = VehicleState(x=200.0, y=200.0, heading=0.0, speed_mps=0.0)
+    world = TrafficWorld(ego=far, ego_route=built.ego_route, t=10.0)
+    assert traffic._may_take_box(front, target, world)

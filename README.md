@@ -55,7 +55,7 @@ caps and deploy commands are in [`docs/hosted-sessions.md`](docs/hosted-sessions
 - **Native desktop app**: a Rust/Tauri shell that runs the Python simulator as a sidecar; a zero-config `.app`.
 - **Deterministic simulation**: kinematic vehicle model, IDM car-following, MOBIL lane-changing and a signal/stop-sign FSM on a fixed-step loop.
 - **Drive it yourself**: keyboard control with a Manual / Cruise / Assist / FSD ladder; the planner takes back over smoothly from wherever you leave the car.
-- **Real-world maps**: live geocoding and OpenStreetMap ingest, cached for offline use and built off the render thread so the car never stutters while a block loads.
+- **Real-world maps and trips**: live geocoding and OpenStreetMap ingest, cached for offline use and built off the render thread so the car never stutters while a block loads. Give it two addresses and it drives a one-way-aware trip between them, with a distance-remaining readout and an ETA.
 - **ML inference in the loop**: camera frames → RT-DETR (ONNX) → 2D-to-3D tracking → scoring against ground truth.
 - **Schema-enforced contract**: fixtures generated from the real simulation are validated by the zod and pydantic schemas.
 - **2,300+ automated tests**: 1,894 backend and contract (pytest), 375 frontend (vitest), 36 end-to-end (Playwright); counted 2026-10-17.

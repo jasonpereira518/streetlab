@@ -71,6 +71,7 @@ from schema import (
     RunSummary,
     SceneDescription,
     SignalState,
+    TurnSignal,
     SimEvent,
     Size,
     StateUpdate,
@@ -1066,6 +1067,7 @@ class Simulation:
             # that can drift.
             signals=self.world.signals,
             sim_rate_hz=1 / self.dt,
+            turn_signal=plan.turn_signal,
             # Passed in rather than recomputed inside the assembler: this is
             # the same figure the planner was just given, so the speed the HUD
             # posts and the speed the car is actually holding to cannot drift
@@ -1525,6 +1527,7 @@ def assemble_state_update(
     plan: Plan,
     signals: Sequence[SignalState],
     sim_rate_hz: float,
+    turn_signal: TurnSignal = "off",
     posted_limit_mps: float | None = None,
     perception_pipeline: PerceptionPipeline | None = None,
     perception_mode: PerceptionMode = "ground-truth",
@@ -1602,6 +1605,7 @@ def assemble_state_update(
                 fsd_available=route_ok(offset, heading_error),
             ),
             size=Size(length=4.7, width=1.9, height=1.45),
+            turn_signal=turn_signal,
         ),
         detections=list(detections),
         world_agents=list(world_agents),
