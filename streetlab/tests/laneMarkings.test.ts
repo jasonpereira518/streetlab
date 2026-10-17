@@ -13,6 +13,7 @@ import * as THREE from 'three/webgpu';
 import { buildWorld } from '../src/three/world';
 import { DASH_M, GAP_M } from '../src/three/world';
 import type { Road, SceneDescription } from '../src/schema';
+import { roadHalfWidth } from '../src/schema';
 
 const osmScene = (): SceneDescription =>
   JSON.parse(readFileSync(resolve(__dirname, 'fixtures/nobHillScene.json'), 'utf8'));
@@ -49,7 +50,7 @@ function marks(scene: SceneDescription): Mark[] {
   return out;
 }
 
-const half = (r: Road) => ((r.lanes_forward + r.lanes_backward) * r.lane_width_m) / 2;
+const half = roadHalfWidth;
 
 /** Span of a triangle projected onto a direction. */
 function extent(tri: Array<[number, number]>, ux: number, uy: number): number {
@@ -190,6 +191,10 @@ describe('lane markings follow the US convention', () => {
       center_marking: 'none',
       sidewalk_left: true,
       sidewalk_right: true,
+      layer: 0,
+      bridge: false,
+      tunnel: false,
+      edge_m: 0,
     };
     const painted = marks({ ...osmScene(), roads: [road], crosswalks: [], buildings: [] });
     const h = half(road); // 5.4 m
@@ -231,6 +236,10 @@ describe('lane markings follow the US convention', () => {
       center_marking: 'none',
       sidewalk_left: true,
       sidewalk_right: true,
+      layer: 0,
+      bridge: false,
+      tunnel: false,
+      edge_m: 0,
     };
     const painted = marks({ ...osmScene(), roads: [road], crosswalks: [], buildings: [] });
     const h = half(road);

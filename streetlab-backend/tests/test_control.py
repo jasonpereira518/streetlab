@@ -156,8 +156,8 @@ def test_ego_completes_a_lap_without_leaving_its_lane(built, limits, ctx):
     assert worst < 1.8, f"ego wandered {worst:.2f} m off the centreline"
 
 
-def stopped_lead_at(route, ego_s, gap_m, cls="car"):
-    """A detection representing a stationary car `gap_m` ahead in the ego lane."""
+def stopped_lead_at(route, ego_s, gap_m, cls="car", speed=0.0):
+    """A detection representing a car `gap_m` ahead in the ego lane, stationary by default."""
     from schema import Detection, Pose, Size
 
     x, y = route.point_at(ego_s + gap_m)
@@ -167,7 +167,7 @@ def stopped_lead_at(route, ego_s, gap_m, cls="car"):
         pose=Pose(x=x, y=y, heading=route.heading_at(ego_s + gap_m)),
         size=Size(length=4.6, width=1.9, height=1.45),
         velocity=(0.0, 0.0),
-        speed_mps=0.0,
+        speed_mps=speed,
         confidence=1.0,
         hazard=True,
         hazard_label="stopped vehicle",
@@ -195,10 +195,13 @@ def test_a_distant_lead_does_not_constrain_the_target(built, limits, ctx):
 
 
 def test_a_larger_follow_distance_yields_a_lower_target(built, ctx):
+    """A lead at the ego's own speed: the spacing law decides, not the
+    kinematic ceiling (which a STOPPED lead 18 m off sets for any follow
+    distance)."""
     route = built.ego_route
     s = straight_s(route)
     ego = start_state(route, speed=9.0, s=s)
-    lead = [stopped_lead_at(route, s, 18.0)]
+    lead = [stopped_lead_at(route, s, 25.0, speed=9.0)]
 
     def target(follow_s):
         limits = PlanLimits(
@@ -231,6 +234,79 @@ def test_ego_does_not_drive_through_a_stopped_car(built, limits, ctx):
 
     assert closest > 0.5, f"ego closed to {closest:.2f} m — it drove into the lead"
     assert state.speed_mps < 0.5, "ego never came to rest behind the obstacle"
+
+
+def follow_a_lead(route, limits, ctx, lead_decel, *, ego_v=None, lead_v=None, bumper_m=None, hold_s=2.0):
+    """Follow a lead until it brakes to a stop at `lead_decel`, `hold_s` in.
+    By default both start at the speed limit, the lead at the following law's
+    own settled gap. Returns (peak ego braking, closest bumper gap, bumper gap
+    at rest)."""
+    from plan.behavior import EGO_LENGTH_M
+
+    s0 = straight_s(route)
+    v = limits.speed_limit_mps
+    ego_v = v if ego_v is None else ego_v
+    lead_v = v if lead_v is None else lead_v
+    if bumper_m is None:  # `_following_speed`'s desired spacing, centre to the lead's tail
+        bumper_m = 5.0 + limits.follow_distance_s * v - EGO_LENGTH_M / 2
+    lead_s = s0 + bumper_m + (4.6 + EGO_LENGTH_M) / 2
+    model = BicycleModel()
+    planner = CenterlineFollower()
+    state = start_state(route, speed=ego_v, s=s0)
+    peak_brake, closest = 0.0, math.inf
+    for i in range(60 * 30):
+        if i > 60 * hold_s:
+            lead_v = max(0.0, lead_v - lead_decel / 60)
+        lead_s += lead_v / 60
+        ego_s = route.project((state.x, state.y))
+        lead = [stopped_lead_at(route, ego_s, lead_s - ego_s, speed=lead_v)]
+        result = planner.plan(state, route, lead, limits, ctx)
+        peak_brake = max(peak_brake, -result.accel_mps2)
+        state = model.step(state, accel_mps2=result.accel_mps2, steer_rad=result.steer_rad, dt=1 / 60)
+        bumper = route.signed_gap(route.project((state.x, state.y)), lead_s) - (4.6 + EGO_LENGTH_M) / 2
+        closest = min(closest, bumper)
+    assert state.speed_mps < 0.1, "ego never came to rest behind the lead"
+    return peak_brake, closest, bumper
+
+
+def test_closing_on_a_slow_lead_brakes_no_harder_than_comfort(built, limits, ctx):
+    """The grid_slow episode (2.56 m/s^2 behind veh_00, t=20-22 s, 2026-10-14):
+    the ego, at 4.7 m/s, accelerated at full authority toward a lead doing
+    3.4 m/s 43 m ahead and easing to a stop sign, reached 9.6 m/s, and then
+    needed more than comfort braking to shed it. The linear spacing law has no
+    idea how fast it can stop; a kinematic ceiling does."""
+    from plan.behavior import COMFORT_DECEL_MPS2
+
+    peak, closest, rest = follow_a_lead(
+        built.ego_route, limits, ctx, 0.65, ego_v=4.7, lead_v=3.4, bumper_m=43.0, hold_s=0.0
+    )
+    assert peak <= COMFORT_DECEL_MPS2 + 0.1, f"peak braking {peak:.2f} m/s^2"
+    assert closest > 0.0, f"ego overlapped the lead ({closest:.2f} m)"
+    assert 2.0 <= rest <= 4.0, f"rested {rest:.2f} m bumper to bumper"
+
+
+@pytest.mark.parametrize("lead_decel", [1.0, 2.0, 3.0, 4.5])
+def test_following_a_braking_lead_never_overlaps_and_rests_2_to_4_m_back(built, limits, ctx, lead_decel):
+    """From settled following: a lead braking harder than comfort may make the
+    ego brake harder, but never into it."""
+    _peak, closest, rest = follow_a_lead(built.ego_route, limits, ctx, lead_decel)
+    assert closest > 0.5, f"ego closed to {closest:.2f} m bumper to bumper"
+    assert 2.0 <= rest <= 4.0, f"rested {rest:.2f} m bumper to bumper"
+
+
+def test_a_short_follow_distance_still_closes_to_its_own_gap(built, ctx):
+    """The ceiling must not bind in steady following, whatever `follow_distance_s`:
+    a lead held at speed is followed at the law's own `5 + 0.8 v` spacing."""
+    from plan.control import _following_speed
+
+    limits = PlanLimits(speed_limit_mps=11.176, speed_cap_mps=100.0, follow_distance_s=0.8)
+    route = built.ego_route
+    s = straight_s(route)
+    v = 10.0
+    ego = start_state(route, speed=v, s=s)
+    gap = 5.0 + 0.8 * v + 4.6 / 2 + 1.0  # a metre long of the settled spacing
+    lead = stopped_lead_at(route, s, gap, speed=v)
+    assert _following_speed(lead, gap, ego, limits) > v, "the ceiling held the ego back"
 
 
 def test_steering_reverses_sign_for_an_offset_to_the_other_side(built, limits, ctx):
@@ -619,3 +695,120 @@ def test_a_fast_car_brakes_for_a_corner_beyond_the_old_preview(ctx):
     result = CenterlineFollower().plan(start_state(route, fast, s=s), route, [], limits, ctx)
     assert result.plan.target_speed_mps < 13.0
     assert result.accel_mps2 < 0
+
+
+# --- the threat layer, wired in (Cycle 6 Phase 2) --------------------------- #
+
+
+def crossing_pedestrian(route, ego_s, ahead_m, off_m, vy):
+    """A pedestrian `ahead_m` along the route and `off_m` to its left, walking at
+    `vy` m/s across it (negative = toward the right)."""
+    from schema import Detection, Pose, Size
+
+    x, y = route.point_at(ego_s + ahead_m)
+    h = route.heading_at(ego_s + ahead_m)
+    nx, ny = -math.sin(h), math.cos(h)
+    return Detection(
+        id="ped",
+        cls="pedestrian",
+        pose=Pose(x=x + nx * off_m, y=y + ny * off_m, heading=h),
+        size=Size(length=0.6, width=0.6, height=1.7),
+        velocity=(nx * vy, ny * vy),
+        speed_mps=abs(vy),
+        confidence=1.0,
+        hazard=False,
+        hazard_label=None,
+        ttc_s=None,
+        lane_offset=round(off_m / 3.6),
+        emergency=False,
+    )
+
+
+def test_a_stopped_car_in_the_strip_brakes_at_the_cap_and_says_so(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=8.0, s=s)
+    result = CenterlineFollower().plan(ego, route, [stopped_lead_at(route, s, 14.0)], limits, ctx)
+    assert result.plan.maneuver == "emergency_brake"
+    assert result.plan.reaction_source_id == "lead"
+    assert result.plan.target_speed_mps == 0.0
+    assert result.accel_mps2 == pytest.approx(-4.5)
+    assert result.reaction.kind == "aeb"
+    Plan.model_validate(result.plan.model_dump())
+
+
+def test_a_pedestrian_stepping_out_makes_the_ego_yield(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=10.0, s=s)
+    ped = crossing_pedestrian(route, s, ahead_m=30.0, off_m=5.0, vy=-1.4)
+    result = CenterlineFollower().plan(ego, route, [ped], limits, ctx)
+    assert result.plan.maneuver == "yield"
+    assert result.plan.reaction_source_id == "ped"
+    assert 0.0 < result.plan.target_speed_mps < 10.0
+
+
+def test_a_pedestrian_standing_at_the_kerb_changes_nothing(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=10.0, s=s)
+    ped = crossing_pedestrian(route, s, ahead_m=30.0, off_m=5.0, vy=0.0)
+    result = CenterlineFollower().plan(ego, route, [ped], limits, ctx)
+    assert result.plan.reaction_source_id is None
+    assert result.reaction.kind == "none"
+    assert result.plan.target_speed_mps == pytest.approx(limits.speed_limit_mps)
+
+
+def test_the_reaction_only_ever_lowers_the_target(built, limits, ctx):
+    """Same scene with and without the threat layer: never faster with it."""
+    route = built.ego_route
+    s = straight_s(route)
+    for speed in (4.0, 8.0, 11.0):
+        ego = start_state(route, speed=speed, s=s)
+        for ahead in (8.0, 15.0, 30.0, 60.0):
+            dets = [crossing_pedestrian(route, s, ahead, 4.0, -1.4), stopped_lead_at(route, s, ahead + 5.0)]
+            on = CenterlineFollower()
+            off = CenterlineFollower()
+            off.assessor.rules.clear()
+            a = on.plan(ego, route, dets, limits, ctx).plan.target_speed_mps
+            b = off.plan(ego, route, dets, limits, ctx).plan.target_speed_mps
+            assert a <= b + 1e-9, (speed, ahead)
+
+
+def test_reset_clears_the_assessor_along_with_the_fsm(built, limits, ctx):
+    route = built.ego_route
+    s = straight_s(route)
+    planner = CenterlineFollower()
+    planner.plan(start_state(route, speed=8.0, s=s), route, [stopped_lead_at(route, s, 14.0)], limits, ctx)
+    assert planner.assessor.rules[0].active_id is not None
+    planner.reset()
+    assert planner.assessor.rules[0].active_id is None
+
+
+def test_with_no_detections_the_plan_is_unchanged_by_the_threat_layer(built, limits, ctx):
+    """Hazard-free driving must not move: compare against a planner whose
+    assessor has no rules, over a stretch that includes a turn."""
+    route = built.ego_route
+    on, off = CenterlineFollower(), CenterlineFollower()
+    off.assessor.rules.clear()
+    model = BicycleModel()
+    ego = start_state(route, speed=6.0, s=straight_s(route))
+    for _ in range(1500):
+        a = on.plan(ego, route, [], limits, ctx)
+        b = off.plan(ego, route, [], limits, ctx)
+        assert a.plan == b.plan and a.accel_mps2 == b.accel_mps2 and a.steer_rad == b.steer_rad
+        ego = model.step(ego, accel_mps2=a.accel_mps2, steer_rad=a.steer_rad, dt=1 / 60)
+
+
+def test_a_cut_in_inside_the_standstill_gap_keeps_full_braking(built, limits, ctx):
+    """The contract's cut-in frame: a motorcycle 0.6 m off the nose, the ego
+    closing at 1.5 m/s. The comfort floor is for a lead with room to spare;
+    inside the standstill gap the spacing law keeps its full authority."""
+    from plan.control import _MAX_DECEL_MPS2
+
+    route = built.ego_route
+    s = straight_s(route)
+    ego = start_state(route, speed=6.3, s=s)
+    lead = stopped_lead_at(route, s, 4.0, speed=4.8)
+    result = CenterlineFollower().plan(ego, route, [lead], limits, ctx)
+    assert result.accel_mps2 == pytest.approx(-_MAX_DECEL_MPS2)

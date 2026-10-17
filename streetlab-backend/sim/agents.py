@@ -21,7 +21,7 @@ from typing import Protocol, runtime_checkable
 
 from schema import SignalState, Size
 from plan.behavior import BOX_TIMEOUT_S, STOP_TIE_S, WAIT_MAX_M, WAIT_MIN_M
-from sim.route import EGO_LANE_ID, AmbientLane, ControlPoint, Lane, LaneSet, Route
+from sim.route import EGO_LANE_ID, AmbientLane, ControlPoint, Junction, Lane, LaneSet, Route
 from sim.vehicle import BicycleModel, VehicleState
 
 # How quickly a scripted agent converges on its target speed. Not a physical
@@ -105,6 +105,8 @@ class Agent:
     #: re-times itself every tick to arrive when the ego does.
     meet_s: float | None = None
     meet_ego_s: float | None = None
+    #: Seconds held at an unsigned junction's edge, giving way.
+    junction_wait_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +377,13 @@ class ScriptedTraffic:
             # The body points where the car is going, not where the lane does.
             heading = _wrap(heading + math.atan2(lateral_rate, speed))
 
+        # A body turns at a bounded rate. Both inputs above step: the route's heading by a whole
+        # vertex (11 degrees on an 8-segment fillet) and the crab from 0 to atan(1.2 / v) the
+        # tick a lane change starts (27 degrees at 2.5 m/s). Followed through, as a real
+        # chassis would, they cost a few ticks of lag instead of a visible snap.
+        before = agent.state.heading
+        heading = _wrap(before + max(-_MAX_YAW_STEP_RAD, min(_MAX_YAW_STEP_RAD, _wrap(heading - before))))
+
         agent.s = s
         agent.state = VehicleState(
             x=x,
@@ -406,6 +415,18 @@ _IDM_DELTA = 4.0
 #: `_IDM_COMFORT_DECEL` stays at 2.0 and is what car-following actually uses --
 #: this is the emergency floor, not the working rate.
 _IDM_MAX_BRAKE = 4.5
+
+#: The floor on the free term (no leader): it brakes for a corner or a speed-scale change, and
+#: should not reach the emergency floor above. 3.0 m/s^2, under the 3.5 p99 traffic budget
+#: (`tests/driving_metrics.py`); measured on `grid`, p99 4.50 -> 3.31 with the yaw bound.
+#: The interaction term adds on top, to `_IDM_MAX_BRAKE`. `traffic_speed_scale=0` still halts
+#: traffic: it needs 3.7 s from 11 m/s.
+_IDM_FREE_BRAKE = 3.0
+
+#: The most an agent's body may turn in one tick, radians: 1.8 degrees, under the 2.0 budget
+#: (`tests/driving_metrics.py`). The tightest corner traffic takes (3.1 m radius, at 2.6 m/s)
+#: needs 0.84.
+_MAX_YAW_STEP_RAD = math.radians(1.8)
 
 #: Beyond this there is no leader worth modelling. Bounding the search is not
 #: a performance dodge -- it is what stops an agent on a short closed loop from
@@ -474,6 +495,11 @@ _LANE_END_MARGIN_M = 1.0
 #: of a street must be before a car at its end comes round to its start, and
 #: how closely two vehicles' headings must agree to be in one lane's queue.
 MAX_DENSITY_PER_LANE_KM = 40.0
+#: The most ambient cars a scene gets, whatever the density: with Nob Hill's
+#: 4 loop cars, the plan's 60 in all, which keeps the 60 Hz step's p95 under
+#: 8 ms (measured 2026-10-16). Scenes list their lanes nearest the ego first,
+#: so the cars that exist are the ones it meets.
+MAX_AMBIENT_AGENTS = 56
 _AMBIENT_SPAWN_CLEAR_M = 3.0
 _AMBIENT_JUNCTION_CLEAR_M = 16.0
 _AMBIENT_RESPAWN_HIDDEN_M = 40.0
@@ -484,12 +510,41 @@ _MERGE_LOOKAHEAD_S = 2.0
 _MEET_MIN_EGO_MPS = 1.0
 _MEET_MAX_MPS = 20.0
 _CROSSING_LOOK_M = 30.0
+#: Beyond this (each axis) the ego is too far to be anyone's leader.
+_EGO_NEAR_M = 110.0
+#: The spatial index's cell, and what a body plus its lookahead adds to a
+#: search radius (half a bus, and 2 s at 15 m/s).
+_CELL_M = 40.0
+_NEAR_PAD_M = 36.0
 #: Half-width of the strip ahead a car keeps clear: its lane, less a margin
 #: so a car passing properly in the next lane is never in it.
 _LANE_CORRIDOR_M = 1.5
 #: All-way stops: the longest a car may hold a box it has taken. The rest of
 #: the rule is the ego's (`plan.behavior`), so both keep one clock.
 _BOX_HOLD_MAX_S = 8.0
+#: Right of way at unsigned junctions: a sign or signal this far before a
+#: junction (beyond its box) is the one that governs it; how far beyond its
+#: braking distance a car starts to care; the gap a car leaving a stop sign
+#: needs in through traffic; arrivals this close count as together; the
+#: slowest a car is taken to approach at, for its arrival time.
+_CONTROL_REACH_M = 20.0
+_ROW_LOOK_M = 15.0
+_ROW_GAP_S = 4.0
+_ROW_TIE_S = 1.0
+_ROW_MIN_SPEED_MPS = 2.0
+#: Street ends: how near another lane must pass to be turned onto, the road
+#: it must have left, the sharpest turn taken, what counts as straight on, and
+#: the least gap behind on the new lane even for slow traffic.
+_EXIT_REACH_M = 8.0
+_EXIT_ROOM_M = 20.0
+_EXIT_MAX_TURN_RAD = math.radians(110.0)
+_STRAIGHT_RAD = math.radians(30.0)
+_EXIT_MIN_GAP_M = 12.0
+#: A turn route: the old lane's last stretch, the corner radius (the ego
+#: route's own), and how far along the new lane it joins it.
+_TURN_TAIL_M = 12.0
+_TURN_RADIUS_M = 6.0
+_TURN_LEAD_M = 6.0
 
 #: Below this a held vehicle counts as stopped rather than driving slowly.
 _STANDSTILL_MPS = 0.5
@@ -508,6 +563,12 @@ _MAX_CRAB_TAN = math.tan(_MAX_CRAB_RAD)
 #: A standard lane, restated from `map.lanes.LANE_W` for the reason
 #: `_SAME_LANE_M` is. Only `_crab_tan` reads it.
 _LANE_W_M = 3.6
+
+
+#: Ambient traffic's mix: no buses. An 11.5 m body posed rigidly on a street's
+#: 12 deg bend swung 0.53 m over the outside kerb (measured, dense Nob Hill);
+#: buses need off-tracking first.
+_AMBIENT_PROFILES = tuple(p for p in _PROFILES if p[0] != "bus")
 
 
 def _crab_tan(agent: Agent) -> float:
@@ -575,8 +636,16 @@ class IdmTraffic(ScriptedTraffic):
         ego_route: Route | None = None,
         ambient: Sequence[AmbientLane] = (),
         density_per_lane_km: float = 0.0,
+        junctions: Sequence[Junction] = (),
     ) -> None:
         super().__init__(routes, speed_limit_mps, seed=seed, speed_scale=speed_scale)
+        self._junctions = list(junctions)
+        #: id(route) -> that route's junction passages, by arc length.
+        self._passages: dict[int, list[_Passage]] = {}
+        #: This tick: each vehicle's next junction passage (id(agent), or
+        #: "ego") as (passage, front bumper to box edge, seconds to it).
+        self._next_pass: dict[object, tuple[_Passage, float, float]] = {}
+        self._ego_route = ego_route
         self._lanes = lanes
         self._controls = _controls_by_route(control_points, ego_route, lanes)
         self._ambient = list(ambient)
@@ -585,6 +654,12 @@ class IdmTraffic(ScriptedTraffic):
             self._controls[id(lane.route)] = sorted(lane.control_points, key=lambda cp: cp.s)
         self._next_ambient = 0
         self._ego_start = ego_route.point_at(0.0) if ego_route is not None else None
+        self._exits = _street_exits([lane.route for lane in self._ambient])
+        #: Turn routes built so far, by (from lane, to lane), and the street
+        #: lane each comes round on.
+        self._turns: dict[tuple[int, int], Route] = {}
+        self._home: dict[int, Route] = {}
+        self._curv_cache: dict[tuple[int, int], float] = {}
         #: All-way stops: who is waiting where since when, when each box was
         #: last occupied, and when the ego came to rest at each.
         self._waiting: dict[str, tuple[tuple[float, float], float]] = {}
@@ -634,8 +709,11 @@ class IdmTraffic(ScriptedTraffic):
         placed and of the ego's start. 0 removes it."""
         self._agents[:] = [a for a in self._agents if id(a.route) not in self._ambient_routes]
         per_lane_km = min(max(0.0, float(per_lane_km)), MAX_DENSITY_PER_LANE_KM)
-        for lane in self._ambient:
-            n = round(per_lane_km * lane.route.length_m / 1000)
+        spawned = 0
+        for lane in self._ambient:  # nearest the ego first; see the cap
+            if spawned >= MAX_AMBIENT_AGENTS:
+                break
+            n = min(round(per_lane_km * lane.route.length_m / 1000), MAX_AMBIENT_AGENTS - spawned)
             junctions = [cp.position for cp in lane.control_points]
             for k in range(n):
                 s = lane.route.length_m * (k + 0.5) / n + self._rng.uniform(-3.0, 3.0)
@@ -644,11 +722,12 @@ class IdmTraffic(ScriptedTraffic):
                     math.dist(lane.route.point_at(s), j) < _AMBIENT_JUNCTION_CLEAR_M for j in junctions
                 ):
                     s += 2.0
-                self._spawn_ambient(lane.route, min(max(s, 5.0), lane.route.length_m - 5.0))
+                if self._spawn_ambient(lane.route, min(max(s, 5.0), lane.route.length_m - 5.0)):
+                    spawned += 1
 
     def _spawn_ambient(self, route: Route, s: float, speed: float | None = None) -> Agent | None:
         """One ambient car at `s` on `route`, unless its lane is taken there."""
-        cls, length, width, height, mult = _profile_for(self._next_ambient, route)
+        cls, length, width, height, mult = _AMBIENT_PROFILES[self._next_ambient % len(_AMBIENT_PROFILES)]
         if self._lane_taken(route, s, length):
             return None
         if self._ego_start is not None and _in_lane(route, s, length, self._ego_start, _EGO_LENGTH_M):
@@ -704,6 +783,109 @@ class IdmTraffic(ScriptedTraffic):
         agent.override_speed_mps = min(mine_left / eta, _MEET_MAX_MPS)
         agent.override_until_s = self._elapsed + 1.0
 
+    def _turn_off(self, agent: Agent, world: TrafficWorld | None) -> bool:
+        """Drive `agent` round the corner onto the first exit with a gap in its
+        traffic, on a turn route built for that pair of lanes (`_turn_route`).
+        Moving it straight onto the exit -- sliding across, or jumping to it
+        -- put it in the oncoming lane on a left turn, and 0.84 m over a kerb
+        on a jump (measured, dense Nob Hill)."""
+        here = (agent.state.x, agent.state.y)
+        for lane in self._exits.get(id(agent.route), ()):
+            if self._exit_busy(lane, lane.project(here), agent, world):
+                continue
+            turn = self._turn_route(agent.route, lane)
+            agent.route = turn
+            agent.s = turn.project(here)
+            agent.lane_id = None
+            agent.from_route = None
+            agent.lateral_m = turn.lateral_offset(here, agent.s)
+            agent.cleared_control_id = None
+            agent.control_dwell_s = 0.0
+            return True
+        return False
+
+    def _turn_route(self, frm: Route, to: Route) -> Route:
+        """The last of `frm` turned round a `_TURN_RADIUS_M` corner into `to`
+        from where `to` passes `frm`'s end, built once per pair. It takes on
+        `to`'s stop lines and exits; a car that must come round on it does so
+        at `to`'s own start."""
+        key = (id(frm), id(to))
+        hit = self._turns.get(key)
+        if hit is not None:
+            return hit
+        end = frm.point_at(frm.length_m)
+        s_to = to.project(end)
+        head = [to.point_at(s_to + _TURN_LEAD_M)] + [
+            p for p in to.points if to.project(p) > s_to + _TURN_LEAD_M + 0.5
+        ]
+        tail = [frm.point_at(frm.length_m - _TURN_TAIL_M), end]
+        turn = Route(tail + head, closed=False).fillet(radius_m=_TURN_RADIUS_M)
+        turn.segment_limits = None
+        joined = turn.project(to.point_at(s_to + _TURN_LEAD_M))
+        self._controls[id(turn)] = [
+            ControlPoint(id=cp.id, kind=cp.kind, s=cp.s - (s_to + _TURN_LEAD_M) + joined, position=cp.position)
+            for cp in self._controls.get(id(to), [])
+            if cp.s > s_to + _TURN_LEAD_M
+        ]
+        self._exits[id(turn)] = self._exits.get(id(to), [])
+        self._ambient_routes.add(id(turn))
+        self._home[id(turn)] = to
+        self._turns[key] = turn
+        return turn
+
+    def _exit_busy(self, lane: Route, s: float, agent: Agent, world: TrafficWorld | None) -> bool:
+        """Whether turning onto `lane` at `s` would cut in front of traffic on
+        it: anything there within `_ROW_GAP_S` of travel behind, or on the spot."""
+        def blocks(other_s: float, speed: float, length: float) -> bool:
+            behind = s - other_s
+            return -length - agent.size.length / 2 < behind < max(_EXIT_MIN_GAP_M, speed * _ROW_GAP_S)
+
+        for other in self._agents:
+            if other is not agent and other.route is lane and blocks(other.s, other.state.speed_mps, other.size.length):
+                return True
+        if world is not None:
+            position = (world.ego.x, world.ego.y)
+            ego_s = lane.project(position)
+            if abs(lane.lateral_offset(position, ego_s)) <= _SAME_LANE_M and blocks(ego_s, world.ego.speed_mps, _EGO_LENGTH_M):
+                return True
+        return False
+
+    def _index_cells(self) -> None:
+        """File every agent by `_CELL_M` cell, once a tick, so the checks that
+        compare a car with the others near it need not walk all of them --
+        on dense Nob Hill that walk was 64 x 64 a tick."""
+        cells: dict[tuple[int, int], list[Agent]] = {}
+        for a in self._agents:
+            cells.setdefault((int(a.state.x // _CELL_M), int(a.state.y // _CELL_M)), []).append(a)
+        self._cells = cells
+
+    def _near(self, at: tuple[float, float], radius: float):
+        """The agents in the cells within `radius` of `at` (a superset of those
+        within it; callers do their own exact test)."""
+        cells = getattr(self, "_cells", None)
+        if cells is None:
+            yield from self._agents
+            return
+        r = int(radius // _CELL_M) + 1
+        cx, cy = int(at[0] // _CELL_M), int(at[1] // _CELL_M)
+        for i in range(cx - r, cx + r + 1):
+            for j in range(cy - r, cy + r + 1):
+                yield from cells.get((i, j), ())
+
+    def _curvature(self, route: Route, s: float) -> float:
+        """`peak_curvature` ahead of `s`, cached per route in 1 m steps: a
+        route never changes shape, and sampling it afresh for every car every
+        tick was a fifth of the dense Nob Hill step."""
+        if id(route) not in self._ambient_routes:
+            # The scenario's own traffic keeps exact sampling: quantised to a
+            # metre it drove a little differently, and every pinned run moved.
+            return route.peak_curvature(s, distance_m=_CURVATURE_PREVIEW_M)
+        key = (id(route), int(route.normalise(s)))
+        hit = self._curv_cache.get(key)
+        if hit is None:
+            hit = self._curv_cache[key] = route.peak_curvature(key[1], distance_m=_CURVATURE_PREVIEW_M)
+        return hit
+
     def _lane_taken(self, route: Route, s: float, length: float, ignore: Agent | None = None) -> bool:
         """Whether a `length` vehicle at `s` on `route` would land on another in
         its lane. The opposite direction's queue one lane over does not count."""
@@ -713,21 +895,29 @@ class IdmTraffic(ScriptedTraffic):
         )
 
     def _come_round(self, agent: Agent, world: TrafficWorld | None) -> None:
-        """An ambient car at its street's end starts again at the street's
-        start -- once the ego can see neither end."""
+        """An ambient car at its street's end turns onto the street it meets
+        there (`_street_exits`), or, where it meets none -- the extract's edge
+        -- starts again at its own street's start once the ego can see
+        neither end. Measured before the turn: a street ending at a T-junction
+        held its car at the end with the ego queued behind it, for good."""
         route = agent.route
         # IDM holds a car its standstill gap short of the end it treats as a wall.
         if route.closed or agent.s < route.length_m - agent.size.length / 2 - _IDM_MIN_GAP_M - 0.5:
+            return
+        if self._turn_off(agent, world):
             return
         if world is not None:
             ego = (world.ego.x, world.ego.y)
             ends = (route.point_at(0.0), route.point_at(route.length_m))
             if min(math.dist(ego, e) for e in ends) < _AMBIENT_RESPAWN_HIDDEN_M:
                 return
+        # A turn route comes round at the start of the street it turned onto.
+        route = self._home.get(id(route), route)
         start = agent.size.length / 2 + 1.0
         if self._lane_taken(route, start, agent.size.length, ignore=agent):
             return
         x, y = route.point_at(start)
+        agent.route = route
         agent.s = start
         agent.cleared_control_id = None
         agent.control_dwell_s = 0.0
@@ -755,6 +945,8 @@ class IdmTraffic(ScriptedTraffic):
         self._straddle_s.clear()
         ego_s_by_route = self._project_ego(world)
         self._note_ego_waiting(world)
+        self._plan_passages(world, ego_s_by_route)
+        self._index_cells()
 
         for agent in self._agents:
             self._expire_overrides(agent)
@@ -769,6 +961,7 @@ class IdmTraffic(ScriptedTraffic):
                 speed = _approach(speed, agent.override_speed_mps, _SPEED_RATE * dt)
             else:
                 self._obey(agent, world, dt)
+                agent.control_gap_m = min(agent.control_gap_m, self._right_of_way(agent, world, dt))
                 gap, lead_speed = self._leader(agent, world, ego_s_by_route)
                 accel = _idm_accel(
                     speed,
@@ -824,7 +1017,10 @@ class IdmTraffic(ScriptedTraffic):
             return {}
         out: dict[int, tuple[float, float]] = {}
         for agent in self._agents:
-            self._ego_on(agent.route, world, out)
+            # Projecting the ego onto a long OSM lane is a scan of it; an agent
+            # beyond the leader horizon cannot have the ego as its leader.
+            if _within(agent.state, world.ego, _EGO_NEAR_M):
+                self._ego_on(agent.route, world, out)
         return out
 
     @staticmethod
@@ -860,7 +1056,7 @@ class IdmTraffic(ScriptedTraffic):
             if posted is not None and self._scene_limit_mps > 0:
                 wanted *= posted / self._scene_limit_mps
         if len(agent.route.points) > 2:  # a two-point route is straight
-            curvature = agent.route.peak_curvature(agent.s, distance_m=_CURVATURE_PREVIEW_M)
+            curvature = self._curvature(agent.route, agent.s)
             if curvature > 1e-6:
                 wanted = min(wanted, math.sqrt(_MAX_LATERAL_MPS2 / curvature))
         return wanted
@@ -910,7 +1106,7 @@ class IdmTraffic(ScriptedTraffic):
                 gap = bumper_gap(other_s, other.size.length, my_s, agent.size.length, loop)
                 if gap < best_gap:
                     best_gap, best_speed = gap, other.state.speed_mps
-            if world is not None:
+            if world is not None and _within(agent.state, world.ego, _EGO_NEAR_M):
                 ego_s, ego_lat = self._ego_on(route, world, ego_s_by_route)
                 # Ahead is not enough: the ego has to be in THIS lane. Phase 2
                 # gave it lane changes, and a car that has pulled out to
@@ -953,8 +1149,9 @@ class IdmTraffic(ScriptedTraffic):
         best_gap, best_speed = math.inf, 0.0
         h = agent.state.heading
         c, s = math.cos(h), math.sin(h)
-        for other in self._agents:
-            if other is agent or any(other.route is r or other.from_route is r for r in routes):
+        mine = {id(r) for r in routes}
+        for other in self._near((agent.state.x, agent.state.y), _IDM_HORIZON_M + _NEAR_PAD_M):
+            if other is agent or id(other.route) in mine or id(other.from_route) in mine:
                 continue
             # Nothing that cannot reach this lane ahead within the lookahead,
             # body and all, is worth the full test: most of the street grid.
@@ -1129,6 +1326,148 @@ class IdmTraffic(ScriptedTraffic):
             self._waiting.pop(agent.id, None)
         elif agent.state.speed_mps < _STANDSTILL_MPS and d >= WAIT_MIN_M:
             self._waiting.setdefault(agent.id, (centre, self._elapsed))
+
+    # -- right of way where nothing says who goes ------------------------- #
+
+    def _passages_of(self, route: Route) -> list["_Passage"]:
+        """Where `route` passes through a junction, and what controls it
+        there: a signal or stop sign this route obeys just before it, else
+        nothing. Worked out once per route."""
+        hit = self._passages.get(id(route))
+        if hit is not None:
+            return hit
+        out: list[_Passage] = []
+        if self._junctions:
+            from shapely.geometry import LineString, Point
+
+            line = LineString(route.points + ([route.points[0]] if route.closed else []))
+            controls = self._controls.get(id(route), [])
+            for j in self._junctions:
+                if line.distance(Point(j.centre)) > j.radius_m:
+                    continue
+                s = route.project(j.centre)
+                kind = next(
+                    (
+                        cp.kind
+                        for cp in controls
+                        if cp.kind in ("signal", "stop_sign") and 0.0 <= (s - cp.s) % route.length_m <= j.radius_m + _CONTROL_REACH_M
+                    ),
+                    None,
+                )
+                out.append(_Passage(_junction_key(j.centre), j.centre, s, j.radius_m, kind))
+        out.sort(key=lambda p: p.s)
+        self._passages[id(route)] = out
+        return out
+
+    def _next_passage(self, route: Route, s: float, length: float, speed: float):
+        """(passage, front bumper to its box edge, seconds to it) for the next
+        junction ahead on `route`, or None."""
+        best = None
+        for p in self._passages_of(route):
+            ahead = (p.s - s) % route.length_m if route.closed else p.s - s
+            if ahead < -p.radius_m or (best is not None and ahead >= best[1]):
+                continue
+            best = (p, ahead)
+        if best is None:
+            return None
+        p, ahead = best
+        entry = ahead - p.radius_m - length / 2
+        return p, entry, max(entry, 0.0) / max(speed, _ROW_MIN_SPEED_MPS)
+
+    def _plan_passages(self, world: TrafficWorld | None, ego_s_by_route) -> None:
+        self._next_pass.clear()
+        if not self._junctions:
+            return
+        for agent in self._agents:
+            nxt = self._next_passage(agent.route, agent.s, agent.size.length, agent.state.speed_mps)
+            if nxt is not None:
+                self._next_pass[id(agent)] = nxt
+        if world is not None and self._ego_route is not None:
+            ego_s, _ = self._ego_on(self._ego_route, world, ego_s_by_route)
+            nxt = self._next_passage(self._ego_route, ego_s, _EGO_LENGTH_M, world.ego.speed_mps)
+            if nxt is not None:
+                self._next_pass["ego"] = nxt
+
+    def _right_of_way(self, agent: Agent, world: TrafficWorld | None, dt: float) -> float:
+        """A wall at the next junction's box edge if this agent must give way
+        there, else inf. Where a signal governs, the light decides. Otherwise:
+
+        * anything already crossing inside the box goes first;
+        * a car leaving a stop sign waits for a gap in through traffic that
+          has no sign -- the two-way stop, most of Nob Hill's junctions;
+        * two cars with nothing to stop them: whoever gets there first goes,
+          and arriving together, the one on the right. The ego is always let
+          go (it does not yet yield at an unsigned junction itself).
+
+        Stopped cars arriving together all round each have one on their right;
+        whoever has waited longest goes once it has waited `BOX_TIMEOUT_S`.
+        """
+        nxt = self._next_pass.get(id(agent))
+        if nxt is None or agent.lifetime_s is not None or agent.emergency_speed_mps is not None:
+            agent.junction_wait_s = 0.0
+            return math.inf
+        p, entry, eta = nxt
+        v = agent.state.speed_mps
+        if p.control == "signal" or entry <= 0.0 or entry > v * v / (2 * _IDM_COMFORT_DECEL) + _ROW_LOOK_M:
+            agent.junction_wait_s = 0.0
+            return math.inf
+        mine_free = p.control is None
+        h = agent.state.heading
+        rivals: list[tuple[object, VehicleState, float]] = [
+            (o, o.state, o.size.length)
+            for o in self._near(p.centre, _IDM_HORIZON_M + _NEAR_PAD_M)
+            if o is not agent
+        ]
+        if world is not None:
+            rivals.append(("ego", world.ego, _EGO_LENGTH_M))
+        must_yield = False
+        for who, state, length in rivals:
+            rn = self._next_pass.get("ego" if who == "ego" else id(who))
+            if rn is None or rn[0].key != p.key:
+                continue
+            c = math.cos(state.heading - h)
+            if abs(c) >= _SAME_WAY_COS:
+                continue  # same way (a leader) or straight opposite: no crossing
+            r_entry, r_eta = rn[1], rn[2]
+            if r_entry <= 0.0 and math.dist((state.x, state.y), p.centre) < p.radius_m + length / 2:
+                must_yield = True  # crossing in the box now
+                break
+            if rn[0].control == "signal":
+                # A junction with lights, but no head faces this lane (an OSM
+                # gap): a crossing car moving on its green goes first.
+                if mine_free and state.speed_mps > _STANDSTILL_MPS and r_eta < _ROW_GAP_S:
+                    must_yield = True
+                    break
+                continue
+            if rn[0].control is not None:
+                continue  # it has a stop sign: it gives way to this one, or the stop rule decides
+            if not mine_free:
+                if r_eta < _ROW_GAP_S:
+                    must_yield = True  # leaving a stop sign into through traffic
+                    break
+                continue
+            if who == "ego":
+                if r_eta < eta + _ROW_TIE_S:
+                    must_yield = True
+                    break
+                continue
+            if r_eta < eta - _ROW_TIE_S:
+                must_yield = True  # it gets there first
+                break
+            if r_eta <= eta + _ROW_TIE_S:
+                dx, dy = state.x - agent.state.x, state.y - agent.state.y
+                on_right = math.cos(h) * dy - math.sin(h) * dx < 0
+                theirs = getattr(who, "junction_wait_s", 0.0)
+                timed_out = agent.junction_wait_s >= BOX_TIMEOUT_S and agent.junction_wait_s > theirs
+                if on_right and not timed_out:
+                    must_yield = True
+                    break
+        if not must_yield:
+            agent.junction_wait_s = 0.0
+            return math.inf
+        if v < _STANDSTILL_MPS:
+            agent.junction_wait_s += dt
+        return max(entry, 0.0)
 
     def _note_ego_waiting(self, world: TrafficWorld | None) -> None:
         """When the ego came to rest at each all-way stop it is waiting at --
@@ -1348,7 +1687,11 @@ class IdmTraffic(ScriptedTraffic):
                 continue
             # Anything still sliding OUT of the target lane is in it too.
             other_s = self._s_on(other, target.route)
-            if other_s is None and id(other.route) in self._ambient_routes:
+            if (
+                other_s is None
+                and id(other.route) in self._ambient_routes
+                and _within(other.state, agent.state, _IDM_HORIZON_M)
+            ):
                 # An ambient car is on a street's own lane, not the LaneSet's:
                 # it is in the target lane if it is beside the target route.
                 position = (other.state.x, other.state.y)
@@ -1577,6 +1920,48 @@ def _in_lane(route: Route, s: float, length: float, at: tuple[float, float], oth
     return abs(across) < _SAME_LANE_M and abs(along) < (length + other_len) / 2 + _AMBIENT_SPAWN_CLEAR_M
 
 
+@dataclass(frozen=True, slots=True)
+class _Passage:
+    """One junction on one route: where, the box radius, and what controls
+    this route there -- "signal", "stop_sign", or None."""
+
+    key: tuple[int, int]
+    centre: tuple[float, float]
+    s: float
+    radius_m: float
+    control: str | None
+
+
+def _street_exits(routes: Sequence[Route]) -> dict[int, list[Route]]:
+    """For each open route, the routes a car at its end can turn onto: those
+    passing within `_EXIT_REACH_M` of its end with room left to drive, right
+    turns first, then straight on, then left -- never back the way it came."""
+    out: dict[int, list[Route]] = {}
+    for route in routes:
+        if route.closed:
+            continue
+        end = route.point_at(route.length_m)
+        heading = route.heading_at(route.length_m - 1.0)
+        found = []
+        for other in routes:
+            if other is route or other.closed:
+                continue
+            s = other.project(end)
+            if math.dist(other.point_at(s), end) > _EXIT_REACH_M or s > other.length_m - _EXIT_ROOM_M:
+                continue
+            turn = math.remainder(other.heading_at(s) - heading, math.tau)
+            if abs(turn) > _EXIT_MAX_TURN_RAD:
+                continue
+            rank = 0 if turn < -_STRAIGHT_RAD else 1 if abs(turn) <= _STRAIGHT_RAD else 2
+            found.append((rank, math.dist(other.point_at(s), end), other))
+        out[id(route)] = [other for _, _, other in sorted(found, key=lambda f: (f[0], f[1]))]
+    return out
+
+
+def _within(a: VehicleState, b: VehicleState, d: float) -> bool:
+    return abs(a.x - b.x) <= d and abs(a.y - b.y) <= d
+
+
 def _junction_key(at: tuple[float, float]) -> tuple[int, int]:
     """One key per junction centre, whichever lane's control point named it."""
     return (round(at[0]), round(at[1]))
@@ -1713,8 +2098,12 @@ def _idm_accel(
     actually produce.
     """
     free = 1.0 - (speed / desired) ** _IDM_DELTA if desired > 0 else -math.inf
+    # The free term alone never asks for more than `_IDM_FREE_BRAKE`; only the interaction with
+    # something ahead can take the total to the emergency floor.
+    # A desired speed of zero (`traffic_speed_scale=0`) is a halt, not a corner: the emergency floor.
+    free_accel = max(_IDM_MAX_ACCEL * free, -(_IDM_FREE_BRAKE if desired > 0 else _IDM_MAX_BRAKE))
     if not math.isfinite(gap):
-        return max(_IDM_MAX_ACCEL * free, -_IDM_MAX_BRAKE)
+        return free_accel
     closing = speed - lead_speed
     s_star = _IDM_MIN_GAP_M + max(
         0.0,
@@ -1724,7 +2113,7 @@ def _idm_accel(
     # A gap that has closed to nothing would divide by zero; the floor makes
     # the interaction term merely enormous, which is the same command.
     interaction = (s_star / max(gap, 0.1)) ** 2
-    return max(_IDM_MAX_ACCEL * (free - interaction), -_IDM_MAX_BRAKE)
+    return max(free_accel - _IDM_MAX_ACCEL * interaction, -_IDM_MAX_BRAKE)
 
 
 def _approach(value: float, target: float, max_delta: float) -> float:

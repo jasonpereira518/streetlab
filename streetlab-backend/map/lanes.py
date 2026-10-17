@@ -22,11 +22,17 @@ from shapely.geometry import LinearRing, LineString
 from map.osm_model import OsmGraph, OsmWay
 from map.projection import LatLon, signed_area_x2, to_local
 from map.tags import (
+    carriageway_width_m,
+    edge_width_m,
     is_oneway,
+    is_routable,
+    layer_of,
+    structure,
     passes_under,
     lane_counts,
-    oneway_direction,
     road_class,
+    route_cost_factor,
+    route_direction,
     sidewalk_sides,
     speed_limit_mps,
     street_name,
@@ -37,6 +43,10 @@ from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
 log = logging.getLogger("streetlab.map")
 
 LANE_W = 3.6
+#: Where a surveyed `width` may put a lane: a tag claiming 1.5 m lanes or 8 m
+#: ones is a mis-tag, not a road.
+MIN_SURVEYED_LANE_M = 2.7
+MAX_SURVEYED_LANE_M = 4.5
 # Below a lane's own width, simplification cannot move the driving line
 # anywhere a driver would notice.
 SIMPLIFY_TOLERANCE_M = 1.0
@@ -138,6 +148,13 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
         forward, backward = lane_counts(way.tags, cls)
         sides = sidewalk_sides(way.tags, cls)
         oneway = is_oneway(way.tags)
+        edge = edge_width_m(way.tags)
+        lane_w = LANE_W
+        surveyed = carriageway_width_m(way.tags)
+        if surveyed is not None:
+            # A surveyed kerb-to-kerb width sets the lanes, within real bounds.
+            lane_w = min(max((surveyed - 2 * edge) / (forward + backward), MIN_SURVEYED_LANE_M), MAX_SURVEYED_LANE_M)
+        kind = structure(way.tags)
         roads.append(
             Road(
                 id=f"osm_w{way.id}",
@@ -146,12 +163,16 @@ def build_roads(graph: OsmGraph, origin: LatLon) -> list[Road]:
                 centerline=points,
                 lanes_forward=forward,
                 lanes_backward=backward,
-                lane_width_m=LANE_W,
+                lane_width_m=lane_w,
                 speed_limit_mps=speed_limit_mps(way.tags, cls),
                 oneway=oneway,
                 center_marking=_center_marking(cls, oneway, forward, backward),
                 sidewalk_left=sides[0],
                 sidewalk_right=sides[1],
+                layer=layer_of(way.tags),
+                bridge=kind == "bridge",
+                tunnel=kind == "tunnel",
+                edge_m=edge,
             )
         )
     if dropped:
@@ -208,6 +229,11 @@ class NoRouteFound(RuntimeError):
     """Origin and destination are not connected by any drivable path in this extract."""
 
 
+class SameJunction(NoRouteFound):
+    """Origin and destination snap to one junction. Widening the extract cannot
+    help, so the radius ladder re-raises this instead of retrying."""
+
+
 @dataclass(frozen=True, slots=True)
 class Edge:
     to: Junction
@@ -218,6 +244,13 @@ class Edge:
     #: reverses along this one (an out-and-back stem) would drive it the
     #: wrong way.
     two_way: bool = True
+    #: What A* pays to drive this edge: `length_m`, times a penalty for
+    #: driveways and parking aisles. Defaults to `length_m`.
+    cost_m: float = -1.0
+
+    def __post_init__(self) -> None:
+        if self.cost_m < 0:
+            object.__setattr__(self, "cost_m", self.length_m)
 
 
 @dataclass
@@ -272,8 +305,12 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
             continue
         cls = road_class(way.tags)
         rank = _CLASS_RANK.get(cls or "service", 0)
-        # +1: only the drawn direction; -1: only against it; 0: both.
-        direction = oneway_direction(way.tags)
+        if not is_routable(way.tags):
+            continue
+        # +1: only the drawn direction; -1: only against it; 0: both. Includes
+        # the one-ways OSM leaves implicit (roundabouts, motorways).
+        direction = route_direction(way.tags)
+        factor = route_cost_factor(way.tags)
         two_way = direction == 0
         resolvable = [nid for nid in way.node_ids if nid in graph.nodes]
 
@@ -290,10 +327,15 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
             if nid in junctions:
                 length = _polyline_length(run)
                 if length > 0 and run_start != nid:
+                    # Both ends are registered even with no outgoing edge: a
+                    # one-way's far end is still a place a trip can finish.
+                    rg.adjacency.setdefault(run_start, [])
+                    rg.adjacency.setdefault(nid, [])
                     if direction >= 0:
                         edge = Edge(
                             to=nid, polyline=list(run), length_m=length,
                             class_rank=rank, two_way=two_way,
+                            cost_m=length * factor,
                         )
                         rg.adjacency.setdefault(run_start, []).append(edge)
                     if direction <= 0:
@@ -303,6 +345,7 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
                             length_m=length,
                             class_rank=rank,
                             two_way=two_way,
+                            cost_m=length * factor,
                         )
                         rg.adjacency.setdefault(nid, []).append(back)
                 run_start = nid
@@ -314,8 +357,10 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
     return rg
 
 
-def nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> Junction:
-    return _nearest_junctions(rg, origin_xy, 1)[0]
+def nearest_junction(
+    rg: RouteGraph, origin_xy: tuple[float, float], *, must_exit: bool = False
+) -> Junction:
+    return _nearest_junctions(rg, origin_xy, 1, must_exit=must_exit)[0]
 
 
 #: How many of the junctions nearest the origin a loop is looked for from
@@ -324,9 +369,13 @@ _START_CANDIDATES = 8
 
 
 def _nearest_junctions(
-    rg: RouteGraph, origin_xy: tuple[float, float], count: int
+    rg: RouteGraph, origin_xy: tuple[float, float], count: int, *, must_exit: bool = False
 ) -> list[Junction]:
-    candidates = [nid for nid in rg.adjacency if nid in rg.points]
+    """Junctions by distance from `origin_xy`. `must_exit` skips dead-end sinks
+    (the far end of a one-way): fine as a trip's destination, useless as a start."""
+    candidates = [
+        nid for nid, edges in rg.adjacency.items() if nid in rg.points and (edges or not must_exit)
+    ]
     if not candidates:
         raise NoDrivableRoad("no drivable junctions in this extract")
     candidates.sort(key=lambda nid: (math.dist(rg.points[nid], origin_xy), nid))
@@ -337,7 +386,7 @@ def _clockwise_loop(rg: RouteGraph, origin_xy: tuple[float, float]) -> list[tupl
     """A clockwise loop -- right turns at every corner, never across oncoming
     traffic -- from one of the junctions nearest the origin: a long one if
     any start yields one, else any length. See `_CW_STARTS`."""
-    starts = _nearest_junctions(rg, origin_xy, _CW_STARTS)
+    starts = _nearest_junctions(rg, origin_xy, _CW_STARTS, must_exit=True)
     for min_m in (TARGET_LOOP_M, MIN_LOOP_M):
         for start in starts:
             points = _find_loop(rg, start, min_m, MAX_LOOP_M, clockwise=True, budget=_CW_BUDGET)
@@ -583,7 +632,7 @@ def _reconstruct_path(
 
 
 def _astar(rg: RouteGraph, start: Junction, goal: Junction) -> list[tuple[float, float]] | None:
-    """Shortest drivable path from `start` to `goal`, by `Edge.length_m`.
+    """Cheapest drivable path from `start` to `goal`, by `Edge.cost_m`.
 
     Standard A* over `RouteGraph.adjacency`: `g` is cumulative distance
     already travelled, and the heuristic is straight-line distance to `goal`
@@ -635,7 +684,7 @@ def _astar(rg: RouteGraph, start: Junction, goal: Junction) -> list[tuple[float,
         for edge in rg.adjacency.get(node, []):
             if edge.to in closed:
                 continue
-            tentative_g = g + edge.length_m
+            tentative_g = g + edge.cost_m
             if tentative_g < best_g.get(edge.to, math.inf):
                 best_g[edge.to] = tentative_g
                 came_from[edge.to] = (node, edge)
@@ -658,7 +707,7 @@ def select_ego_route(
     dead end (measured: the Nob Hill extract geocoded elsewhere started on
     one and failed to build at all).
     """
-    candidates = _nearest_junctions(rg, origin_xy, _START_CANDIDATES)
+    candidates = _nearest_junctions(rg, origin_xy, _START_CANDIDATES, must_exit=True)
     points = _clockwise_loop(rg, origin_xy)
     for start in candidates if points is None else ():
         points = _any_loop(rg, start)
@@ -700,10 +749,10 @@ def select_route_to_destination(
     returns an OPEN route -- the ego drives it once and stops, rather than
     lapping it forever.
     """
-    start = nearest_junction(rg, origin_xy)
+    start = nearest_junction(rg, origin_xy, must_exit=True)
     goal = nearest_junction(rg, dest_xy)
     if start == goal:
-        raise NoRouteFound("origin and destination resolve to the same road junction")
+        raise SameJunction("origin and destination resolve to the same road junction")
 
     points = _astar(rg, start, goal)
     if points is None:
@@ -859,7 +908,7 @@ def lane_inset(road: Road) -> float:
     Washington Streets: 250 m of the Nob Hill loop driven with one side on
     the pavement).
     """
-    half = (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+    half = road.half_width_m
     return min(road.lane_width_m / 2, max(0.0, half - road.lane_width_m / 2))
 
 
@@ -1587,6 +1636,81 @@ def _neighbour_lane(ego_route: Route, roads: list[Road], direction: int) -> Rout
     )
     lane.segment_limits = speed_limits_along(lane, roads)
     return lane
+
+
+#: A chained street shorter than this is not worth a lane of traffic: a car
+#: would come round before anyone saw it move.
+MIN_AMBIENT_STREET_M = 60.0
+#: Same-name ways meeting at sharper than this are two streets, not one.
+_CHAIN_MAX_TURN_RAD = math.radians(60.0)
+
+
+def street_chains(
+    roads: list[Road], passes_under: frozenset[str] = frozenset()
+) -> list[tuple[list[tuple[float, float]], Road]]:
+    """Whole streets for ambient traffic: OSM splits a street into a way per
+    block (at every tag change), and a car that came round at each block's
+    end would teleport every 80 m. Same-name ways are chained end to end, a
+    one-way only ever onward. Tunnels and bridges (not yet drawn as such) and
+    service roads are left out. Each chain comes with the way it started from,
+    whose lanes it is driven by.
+    ponytail: one lane layout per chain, its first way's; per-segment counts
+    if a street changes lane count mid-chain matters."""
+    usable = [
+        r for r in roads
+        if r.name and r.road_class != "service" and not (r.tunnel or r.bridge) and r.id not in passes_under
+    ]
+    ends: dict[tuple[int, int], list[int]] = {}
+    key = lambda p: (round(p[0] * 2), round(p[1] * 2))  # noqa: E731  half-metre
+    for i, r in enumerate(usable):
+        for p in (r.centerline[0], r.centerline[-1]):
+            ends.setdefault(key(p), []).append(i)
+    used: set[int] = set()
+
+    def heading(a, b):
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def extend(chain: list, oneway: bool, name: str, forward: bool) -> None:
+        while True:
+            tip, prev = (chain[-1], chain[-2]) if forward else (chain[0], chain[1])
+            best = None
+            for j in ends.get(key(tip), []):
+                if j in used or usable[j].name != name or usable[j].oneway != oneway:
+                    continue
+                pts = list(usable[j].centerline)
+                starts_here = key(pts[0]) == key(tip)
+                # Onward the piece must start at the tip, backward end at it.
+                if forward != starts_here:
+                    if oneway:
+                        continue  # never up a one-way
+                    pts.reverse()
+                nxt = pts[1] if forward else pts[-2]
+                turn = abs(math.remainder(heading(tip, nxt) - heading(prev, tip), math.tau)) if forward else abs(
+                    math.remainder(heading(nxt, tip) - heading(tip, prev), math.tau)
+                )
+                if turn <= _CHAIN_MAX_TURN_RAD and (best is None or turn < best[0]):
+                    best = (turn, j, pts)
+            if best is None:
+                return
+            _, j, pts = best
+            used.add(j)
+            if forward:
+                chain.extend(pts[1:])
+            else:
+                chain[:0] = pts[:-1]
+
+    out = []
+    for i in sorted(range(len(usable)), key=lambda k: -LineString(usable[k].centerline).length):
+        if i in used:
+            continue
+        used.add(i)
+        road = usable[i]
+        chain = list(road.centerline)
+        extend(chain, road.oneway, road.name, True)
+        extend(chain, road.oneway, road.name, False)
+        if LineString(chain).length >= MIN_AMBIENT_STREET_M:
+            out.append((chain, road))
+    return out
 
 
 def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:

@@ -23,6 +23,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.strtree import STRtree
 
 from schema import Building, Crosswalk, KerbReturn, Road, Tree
+from sim.route import Junction
 
 log = logging.getLogger("streetlab.map")
 
@@ -48,7 +49,7 @@ WALL_GAP_M = 0.05
 
 
 def half_width(road: Road) -> float:
-    return (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+    return road.half_width_m
 
 
 def _footprint(building: Building) -> Polygon:
@@ -121,8 +122,13 @@ def floor_half_width(road: Road) -> float:
 
 
 def _with_half_width(road: Road, fitted: float) -> Road:
+    """`road` at half-width `fitted`: its parking / bus edge gives way first,
+    then the driven lanes narrow."""
     lanes = road.lanes_forward + road.lanes_backward
-    update: dict = {"lane_width_m": round(2 * fitted / lanes, 3)}
+    driven = lanes * road.lane_width_m / 2
+    if fitted >= driven:
+        return road.model_copy(update={"edge_m": round(fitted - driven, 3)})
+    update: dict = {"lane_width_m": round(2 * fitted / lanes, 3), "edge_m": 0.0}
     if road.road_class not in ("arterial", "collector") and 2 * fitted < 2 * MIN_LANE_W_M:
         update["center_marking"] = "none"
     return road.model_copy(update=update)
@@ -174,20 +180,12 @@ def _leg_dirs(line: LineString, s: float) -> list[tuple[Vec2, float]]:
     return out
 
 
-def kerb_returns(
-    roads: Sequence[Road], passes_under: frozenset[str] = frozenset()
-) -> list[KerbReturn]:
-    """One `KerbReturn` for each corner between two angularly neighbouring
-    legs of every junction.
-
-    A junction is wherever two roads cross or meet, except two ways of one
-    street meeting end to end at a shallow angle -- OSM splits a street at
-    every tag change, and that joint is a continuation (the renderer's
-    `findCrossings` rule). Each road through the point contributes a leg each
-    way it runs on; neighbouring legs are joined by a fillet tangent to both
-    kerbs. A leg too short for the whole fillet gets a smaller one. Ways in
-    `passes_under` (tunnels) cross the streets above without meeting them.
-    """
+def _junction_legs(
+    roads: Sequence[Road], passes_under: frozenset[str]
+) -> tuple[list[Road], list[tuple[Vec2, dict]]]:
+    """Every junction (see `kerb_returns`) with the legs that leave it:
+    `{(road index, direction): (unit dir, leg length)}`, road indices into
+    the returned road list."""
     roads = [r for r in roads if r.id not in passes_under]
     lines = [LineString(r.centerline) for r in roads]
     index = STRtree(lines)
@@ -196,8 +194,8 @@ def kerb_returns(
     for i, li in enumerate(lines):
         for j in index.query(li, predicate="intersects"):
             j = int(j)
-            if j <= i:
-                continue
+            if j <= i or roads[i].layer != roads[j].layer:
+                continue  # a bridge over a street meets nothing
             lj = lines[j]
             hit = li.intersection(lj)
             points = [g for g in getattr(hit, "geoms", [hit]) if g.geom_type == "Point"]
@@ -223,6 +221,37 @@ def kerb_returns(
                     for n, (u, length) in enumerate(_leg_dirs(ln, s)):
                         legs[(k, n)] = (u, length)
 
+    return roads, junctions
+
+
+def junctions(
+    roads: Sequence[Road], passes_under: frozenset[str] = frozenset()
+) -> list[Junction]:
+    """Where roads cross or meet, for traffic to take turns at: the centre and
+    the radius of the box -- the widest road there's half-width, plus a metre."""
+    kept, found = _junction_legs(roads, passes_under)
+    return [
+        Junction(centre=at, radius_m=max(kept[k].half_width_m for (k, _) in legs) + 1.0)
+        for at, legs in found
+        if legs
+    ]
+
+
+def kerb_returns(
+    roads: Sequence[Road], passes_under: frozenset[str] = frozenset()
+) -> list[KerbReturn]:
+    """One `KerbReturn` for each corner between two angularly neighbouring
+    legs of every junction.
+
+    A junction is wherever two roads cross or meet, except two ways of one
+    street meeting end to end at a shallow angle -- OSM splits a street at
+    every tag change, and that joint is a continuation (the renderer's
+    `findCrossings` rule). Each road through the point contributes a leg each
+    way it runs on; neighbouring legs are joined by a fillet tangent to both
+    kerbs. A leg too short for the whole fillet gets a smaller one. Ways in
+    `passes_under` (tunnels) cross the streets above without meeting them.
+    """
+    roads, junctions = _junction_legs(roads, passes_under)
     out: list[KerbReturn] = []
     for at, legs in junctions:
         ordered = sorted(

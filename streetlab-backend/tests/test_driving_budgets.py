@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from map.scene_build import SyntheticGrid
-from tests.driving_metrics import (
+from evaluation.driving_metrics import (
     BUDGET,
     RUN_KEYS,
     agent_heading_step_deg,
@@ -28,24 +28,17 @@ from tests.driving_metrics import (
 
 #: (budget, run) -> why it fails today. Deleting a line is how a phase says "fixed".
 BASELINE_FAILS: dict[tuple[str, str], str] = {
+    # The traffic rows (agent_heading, agent_decel) closed 2026-10-14: yaw bound 1.8 deg/tick and a
+    # 3.0 m/s2 free-term floor in sim/agents.py (docs/measurements/2026-10-14-driving-on-main.md).
     # Re-measured 2026-10-12, after stops were led by the tracker's lag: every
     # planned stop now brakes at ~2.0 m/s^2 and rests 0.98 m short. What is left
     # on Nob Hill is three stops begun at a yellow onset 40-66 m out, braked at
     # the 3.0 m/s^2 rate a yellow is designed around -- over a 2.5 budget.
     ("ego_decel", "nobhill"): "2.98 m/s2, firm stops at 3 yellow onsets",
     ("stop_decel", "nobhill"): "2.94-2.98 m/s2 at the 3 yellow-onset stops",
-    # Measured 2026-10-14: following veh_00 as it brakes to ss_80_80_e, the
-    # ego's linear following law (lead speed + 0.7 x gap error, not IDM) cuts
-    # its target faster than comfort braking needs. Every planned stop itself
-    # is ~2.0 m/s2.
-    ("ego_decel", "grid_slow"): "2.56 m/s2 following a lead braking to a stop sign",
-    ("stop_decel", "grid_slow"): "2.54 m/s2, the same lead-following episode",
     ("ego_jerk", "nobhill"): "p99 3.4, max 213 m/s3",
     ("ego_jerk", "grid"): "p99 4.5, max 135 m/s3",
     ("ego_jerk", "grid_slow"): "p99 4.3, max 179 m/s3",
-    ("agent_heading", "grid"): "15.0 deg per tick at the start of a lane-change slide; Phase 4",
-    ("agent_heading", "grid_slow"): "15.0 deg per tick at the start of a lane-change slide; Phase 4",
-    ("agent_decel", "grid"): "p99 4.50 m/s2, the IDM floor; Phase 4",
 }
 
 

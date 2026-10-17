@@ -3,19 +3,27 @@ import { createMockTransport } from './net/mockServer';
 import { createTransportFromLocation } from './net/wsClient';
 import { useSimStore } from './store/simStore';
 import { Renderer } from './three/Renderer';
+import { AckToast } from './ui/AckToast';
+import { HelpDialog, useShortcuts } from './ui/HelpDialog';
 import { LeftScenarioSidebar } from './ui/LeftScenarioSidebar';
 import { PanelHandle } from './ui/PanelHandle';
 import { PerfOverlay } from './ui/PerfOverlay';
 import { RightPanel } from './ui/RightPanel';
+import { ConnectionErrorOverlay } from './ui/ConnectionErrorOverlay';
 import { StartupOverlay } from './ui/StartupOverlay';
 import { TelemetryRow } from './ui/TelemetryRow';
 import { TopToolbar } from './ui/TopToolbar';
+import { QueueOverlay, SessionNoticeBanner, useWaitlistEffects } from './ui/Waitlist';
 
 type BootPhase = 'starting' | 'ready' | 'error';
 
 export default function App() {
   const attach = useSimStore((s) => s.attach);
   const collapsed = useSimStore((s) => s.collapsed);
+  useShortcuts();
+  useWaitlistEffects();
+  const failure = useSimStore((s) => s.failure);
+  const retryConnection = useSimStore((s) => s.retryConnection);
   const [boot, setBoot] = useState<BootPhase>('starting');
   const [bootError, setBootError] = useState('');
   const cleanup = useRef<(() => void) | undefined>(undefined);
@@ -45,6 +53,9 @@ export default function App() {
   }, [attach]);
 
   const useMock = () => {
+    // Stop the failing WebSocket transport first: left running it would keep
+    // retrying and re-raise its error over the mock.
+    cleanup.current?.();
     cleanup.current = attach(createMockTransport());
     setBoot('ready');
   };
@@ -76,6 +87,17 @@ export default function App() {
       </div>
       {!collapsed.telemetry && <TelemetryRow />}
       <PerfOverlay />
+      <AckToast />
+      <HelpDialog />
+      <SessionNoticeBanner />
+      {boot === 'ready' && !failure && <QueueOverlay onUseMock={useMock} />}
+      {boot === 'ready' && failure && (
+        <ConnectionErrorOverlay
+          failure={failure}
+          onRetry={retryConnection}
+          onUseMock={useMock}
+        />
+      )}
       {boot !== 'ready' && (
         <StartupOverlay
           phase={boot === 'error' ? 'error' : 'starting'}

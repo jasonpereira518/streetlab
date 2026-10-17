@@ -49,7 +49,7 @@ STATION_M = 2.0
 
 
 def _half(road: Road) -> float:
-    return (road.lanes_forward + road.lanes_backward) * road.lane_width_m / 2
+    return road.half_width_m
 
 
 def _key(p) -> tuple[int, int]:

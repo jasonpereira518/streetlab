@@ -11,7 +11,7 @@ import pytest
 
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
-from tests.driving_metrics import (
+from evaluation.driving_metrics import (
     EGO_LENGTH_M,
     Run,
     lateral_accel_by_phase,

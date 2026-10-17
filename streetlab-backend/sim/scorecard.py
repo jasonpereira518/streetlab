@@ -18,7 +18,7 @@ from sim.route import ControlPoint, Route
 from sim.vehicle import BicycleModel
 
 #: The hazard-free ego comfort budget, `BUDGET.ego_decel_mps2` in
-#: `tests/driving_metrics.py`. Copied, not imported: runtime code must not
+#: `evaluation/driving_metrics.py`. Copied, not imported: runtime code must not
 #: depend on a test module. Keep the two equal.
 HARD_BRAKE_MPS2 = 2.5
 #: Deceleration that counts as the ego reacting to a hazard.

@@ -20,6 +20,7 @@ import type {
   SignalState,
   Vec2,
 } from '../schema';
+import { roadHalfWidth } from '../schema';
 import { signalColor } from '../ui/theme';
 import {
   MeshBuilder,
@@ -29,6 +30,7 @@ import {
   subtractIntervals,
 } from './meshBuilder';
 import type { Interval, P3 } from './meshBuilder';
+import { CH, TOGGLE_CHANNEL, assignChannel } from './layers';
 import { speedLimitTexture, stopFaceTexture, streetNameTexture } from './labels';
 import { TerrainField, type HeightFn } from './terrain';
 
@@ -135,12 +137,10 @@ export interface World {
   groundMin: number;
   /** Drive signal lamps from the live frame. */
   updateSignals(states: SignalState[], time: number): void;
-  setLayerVisible(layer: LayerKey, visible: boolean): void;
   dispose(): void;
 }
 
-const carriagewayHalfWidth = (r: Road): number =>
-  ((r.lanes_forward + r.lanes_backward) * r.lane_width_m) / 2;
+const carriagewayHalfWidth = roadHalfWidth;
 
 /* ------------------------------------------------------------------ */
 /* Intersections                                                       */
@@ -920,7 +920,8 @@ export function buildWorld(scene: SceneDescription): World {
   markings.ground = ground;
   scene.roads.forEach((road, i) => {
     const line = lines[i];
-    const h = carriagewayHalfWidth(road);
+    // Markings span the DRIVEN lanes; a parking or bus edge lies outside them.
+    const h = carriagewayHalfWidth(road) - (road.edge_m ?? 0);
     const w = road.lane_width_m;
     const forward = road.lanes_forward;
     const backward = road.lanes_backward;
@@ -1255,15 +1256,20 @@ export function buildWorld(scene: SceneDescription): World {
     disposables.push(mesh.geometry, mesh.material as THREE.Material);
   }
 
+  // UI toggles hide a category from the MAIN camera only (layers.ts); the
+  // detector keeps seeing it. Real geometry therefore moves onto a channel of
+  // its own rather than flipping `visible`, which every camera obeys.
+  for (const [layer, nodes] of layerNodes) {
+    const channel = layer === 'reference_path' ? CH.OVERLAY : TOGGLE_CHANNEL[layer];
+    if (channel !== undefined) for (const n of nodes) assignChannel(n, channel);
+  }
+
   return {
     root,
     heightAt,
     groundMin: terrain.min,
     updateSignals(states, time) {
       signals?.update(states, time);
-    },
-    setLayerVisible(layer, visible) {
-      for (const node of layerNodes.get(layer) ?? []) node.visible = visible;
     },
     dispose() {
       for (const d of disposables) d.dispose();

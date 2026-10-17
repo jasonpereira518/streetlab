@@ -1,5 +1,5 @@
 /**
- * Renders the `detections` array as vehicles.
+ * Renders `world_agents` -- ground truth, independent of perception -- as vehicles.
  *
  * Meshes are pooled per detection class and recycled by id, so a scenario that
  * cycles agents in and out does not churn GPU buffers. Poses are damped toward
@@ -7,7 +7,7 @@
  * renderer runs faster than the simulator.
  */
 import * as THREE from 'three/webgpu';
-import type { Detection } from '../schema';
+import type { WorldAgent } from '../schema';
 import { dampAngle } from '../units';
 import {
   TRAFFIC_STYLES,
@@ -59,10 +59,10 @@ export class TrafficFleet {
     return geo;
   }
 
-  update(detections: Detection[], dt: number, ground: HeightFn | null = null): void {
+  update(agents: WorldAgent[], dt: number, ground: HeightFn | null = null): void {
     for (const slot of this.slots.values()) slot.seen = false;
 
-    for (const d of detections) {
+    for (const d of agents) {
       let slot = this.slots.get(d.id);
       if (slot && slot.cls !== d.cls) {
         this.release(d.id, slot);
@@ -120,10 +120,6 @@ export class TrafficFleet {
     this.group.remove(slot.group);
     this.free.push(slot.group);
     this.slots.delete(id);
-  }
-
-  setVisible(visible: boolean): void {
-    this.group.visible = visible;
   }
 
   dispose(): void {

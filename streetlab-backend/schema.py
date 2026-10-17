@@ -27,11 +27,11 @@ Three transcription hazards are handled deliberately; see the tests that pin the
 
 from typing import Annotated, Any, Generic, Literal, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 11
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -121,6 +121,19 @@ class Road(Wire):
     # Hill extract's 264 drivable ways say, so the renderer drew both.
     sidewalk_left: bool = True
     sidewalk_right: bool = True
+    # OSM's vertical order (`layer`, or +1 bridge / -1 tunnel by default), and
+    # which structure carries the way, if any. Defaulted: the grid has none.
+    layer: int = 0
+    bridge: bool = False
+    tunnel: bool = False
+    # Carriageway beyond the driven lanes on each side: parking lanes and
+    # kerbside bus lanes. Not driven; it widens the kerb to kerb width.
+    edge_m: NonNeg = 0.0
+
+    @property
+    def half_width_m(self) -> float:
+        """Centreline to kerb. THE half-width: every consumer asks this."""
+        return (self.lanes_forward + self.lanes_backward) * self.lane_width_m / 2 + self.edge_m
 
 
 class KerbReturn(Wire):
@@ -363,6 +376,19 @@ class Detection(Wire):
     emergency: bool
 
 
+class WorldAgent(Wire):
+    """One simulated agent as the world has it: ground truth, independent of
+    what perception sees. Rendering reads this; `detections` is only what the
+    driving source reported (an overlay), so a missed car never vanishes from
+    the scene the detector camera photographs."""
+
+    id: str
+    cls: DetectionClass
+    pose: Pose
+    size: Size
+    speed_mps: Num
+
+
 class CameraParams(Wire):
     """The camera that produced one frame, in wire world coordinates:
     +x east, +y north, +z up, ground plane at z = 0. The frontend converts out
@@ -411,6 +437,9 @@ class PerceptionStats(Wire):
     precision: Unit | None
     recall: Unit | None
     mean_pos_err_m: NonNeg | None
+    # Required, never null: "degraded" while the detector is a stub or its most
+    # recent frame failed. The planner's degraded mode (M1) keys off this.
+    health: Literal["ok", "degraded"]
 
 
 class RadarPoint(Wire):
@@ -531,8 +560,8 @@ class Plan(Wire):
     target_speed_mps: NonNeg
     maneuver: Maneuver
     confidence: Unit
-    # The detection the planner's current reaction is to, or null. Always
-    # null until Cycle 6 Phase 2's `plan/hazard.py` exists.
+    # The detection the planner's current reaction is to (`plan/hazard.py`:
+    # emergency braking or yielding), or null when it is not reacting.
     reaction_source_id: str | None
 
 
@@ -623,6 +652,9 @@ class StateUpdate(Wire):
     scenario_id: str
     ego: Ego
     detections: list[Detection]
+    # Every agent's ground truth, not range-gated and independent of perception
+    # mode. Required and never null: an empty list when there is no traffic.
+    world_agents: list[WorldAgent]
     # The perception source that is NOT driving, when both are running.
     # `None` when there is no second source at all (no ML pipeline running)
     # -- distinct from `[]`, which means the other source ran and saw
@@ -653,6 +685,7 @@ class StateUpdate(Wire):
 LayerKey = Literal[
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",
@@ -663,6 +696,10 @@ LayerKey = Literal[
 ]
 
 CameraView = Literal["chase", "overhead", "cockpit", "free"]
+
+#: Longest address text a command may carry (mirrored in the zod schema).
+MAX_QUERY_LEN = 200
+
 
 class _Cmd(Wire):
     """Every command carries a client-generated id so an Ack can be correlated."""
@@ -713,13 +750,28 @@ class RunSummaryCmd(_Cmd):
 
 class LoadLocation(_Cmd):
     cmd: Literal["load_location"] = "load_location"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
     # A second address to route TO. Absent (the common case) means "drive an
     # auto-discovered loop near `query`", exactly as before this existed.
-    destination: Annotated[str, Field(min_length=1)] | None = None
+    destination: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)] | None = None
+    # The coordinates of a suggestion the user picked, so the backend does not
+    # geocode its label a second time. Each pair is both-or-neither. Commands
+    # only travel client -> server, so `None` here never reaches a zod schema.
+    lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    destination_lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    destination_lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+
+    @model_validator(mode="after")
+    def _pairs_are_both_or_neither(self) -> "LoadLocation":
+        if (self.lat is None) != (self.lon is None):
+            raise ValueError("lat and lon must be given together")
+        if (self.destination_lat is None) != (self.destination_lon is None):
+            raise ValueError("destination_lat and destination_lon must be given together")
+        return self
 
 
 class SuggestAddress(_Cmd):
@@ -729,7 +781,15 @@ class SuggestAddress(_Cmd):
     bypasses it: a network geocode call must not stall the physics step."""
 
     cmd: Literal["suggest_address"] = "suggest_address"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
+
+
+class Heartbeat(_Cmd):
+    """"I'm still here" from a hosted client: user input that sends no other
+    command (orbiting the camera) must still count against the idle timeout.
+    Answered by nobody -- the connection handler only notes the time."""
+
+    cmd: Literal["heartbeat"] = "heartbeat"
 
 
 class SetParam(_Cmd):
@@ -788,6 +848,7 @@ Command = Annotated[
         InjectHazard,
         SetPerception,
         CameraFrameCmd,
+        Heartbeat,
     ],
     Field(discriminator="cmd"),
 ]
@@ -827,12 +888,36 @@ class AddressSuggestions(Wire):
     suggestions: list[AddressSuggestion]
 
 
+class QueueStatus(Wire):
+    """Hosted waitlist: sent instead of a scene while every session slot is
+    taken, and again whenever this client's place in line changes. The
+    `scene_description` that follows admission is what ends the wait."""
+
+    type: Literal["queue_status"] = "queue_status"
+    protocol: int = PROTOCOL_VERSION
+    # 1 = next in line.
+    position: Annotated[int, Field(ge=1)]
+    size: Annotated[int, Field(ge=1)]
+    # A rough estimate; always present, never null.
+    eta_s: NonNeg
+
+
+class SessionNotice(Wire):
+    """Hosted mode: the session is about to be closed (`idle`: no input;
+    `time_up`: others are waiting), or the warning no longer applies (`ok`)."""
+
+    type: Literal["session_notice"] = "session_notice"
+    protocol: int = PROTOCOL_VERSION
+    kind: Literal["idle", "time_up", "ok"]
+    seconds_left: NonNeg
+
+
 # --------------------------------------------------------------------------- #
 # Envelope + helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 ServerMessage = Annotated[
-    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions],
+    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions, QueueStatus, SessionNotice],
     Field(discriminator="type"),
 ]
 
@@ -881,6 +966,7 @@ def parse_command(raw: Any) -> ParseResult:
 LAYER_KEYS: tuple[str, ...] = (
     "detections",
     "plan_path",
+    "reference_path",
     "lane_markings",
     "crosswalks",
     "buildings",
