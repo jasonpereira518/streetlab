@@ -84,7 +84,7 @@ cd streetlab && npx vitest run                    # 375 tests in 24 files, inclu
 cd streetlab && npm run test:e2e                  # 36 Playwright tests in 10 files (hostedSessions needs STREETLAB_E2E_BACKEND)
 ```
 
-CI runs typecheck, vitest, the contract tests and the fast backend set on every push and pull request ([Actions](https://github.com/jasonpereira518/streetlab/actions)). The whole-scenario replays (`pytest -m slow`, about 300 tests) run on main and nightly, because the full suite does not finish inside a hosted-runner job timeout. Playwright runs nightly as an advisory job: on GPU-less runners a few canvas-screenshot specs time out ([measurements](docs/measurements/2026-10-04-e2e-flake-rate.md)), and the suite passes on a developer machine. Counts measured 2026-10-17.
+CI runs typecheck, vitest, the contract tests and the fast backend set on every push and pull request ([Actions](https://github.com/jasonpereira518/streetlab/actions)). The whole-scenario replays (`pytest -m slow`, about 320 tests) run on main and nightly, because the full suite does not finish inside a hosted-runner job timeout. Playwright runs nightly as an advisory job: on GPU-less runners a few canvas-screenshot specs time out ([measurements](docs/measurements/2026-10-04-e2e-flake-rate.md)), and the suite passes on a developer machine. Counts measured 2026-10-17.
 
 ## More
 

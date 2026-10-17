@@ -45,12 +45,21 @@ SLOW_FILES = frozenset({
     "test_trip_signals.py",
     "test_vehicle_clearance.py",
     "test_world_sanity.py",
+    # Three real-route laps at ~2 minutes each on a hosted runner.
+    "test_junctions.py",
+})
+
+# Single tests inside otherwise-fast files that took minutes in the first
+# --durations report from CI (318 s and 182 s).
+SLOW_TESTS = frozenset({
+    "test_scenarios_and_find_stay_consistent_while_the_catalog_grows_concurrently",
+    "test_full_lap_route_projection_stays_continuous",
 })
 
 
 def pytest_collection_modifyitems(items):
     for item in items:
-        if Path(str(item.fspath)).name in SLOW_FILES:
+        if Path(str(item.fspath)).name in SLOW_FILES or item.name in SLOW_TESTS:
             item.add_marker(pytest.mark.slow)
 
 
