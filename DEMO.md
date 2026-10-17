@@ -13,7 +13,7 @@ data — either behind `--source osm` at startup or typed into the running app's
 address box; Cycle 3's junction compliance, lane changes, reactive
 IDM/MOBIL traffic and five distinct hazard scenarios; and Cycle 4's real ONNX
 detector, which runs and is measured honestly — including the result that it
-can't drive the car yet. See the root [`README.md`](README.md#roadmap) for
+can't drive the car yet. See the [roadmap](docs/ARCHITECTURE.md#roadmap) for
 what's deliberately not built yet.
 
 Two ways to run it — pick one:
