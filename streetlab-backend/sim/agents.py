@@ -14,6 +14,8 @@ the planner, the wire assembler — consumes `agents` and is unaffected.
 from __future__ import annotations
 
 import math
+
+import numpy as np
 from dataclasses import dataclass, field, replace
 from random import Random
 from collections.abc import Mapping, Sequence
@@ -197,6 +199,75 @@ _PROFILES = (
     ("bus", 11.5, 2.55, 3.30, 0.78),
     ("motorcycle", 2.1, 0.8, 1.30, 1.10),
 )
+
+#: A vehicle this long checks the sweep of its tail before it pulls off into
+#: a corner tighter than `_TAIL_CHECK_RADIUS_M`: as a rigid box on the lane's
+#: 6 m fillet an 11.5 m bus swings it up to ~1.4 m over the centreline, into
+#: the oncoming lane (measured, grid-merge dense: two motorcycles struck).
+_TAIL_CHECK_LENGTH_M = 10.0
+_TAIL_CHECK_RADIUS_M = 11.0
+#: What it looks for: anything within this of the sweep, now or within
+#: `_TAIL_CLEAR_S` where its route takes it.
+_TAIL_MARGIN_M = 0.3
+_TAIL_CLEAR_S = 4.0
+
+
+def _tight_turns(route: Route, length: float) -> list[tuple[float, float, np.ndarray]]:
+    """`(s from, s to, boxes (K, 4, 2))` for each corner of `route` tighter
+    than `_TAIL_CHECK_RADIUS_M`: where a `length` body rests short of it to
+    where its tail is through, and the body as posed every metre between."""
+    spans: list[list[float]] = []
+    s = 0.0
+    while s < route.length_m:
+        if route.peak_curvature(s, distance_m=0.0) * _TAIL_CHECK_RADIUS_M > 1.0:
+            if spans and s - spans[-1][1] <= 1.0:
+                spans[-1][1] = s
+            else:
+                spans.append([s, s])
+        s += 0.5
+    out = []
+    for a, b in spans:
+        lo, hi = a - length, b + length / 2
+        boxes = np.array([
+            _box(*route.point_at(p), _body_heading(route, p, length), length, 2.6)
+            for p in np.arange(lo, hi, 1.0)
+        ])
+        out.append((lo, hi, boxes))
+    return out
+
+
+def _box(x: float, y: float, heading: float, length: float, width: float) -> list[tuple[float, float]]:
+    c, s = math.cos(heading), math.sin(heading)
+    hl, hw = length / 2, width / 2
+    return [(x + c * dx - s * dy, y + s * dx + c * dy) for dx, dy in ((hl, hw), (hl, -hw), (-hl, -hw), (-hl, hw))]
+
+
+def _point_box_distance(points: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    """(M, K) distance from each point to each oriented box, 0 inside."""
+    centre = boxes.mean(axis=1)
+    u = boxes[:, 0] - boxes[:, 3]
+    v = boxes[:, 0] - boxes[:, 1]
+    hl = np.linalg.norm(u, axis=1) / 2
+    hw = np.linalg.norm(v, axis=1) / 2
+    u, v = u / (2 * hl)[:, None], v / (2 * hw)[:, None]
+    d = points[:, None, :] - centre[None]
+    a = np.maximum(np.abs((d * u[None]).sum(-1)) - hl, 0.0)
+    b = np.maximum(np.abs((d * v[None]).sum(-1)) - hw, 0.0)
+    return np.hypot(a, b)
+
+
+def _box_separation(boxes: np.ndarray, other: np.ndarray) -> np.ndarray:
+    """(K,) signed SAT separation of each box from one `other` box, as
+    `sim.scorecard.obb_separation`, all at once."""
+    best = np.full(len(boxes), -np.inf)
+    edges = [boxes[:, (i + 1) % 4] - boxes[:, i] for i in range(2)]
+    edges += [np.broadcast_to(other[(i + 1) % 4] - other[i], boxes[:, 0].shape) for i in range(2)]
+    for e in edges:
+        axis = np.stack([-e[:, 1], e[:, 0]], axis=1) / np.linalg.norm(e, axis=1)[:, None]
+        pa = (boxes * axis[:, None, :]).sum(-1)
+        pb = other @ axis.T
+        best = np.maximum(best, np.maximum(pb.min(0) - pa.max(1), pa.min(1) - pb.max(0)))
+    return best
 
 
 class ScriptedTraffic:
@@ -499,6 +570,7 @@ _NEAR_PAD_M = 36.0
 #: Half-width of the strip ahead a car keeps clear: its lane, less a margin
 #: so a car passing properly in the next lane is never in it.
 _LANE_CORRIDOR_M = 1.5
+_CORRIDOR_MARGIN_M = 0.55
 #: All-way stops: the longest a car may hold a box it has taken. The rest of
 #: the rule is the ego's (`plan.behavior`), so both keep one clock.
 _BOX_HOLD_MAX_S = 8.0
@@ -633,6 +705,8 @@ class IdmTraffic(ScriptedTraffic):
         for lane in self._ambient:
             self._controls[id(lane.route)] = sorted(lane.control_points, key=lambda cp: cp.s)
         self._next_ambient = 0
+        #: Each (route, length)'s tight corners and their sweeps (`_tight_turns`).
+        self._turns: dict[tuple[int, float], list] = {}
         self._ego_start = ego_route.point_at(0.0) if ego_route is not None else None
         self._exits = _street_exits([lane.route for lane in self._ambient])
         #: Turn routes built so far, by (from lane, to lane), and the street
@@ -727,6 +801,44 @@ class IdmTraffic(ScriptedTraffic):
         self._agents.append(agent)
         self._arrive_able_to_stop(agent)
         return agent
+
+    def _tail_clear(self, agent: Agent) -> bool:
+        """Nothing but its own lane's traffic is in the sweep of the tight
+        corner `agent` is about to take, or will be within `_TAIL_CLEAR_S`
+        accelerating as IDM does. True away from one."""
+        key = (id(agent.route), agent.size.length)
+        turns = self._turns.get(key)
+        if turns is None:
+            turns = self._turns[key] = _tight_turns(agent.route, agent.size.length)
+        n = agent.route.length_m
+        for lo, hi, boxes in turns:
+            if not 0.0 <= (agent.s - lo) % n <= hi - lo:
+                continue
+            lx, ly = agent.route.point_at(agent.s)
+            nx, ny = lateral_unit(agent.route, agent.s)
+            for other in self._agents:
+                if other is agent or other.route is agent.route or other.cls == "pedestrian":
+                    continue
+                st = other.state
+                if math.hypot(st.x - lx, st.y - ly) > 60.0:
+                    continue
+                same_way = math.cos(st.heading - agent.state.heading) > _SAME_WAY_COS
+                if same_way and abs((st.x - lx) * nx + (st.y - ly) * ny) < _SAME_LANE_M:
+                    continue  # its own lane: a leader or a follower
+                body = np.array(_box(st.x, st.y, st.heading, other.size.length, other.size.width))
+                if _box_separation(boxes, body).min() < _TAIL_MARGIN_M:
+                    return False
+                ahead = [
+                    other.route.point_at(
+                        other.s + min(st.speed_mps * k + 0.5 * _IDM_MAX_ACCEL * k * k, max(st.speed_mps, other.target_speed_mps) * k) + d
+                    )
+                    for k in [0.5 * j for j in range(1, int(2 * _TAIL_CLEAR_S) + 1)]
+                    for d in (0.0, other.size.length / 2)
+                ]
+                if _point_box_distance(np.array(ahead), boxes).min() < other.size.width / 2 + _TAIL_MARGIN_M:
+                    return False
+            return True
+        return True
 
     def _crossing_gap(self, agent: Agent, other: Agent) -> float:
         """A crossing vehicle that will be in this agent's lane within
@@ -1098,6 +1210,10 @@ class IdmTraffic(ScriptedTraffic):
         gap, speed = self._cross_route_leader(agent, routes, world, ego_s_by_route)
         if gap < best_gap:
             best_gap, best_speed = gap, speed
+        if agent.size.length >= _TAIL_CHECK_LENGTH_M and agent.state.speed_mps < _STANDSTILL_MPS:
+            # At rest short of a tight corner: pull off only into a clear sweep.
+            if not self._tail_clear(agent):
+                best_gap, best_speed = 0.0, 0.0
         end = self._lane_end(agent)
         if end < best_gap:
             best_gap, best_speed = end, 0.0
@@ -1143,7 +1259,10 @@ class IdmTraffic(ScriptedTraffic):
             if abs(-dx * s + dy * c) - reach > _SAME_LANE_M:
                 continue
             future = other.route.point_at(other.s + other.state.speed_mps * _MERGE_LOOKAHEAD_S)
-            gap = _merging_gap(agent.state, agent.size.length, other.state, other.size.length, future)
+            gap = _merging_gap(
+                agent.state, agent.size.length, other.state, other.size.length, future,
+                my_width=agent.size.width, other_width=other.size.width,
+            )
             if gap < best_gap:
                 best_gap, best_speed = gap, other.state.speed_mps
             gap = _intrusion_gap(agent, other.state, other.size)
@@ -1157,7 +1276,10 @@ class IdmTraffic(ScriptedTraffic):
             # takes it.
             ego_s, _ = self._ego_on(world.ego_route, world, ego_s_by_route)
             future = world.ego_route.point_at(ego_s + world.ego.speed_mps * _MERGE_LOOKAHEAD_S)
-            gap = _merging_gap(agent.state, agent.size.length, world.ego, _EGO_LENGTH_M, future)
+            gap = _merging_gap(
+                agent.state, agent.size.length, world.ego, _EGO_LENGTH_M, future,
+                my_width=agent.size.width, other_width=_EGO_SIZE.width,
+            )
             if gap < best_gap:
                 best_gap, best_speed = gap, world.ego.speed_mps
             gap = _intrusion_gap(agent, world.ego, _EGO_SIZE)
@@ -1255,7 +1377,19 @@ class IdmTraffic(ScriptedTraffic):
             inside.append(holder[0])
         else:
             self._box_holder.pop(key, None)
-        if inside or math.dist(centre, ego) < r_box:
+        # An ego that waited here and is now rolling in has the box, however
+        # slowly it crosses the gap to it: a crawl in from 6 m back left the
+        # box "empty" past `BOX_TIMEOUT_S` and a truck took it across the
+        # ego's path (grid-merge, dense). Traffic's own holders keep theirs
+        # the same way (`_box_holder`).
+        toward = math.cos(math.atan2(centre[1] - world.ego.y, centre[0] - world.ego.x) - world.ego.heading)
+        rolling_in = (
+            key in self._ego_waiting
+            and world.ego.speed_mps > _STANDSTILL_MPS
+            and toward > 0.7
+            and math.dist(centre, ego) <= WAIT_MAX_M
+        )
+        if inside or math.dist(centre, ego) < r_box or rolling_in:
             self._box_busy_at[key] = self._elapsed
             return False
         free_for = self._elapsed - self._box_busy_at.get(key, -math.inf)
@@ -1263,12 +1397,17 @@ class IdmTraffic(ScriptedTraffic):
         # the bar can stand outside it.
         mine = self._waiting.setdefault(agent.id, (centre, self._elapsed))[1]
         h = agent.state.heading
+        by_id = {o.id: o for o in self._agents}
+        loop = agent.route.length_m
         rivals = [
-            (since, pos)
+            (since, (o.state.x, o.state.y))
             for other_id, (at, since) in self._waiting.items()
             if other_id != agent.id and _junction_key(at) == key
-            for pos in [next(((o.state.x, o.state.y) for o in self._agents if o.id == other_id), None)]
-            if pos is not None
+            for o in [by_id.get(other_id)]
+            if o is not None
+            # Queued behind this one on its own approach: it cannot go first,
+            # and a junction that waited on it waited for good (grid-arterial).
+            and not (o.route is agent.route and 0 < (agent.s - o.s) % loop < WAIT_MAX_M)
         ]
         ego_since = self._ego_waiting.get(key)
         if ego_since is not None:
@@ -1822,13 +1961,29 @@ def _free_spot(
     return s
 
 
+#: Clear space across between two bodies below which one is in the other's lane.
+_BODY_LANE_MARGIN_M = 0.2
+
+
 def _merging_gap(
-    me: VehicleState, my_len: float, other: VehicleState, other_len: float, future: tuple[float, float]
+    me: VehicleState,
+    my_len: float,
+    other: VehicleState,
+    other_len: float,
+    future: tuple[float, float],
+    *,
+    my_width: float | None = None,
+    other_width: float | None = None,
 ) -> float:
     """Bumper gap to `other` if it is a leader in `me`'s lane -- ahead, going
     roughly `me`'s way, and in the lane now or at `future`, where its route
     takes it within `_MERGE_LOOKAHEAD_S` (a car turning right across this
-    lane from the one beside it) -- else inf."""
+    lane from the one beside it) -- else inf.
+
+    "In the lane" is its centre within `_SAME_LANE_M`, or, given both widths,
+    its body reaching into `me`'s width at the angle it is at: a truck easing
+    back from the kerb lane sat 1.8 m aside at 9 degrees with its tail in the
+    lane, and the motorcycle behind drove into it (grid-merge, dense)."""
     h = me.heading
     c, s = math.cos(h), math.sin(h)
     dx, dy = other.x - me.x, other.y - me.y
@@ -1839,7 +1994,15 @@ def _merging_gap(
     if math.cos(rel) <= 0:
         return math.inf
     across = -dx * s + dy * c
-    if abs(across) > _SAME_LANE_M:
+    body_in_lane = (
+        my_width is not None
+        and other_width is not None
+        and abs(across)
+        - (abs(other_len / 2 * math.sin(rel)) + other_width / 2 * abs(math.cos(rel)))
+        - my_width / 2
+        < _BODY_LANE_MARGIN_M
+    )
+    if abs(across) > _SAME_LANE_M and not body_in_lane:
         fx, fy = future[0] - me.x, future[1] - me.y
         if abs(-fx * s + fy * c) > _SAME_LANE_M or fx * c + fy * s <= 0:
             return math.inf
@@ -1869,6 +2032,11 @@ def _intrusion_gap(me: Agent, other: VehicleState, size: Size) -> float:
     nearest = math.inf
     # A two-point route is straight: its frame is the heading's, no lookups.
     straight = len(me.route.points) == 2 and not me.lateral_m
+    # As wide as what is in the lane needs: a car's `_LANE_CORRIDOR_M` is its
+    # half-width plus `_CORRIDOR_MARGIN_M`. A motorcycle judged by a car's
+    # stopped beside a turning bus with 0.76 m to spare, and the bus's tail
+    # swept into it (grid-merge, dense).
+    corridor = min(_LANE_CORRIDOR_M, me.size.width / 2 + _CORRIDOR_MARGIN_M)
     # Points down both long sides, not just the corners: a car square across
     # the lane spans it with every corner outside.
     for a, b in ((hl * k / 2, side) for k in (-2, -1, 0, 1, 2) for side in (hw, -hw)):
@@ -1878,13 +2046,13 @@ def _intrusion_gap(me: Agent, other: VehicleState, size: Size) -> float:
         if not half < ahead < _IDM_HORIZON_M:
             continue
         if straight:
-            if abs(-(px - me.state.x) * s + (py - me.state.y) * c) < _LANE_CORRIDOR_M:
+            if abs(-(px - me.state.x) * s + (py - me.state.y) * c) < corridor:
                 nearest = min(nearest, ahead)
             continue
         # Where the route is that far on, and how far off it the point lies.
         qx, qy = me.route.point_at(me.s + ahead)
         qh = me.route.heading_at(me.s + ahead)
-        if abs(-(px - qx) * math.sin(qh) + (py - qy) * math.cos(qh)) < _LANE_CORRIDOR_M:
+        if abs(-(px - qx) * math.sin(qh) + (py - qy) * math.cos(qh)) < corridor:
             nearest = min(nearest, ahead)
     return nearest - half
 

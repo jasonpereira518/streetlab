@@ -283,3 +283,91 @@ def test_a_crowded_scene_never_spawns_two_vehicles_on_top_of_each_other(built):
             assert apart >= (len_a + len_b) / 2 + 1.0, (
                 f"{id_a} and {id_b} spawned {apart:.1f} m apart, centre to centre"
             )
+
+
+
+def test_a_car_straddling_into_your_lane_is_your_leader():
+    """Measured, grid-merge dense: a truck easing back from the kerb lane sat
+    1.8 m to one side at 9 degrees -- its centre just outside "same lane", its
+    tail in it -- and the motorcycle behind in the kerb lane drove into it.
+    A body in the lane is a leader wherever its centre is."""
+    import math
+
+    from sim.agents import _merging_gap
+    from sim.vehicle import VehicleState
+
+    moto = VehicleState(x=0.0, y=0.0, heading=math.pi / 2, speed_mps=3.5)
+    truck = VehicleState(x=-1.85, y=8.0, heading=math.radians(99.0), speed_mps=1.8)
+    far = (truck.x, truck.y + 3.0)
+    gap = _merging_gap(moto, 2.1, truck, 7.8, far, my_width=0.8, other_width=2.4)
+    assert gap < 4.0, gap
+    # One a whole lane over, square to it, is not.
+    beside = VehicleState(x=-3.6, y=8.0, heading=math.pi / 2, speed_mps=1.8)
+    assert _merging_gap(moto, 2.1, beside, 7.8, (beside.x, beside.y + 3.0), my_width=0.8, other_width=2.4) == math.inf
+
+
+def test_a_motorcycle_passes_a_bus_tail_that_is_not_in_its_way():
+    """Measured, grid-merge dense: a bus turning right from its line swung its
+    tail 0.64 m over the centreline; the oncoming motorcycle took that corner,
+    1.16 m from its lane's centre, for a wall in its lane -- a car's corridor
+    -- stopped beside the bus, and the tail swept into it. Its own body had
+    0.76 m to spare: a lane is as wide as what is in it needs."""
+    import math
+
+    from sim.agents import Agent, _intrusion_gap
+    from sim.route import Route
+    from sim.vehicle import VehicleState
+    from schema import Size
+
+    lane = Route([(-1.8, 120.0), (-1.8, -40.0)], closed=False)
+    s = lane.project((-1.8, 71.8))
+    x, y = lane.point_at(s)
+    moto = Agent(
+        id="moto", cls="motorcycle", size=Size(length=2.1, width=0.8, height=1.3),
+        state=VehicleState(x=x, y=y, heading=-math.pi / 2, speed_mps=2.0),
+        route=lane, s=s, target_speed_mps=10.0,
+    )
+    tail = VehicleState(x=1.9, y=73.0, heading=math.radians(77.0), speed_mps=0.0)
+    assert _intrusion_gap(moto, tail, Size(length=11.5, width=2.55, height=3.3)) == math.inf
+    # A car there, as wide as its corridor was sized for, still stops for it.
+    car = Agent(
+        id="car", cls="car", size=Size(length=4.6, width=1.9, height=1.45),
+        state=moto.state, route=lane, s=s, target_speed_mps=10.0,
+    )
+    assert _intrusion_gap(car, tail, Size(length=11.5, width=2.55, height=3.3)) < 6.0
+
+
+def test_a_bus_at_its_line_waits_for_the_lane_its_tail_will_swing_over():
+    """Measured, grid-merge dense: a bus turning right from its line swings
+    its tail up to ~1.4 m over the centreline on the 6 m corner, and swept
+    into oncoming motorcycles passing the corner (-0.05, then -0.29 m). As a
+    driver does, it checks before pulling off: nothing in that sweep, or
+    about to be. With the oncoming lane empty it goes."""
+    import math
+    from dataclasses import replace
+
+    from sim.agents import Agent, IdmTraffic, AmbientLane
+    from sim.route import Route
+    from sim.vehicle import VehicleState
+    from schema import Size
+
+    # Clockwise: north up x=0, every corner a right turn on the lane's 6 m fillet.
+    loop = Route([(0, 0), (0, 80), (80, 80), (80, 0)]).fillet(6.0)
+    oncoming = Route([(-3.6, 140.0), (-3.6, -40.0)], closed=False)
+    traffic = IdmTraffic([loop] * 6, 13.4, ambient=[AmbientLane(oncoming, [])])
+    bus = next(a for a in traffic.agents if a.cls == "bus")
+    traffic._agents[:] = [bus]
+    bus.s = loop.project((0.0, 66.0))  # at rest before the corner at (0, 80)
+    traffic._advance(bus, 0.0, 0.1)
+    bus.state = replace(bus.state, speed_mps=0.0)
+    gap, _ = traffic._leader(bus, None, {})
+    assert gap > 5.0, gap  # nothing coming: it goes
+    s = oncoming.project((-3.6, 92.0))
+    x, y = oncoming.point_at(s)
+    traffic._agents.append(Agent(
+        id="moto", cls="motorcycle", size=Size(length=2.1, width=0.8, height=1.3),
+        state=VehicleState(x=x, y=y, heading=-math.pi / 2, speed_mps=5.0),
+        route=oncoming, s=s, target_speed_mps=10.0,
+    ))
+    gap, _ = traffic._leader(bus, None, {})
+    assert gap <= 0.0, gap
