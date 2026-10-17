@@ -37,6 +37,10 @@ export const SEND_HZ = 30;
 const STEER_ENGAGE_S = 0.3;
 const STEER_RETURN_S = 0.2;
 const PEDAL_S = 0.25;
+/** Where a fresh press starts: past the backend's 0.15 deadband
+ * (`plan/manual.py`), so even a tap registers and walks the hand-over ladder.
+ * The car stays smooth: the backend rate- and jerk-limits whatever arrives. */
+export const PRESS_KICK = 0.25;
 
 export function controlFor(key: string): Control | undefined {
   return KEYS[key.toLowerCase()];
@@ -47,6 +51,7 @@ function approach(value: number, target: number, rate: number, dt: number): numb
   // Snap the float residue a sum of steps leaves, so a released key reads as
   // exactly zero and the hook stops sending.
   if (Math.abs(target - value) <= step + 1e-9) return target;
+  if (value === 0 && target !== 0) return Math.sign(target) * Math.max(step, PRESS_KICK);
   return value < target ? value + step : value - step;
 }
 
@@ -72,6 +77,9 @@ export function isZero(a: Axes): boolean {
 export function useDriveKeys(): void {
   useEffect(() => {
     const held = new Set<Control>();
+    // Keys pressed since the last sample: a tap shorter than one 33 ms tick
+    // still counts once, instead of slipping between samples unseen.
+    const tapped = new Set<Control>();
     let axes: Axes = ZERO_AXES;
     let last = performance.now();
 
@@ -83,6 +91,7 @@ export function useDriveKeys(): void {
       if (s.failure || s.queue || ownsTheKey(e.target, e.key)) return;
       e.preventDefault(); // arrows would scroll the page
       held.add(control);
+      tapped.add(control);
     };
     const onUp = (e: KeyboardEvent) => {
       const control = controlFor(e.key);
@@ -95,7 +104,8 @@ export function useDriveKeys(): void {
       const now = performance.now();
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      const next = shapeAxes(axes, held, dt);
+      const next = shapeAxes(axes, new Set([...held, ...tapped]), dt);
+      tapped.clear();
       if (!isZero(next) || !isZero(axes)) {
         useSimStore.getState().send({ cmd: 'drive_input', ...next });
       }
