@@ -47,6 +47,15 @@ class ControlPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class Junction:
+    """Where roads cross or meet: traffic takes turns inside `radius_m` of
+    `centre` (`map.clearance.junctions`)."""
+
+    centre: Point
+    radius_m: float
+
+
+@dataclass(frozen=True, slots=True)
 class AmbientLane:
     """One lane of one street, one way, end to end: what ambient traffic
     drives. Open, and carrying its own stop lines (each street crosses

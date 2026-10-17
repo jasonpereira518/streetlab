@@ -235,6 +235,11 @@ DENSE_CASES = [
         marks=pytest.mark.xfail(strict=True, reason="loop bus swings into a car waiting at its line"),
     ),
     ("grid-signals", 7),
+    # Dense Nob Hill, measured 2026-10-16: none touch over 180 s once traffic
+    # gives way at junctions with no sign or signal (see test_right_of_way.py),
+    # leaves a street's end by turning onto the street it meets, and streets
+    # are chained without doubling back. Before: 1.0 m deep at three junctions.
+    ("osm-nob-hill", 7),
 ]
 
 
