@@ -178,12 +178,17 @@ class TrafficLight(Wire):
     # Horizontal mast-arm reach; 0 means a pole-mounted head.
     mast_arm_m: NonNeg
     height_m: Pos
+    # How much further back than the standard bar the approach it governs
+    # stops: set back where a bus turns across it.
+    stop_bar_extra_m: NonNeg = 0.0
 
 
 class StopSign(Wire):
     id: str
     position: Vec2
     heading: Num
+    # As `TrafficLight.stop_bar_extra_m`. The sign stands level with the bar.
+    stop_bar_extra_m: NonNeg = 0.0
 
 
 class Tree(Wire):
