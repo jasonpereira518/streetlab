@@ -44,8 +44,18 @@ from perception.scoring import Prediction, ScoreResult, TruthObject, score
 from perception.service import MAX_RANGE_M, GroundTruthPerception, PerceptionSource
 from perception.tracker import Tracker
 from plan.behavior import COMFORT_DECEL_MPS2, STOP_MARGIN_M, BehaviorState
-from plan.control import CenterlineFollower, PlanContext, PlanLimits, Planner, PlanResult
+from plan.control import (
+    _MAX_ACCEL_MPS2,
+    _MAX_DECEL_MPS2,
+    _SPEED_GAIN,
+    CenterlineFollower,
+    PlanContext,
+    PlanLimits,
+    Planner,
+    PlanResult,
+)
 from plan.hazard import Reaction
+from plan.manual import NO_CONTROLS, Controls, ManualDriver, axis, jerk_limit, live, throttle_accel
 from schema import (
     Ack,
     Cruise,
@@ -112,7 +122,6 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # How far over the posted limit the ego may drive, mph.
     "speed_margin_mph": 5.0,
     "follow_distance_s": 1.5,
-    "assist_enabled": True,
     "traffic_speed_scale": 1.0,
     # Ambient cars per lane-kilometre on every street, both ways. 0 here keeps
     # tests, contract fixtures and benchmarks pinned; `serve` defaults dense.
@@ -121,6 +130,24 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # them unasked. Floored at `_CUTIN_MIN_PERIOD_S` when on.
     "cutin_period_s": 0.0,
 }
+
+#: Drive modes in which the planner steers (and so is scored).
+_PLANNER_STEERS = ("autosteer", "fsd")
+_DRIVE_MODE_LABELS = {"off": "Manual", "cruise": "Cruise", "autosteer": "Assist", "fsd": "FSD"}
+#: How far off its route the ego may be and still hand back to Assist/FSD.
+_ROUTE_OFFSET_M = 3.0
+_ROUTE_HEADING_RAD = math.radians(45.0)
+#: After a mode change, accel is jerk-limited for this long so a stale planner
+#: (e.g. still honouring a stop the driver drove through) cannot lurch the car.
+_HANDOVER_S = 1.0
+#: Below this a set speed is seeded from the posted limit, not the crawl speed.
+_MIN_SET_SPEED_MPS = 2.0
+
+
+def route_ok(offset_m: float, heading_error_rad: float) -> bool:
+    """Whether the planner can take the car from here: near the route, pointing along it."""
+    return abs(offset_m) <= _ROUTE_OFFSET_M and abs(heading_error_rad) <= _ROUTE_HEADING_RAD
+
 
 #: Trust-boundary floor on `cutin_period_s`: a wire param must not be able to
 #: ask for a cut-in every frame.
@@ -184,6 +211,14 @@ class WorldState:
     # every other simulation the process has run. Never reset with the scene,
     # so an id names one participant for the simulation's whole life.
     hazard_spawns: int = 0
+    # Who is driving: `off` (manual), `cruise`, `autosteer` (Assist) or `fsd`.
+    drive_mode: str = "fsd"
+    # The held speed in cruise/autosteer; None otherwise.
+    set_speed_mps: float | None = None
+    # The newest driver controls, stamped with the sim time they arrived.
+    controls: Controls = NO_CONTROLS
+    # When `drive_mode` last changed, for the hand-over jerk limit.
+    mode_changed_t: float = -math.inf
 
 
 class SignalController:
@@ -253,6 +288,7 @@ class Simulation:
         self._perception = perception or GroundTruthPerception()
         self._planner = planner or CenterlineFollower()
         self._model = BicycleModel()
+        self._manual = ManualDriver(wheelbase_m=self._model.wheelbase_m)
         self._road_rules = RoadRulesObserver()
         self.world = WorldState()
         self.perception_pipeline = perception_pipeline
@@ -355,6 +391,11 @@ class Simulation:
         self.world.history = []
         self.world.pending_steps = 0
         self.world.odometer_m = 0.0
+        # Every scene and reset starts under FSD with nothing held.
+        self.world.drive_mode = "fsd"
+        self.world.set_speed_mps = None
+        self.world.controls = NO_CONTROLS
+        self.world.mode_changed_t = -math.inf
         self.world.plan_result = None
         self.world.detections = []
         self.world.detections_shadow = None
@@ -452,10 +493,11 @@ class Simulation:
         self._guard_world()
         result = self._plan(dt)
         self._check_trip_complete()
+        accel, steer = self._drive(result, dt)
         self.world.ego = self._model.step(
             self.world.ego,
-            accel_mps2=result.accel_mps2,
-            steer_rad=result.steer_rad,
+            accel_mps2=accel,
+            steer_rad=steer,
             dt=dt,
         )
         self._guard_world()
@@ -475,14 +517,19 @@ class Simulation:
         self._record_truth()
         self._record_history()
 
-        self.scorecard.step(
-            self.world,
-            self._traffic.agents,
-            getattr(self._planner, "fsm", None),
-            self.scene.control_points,
-            self.scene.ego_route,
-            dt,
-        )
+        if self.world.drive_mode in _PLANNER_STEERS:
+            self.scorecard.step(
+                self.world,
+                self._traffic.agents,
+                getattr(self._planner, "fsm", None),
+                self.scene.control_points,
+                self.scene.ego_route,
+                dt,
+            )
+        else:
+            # The driver's braking and clearances are not FSD's to answer for;
+            # only the distance still counts toward the run.
+            self.scorecard.distance_m += abs(self.world.ego.speed_mps) * dt
         card = self.scorecard
         # A hair of slack: 5400 steps of 1/60 s sum to 89.999999999996, and
         # `streetlab run` steps exactly `duration * hz` times.
@@ -493,6 +540,66 @@ class Simulation:
         ):
             card.summarised = True
             self._emit_summary(complete=True)
+
+    def _drive(self, result: PlanResult, dt: float) -> tuple[float, float]:
+        """This tick's (accel, steer): the planner's, the driver's, or a blend, by mode.
+
+        The planner always runs (`_plan`), so its FSM and threat layer stay warm
+        and the ribbon shows what FSD would do while you drive.
+        """
+        world, ego = self.world, self.world.ego
+        mode = world.drive_mode
+        controls = live(world.controls, world.t)
+        aeb = result.plan.maneuver == "emergency_brake"
+
+        if mode in _PLANNER_STEERS:
+            steer = result.steer_rad
+        else:
+            steer = self._manual.steer(controls, ego, dt)
+            # The planner's own steer-rate clamp starts from here when it takes
+            # back over: that is the smooth pick-up, with no second code path.
+            if hasattr(self._planner, "last_steer"):
+                self._planner.last_steer = steer
+
+        if mode == "off":
+            return self._manual.accel(controls, ego, dt), steer
+
+        accel = result.accel_mps2
+        if mode == "cruise" and not self.route_available():
+            # Off the route its stop lines and curves describe the wrong
+            # street: just hold the set speed.
+            target = world.set_speed_mps or 0.0
+            accel = _SPEED_GAIN * (target - ego.speed_mps)
+            accel = max(-_MAX_DECEL_MPS2, min(_MAX_ACCEL_MPS2, accel))
+        if aeb:
+            return accel, steer  # nothing overrides an emergency brake
+        pedal = throttle_accel(controls)
+        if pedal > 0.0 and pedal > accel:
+            accel = jerk_limit(pedal, ego.accel_mps2, dt)
+        if world.t - world.mode_changed_t < _HANDOVER_S:
+            accel = jerk_limit(accel, ego.accel_mps2, dt)
+        return accel, steer
+
+    def route_available(self) -> bool:
+        """Whether Assist/FSD may engage from the ego's current pose."""
+        ego, route = self.world.ego, self.scene.ego_route
+        s = route.project((ego.x, ego.y))
+        offset = route.lateral_offset((ego.x, ego.y), s)
+        heading_error = math.remainder(ego.heading - route.heading_at(s), math.tau)
+        return route_ok(offset, heading_error)
+
+    def _change_drive_mode(self, mode: str) -> None:
+        world = self.world
+        if mode == world.drive_mode:
+            return
+        world.drive_mode = mode
+        world.mode_changed_t = world.t
+        if mode in ("off", "fsd"):
+            world.set_speed_mps = None
+        elif world.set_speed_mps is None:
+            v = world.ego.speed_mps
+            world.set_speed_mps = v if v >= _MIN_SET_SPEED_MPS else self.posted_limit()
+        self._emit("drive_mode", f"drive mode: {_DRIVE_MODE_LABELS[mode]}")
 
     def _fire_due_hazards(self) -> None:
         """Stage the preset's scheduled hazards that are due, then the
@@ -783,12 +890,16 @@ class Simulation:
             ahead = route.limit_ahead(s, look, COMFORT_DECEL_MPS2)
             if ahead is not None:
                 limit = min(limit, ahead)
+        margin = float(p["speed_margin_mph"]) * MPH
+        if self.world.set_speed_mps is not None:
+            # Cruise/Assist: the driver's set speed replaces limit + margin.
+            # Slower zones ahead and every other cap still apply in the planner.
+            limit, margin = self.world.set_speed_mps, 0.0
         return PlanLimits(
             speed_limit_mps=limit,
             speed_cap_mps=float(p["ego_speed_cap_mph"]) * MPH,
             follow_distance_s=float(p["follow_distance_s"]),
-            assist_enabled=bool(p["assist_enabled"]),
-            speed_margin_mps=float(p["speed_margin_mph"]) * MPH,
+            speed_margin_mps=margin,
         )
 
     def _record_history(self) -> None:
@@ -1170,6 +1281,38 @@ class Simulation:
             self._traffic.set_density(float(command.value))
         return CommandOutcome(ok=True, message=f"{command.key} = {command.value}")
 
+    def _cmd_set_drive_mode(self, command) -> CommandOutcome:
+        mode = command.mode
+        if mode in _PLANNER_STEERS and not self.route_available():
+            return CommandOutcome(
+                ok=False, message=f"{_DRIVE_MODE_LABELS[mode]} unavailable: off route"
+            )
+        self._change_drive_mode(mode)
+        if command.set_speed_mps is not None and mode in ("cruise", "autosteer"):
+            cap = float(self.world.params["ego_speed_cap_mph"]) * MPH
+            self.world.set_speed_mps = min(command.set_speed_mps, cap)
+        return CommandOutcome(ok=True, message=f"drive mode: {_DRIVE_MODE_LABELS[mode]}")
+
+    def _cmd_drive_input(self, command) -> CommandOutcome:
+        """Store the held controls and walk the hand-over ladder: steering under
+        Assist/FSD drops to Cruise, braking under anything drops to Manual.
+
+        Only on a fresh press (the axis crossing the deadband from rest): a
+        released key ramps down over ~0.25 s client-side, and engaging a mode
+        in that window must not be undone by the tail of the release."""
+        world = self.world
+        prev = live(world.controls, world.t)
+        world.controls = Controls(
+            steer=command.steer, throttle=command.throttle, brake=command.brake, t=world.t
+        )
+        pressed_steer = axis(command.steer) and not axis(prev.steer)
+        pressed_brake = axis(command.brake) and not axis(prev.brake)
+        if pressed_steer and world.drive_mode in _PLANNER_STEERS:
+            self._change_drive_mode("cruise")
+        if pressed_brake and world.drive_mode != "off":
+            self._change_drive_mode("off")
+        return CommandOutcome(ok=True)
+
     def _cmd_set_perception(self, command) -> CommandOutcome:
         if command.mode == "ml" and self.perception_pipeline is None:
             return CommandOutcome(
@@ -1433,7 +1576,7 @@ def assemble_state_update(
         t=t,
         sim_rate_hz=sim_rate_hz,
         paused=world.paused,
-        assist_active=bool(world.params.get("assist_enabled", True)),
+        assist_active=world.drive_mode != "off",
         scenario_id=scene.description.scenario_id,
         ego=Ego(
             pose=pose,
@@ -1448,8 +1591,15 @@ def assemble_state_update(
                 scene.speed_limit_mps if posted_limit_mps is None else posted_limit_mps
             ),
             cruise=Cruise(
-                mode="fsd" if world.params.get("assist_enabled", True) else "off",
-                set_speed_mps=target,
+                mode=world.drive_mode,
+                set_speed_mps=(
+                    world.set_speed_mps
+                    if world.set_speed_mps is not None
+                    else target
+                    if world.drive_mode == "fsd"
+                    else speed
+                ),
+                fsd_available=route_ok(offset, heading_error),
             ),
             size=Size(length=4.7, width=1.9, height=1.45),
         ),
@@ -1730,6 +1880,9 @@ class SimLoop:
         self._lock = threading.Lock()
         self._published = threading.Event()
         self._commands: queue.Queue[tuple[Any, Future]] = queue.Queue()
+        # The newest `drive_input`, latest-wins: ~30 Hz of held controls must
+        # neither queue up behind each other nor be acked one by one.
+        self._drive_input: Any = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         # Wall-clock cost of `sim.step()` + `sim.state_update()`, the last
@@ -1880,6 +2033,11 @@ class SimLoop:
         self._commands.put((raw, future))
         return future
 
+    def set_drive_input(self, raw: Any) -> None:
+        """Stash held controls for the next tick. Never blocks, never acks."""
+        with self._lock:
+            self._drive_input = raw
+
     def submit_scene(self, build: SceneBuilder) -> None:
         """Build a scene off the sim thread and swap it in when it is ready."""
 
@@ -1939,6 +2097,7 @@ class SimLoop:
         next_at = time.monotonic()
         while not self._stop.is_set():
             self._drain_commands()
+            self._take_drive_input()
             self._drain_events()
             self._take_pending_scene()
             step_start = time.perf_counter()
@@ -1981,6 +2140,14 @@ class SimLoop:
             # and silently stop the world.
             if future.set_running_or_notify_cancel():
                 future.set_result(outcome)
+
+    def _take_drive_input(self) -> None:
+        with self._lock:
+            raw, self._drive_input = self._drive_input, None
+        if raw is not None:
+            outcome = self.sim.apply_dict(raw)
+            if not outcome.ok:
+                log.debug("dropping drive_input: %s", outcome.message)
 
     def _drain_events(self) -> None:
         while True:

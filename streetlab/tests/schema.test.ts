@@ -11,7 +11,7 @@ import {
 import type { StateUpdate } from '../src/schema';
 import { buildScene } from '../src/net/mockCity';
 
-it('is protocol 9', () => {
+it("is protocol 12", () => {
   // Bumped to 5 when `LaneMarking` gained `broken_yellow` and
   // `solid_yellow`. A new enum value is additive for a NEW client reading an
   // OLD server, but an old client rejects the new value on every frame -- and
@@ -28,7 +28,7 @@ it('is protocol 9', () => {
   // old client, matching the reasoning above. Then 8 for the required
   // `SceneDescription.reference_path`, and 9 for the required-nullable
   // `terrain`: an old client would drop it and draw a hilly scene flat.
-  expect(PROTOCOL_VERSION).toBe(11);
+  expect(PROTOCOL_VERSION).toBe(12);
 });
 
 it('accepts load_location with and without a radius', () => {
@@ -99,7 +99,7 @@ const sample: StateUpdate = {
     brake: 0,
     gear: 'D',
     speed_limit_mps: 11.176,
-    cruise: { mode: 'fsd', set_speed_mps: 20.1 },
+    cruise: { mode: 'fsd', set_speed_mps: 20.1, fsd_available: true },
     size: { length: 4.9, width: 1.96, height: 1.44 },
   },
   detections: [
@@ -291,7 +291,7 @@ describe('StateUpdate', () => {
     delete noSource.plan.reaction_source_id;
     expect(StateUpdateSchema.safeParse(noSource).success).toBe(false);
 
-    expect(PROTOCOL_VERSION).toBe(11);
+    expect(PROTOCOL_VERSION).toBe(12);
   });
 });
 

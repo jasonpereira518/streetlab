@@ -1,6 +1,6 @@
 {
   "type": "state_update",
-  "protocol": 11,
+  "protocol": 12,
   "seq": 180,
   "t": 2.9999999999999942,
   "sim_rate_hz": 60.0,
@@ -22,7 +22,8 @@
     "speed_limit_mps": 15.6464,
     "cruise": {
       "mode": "fsd",
-      "set_speed_mps": 3.511638301790246
+      "set_speed_mps": 3.511638301790246,
+      "fsd_available": true
     },
     "size": {
       "length": 4.7,

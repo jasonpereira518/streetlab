@@ -54,6 +54,7 @@ caps and deploy commands are in [`docs/hosted-sessions.md`](docs/hosted-sessions
 - **Real-time 3D rendering**: Three.js over WebGPU, with a WebGL2 fallback.
 - **Native desktop app**: a Rust/Tauri shell that runs the Python simulator as a sidecar; a zero-config `.app`.
 - **Deterministic simulation**: kinematic vehicle model, IDM car-following, MOBIL lane-changing and a signal/stop-sign FSM on a fixed-step loop.
+- **Drive it yourself**: keyboard control with a Manual / Cruise / Assist / FSD ladder; the planner takes back over smoothly from wherever you leave the car.
 - **Real-world maps**: live geocoding and OpenStreetMap ingest, cached for offline use and built off the render thread so the car never stutters while a block loads.
 - **ML inference in the loop**: camera frames → RT-DETR (ONNX) → 2D-to-3D tracking → scoring against ground truth.
 - **Schema-enforced contract**: fixtures generated from the real simulation are validated by the zod and pydantic schemas.
