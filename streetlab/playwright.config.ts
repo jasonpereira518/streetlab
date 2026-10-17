@@ -1,5 +1,22 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Locally Chromium gets WebGPU so the primary render path is exercised.
+const LOCAL_CHROMIUM_ARGS = [
+  '--enable-unsafe-webgpu',
+  '--enable-features=Vulkan,WebGPU',
+  '--use-angle=default',
+];
+
+// A CI runner has no GPU. Force-enabling WebGPU there hands the app a software
+// Vulkan adapter that dies mid-test ("Instance dropped in popErrorScope"), so
+// CI leaves WebGPU off and renders through SwiftShader-backed WebGL2 -- the
+// fallback the app takes on its own, which the tests already accept.
+const CI_CHROMIUM_ARGS = [
+  '--use-gl=angle',
+  '--use-angle=swiftshader',
+  '--enable-unsafe-swiftshader',
+];
+
 /**
  * End-to-end smoke tests against the real Vite build.
  *
@@ -34,13 +51,7 @@ export default defineConfig({
         // contract, was exercising the narrow layout and calling it the
         // default. Restate it after the spread so the intent survives.
         viewport: { width: 1440, height: 900 },
-        launchOptions: {
-          args: [
-            '--enable-unsafe-webgpu',
-            '--enable-features=Vulkan,WebGPU',
-            '--use-angle=default',
-          ],
-        },
+        launchOptions: { args: process.env.CI ? CI_CHROMIUM_ARGS : LOCAL_CHROMIUM_ARGS },
       },
     },
   ],
