@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -677,11 +677,17 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('run_summary') }),
   cmd({
     cmd: z.literal('load_location'),
-    query: z.string().min(1),
+    query: z.string().min(1).max(200),
     radius_m: z.number().positive().optional(),
     /** A second address to route TO. Absent means "drive an auto-discovered
      * loop near `query`", exactly as before this existed. */
-    destination: z.string().min(1).optional(),
+    destination: z.string().min(1).max(200).optional(),
+    /** The coordinates of a suggestion the user picked, so the backend does
+     * not geocode the label a second time. Each pair is both-or-neither. */
+    lat: z.number().min(-90).max(90).optional(),
+    lon: z.number().min(-180).max(180).optional(),
+    destination_lat: z.number().min(-90).max(90).optional(),
+    destination_lon: z.number().min(-180).max(180).optional(),
   }),
   cmd({
     cmd: z.literal('set_param'),
@@ -698,7 +704,10 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('set_perception'), mode: PerceptionModeSchema }),
   /** Answered directly by the server's connection handler, not routed
    * through the sim command queue — see `SuggestAddress` in schema.py. */
-  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1) }),
+  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1).max(200) }),
+  /** Hosted mode: "still here" from input that sends no other command
+   * (orbiting the camera), so it counts against the idle timeout. No ack. */
+  cmd({ cmd: z.literal('heartbeat') }),
   cmd({
     cmd: z.literal('camera_frame'),
     /** Monotonic per connection; the backend drops anything out of order. */
@@ -744,6 +753,28 @@ export const AddressSuggestionsSchema = z.object({
   suggestions: z.array(AddressSuggestionSchema),
 });
 
+/** Hosted waitlist: sent instead of a scene while every slot is taken, and
+ * again whenever this client's place changes. The scene that follows
+ * admission ends the wait. */
+export const QueueStatusSchema = z.object({
+  type: z.literal('queue_status'),
+  protocol: z.number().int(),
+  /** 1 = next in line. */
+  position: z.number().int().min(1),
+  size: z.number().int().min(1),
+  /** Rough estimate; always present. */
+  eta_s: z.number().nonnegative(),
+});
+
+/** Hosted mode: the session closes soon (`idle`: no input; `time_up`:
+ * others are waiting), or the warning no longer applies (`ok`). */
+export const SessionNoticeSchema = z.object({
+  type: z.literal('session_notice'),
+  protocol: z.number().int(),
+  kind: z.enum(['idle', 'time_up', 'ok']),
+  seconds_left: z.number().nonnegative(),
+});
+
 /* ------------------------------------------------------------------ */
 /* Envelope + helpers                                                  */
 /* ------------------------------------------------------------------ */
@@ -753,6 +784,8 @@ export const ServerMessageSchema = z.discriminatedUnion('type', [
   StateUpdateSchema,
   AckSchema,
   AddressSuggestionsSchema,
+  QueueStatusSchema,
+  SessionNoticeSchema,
 ]);
 
 /* ---- inferred types ---- */
@@ -827,6 +860,8 @@ export type CommandInput = Command extends infer C
 export type Ack = z.infer<typeof AckSchema>;
 export type AddressSuggestion = z.infer<typeof AddressSuggestionSchema>;
 export type AddressSuggestions = z.infer<typeof AddressSuggestionsSchema>;
+export type QueueStatus = z.infer<typeof QueueStatusSchema>;
+export type SessionNotice = z.infer<typeof SessionNoticeSchema>;
 export type ServerMessage = z.infer<typeof ServerMessageSchema>;
 
 export type ParseResult<T> =

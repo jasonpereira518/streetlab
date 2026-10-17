@@ -531,3 +531,33 @@ describe('perception fix round', () => {
     expect(useSimStore.getState().activePresetId).toBe('mock-cutin-20s');
   });
 });
+
+describe('hosted waitlist', () => {
+  it('holds our place in line until a scene admits us', () => {
+    resetStore();
+    const h = createHarness();
+    h.emit({ type: 'queue_status', protocol: 1, position: 2, size: 3, eta_s: 240 });
+    expect(useSimStore.getState().queue).toMatchObject({ position: 2, size: 3 });
+    h.emitScene();
+    expect(useSimStore.getState().queue).toBeNull();
+  });
+
+  it('a session notice is kept until an ok clears it', () => {
+    resetStore();
+    const h = createHarness();
+    h.emitScene();
+    h.emit({ type: 'session_notice', protocol: 1, kind: 'idle', seconds_left: 30 });
+    expect(useSimStore.getState().notice).toMatchObject({ kind: 'idle', seconds_left: 30 });
+    h.emit({ type: 'session_notice', protocol: 1, kind: 'ok', seconds_left: 0 });
+    expect(useSimStore.getState().notice).toBeNull();
+  });
+
+  it('heartbeats are sent but kept out of the command log', () => {
+    resetStore();
+    const h = createHarness();
+    h.emitScene();
+    useSimStore.getState().send({ cmd: 'heartbeat' });
+    expect(h.sent.some((c) => c.cmd === 'heartbeat')).toBe(true);
+    expect(useSimStore.getState().commandLog).toHaveLength(0);
+  });
+});

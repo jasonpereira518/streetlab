@@ -21,11 +21,11 @@ cd streetlab && npm run dev                        # http://localhost:1420
 Open `http://localhost:1420`. The frontend already defaults to the backend's
 port, so no query parameter is needed.
 
-**Hosted** (Vercel frontend plus the Fly app `streetlab-sim`, from
-[`streetlab-backend/fly.toml`](../streetlab-backend/fly.toml)): open the
-hosted frontend. Its build points at the Fly backend, so nothing else is
+**Hosted** (Vercel frontend plus the Cloud Run service `streetlab-sim`, from
+[`streetlab-backend/deploy-cloudrun.sh`](../streetlab-backend/deploy-cloudrun.sh)): open the
+hosted frontend. Its build points at the hosted backend, so nothing else is
 needed. To point a frontend at it explicitly, use
-`?backend=wss://streetlab-sim.fly.dev`. That only connects from an origin
+`?backend=wss://<service-host>`. That only connects from an origin
 listed in the backend's `STREETLAB_ALLOWED_ORIGINS`, so in practice that means
 the hosted frontend itself. The hosted backend runs `--source osm`, so
 **every preset resolves to the Nob Hill scene there**, not to its own scene
@@ -179,7 +179,7 @@ so note each rung's column as you go.
 - **ML detector:** the real ONNX detector, where a local pipeline exists
   (`uv run streetlab serve --perception ml`). Everywhere else it falls back
   to noisy truth, and a `preset_note` event says so. That always includes the
-  hosted Fly backend. With the detector present, expect Recall near zero (see
+  hosted backend. With the detector present, expect Recall near zero (see
   Limitations). This rung is not replayable.
 
 Both noisy truth and ML are scored against the **same forward-visible truth
@@ -238,7 +238,7 @@ Lead-vehicle pressure on a pinned seed.
   precision and recall as "what this model of a sensor does to the planner",
   not as a prediction of any real sensor.
 - **Hosted: one private world per tab, and a cap.** Each browser connection to
-  the Fly backend gets its own simulation, so another visitor's Run, Reset or
+  the hosted backend gets its own simulation, so another visitor's Run, Reset or
   address load never swaps yours. A preset's scorecard, seed and replay are
   yours alone. Details in [`hosted-sessions.md`](hosted-sessions.md).
   - At most `STREETLAB_MAX_SESSIONS` (2) tabs run at once; the next gets a

@@ -78,7 +78,7 @@ def test_nullable_fields_keep_their_key_when_none():
 def test_wire_field_is_named_protocol_and_is_distinct_from_schema_version():
     raw = load_fixture("state_update_initial")
     dumped = StateUpdate.model_validate(raw).model_dump(mode="json")
-    assert dumped["protocol"] == PROTOCOL_VERSION == 10
+    assert dumped["protocol"] == PROTOCOL_VERSION == 11
     assert "schema_version" not in dumped
     assert isinstance(SCHEMA_VERSION, str)
 
@@ -91,7 +91,7 @@ def test_protocol_is_10():
     this and `PROTOCOL_VERSION` in `schema.ts` must move together -- which is
     exactly what an exact-match assertion is here to force.
     """
-    assert PROTOCOL_VERSION == 10
+    assert PROTOCOL_VERSION == 11
 
 
 def test_the_fixtures_carry_the_protocol_7_8_and_9_fields():
@@ -305,6 +305,16 @@ COMMANDS = [
         "radius_m": 400.0,
         "destination": "Fisherman's Wharf",
     },
+    {
+        "id": "c4d",
+        "cmd": "load_location",
+        "query": "Nob Hill",
+        "destination": "Fisherman's Wharf",
+        "lat": 37.79,
+        "lon": -122.42,
+        "destination_lat": 37.808,
+        "destination_lon": -122.415,
+    },
     {"id": "c5", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 35},
     {"id": "c6", "cmd": "set_param", "key": "hazard_color", "value": "#FF7A1A"},
     {"id": "c7", "cmd": "set_param", "key": "assist_enabled", "value": False},
@@ -322,7 +332,9 @@ COMMANDS = [
 def test_every_command_variant_round_trips(raw):
     parsed = parse_command(raw)
     assert parsed.ok, parsed.error
-    assert parsed.value.model_dump(mode="json") == raw
+    assert parsed.value.model_dump(mode="json", exclude_none=True) == {
+        k: v for k, v in raw.items() if v is not None
+    }
 
 
 def test_load_preset_seed_is_optional():
@@ -388,7 +400,7 @@ def test_server_message_union_accepts_all_three_types():
 def test_camera_frame_command_round_trips():
     from schema import PROTOCOL_VERSION, parse_command
 
-    assert PROTOCOL_VERSION == 10
+    assert PROTOCOL_VERSION == 11
 
     raw = {
         "id": "f1",

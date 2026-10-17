@@ -19,10 +19,12 @@ import binascii
 import fnmatch
 import json
 import logging
+import math
 import os
 import resource
 import sys
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Callable
 
@@ -38,7 +40,9 @@ from schema import (
     AddressSuggestion,
     AddressSuggestions,
     CameraFrameCmd,
+    QueueStatus,
     SceneDescription,
+    SessionNotice,
     StateUpdate,
     SuggestAddress,
     format_issues,
@@ -61,6 +65,10 @@ SUGGESTION_LIMIT = 5
 # indistinguishable from "backend down".
 CLOSE_ORIGIN_REJECTED = 1008
 CLOSE_SERVER_BUSY = 4429
+# Hosted waitlist evictions, same range: no input for `idle_s` (HTTP 408
+# "request timeout"), or the session cap hit while others wait in line.
+CLOSE_IDLE = 4408
+CLOSE_TIME_UP = 4409
 
 
 def _rss_mb() -> float:
@@ -98,19 +106,81 @@ def describe_origin_policy(allowed: list[str] | None) -> str:
     return f"origin policy: ALLOWLIST -- only {', '.join(allowed)} may connect"
 
 
-class _Sessions:
-    """Per-connection simulations: a factory, and a hard cap on how many live.
+class _Waiter:
+    """One connection in line. `changed` is set whenever its position may have
+    moved; `admitted` means a slot has already been handed to it."""
 
-    `reserved` is checked and bumped with no await in between, on the single
+    def __init__(self) -> None:
+        self.changed = asyncio.Event()
+        self.admitted = False
+
+
+class _Sessions:
+    """Per-connection simulations: a factory, a hard cap on how many live, and
+    a FIFO line for everyone over the cap.
+
+    Every check-and-update below runs with no await in between, on the single
     event-loop thread, so two simultaneous connects cannot both take the last
-    slot.
+    slot. A freed slot is handed straight to the head of the line (`reserved`
+    never dips), so a newcomer arriving at that instant cannot jump the queue.
     """
 
-    def __init__(self, factory: Callable[[], SimLoop], limit: int) -> None:
+    def __init__(
+        self,
+        factory: Callable[[], SimLoop],
+        limit: int,
+        *,
+        queue_max: int = 20,
+        idle_s: float = 180.0,
+        session_max_s: float = 900.0,
+    ) -> None:
         self.factory = factory
         self.limit = limit
+        self.queue_max = queue_max
+        self.idle_s = idle_s
+        self.session_max_s = session_max_s
         self.reserved = 0
         self.active: set[SimLoop] = set()
+        self.waiters: list[_Waiter] = []
+        # Recent session lengths, for the line's ETA.
+        self.durations: deque[float] = deque(maxlen=10)
+
+    def try_admit(self) -> bool:
+        if self.reserved < self.limit and not self.waiters:
+            self.reserved += 1
+            return True
+        return False
+
+    def release(self) -> None:
+        """A slot is free: give it to the head of the line, else return it."""
+        if self.waiters:
+            head = self.waiters.pop(0)
+            head.admitted = True
+            head.changed.set()  # popped, so `_notify` below would miss it
+        else:
+            self.reserved -= 1
+        self._notify()
+
+    def leave(self, waiter: _Waiter) -> None:
+        if waiter.admitted:
+            self.release()  # handed a slot it never used: pass it on
+        else:
+            self.waiters.remove(waiter)
+            self._notify()
+
+    def status(self, waiter: _Waiter) -> QueueStatus:
+        position = self.waiters.index(waiter) + 1
+        typical = (
+            sum(self.durations) / len(self.durations)
+            if self.durations
+            else self.session_max_s / 2
+        )
+        eta = math.ceil(position / self.limit) * min(typical, self.session_max_s)
+        return QueueStatus(position=position, size=len(self.waiters), eta_s=round(eta, 1))
+
+    def _notify(self) -> None:
+        for w in self.waiters:
+            w.changed.set()
 
 
 def create_app(
@@ -120,6 +190,9 @@ def create_app(
     geocoder: Geocoder | None = None,
     session_factory: Callable[[], SimLoop] | None = None,
     max_sessions: int = 4,
+    queue_max: int = 20,
+    idle_timeout_s: float = 180.0,
+    session_max_s: float = 900.0,
 ) -> FastAPI:
     """Serve one shared `loop` (desktop sidecar, tests), or -- given a
     `session_factory` -- a private simulation per connection, capped at
@@ -127,11 +200,22 @@ def create_app(
     """
     if (loop is None) == (session_factory is None):
         raise ValueError("pass exactly one of `loop` or `session_factory`")
-    sessions = _Sessions(session_factory, max_sessions) if session_factory else None
+    sessions = (
+        _Sessions(
+            session_factory,
+            max_sessions,
+            queue_max=queue_max,
+            idle_s=idle_timeout_s,
+            session_max_s=session_max_s,
+        )
+        if session_factory
+        else None
+    )
     allowed = _allowed_origins()
     log.info(describe_origin_policy(allowed))
     log.info(
-        f"sessions: per-connection, max {max_sessions} concurrent"
+        f"sessions: per-connection, max {max_sessions} concurrent, "
+        f"line of {queue_max}, idle {idle_timeout_s:g}s, cap {session_max_s:g}s"
         if sessions
         else "sessions: one shared world for every client"
     )
@@ -190,6 +274,7 @@ def create_app(
         if sessions is not None:
             body["sessions"] = len(sessions.active)
             body["max_sessions"] = sessions.limit
+            body["waiting"] = len(sessions.waiters)
         return body
 
     # The frontend connects to a bare `ws://host:port`, so the root path is the
@@ -215,8 +300,11 @@ class _Connection:
         self.ws = ws
         self.loop = loop
         self.geocoder = geocoder
+        self._suggest_task: asyncio.Task | None = None
         self.period = 1.0 / tick_hz
         self.seq = 0
+        # Any inbound text counts as the user being present (hosted idle timeout).
+        self.last_input = time.monotonic()
         # Serialises the streaming task against command replies, so a scene and
         # its ack cannot be split by a frame going out between them.
         self._send_lock = asyncio.Lock()
@@ -302,7 +390,46 @@ class _Connection:
     async def receive(self) -> None:
         while True:
             text = await self.ws.receive_text()
+            self.last_input = time.monotonic()
             await self._handle(text)
+
+    async def watchdog(self, sessions: _Sessions) -> None:
+        """Hosted only: warn, then close, an idle session -- or one past the
+        session cap while someone is waiting in line. Returns once closed."""
+        started = time.monotonic()
+        idle_warn = min(30.0, sessions.idle_s / 2)
+        cap_warn = min(60.0, sessions.session_max_s / 2)
+        tick = min(1.0, sessions.idle_s / 10)
+        warned = "ok"
+        cap_deadline: float | None = None
+        while True:
+            await asyncio.sleep(tick)
+            now = time.monotonic()
+            idle_left = sessions.idle_s - (now - self.last_input)
+            # The cap only bites while someone waits, and never without the
+            # full warning: a line forming at minute 20 still gets `cap_warn`.
+            if not sessions.waiters:
+                cap_deadline = None
+            elif cap_deadline is None:
+                cap_deadline = max(started + sessions.session_max_s, now + cap_warn)
+            cap_left = math.inf if cap_deadline is None else cap_deadline - now
+            if idle_left <= 0 or cap_left <= 0:
+                code, reason = (
+                    (CLOSE_IDLE, "idle") if idle_left <= 0 else (CLOSE_TIME_UP, "time up")
+                )
+                log.info("closing hosted session: %s", reason)
+                async with self._send_lock:
+                    await self.ws.close(code=code, reason=reason)
+                return
+            if idle_left <= idle_warn:
+                kind, left = "idle", idle_left
+            elif cap_left <= cap_warn:
+                kind, left = "time_up", cap_left
+            else:
+                kind, left = "ok", 0.0
+            if kind != warned:
+                warned = kind
+                await self.send_model(SessionNotice(kind=kind, seconds_left=round(left, 1)))
 
     async def _handle(self, text: str) -> None:
         try:
@@ -329,8 +456,18 @@ class _Connection:
         # on the network. Unlike `camera_frame` this does reply -- just with
         # its own message type instead of an ack, since there is no command
         # outcome to report, only a payload.
+        if raw.get("cmd") == "heartbeat":
+            return  # `receive` already noted the time; nothing to answer
+
         if raw.get("cmd") == "suggest_address":
-            await self._suggest_address(raw)
+            # A task, not an await: awaiting here would park this client's
+            # receive loop (pause, hazards, the submit itself) behind a slow
+            # geocoder. Latest wins -- the previous suggestion, if still
+            # running, is cancelled so its reply is never sent. (The geocoder
+            # thread itself cannot be interrupted; its result is discarded.)
+            if self._suggest_task is not None:
+                self._suggest_task.cancel()
+            self._suggest_task = asyncio.create_task(self._run_suggest(raw))
             return
 
         command_id = raw.get("id")
@@ -357,6 +494,12 @@ class _Connection:
         except asyncio.TimeoutError:
             log.error("simulation did not answer command in time: %r", raw)
             return CommandOutcome(ok=False, message="simulation busy")
+
+    async def _run_suggest(self, raw: dict) -> None:
+        try:
+            await self._suggest_address(raw)
+        except Exception as exc:  # the socket closed mid-reply; nothing to tell anyone
+            log.debug("suggest_address reply dropped: %r", exc)
 
     async def _suggest_address(self, raw: dict) -> None:
         """Answer a `suggest_address` with candidates, or an empty list.
@@ -525,13 +668,18 @@ async def _serve(
 
     owned = False  # this connection holds a session slot and its own SimLoop
     if sessions is not None:
-        if sessions.reserved >= sessions.limit:
-            log.warning(
-                "refusing websocket: %d/%d sessions in use", sessions.reserved, sessions.limit
-            )
-            await ws.close(code=CLOSE_SERVER_BUSY, reason="server busy")
-            return
-        sessions.reserved += 1
+        if not sessions.try_admit():
+            if len(sessions.waiters) >= sessions.queue_max:
+                log.warning(
+                    "refusing websocket: %d/%d sessions in use, line of %d full",
+                    sessions.reserved,
+                    sessions.limit,
+                    len(sessions.waiters),
+                )
+                await ws.close(code=CLOSE_SERVER_BUSY, reason="server busy")
+                return
+            if not await _wait_in_line(ws, sessions):
+                return
         owned = True
 
     clients["count"] += 1
@@ -547,23 +695,65 @@ async def _serve(
                 return
             loop.start()
             sessions.active.add(loop)
+        started = time.monotonic()
         try:
-            await _run_connection(ws, loop, tick_hz, geocoder)
+            await _run_connection(ws, loop, tick_hz, geocoder, sessions)
         finally:
             if owned:
                 # The socket is gone: a private world nobody watches is
                 # stopped and released -- not left running, and not left
                 # paused holding its memory for the life of the process.
                 sessions.active.discard(loop)
+                sessions.durations.append(time.monotonic() - started)
                 await asyncio.to_thread(loop.stop)
     finally:
         clients["count"] -= 1
         if owned:
-            sessions.reserved -= 1
+            sessions.release()
+
+
+async def _wait_in_line(ws: WebSocket, sessions: _Sessions) -> bool:
+    """Hold an accepted socket in the FIFO line until a slot is handed to it.
+
+    True: admitted, and the slot is this connection's. False: the client left
+    first -- its place (or a slot handed to it too late) is passed on.
+    """
+    waiter = _Waiter()
+    sessions.waiters.append(waiter)
+    log.info("websocket queued at %d", len(sessions.waiters))
+    # Watch the socket while waiting: a tab closed mid-line must leave the
+    # line. Anything it sends meanwhile (heartbeats) is ignored.
+    recv = asyncio.ensure_future(ws.receive())
+    try:
+        while True:
+            if waiter.admitted:
+                return True
+            waiter.changed.clear()
+            try:
+                await ws.send_text(sessions.status(waiter).model_dump_json())
+            except Exception:
+                sessions.leave(waiter)
+                return False
+            changed = asyncio.ensure_future(waiter.changed.wait())
+            await asyncio.wait({recv, changed}, return_when=asyncio.FIRST_COMPLETED)
+            changed.cancel()
+            if recv.done():
+                if recv.exception() is not None or recv.result()["type"] == "websocket.disconnect":
+                    sessions.leave(waiter)
+                    return False
+                recv = asyncio.ensure_future(ws.receive())
+    finally:
+        recv.cancel()
+        if not waiter.admitted and waiter in sessions.waiters:
+            sessions.leave(waiter)  # cancelled mid-wait (shutdown)
 
 
 async def _run_connection(
-    ws: WebSocket, loop: SimLoop, tick_hz: float, geocoder: Geocoder | None
+    ws: WebSocket,
+    loop: SimLoop,
+    tick_hz: float,
+    geocoder: Geocoder | None,
+    sessions: _Sessions | None = None,
 ) -> None:
     conn = _Connection(ws, loop, tick_hz, geocoder)
 
@@ -575,10 +765,15 @@ async def _run_connection(
 
     stream = asyncio.create_task(conn.stream(), name="streetlab-stream")
     receive = asyncio.create_task(conn.receive(), name="streetlab-receive")
+    tasks = {stream, receive}
+    if sessions is not None:
+        tasks.add(asyncio.create_task(conn.watchdog(sessions), name="streetlab-watchdog"))
 
-    done, pending = await asyncio.wait({stream, receive}, return_when=asyncio.FIRST_COMPLETED)
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
         task.cancel()
+    if conn._suggest_task is not None:
+        conn._suggest_task.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
 
     for task in done:

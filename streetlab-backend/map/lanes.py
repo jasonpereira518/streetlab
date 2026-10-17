@@ -25,12 +25,14 @@ from map.tags import (
     carriageway_width_m,
     edge_width_m,
     is_oneway,
+    is_routable,
     layer_of,
     structure,
     passes_under,
     lane_counts,
-    oneway_direction,
     road_class,
+    route_cost_factor,
+    route_direction,
     sidewalk_sides,
     speed_limit_mps,
     street_name,
@@ -227,6 +229,11 @@ class NoRouteFound(RuntimeError):
     """Origin and destination are not connected by any drivable path in this extract."""
 
 
+class SameJunction(NoRouteFound):
+    """Origin and destination snap to one junction. Widening the extract cannot
+    help, so the radius ladder re-raises this instead of retrying."""
+
+
 @dataclass(frozen=True, slots=True)
 class Edge:
     to: Junction
@@ -237,6 +244,13 @@ class Edge:
     #: reverses along this one (an out-and-back stem) would drive it the
     #: wrong way.
     two_way: bool = True
+    #: What A* pays to drive this edge: `length_m`, times a penalty for
+    #: driveways and parking aisles. Defaults to `length_m`.
+    cost_m: float = -1.0
+
+    def __post_init__(self) -> None:
+        if self.cost_m < 0:
+            object.__setattr__(self, "cost_m", self.length_m)
 
 
 @dataclass
@@ -291,8 +305,12 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
             continue
         cls = road_class(way.tags)
         rank = _CLASS_RANK.get(cls or "service", 0)
-        # +1: only the drawn direction; -1: only against it; 0: both.
-        direction = oneway_direction(way.tags)
+        if not is_routable(way.tags):
+            continue
+        # +1: only the drawn direction; -1: only against it; 0: both. Includes
+        # the one-ways OSM leaves implicit (roundabouts, motorways).
+        direction = route_direction(way.tags)
+        factor = route_cost_factor(way.tags)
         two_way = direction == 0
         resolvable = [nid for nid in way.node_ids if nid in graph.nodes]
 
@@ -309,10 +327,15 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
             if nid in junctions:
                 length = _polyline_length(run)
                 if length > 0 and run_start != nid:
+                    # Both ends are registered even with no outgoing edge: a
+                    # one-way's far end is still a place a trip can finish.
+                    rg.adjacency.setdefault(run_start, [])
+                    rg.adjacency.setdefault(nid, [])
                     if direction >= 0:
                         edge = Edge(
                             to=nid, polyline=list(run), length_m=length,
                             class_rank=rank, two_way=two_way,
+                            cost_m=length * factor,
                         )
                         rg.adjacency.setdefault(run_start, []).append(edge)
                     if direction <= 0:
@@ -322,6 +345,7 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
                             length_m=length,
                             class_rank=rank,
                             two_way=two_way,
+                            cost_m=length * factor,
                         )
                         rg.adjacency.setdefault(nid, []).append(back)
                 run_start = nid
@@ -333,8 +357,10 @@ def build_route_graph(graph: OsmGraph, origin: LatLon) -> RouteGraph:
     return rg
 
 
-def nearest_junction(rg: RouteGraph, origin_xy: tuple[float, float]) -> Junction:
-    return _nearest_junctions(rg, origin_xy, 1)[0]
+def nearest_junction(
+    rg: RouteGraph, origin_xy: tuple[float, float], *, must_exit: bool = False
+) -> Junction:
+    return _nearest_junctions(rg, origin_xy, 1, must_exit=must_exit)[0]
 
 
 #: How many of the junctions nearest the origin a loop is looked for from
@@ -343,9 +369,13 @@ _START_CANDIDATES = 8
 
 
 def _nearest_junctions(
-    rg: RouteGraph, origin_xy: tuple[float, float], count: int
+    rg: RouteGraph, origin_xy: tuple[float, float], count: int, *, must_exit: bool = False
 ) -> list[Junction]:
-    candidates = [nid for nid in rg.adjacency if nid in rg.points]
+    """Junctions by distance from `origin_xy`. `must_exit` skips dead-end sinks
+    (the far end of a one-way): fine as a trip's destination, useless as a start."""
+    candidates = [
+        nid for nid, edges in rg.adjacency.items() if nid in rg.points and (edges or not must_exit)
+    ]
     if not candidates:
         raise NoDrivableRoad("no drivable junctions in this extract")
     candidates.sort(key=lambda nid: (math.dist(rg.points[nid], origin_xy), nid))
@@ -356,7 +386,7 @@ def _clockwise_loop(rg: RouteGraph, origin_xy: tuple[float, float]) -> list[tupl
     """A clockwise loop -- right turns at every corner, never across oncoming
     traffic -- from one of the junctions nearest the origin: a long one if
     any start yields one, else any length. See `_CW_STARTS`."""
-    starts = _nearest_junctions(rg, origin_xy, _CW_STARTS)
+    starts = _nearest_junctions(rg, origin_xy, _CW_STARTS, must_exit=True)
     for min_m in (TARGET_LOOP_M, MIN_LOOP_M):
         for start in starts:
             points = _find_loop(rg, start, min_m, MAX_LOOP_M, clockwise=True, budget=_CW_BUDGET)
@@ -602,7 +632,7 @@ def _reconstruct_path(
 
 
 def _astar(rg: RouteGraph, start: Junction, goal: Junction) -> list[tuple[float, float]] | None:
-    """Shortest drivable path from `start` to `goal`, by `Edge.length_m`.
+    """Cheapest drivable path from `start` to `goal`, by `Edge.cost_m`.
 
     Standard A* over `RouteGraph.adjacency`: `g` is cumulative distance
     already travelled, and the heuristic is straight-line distance to `goal`
@@ -654,7 +684,7 @@ def _astar(rg: RouteGraph, start: Junction, goal: Junction) -> list[tuple[float,
         for edge in rg.adjacency.get(node, []):
             if edge.to in closed:
                 continue
-            tentative_g = g + edge.length_m
+            tentative_g = g + edge.cost_m
             if tentative_g < best_g.get(edge.to, math.inf):
                 best_g[edge.to] = tentative_g
                 came_from[edge.to] = (node, edge)
@@ -677,7 +707,7 @@ def select_ego_route(
     dead end (measured: the Nob Hill extract geocoded elsewhere started on
     one and failed to build at all).
     """
-    candidates = _nearest_junctions(rg, origin_xy, _START_CANDIDATES)
+    candidates = _nearest_junctions(rg, origin_xy, _START_CANDIDATES, must_exit=True)
     points = _clockwise_loop(rg, origin_xy)
     for start in candidates if points is None else ():
         points = _any_loop(rg, start)
@@ -719,10 +749,10 @@ def select_route_to_destination(
     returns an OPEN route -- the ego drives it once and stops, rather than
     lapping it forever.
     """
-    start = nearest_junction(rg, origin_xy)
+    start = nearest_junction(rg, origin_xy, must_exit=True)
     goal = nearest_junction(rg, dest_xy)
     if start == goal:
-        raise NoRouteFound("origin and destination resolve to the same road junction")
+        raise SameJunction("origin and destination resolve to the same road junction")
 
     points = _astar(rg, start, goal)
     if points is None:

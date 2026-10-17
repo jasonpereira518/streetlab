@@ -27,11 +27,11 @@ Three transcription hazards are handled deliberately; see the tests that pin the
 
 from typing import Annotated, Any, Generic, Literal, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 10
+PROTOCOL_VERSION = 11
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -697,6 +697,10 @@ LayerKey = Literal[
 
 CameraView = Literal["chase", "overhead", "cockpit", "free"]
 
+#: Longest address text a command may carry (mirrored in the zod schema).
+MAX_QUERY_LEN = 200
+
+
 class _Cmd(Wire):
     """Every command carries a client-generated id so an Ack can be correlated."""
 
@@ -746,13 +750,28 @@ class RunSummaryCmd(_Cmd):
 
 class LoadLocation(_Cmd):
     cmd: Literal["load_location"] = "load_location"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
     # A second address to route TO. Absent (the common case) means "drive an
     # auto-discovered loop near `query`", exactly as before this existed.
-    destination: Annotated[str, Field(min_length=1)] | None = None
+    destination: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)] | None = None
+    # The coordinates of a suggestion the user picked, so the backend does not
+    # geocode its label a second time. Each pair is both-or-neither. Commands
+    # only travel client -> server, so `None` here never reaches a zod schema.
+    lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    destination_lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    destination_lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+
+    @model_validator(mode="after")
+    def _pairs_are_both_or_neither(self) -> "LoadLocation":
+        if (self.lat is None) != (self.lon is None):
+            raise ValueError("lat and lon must be given together")
+        if (self.destination_lat is None) != (self.destination_lon is None):
+            raise ValueError("destination_lat and destination_lon must be given together")
+        return self
 
 
 class SuggestAddress(_Cmd):
@@ -762,7 +781,15 @@ class SuggestAddress(_Cmd):
     bypasses it: a network geocode call must not stall the physics step."""
 
     cmd: Literal["suggest_address"] = "suggest_address"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
+
+
+class Heartbeat(_Cmd):
+    """"I'm still here" from a hosted client: user input that sends no other
+    command (orbiting the camera) must still count against the idle timeout.
+    Answered by nobody -- the connection handler only notes the time."""
+
+    cmd: Literal["heartbeat"] = "heartbeat"
 
 
 class SetParam(_Cmd):
@@ -821,6 +848,7 @@ Command = Annotated[
         InjectHazard,
         SetPerception,
         CameraFrameCmd,
+        Heartbeat,
     ],
     Field(discriminator="cmd"),
 ]
@@ -860,12 +888,36 @@ class AddressSuggestions(Wire):
     suggestions: list[AddressSuggestion]
 
 
+class QueueStatus(Wire):
+    """Hosted waitlist: sent instead of a scene while every session slot is
+    taken, and again whenever this client's place in line changes. The
+    `scene_description` that follows admission is what ends the wait."""
+
+    type: Literal["queue_status"] = "queue_status"
+    protocol: int = PROTOCOL_VERSION
+    # 1 = next in line.
+    position: Annotated[int, Field(ge=1)]
+    size: Annotated[int, Field(ge=1)]
+    # A rough estimate; always present, never null.
+    eta_s: NonNeg
+
+
+class SessionNotice(Wire):
+    """Hosted mode: the session is about to be closed (`idle`: no input;
+    `time_up`: others are waiting), or the warning no longer applies (`ok`)."""
+
+    type: Literal["session_notice"] = "session_notice"
+    protocol: int = PROTOCOL_VERSION
+    kind: Literal["idle", "time_up", "ok"]
+    seconds_left: NonNeg
+
+
 # --------------------------------------------------------------------------- #
 # Envelope + helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 ServerMessage = Annotated[
-    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions],
+    Union[SceneDescription, StateUpdate, Ack, AddressSuggestions, QueueStatus, SessionNotice],
     Field(discriminator="type"),
 ]
 
