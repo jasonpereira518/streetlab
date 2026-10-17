@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 11;
+export const PROTOCOL_VERSION = 12;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -544,6 +544,8 @@ export const EgoSchema = z.object({
     set_speed_mps: z.number().nonnegative(),
   }),
   size: SizeSchema,
+  /** Indicator state, decided by the planner ahead of the turn it announces. */
+  turn_signal: z.enum(['off', 'left', 'right']),
 });
 
 export const SignalStateSchema = z.object({

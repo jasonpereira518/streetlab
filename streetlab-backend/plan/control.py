@@ -19,7 +19,7 @@ from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from plan.behavior import COMFORT_DECEL_MPS2, SPEED_GAIN, TRACKER_LAG_S, BehaviorFSM
 from plan.hazard import NO_REACTION, Reaction, ThreatAssessor
-from schema import Detection, Plan, SignalState
+from schema import Detection, Plan, SignalState, TurnSignal
 from sim.route import ControlPoint, Lane, LaneSet, Route
 from sim.vehicle import VehicleState
 
@@ -75,6 +75,14 @@ _PLAN_STEP_M = 3.0
 
 # Heading change across the preview beyond which the manoeuvre is a turn.
 _TURN_THRESHOLD_RAD = 0.45
+
+#: How far ahead the indicator looks for a turn: about 4 s out, as a driver
+#: signals, and never under 30 m, so a slow car still signals before the
+#: junction rather than in it. Sampled every `_SIGNAL_STEP_M`, which divides
+#: `_CURVATURE_PREVIEW_M` exactly so the nearest window IS `_maneuver`'s.
+_SIGNAL_LOOKAHEAD_S = 4.0
+_SIGNAL_LOOKAHEAD_MIN_M = 30.0
+_SIGNAL_STEP_M = 2.0
 
 #: Bound on how fast the commanded steering angle may move. `BicycleModel`
 #: applies steer instantaneously (`sim/vehicle.py:63`), so without this a lane
@@ -139,6 +147,7 @@ class PlanResult:
     #: only its source id -- but `sim/loop.py` draws the trajectory graph's
     #: `threat` series from it.
     reaction: Reaction = NO_REACTION
+    turn_signal: TurnSignal = "off"
 
 
 @runtime_checkable
@@ -307,6 +316,7 @@ class CenterlineFollower:
             steer_rad=steer,
             accel_mps2=accel,
             reaction=reaction,
+            turn_signal=_turn_signal(decision.maneuver, route, s, ego.speed_mps),
         )
 
     def _pure_pursuit_blended(
@@ -448,6 +458,35 @@ def _following_speed(
         return max(0.0, min(linear, ceiling))
     comfort_floor = ego.speed_mps - COMFORT_DECEL_MPS2 / _SPEED_GAIN
     return max(0.0, min(ceiling, max(linear, comfort_floor)))
+
+
+def _turn_signal(
+    decision_maneuver: str | None, route: Route, s: float, speed_mps: float
+) -> TurnSignal:
+    """The indicator: a lane change in progress, else the next turn ahead.
+
+    A turn is exactly what `_maneuver` calls one -- more than
+    `_TURN_THRESHOLD_RAD` of heading change within `_CURVATURE_PREVIEW_M` --
+    looked for in every such window starting up to the lookahead ahead. So the
+    signal comes on that far before the wire label flips to `turn_*`, and goes
+    off the moment it flips back, as a stalk self-cancels when the wheel
+    straightens. A long, gentle curve never qualifies, so it never blinks.
+    """
+    if decision_maneuver == "lane_change_left":
+        return "left"
+    if decision_maneuver == "lane_change_right":
+        return "right"
+    reach = max(_SIGNAL_LOOKAHEAD_MIN_M, _SIGNAL_LOOKAHEAD_S * speed_mps)
+    span = round(_CURVATURE_PREVIEW_M / _SIGNAL_STEP_M)
+    starts = int(reach // _SIGNAL_STEP_M) + 1
+    headings = [route.heading_at(s + i * _SIGNAL_STEP_M) for i in range(starts + span)]
+    for i in range(starts):
+        turn = math.remainder(headings[i + span] - headings[i], math.tau)
+        if turn > _TURN_THRESHOLD_RAD:
+            return "left"
+        if turn < -_TURN_THRESHOLD_RAD:
+            return "right"
+    return "off"
 
 
 def _maneuver(route: Route, s: float) -> str:

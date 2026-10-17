@@ -62,7 +62,7 @@ function roundedRectShape(length: number, width: number, r: number): THREE.Shape
   return s;
 }
 
-function paint(geo: THREE.BufferGeometry, hex: string): THREE.BufferGeometry {
+export function paint(geo: THREE.BufferGeometry, hex: string): THREE.BufferGeometry {
   const g = geo.index ? geo.toNonIndexed() : geo;
   if (g !== geo) geo.dispose();
   g.clearGroups();
@@ -83,7 +83,7 @@ function paint(geo: THREE.BufferGeometry, hex: string): THREE.BufferGeometry {
 }
 
 /** Plan-view slab, extruded upward with soft edges. */
-function slab(
+export function slab(
   length: number,
   width: number,
   cornerR: number,
