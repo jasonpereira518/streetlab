@@ -57,7 +57,7 @@ caps and deploy commands are in [`docs/hosted-sessions.md`](docs/hosted-sessions
 - **Real-world maps**: live geocoding and OpenStreetMap ingest, cached for offline use and built off the render thread so the car never stutters while a block loads.
 - **ML inference in the loop**: camera frames → RT-DETR (ONNX) → 2D-to-3D tracking → scoring against ground truth.
 - **Schema-enforced contract**: fixtures generated from the real simulation are validated by the zod and pydantic schemas.
-- **2,200+ automated tests**: 1,811 backend and contract (pytest), 368 frontend (vitest), 36 end-to-end (Playwright); counted 2026-10-16.
+- **2,300+ automated tests**: 1,894 backend and contract (pytest), 375 frontend (vitest), 36 end-to-end (Playwright); counted 2026-10-17.
 
 ## Results
 
@@ -79,12 +79,12 @@ Methodology, thresholds and what was walked back after review are in
 ## Testing
 
 ```bash
-cd streetlab-backend && uv run pytest -q tests ../contract   # 1,811 collected (~10 min)
-cd streetlab && npx vitest run                    # 368 tests in 24 files, includes ../contract
+cd streetlab-backend && uv run pytest -q tests ../contract   # 1,894 collected (~10 min on a quiet machine)
+cd streetlab && npx vitest run                    # 375 tests in 24 files, includes ../contract
 cd streetlab && npm run test:e2e                  # 36 Playwright tests in 10 files (hostedSessions needs STREETLAB_E2E_BACKEND)
 ```
 
-CI runs typecheck, vitest, the contract tests and the fast backend set on every push and pull request ([Actions](https://github.com/jasonpereira518/streetlab/actions)). The whole-scenario replays (`pytest -m slow`, about 300 tests) run on main and nightly, because the full suite does not finish inside a hosted-runner job timeout. Playwright runs nightly as an advisory job: on GPU-less runners a few canvas-screenshot specs time out ([measurements](docs/measurements/2026-10-04-e2e-flake-rate.md)), and the suite passes on a developer machine. Counts measured 2026-10-16.
+CI runs typecheck, vitest, the contract tests and the fast backend set on every push and pull request ([Actions](https://github.com/jasonpereira518/streetlab/actions)). The whole-scenario replays (`pytest -m slow`, about 300 tests) run on main and nightly, because the full suite does not finish inside a hosted-runner job timeout. Playwright runs nightly as an advisory job: on GPU-less runners a few canvas-screenshot specs time out ([measurements](docs/measurements/2026-10-04-e2e-flake-rate.md)), and the suite passes on a developer machine. Counts measured 2026-10-17.
 
 ## More
 
