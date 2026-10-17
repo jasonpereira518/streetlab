@@ -37,8 +37,8 @@ address to load it live. Dev setups and a walkthrough are in [`DEMO.md`](DEMO.md
 [`docs/walkthrough.md`](docs/walkthrough.md) covers the preset runs, which end in a
 scorecard you can compare from seed to seed.
 
-The browser build talks to a hosted simulator instead: it finds it through
-`VITE_BACKEND_WS_URL`, every connection gets a private simulation, and the design,
+The browser build (Vercel) talks to a simulator hosted on Google Cloud Run instead: it finds it
+through `VITE_BACKEND_WS_URL`, every connection gets a private simulation, and the design,
 caps and deploy commands are in [`docs/hosted-sessions.md`](docs/hosted-sessions.md).
 
 <table>

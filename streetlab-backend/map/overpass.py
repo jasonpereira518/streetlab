@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from map.useragent import USER_AGENT
 from map.cache import DiskCache
 from map.osm_model import OsmGraph, parse_overpass
 from map.projection import EARTH_R
@@ -24,11 +25,49 @@ from map.projection import EARTH_R
 log = logging.getLogger("streetlab.map")
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-USER_AGENT = "StreetLab/0.2 (driving simulator; https://github.com/streetlab)"
+# Public mirrors tried when the primary is down or rate-limiting us. Each has its
+# own capacity and policy, so a 429 from one says nothing about the others.
+OVERPASS_MIRRORS = ("https://overpass.private.coffee/api/interpreter",)
+MAX_RETRY_AFTER_S = 30.0
 
 
 class OverpassError(RuntimeError):
     """The endpoint could not be reached, or answered with something unusable."""
+
+
+class OverpassRateLimited(OverpassError):
+    """The endpoint is busy (429/503/504). `retry_after_s` is its `Retry-After`
+    header, capped, when it sent a usable one."""
+
+    def __init__(self, message: str, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """`Retry-After` in seconds (the HTTP-date form is treated as absent), capped."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return min(max(seconds, 0.0), MAX_RETRY_AFTER_S)
+
+
+def validate_payload(payload: object) -> dict:
+    """The payload if it is a complete Overpass answer, else `OverpassError`.
+
+    Overpass answers HTTP 200 even when the query died: a `remark` reporting a
+    runtime error or timeout, with partial or no elements. Caching that would
+    pin a truncated map forever.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("elements"), list):
+        raise OverpassError("Overpass answered with no element list")
+    remark = str(payload.get("remark", "")).lower()
+    if "runtime error" in remark or "timed out" in remark or "timeout" in remark:
+        raise OverpassError(f"Overpass reported a failed query: {payload['remark']}")
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,8 +137,15 @@ class HttpxFetcher:
                 headers={"User-Agent": USER_AGENT},
                 timeout=self.timeout,
             )
+            if response.status_code in (429, 503, 504):
+                raise OverpassRateLimited(
+                    f"Overpass busy (HTTP {response.status_code})",
+                    parse_retry_after(response.headers.get("Retry-After")),
+                )
             response.raise_for_status()
             return response.json()
+        except OverpassError:
+            raise
         except Exception as exc:  # httpx errors, JSON errors, all equivalent here
             raise OverpassError(str(exc)) from exc
 
@@ -132,11 +178,14 @@ class OverpassClient:
         *,
         retries: int = 3,
         backoff_s: float = 1.0,
+        mirrors: list[HttpFetcher] | None = None,
     ) -> None:
+        self.fetchers = [fetcher, *(mirrors or [])]
         self.fetcher = fetcher
         self.cache = cache
         self.retries = retries
         self.backoff_s = backoff_s
+        self._sleep = time.sleep
 
     def graph(self, bbox: BBox) -> OsmGraph:
         key = bbox.cache_key()
@@ -145,17 +194,33 @@ class OverpassClient:
             return parse_overpass(cached)
 
         payload = self._fetch_with_retries(build_query(bbox))
-        self.cache.put(key, payload)
+        self.cache.put(key, payload)  # only ever a validated payload
         return parse_overpass(payload)
 
     def _fetch_with_retries(self, query: str) -> dict:
+        """Endpoints are tried in turn (primary, then mirrors, then round again).
+
+        Moving to an endpoint not yet tried costs no wait: a 429's `Retry-After`
+        binds the host that sent it, not its mirrors. Once every endpoint has
+        failed, the wait honours `Retry-After` (capped) or backs off exponentially.
+        """
+        attempts = max(self.retries, len(self.fetchers))
         last: Exception | None = None
-        for attempt in range(self.retries):
+        for attempt in range(attempts):
+            fetcher = self.fetchers[attempt % len(self.fetchers)]
             try:
-                return self.fetcher.fetch(query)
+                return validate_payload(fetcher.fetch(query))
             except Exception as exc:
                 last = exc
-                log.warning("Overpass attempt %d/%d failed: %s", attempt + 1, self.retries, exc)
-                if self.backoff_s and attempt < self.retries - 1:
-                    time.sleep(self.backoff_s * (2**attempt))
-        raise OverpassError(f"Overpass failed after {self.retries} attempts: {last}")
+                log.warning("Overpass attempt %d/%d failed: %s", attempt + 1, attempts, exc)
+                if attempt == attempts - 1 or attempt + 1 < len(self.fetchers):
+                    continue
+                if isinstance(exc, OverpassRateLimited) and exc.retry_after_s is not None:
+                    wait = exc.retry_after_s
+                else:
+                    wait = self.backoff_s * (2 ** (attempt + 1 - len(self.fetchers)))
+                if wait:
+                    self._sleep(wait)
+        if isinstance(last, OverpassRateLimited):
+            raise OverpassRateLimited(f"Overpass busy after {attempts} attempts", last.retry_after_s)
+        raise OverpassError(f"Overpass failed after {attempts} attempts: {last}")
