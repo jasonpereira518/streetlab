@@ -203,6 +203,20 @@ describe('mock commands', () => {
     expect(sim.frame().ego.speed_mps).toBeGreaterThan(v0 + 2);
   });
 
+  it('reverses after the brake is held at a stop, like the backend', () => {
+    const sim = new MockSim();
+    sim.apply({ id: 'm', cmd: 'set_drive_mode', mode: 'off' });
+    for (let i = 0; i < 240; i++) {
+      sim.driveInput({ steer: 0, throttle: 0, brake: 1 });
+      sim.step();
+      expect(StateUpdateSchema.safeParse(sim.frame()).success).toBe(true);
+    }
+    const f = sim.frame();
+    expect(f.ego.gear).toBe('R');
+    expect(f.ego.speed_mps).toBeLessThan(-0.5);
+    expect(sim.apply({ id: 'f', cmd: 'set_drive_mode', mode: 'fsd' }).ok).toBe(false);
+  });
+
   it('applies a known parameter', () => {
     const sim = new MockSim();
     const res = sim.apply({

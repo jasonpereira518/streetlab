@@ -10,7 +10,9 @@ import pytest
 from map.scene_build import SyntheticGrid
 from plan.control import MAX_STEER_RATE_RAD_S, CenterlineFollower
 from plan.manual import (
+    BRAKE_JERK_MPS3,
     COAST_DECEL_MPS2,
+    MANUAL_MAX_DECEL_MPS2,
     MAX_JERK_MPS3,
     Controls,
     ManualDriver,
@@ -69,7 +71,9 @@ def test_steer_and_accel_stay_inside_their_rate_limits_under_any_key_pattern():
         accel, steer = driver.step(inp, ego, DT)
         assert abs(steer - ego.steering_angle) <= MAX_STEER_RATE_RAD_S * DT + EPS
         if ego.speed_mps > 0:
-            assert abs(accel - ego.accel_mps2) <= MAX_JERK_MPS3 * DT + EPS
+            # Every change is a ramp; only the brake (biting or letting go) may ramp fast.
+            bound = BRAKE_JERK_MPS3 if (inp.brake or ego.accel_mps2 < 0) else MAX_JERK_MPS3
+            assert abs(accel - ego.accel_mps2) <= bound * DT + EPS
         ego = model.step(ego, accel_mps2=accel, steer_rad=steer, dt=DT)
 
 
@@ -288,3 +292,87 @@ def test_the_same_inputs_replay_to_the_same_state():
     a = _drive_script(Simulation(SyntheticGrid(), seed=7))
     b = _drive_script(Simulation(SyntheticGrid(), seed=7))
     assert a == b
+
+
+# -- harder braking and reverse --------------------------------------------- #
+
+
+def _manual_at(sim, speed_mps):
+    """Manual, driving straight at `speed_mps` along the route."""
+    assert mode(sim, "off").ok
+    sim.ego = replace(sim.ego, speed_mps=speed_mps)
+
+
+def test_a_full_manual_brake_stops_far_shorter_than_the_planners_comfort_ceiling(sim):
+    advance(sim, 4.0)
+    _manual_at(sim, 13.4)  # 30 mph
+    start, steps = (sim.ego.x, sim.ego.y), 0
+    peak = 0.0
+    while sim.ego.speed_mps > 0 and steps < 600:
+        hold(sim, DT, brake=1.0)
+        peak = min(peak, sim.ego.accel_mps2)
+        steps += 1
+    dist = math.dist(start, (sim.ego.x, sim.ego.y))
+    assert peak == pytest.approx(-MANUAL_MAX_DECEL_MPS2)
+    # v^2 / 2a at 4.5 m/s^2 is 20 m; at 8 m/s^2 with a 0.3 s ramp it is ~13 m.
+    assert dist < 14.0
+    assert steps * DT < 2.2
+
+
+def test_holding_the_brake_at_a_stop_shifts_into_reverse_and_backs_up(sim):
+    advance(sim, 3.0)
+    assert mode(sim, "off").ok
+    hold(sim, 3.0, brake=1.0)  # stop, dwell, shift, reverse
+    f = frame(sim)
+    assert f.ego.gear == "R"
+    assert -3.0 - EPS <= f.ego.speed_mps < -0.5  # backing up, capped
+    assert f.ego.throttle > 0 or f.ego.speed_mps == pytest.approx(-3.0)
+    hold(sim, 3.0, brake=1.0)
+    assert sim.ego.speed_mps == pytest.approx(-3.0)  # reverse top speed
+
+
+def test_braking_to_a_stop_without_holding_on_does_not_shift():
+    sim = Simulation(SyntheticGrid(), seed=7)  # starts at rest
+    assert mode(sim, "off").ok
+    hold(sim, 0.25, brake=1.0)  # stopped, but released inside the 0.3 s hold
+    hold(sim, 0.5)
+    assert frame(sim).ego.gear == "D"
+    hold(sim, 0.4, brake=1.0)  # held past it: reverse
+    assert frame(sim).ego.gear == "R"
+
+
+def test_in_reverse_w_brakes_then_shifts_back_to_drive(sim):
+    assert mode(sim, "off").ok
+    hold(sim, 2.5, brake=1.0)  # standstill -> R -> backing
+    assert sim.ego.speed_mps < -0.5
+    hold(sim, 0.2, throttle=1.0)
+    assert sim.ego.accel_mps2 > 0  # W is the brake in reverse
+    hold(sim, 2.0, throttle=1.0)  # stop, dwell, shift, pull away
+    f = frame(sim)
+    assert f.ego.gear == "D" and f.ego.speed_mps > 0.3
+
+
+def test_fsd_refuses_while_reversing_and_shifts_to_drive_at_a_stop(sim):
+    assert mode(sim, "off").ok
+    hold(sim, 2.5, brake=1.0)
+    assert sim.ego.speed_mps < -0.5
+    outcome = mode(sim, "fsd")
+    assert not outcome.ok and outcome.message == "FSD: stop reversing first"
+    hold(sim, 0.25, throttle=1.0)  # W brakes in reverse...
+    hold(sim, 1.0)  # ...released before it could shift; it coasts the last bit
+    while sim.ego.speed_mps < 0:
+        hold(sim, DT)
+    assert sim.ego.speed_mps == 0.0 and frame(sim).ego.gear == "R"
+    assert mode(sim, "fsd").ok
+    assert frame(sim).ego.gear == "D"
+    advance(sim, 3.0)
+    assert sim.ego.speed_mps > 1.0  # FSD drives off forward
+
+
+def test_traffic_and_the_planner_never_see_a_negative_ego_speed(sim):
+    assert mode(sim, "off").ok
+    hold(sim, 2.5, brake=1.0)
+    assert sim.ego.speed_mps < 0
+    assert sim._ego_ahead().speed_mps == 0.0
+    hold(sim, 1.0, brake=1.0)  # many reversing ticks run clean
+    assert all(math.isfinite(v) for v in (sim.ego.x, sim.ego.y, sim.ego.heading))

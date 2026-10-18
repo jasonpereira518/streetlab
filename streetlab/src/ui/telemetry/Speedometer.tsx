@@ -15,7 +15,7 @@ export function Speedometer() {
   const ref = useTelemetryCanvas(({ ctx, width, height, frame }) => {
     if (!frame) return placeholder(ctx, width, height);
 
-    const mph = toMph(frame.ego.speed_mps);
+    const mph = toMph(Math.abs(frame.ego.speed_mps));
     const setMph = toMph(frame.ego.cruise.set_speed_mps);
     const limitMph = toMph(frame.ego.speed_limit_mps);
     // Round the ceiling up to the next 10 so the needle never pins.

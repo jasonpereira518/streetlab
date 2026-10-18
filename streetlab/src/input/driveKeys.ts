@@ -37,6 +37,8 @@ export const SEND_HZ = 30;
 const STEER_ENGAGE_S = 0.3;
 const STEER_RETURN_S = 0.2;
 const PEDAL_S = 0.25;
+/** The brake key bites faster than the throttle: stopping is the urgent one. */
+const BRAKE_S = 0.12;
 /** Where a fresh press starts: past the backend's 0.15 deadband
  * (`plan/manual.py`), so even a tap registers and walks the hand-over ladder.
  * The car stays smooth: the backend rate- and jerk-limits whatever arrives. */
@@ -65,7 +67,7 @@ export function shapeAxes(prev: Axes, held: ReadonlySet<Control>, dt: number): A
   return {
     steer: approach(prev.steer, steerTarget, steerRate, dt),
     throttle: approach(prev.throttle, held.has('throttle') ? 1 : 0, 1 / PEDAL_S, dt),
-    brake: approach(prev.brake, held.has('brake') ? 1 : 0, 1 / PEDAL_S, dt),
+    brake: approach(prev.brake, held.has('brake') ? 1 : 0, 1 / BRAKE_S, dt),
   };
 }
 

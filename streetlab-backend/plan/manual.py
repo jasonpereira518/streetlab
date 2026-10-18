@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 from plan.control import (
     _MAX_ACCEL_MPS2,
-    _MAX_DECEL_MPS2,
     _MAX_LATERAL_MPS2,
     MAX_STEER_RATE_RAD_S,
 )
@@ -22,8 +21,14 @@ from sim.vehicle import VehicleState
 
 #: Below this an axis is a resting finger, not an input (also the ladder's deadband).
 DEADBAND = 0.15
-#: How fast commanded accel may change, m/s^3. Full brake in 0.75 s.
+#: How fast commanded accel may change on the throttle, m/s^3.
 MAX_JERK_MPS3 = 6.0
+#: ...and on the brake: firm enough to stop fast, still a ramp (full brake in ~0.3 s).
+BRAKE_JERK_MPS3 = 25.0
+#: A driver's full brake, m/s^2 (~0.8 g). Harder than the planner's 4.5 comfort ceiling.
+MANUAL_MAX_DECEL_MPS2 = 8.0
+#: Pulling away in reverse, m/s^2.
+REVERSE_ACCEL_MPS2 = 1.5
 #: Engine braking and rolling resistance with neither pedal held.
 COAST_DECEL_MPS2 = 0.3
 #: Input older than this (sim seconds) is treated as released: a dropped
@@ -82,17 +87,30 @@ class ManualDriver:
         step = MAX_STEER_RATE_RAD_S * dt
         return _clamp(target, ego.steering_angle - step, ego.steering_angle + step)
 
-    def accel(self, inp: Controls, ego: VehicleState, dt: float) -> float:
-        throttle, brake = axis(inp.throttle), axis(inp.brake)
-        if throttle or brake:
-            target = throttle * _MAX_ACCEL_MPS2 - brake * _MAX_DECEL_MPS2
+    def accel(self, inp: Controls, ego: VehicleState, dt: float, reverse: bool = False) -> float:
+        """Signed along the heading. In reverse the pedals swap roles, as the
+        keys do: brake (S) drives backward and throttle (W) brakes."""
+        go, stop = axis(inp.throttle), axis(inp.brake)
+        if reverse:
+            go, stop = stop, go
+        sign = -1.0 if reverse else 1.0  # +1: "forward" for this gear
+        top = REVERSE_ACCEL_MPS2 if reverse else _MAX_ACCEL_MPS2
+        if go or stop:
+            target = sign * (go * top - stop * MANUAL_MAX_DECEL_MPS2)
         else:
-            target = -COAST_DECEL_MPS2
-        if ego.speed_mps <= 0.0 and target < 0.0:
+            target = -sign * COAST_DECEL_MPS2
+        moving = sign * ego.speed_mps  # speed in this gear's direction, >= 0
+        if moving <= 0.0 and sign * target < 0.0:
             # Stopped: nothing to brake against. No jerk ramp, or the stored
             # accel would read as phantom braking on a parked car.
             return 0.0
-        return jerk_limit(target, ego.accel_mps2, dt)
+        # The brake bites (and lets go) fast; the throttle eases in.
+        braking = stop > 0.0 or sign * ego.accel_mps2 < 0.0
+        rate = BRAKE_JERK_MPS3 if braking else MAX_JERK_MPS3
+        step = rate * dt
+        return _clamp(target, ego.accel_mps2 - step, ego.accel_mps2 + step)
 
-    def step(self, inp: Controls, ego: VehicleState, dt: float) -> tuple[float, float]:
-        return self.accel(inp, ego, dt), self.steer(inp, ego, dt)
+    def step(
+        self, inp: Controls, ego: VehicleState, dt: float, reverse: bool = False
+    ) -> tuple[float, float]:
+        return self.accel(inp, ego, dt, reverse), self.steer(inp, ego, dt)

@@ -171,6 +171,8 @@ export class MockSim {
   /** Drive modes, mirroring `sim/loop.py`: who drives, the held set speed and
    * the newest held controls (stamped with the sim time they arrived). */
   private driveMode: CruiseMode = 'fsd';
+  private gear: 'D' | 'R' = 'D';
+  private shiftHold = 0;
   private setSpeed: number | null = null;
   private held = { steer: 0, throttle: 0, brake: 0, t: -Infinity };
 
@@ -212,6 +214,8 @@ export class MockSim {
     this.steering = 0;
     this.battery = 78;
     this.driveMode = 'fsd';
+    this.gear = 'D';
+    this.shiftHold = 0;
     this.setSpeed = null;
     this.held = { steer: 0, throttle: 0, brake: 0, t: -Infinity };
     this.nextCutinAt = 8;
@@ -509,13 +513,23 @@ export class MockSim {
     const held = this.liveControls();
     const jerk = 6 * dt;
     if (this.driveMode === 'off') {
+      // Mirrors `plan/manual.py` + `Simulation._shift`: a hard (8 m/s^2) brake
+      // that bites fast, and a reverse gear entered by holding the brake at a stop.
+      const reverse = this.gear === 'R';
       const want =
-        held.throttle || held.brake
-          ? held.throttle * MAX_ACCEL + held.brake * MAX_DECEL
-          : this.egoSpeed > 0
-            ? -0.3
-            : 0;
-      this.egoAccel = clamp(want, this.egoAccel - jerk, this.egoAccel + jerk);
+        reverse ? held.throttle > 0 && this.egoSpeed >= -0.05 : held.brake > 0 && this.egoSpeed <= 0.05;
+      this.shiftHold = want ? this.shiftHold + dt : 0;
+      if (this.shiftHold >= 0.3) {
+        this.gear = reverse ? 'D' : 'R';
+        this.shiftHold = 0;
+      }
+      const sign = this.gear === 'R' ? -1 : 1;
+      const [go, stop] = sign > 0 ? [held.throttle, held.brake] : [held.brake, held.throttle];
+      const top = sign > 0 ? MAX_ACCEL : 1.5;
+      let target = go || stop ? sign * (go * top - stop * 8) : -sign * 0.3;
+      if (sign * this.egoSpeed <= 0 && sign * target < 0) target = 0;
+      const rate = (stop > 0 || sign * this.egoAccel < 0 ? 25 : 6) * dt;
+      this.egoAccel = target === 0 && sign * this.egoSpeed <= 0 ? 0 : clamp(target, this.egoAccel - rate, this.egoAccel + rate);
     } else {
       this.egoAccel = clamp(raw, MAX_DECEL, MAX_ACCEL);
       const pedal = held.throttle * MAX_ACCEL;
@@ -523,9 +537,12 @@ export class MockSim {
         this.egoAccel = clamp(pedal, this.egoAccel - jerk, this.egoAccel + jerk);
       }
     }
-    this.egoSpeed = Math.max(0, this.egoSpeed + this.egoAccel * dt);
+    this.egoSpeed =
+      this.gear === 'R'
+        ? clamp(this.egoSpeed + this.egoAccel * dt, -3, 0)
+        : Math.max(0, this.egoSpeed + this.egoAccel * dt);
     this.egoS = this.route.wrap(this.egoS + this.egoSpeed * dt);
-    this.odometer += this.egoSpeed * dt;
+    this.odometer += Math.abs(this.egoSpeed) * dt;
 
     if (this.driveMode === 'off' || this.driveMode === 'cruise') {
       // ponytail: the mock's ego rides its route by arc length, so manual
@@ -850,9 +867,10 @@ export class MockSim {
         accel_mps2: this.egoAccel,
         steering_angle: this.steering,
         yaw_rate: this.egoSpeed * ego.curvature,
-        throttle: clamp(this.egoAccel / MAX_ACCEL, 0, 1),
-        brake: clamp(-this.egoAccel / -MAX_DECEL, 0, 1),
-        gear: 'D',
+        // Along the gear's direction, as the backend reports them.
+        throttle: clamp((this.gear === 'R' ? -this.egoAccel : this.egoAccel) / MAX_ACCEL, 0, 1),
+        brake: clamp((this.gear === 'R' ? this.egoAccel : -this.egoAccel) / -MAX_DECEL, 0, 1),
+        gear: this.gear,
         speed_limit_mps: this.currentSpeedLimit(),
         cruise: {
           mode: this.driveMode,
@@ -860,7 +878,7 @@ export class MockSim {
             this.setSpeed ??
             (this.driveMode === 'fsd'
               ? this.targetLimit(this.params.ego_speed_cap_mph * 0.44704)
-              : this.egoSpeed),
+              : Math.abs(this.egoSpeed)),
           fsd_available: true,
         },
         size: EGO_SIZE,
@@ -1132,6 +1150,12 @@ export class MockSim {
       case 'set_camera':
         return { ok: true, message: command.view };
       case 'set_drive_mode':
+        if (command.mode !== 'off' && this.gear === 'R') {
+          if (this.egoSpeed < -0.05) {
+            return { ok: false, message: `${DRIVE_MODE_LABELS[command.mode]}: stop reversing first` };
+          }
+          this.gear = 'D';
+        }
         // The mock's ego never leaves its route, so Assist/FSD always engage.
         this.changeDriveMode(command.mode);
         if (

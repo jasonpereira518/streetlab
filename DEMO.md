@@ -96,7 +96,7 @@ brake) and **A/D** (steer). Touching the controls hands over the way a
 driver-assist car does: steering under Assist or FSD drops to Cruise (speed
 held, you steer), braking drops to Manual, and the throttle speeds you up
 without taking the wheel. **F**, **L** and **C** engage FSD, Assist and Cruise,
-and **[ / ]** move the set speed by 5 mph. Assist and FSD pick up from wherever
+and **[ / ]** move the set speed by 5 mph. A full brake in Manual stops much harder than FSD's comfort braking, and holding **S** at a standstill shifts into reverse (W brakes; hold W at a stop to go back to Drive). Assist and FSD pick up from wherever
 the car is, blending the steering and acceleration back in rather than
 snapping. They grey out while the car is more than 3 m or 45° off its route.
 Only time under Assist or FSD counts toward a run's scorecard. Press **?** for

@@ -143,6 +143,10 @@ _ROUTE_HEADING_RAD = math.radians(45.0)
 _HANDOVER_S = 1.0
 #: Below this a set speed is seeded from the posted limit, not the crawl speed.
 _MIN_SET_SPEED_MPS = 2.0
+#: Slower than this the car counts as stopped, for shifting gear.
+_STOPPED_MPS = 0.05
+#: How long the brake (in D) or throttle (in R) must be held at a stop to shift.
+_SHIFT_HOLD_S = 0.3
 
 
 def route_ok(offset_m: float, heading_error_rad: float) -> bool:
@@ -220,6 +224,10 @@ class WorldState:
     controls: Controls = NO_CONTROLS
     # When `drive_mode` last changed, for the hand-over jerk limit.
     mode_changed_t: float = -math.inf
+    # "D" or "R". Only Manual ever reverses; every other mode is in D.
+    gear: str = "D"
+    # Seconds the shift pedal has been held at a stop (see `_shift`).
+    shift_hold_s: float = 0.0
 
 
 class SignalController:
@@ -397,6 +405,8 @@ class Simulation:
         self.world.set_speed_mps = None
         self.world.controls = NO_CONTROLS
         self.world.mode_changed_t = -math.inf
+        self.world.gear = "D"
+        self.world.shift_hold_s = 0.0
         self.world.plan_result = None
         self.world.detections = []
         self.world.detections_shadow = None
@@ -482,7 +492,7 @@ class Simulation:
         self._traffic.step(
             dt,
             TrafficWorld(
-                ego=self.world.ego,
+                ego=self._ego_ahead(),
                 ego_route=self.scene.ego_route,
                 t=self.world.t,
                 # Same `t` `_plan` evaluates below, and the controller is a pure
@@ -500,9 +510,10 @@ class Simulation:
             accel_mps2=accel,
             steer_rad=steer,
             dt=dt,
+            reverse=self.world.gear == "R",
         )
         self._guard_world()
-        self.world.odometer_m += self.world.ego.speed_mps * dt
+        self.world.odometer_m += abs(self.world.ego.speed_mps) * dt
 
         self.world.t += dt
         self.world.seq += 1
@@ -563,7 +574,8 @@ class Simulation:
                 self._planner.last_steer = steer
 
         if mode == "off":
-            return self._manual.accel(controls, ego, dt), steer
+            self._shift(controls, dt)
+            return self._manual.accel(controls, ego, dt, reverse=world.gear == "R"), steer
 
         accel = result.accel_mps2
         if mode == "cruise" and not self.route_available():
@@ -580,6 +592,27 @@ class Simulation:
         if world.t - world.mode_changed_t < _HANDOVER_S:
             accel = jerk_limit(accel, ego.accel_mps2, dt)
         return accel, steer
+
+    def _shift(self, controls: Controls, dt: float) -> None:
+        """Manual gear changes: hold the brake at a stop to shift into reverse,
+        hold the throttle at a stop to shift back into drive."""
+        world, v = self.world, self.world.ego.speed_mps
+        if world.gear == "D":
+            want = bool(axis(controls.brake)) and v <= _STOPPED_MPS
+        else:
+            want = bool(axis(controls.throttle)) and v >= -_STOPPED_MPS
+        world.shift_hold_s = world.shift_hold_s + dt if want else 0.0
+        if world.shift_hold_s >= _SHIFT_HOLD_S:
+            world.gear = "R" if world.gear == "D" else "D"
+            world.shift_hold_s = 0.0
+            self._emit("gear", "reverse" if world.gear == "R" else "drive")
+
+    def _ego_ahead(self) -> VehicleState:
+        """The ego as traffic, perception and the planner see it: never moving
+        backward. They model a car that drives forward; a reversing ego reads as
+        a stopped one rather than feeding negative speeds into gap and TTC maths."""
+        ego = self.world.ego
+        return ego if ego.speed_mps >= 0.0 else replace(ego, speed_mps=0.0)
 
     def route_available(self) -> bool:
         """Whether Assist/FSD may engage from the ego's current pose."""
@@ -710,7 +743,7 @@ class Simulation:
         on the other one. Ground truth stays the default, and stays the
         answer whenever no ML source exists.
         """
-        ego, agents, route = self.world.ego, self._traffic.agents, self.scene.ego_route
+        ego, agents, route = self._ego_ahead(), self._traffic.agents, self.scene.ego_route
         # Full ground truth stays available as the measurement reference /
         # shadow. The driving feed is what the cabin can resolve: FOV plus
         # building occlusion, with a short rear mirror cone so lane-change
@@ -819,8 +852,9 @@ class Simulation:
         signals = self._signals.state(self.world.t)
         truth = {s.id: s for s in signals}
         desc = self.scene.description
+        ego = self._ego_ahead()
         observed = self._road_rules.observe(
-            self.world.ego,
+            ego,
             self.world.t,
             truth,
             desc.traffic_lights,
@@ -841,7 +875,7 @@ class Simulation:
             lanes=self.scene.lanes,
         )
         result = self._planner.plan(
-            self.world.ego,
+            ego,
             self.scene.ego_route,
             detections,
             self._limits(),
@@ -1289,6 +1323,13 @@ class Simulation:
             return CommandOutcome(
                 ok=False, message=f"{_DRIVE_MODE_LABELS[mode]} unavailable: off route"
             )
+        if mode != "off" and self.world.gear == "R":
+            if self.world.ego.speed_mps < -_STOPPED_MPS:
+                return CommandOutcome(
+                    ok=False, message=f"{_DRIVE_MODE_LABELS[mode]}: stop reversing first"
+                )
+            self.world.gear = "D"
+            self.world.shift_hold_s = 0.0
         self._change_drive_mode(mode)
         if command.set_speed_mps is not None and mode in ("cruise", "autosteer"):
             cap = float(self.world.params["ego_speed_cap_mph"]) * MPH
@@ -1566,6 +1607,7 @@ def assemble_state_update(
     steering = _finite("ego.steering_angle", ego.steering_angle, bad)
     yaw_rate = _finite("ego.yaw_rate", ego.yaw_rate, bad)
     t = max(0.0, _finite("t", world.t, bad))
+    drive_accel = -accel if world.gear == "R" else accel
 
     if bad:
         log.warning(
@@ -1587,9 +1629,11 @@ def assemble_state_update(
             accel_mps2=accel,
             steering_angle=steering,
             yaw_rate=yaw_rate,
-            throttle=_clamp01(max(0.0, accel) / 2.2),
-            brake=_clamp01(max(0.0, -accel) / 4.5),
-            gear="D",
+            # Pedals act along the gear's direction: in reverse, accelerating
+            # backward is throttle and slowing toward zero is brake.
+            throttle=_clamp01(max(0.0, drive_accel) / 2.2),
+            brake=_clamp01(max(0.0, -drive_accel) / 4.5),
+            gear="R" if world.gear == "R" else "D",
             speed_limit_mps=(
                 scene.speed_limit_mps if posted_limit_mps is None else posted_limit_mps
             ),
@@ -1600,7 +1644,7 @@ def assemble_state_update(
                     if world.set_speed_mps is not None
                     else target
                     if world.drive_mode == "fsd"
-                    else speed
+                    else abs(speed)  # a magnitude: reversing must not fail the wire's >= 0
                 ),
                 fsd_available=route_ok(offset, heading_error),
             ),

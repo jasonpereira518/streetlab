@@ -10,8 +10,8 @@ import { MPH_TO_MPS } from '../units';
 export const SHORTCUTS: Array<{ keys: string; does: string }> = [
   { keys: 'Space', does: 'Pause / resume the simulation' },
   { keys: 'R', does: 'Reset the scenario' },
-  { keys: 'W / ↑', does: 'Accelerate (takes over speed; FSD keeps steering)' },
-  { keys: 'S / ↓', does: 'Brake (drops to Manual)' },
+  { keys: 'W / ↑', does: 'Accelerate (takes over speed; FSD keeps steering). Brakes in reverse' },
+  { keys: 'S / ↓', does: 'Brake (drops to Manual). Hold at a stop to reverse' },
   { keys: 'A D / ← →', does: 'Steer (Assist or FSD drops to Cruise)' },
   { keys: 'F', does: 'FSD on / off' },
   { keys: 'L', does: 'Assist (cruise + lane keep) on / off' },

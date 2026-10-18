@@ -95,7 +95,9 @@ export function TopToolbar() {
   const helpOpen = useSimStore((s) => s.helpOpen);
   const setHelpOpen = useSimStore((s) => s.setHelpOpen);
 
-  const mph = useFrameValue((f) => Math.round(toMph(f.ego.speed_mps)), 12);
+  // A magnitude: reversing reads as "3 mph" with an R, not "-3".
+  const mph = useFrameValue((f) => Math.round(toMph(Math.abs(f.ego.speed_mps))), 12);
+  const reversing = useFrameValue((f) => f.ego.gear === 'R', 10);
   // Primitives, not the trip object, so the toolbar re-renders only when a
   // shown figure changes: tenths of a km, whole seconds, the lap number.
   const tripLeft = useFrameValue((f) => formatKm(f.telemetry.trip.distance_remaining_m), 4);
@@ -193,7 +195,7 @@ export function TopToolbar() {
 
         <div className="readout">
           <span className="readout-value">{mph ?? '—'}</span>
-          <span className="readout-unit">mph</span>
+          <span className="readout-unit">{reversing ? 'mph · R' : 'mph'}</span>
         </div>
 
         <div

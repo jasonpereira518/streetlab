@@ -162,7 +162,7 @@ export class FsdScreen {
     // Speed.
     ctx.fillStyle = '#ffffff';
     ctx.font = font(300, 84);
-    ctx.fillText(String(Math.round(toMph(ego.speed_mps))), cx, 128);
+    ctx.fillText(String(Math.round(toMph(Math.abs(ego.speed_mps)))), cx, 128);
     ctx.font = font(500, 16);
     ctx.fillStyle = 'rgba(255,255,255,0.6)';
     ctx.fillText('MPH', cx, 152);

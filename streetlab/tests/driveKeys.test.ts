@@ -42,6 +42,12 @@ describe('drive keys', () => {
     expect(run(full, new Set(), 0.2).steer).toBe(0);
   });
 
+  it('the brake key reaches full within ~0.15 s, faster than the throttle', () => {
+    const brake = new Set(['brake'] as const);
+    expect(run(ZERO_AXES, brake, 0.15).brake).toBe(1);
+    expect(run(ZERO_AXES, new Set(['throttle'] as const), 0.15).throttle).toBeLessThan(1);
+  });
+
   it('ramps pedals over 0.25 s both ways and settles to exact zero', () => {
     const on = run(ZERO_AXES, new Set(['throttle'] as const), 0.25);
     expect(on.throttle).toBe(1);
