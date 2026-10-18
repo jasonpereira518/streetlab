@@ -44,7 +44,7 @@ def traffic_with(scene, kind, positions, speed=10.0):
         [route] * len(positions),
         scene.speed_limit_mps,
         seed=1,
-        control_points=[line],
+        control_points=[] if kind is None else [line],
         ego_route=route,
     )
     place(traffic, route, positions, speed)
@@ -90,15 +90,11 @@ def test_it_proceeds_once_the_light_goes_green(scene):
 
 def test_a_green_light_does_not_slow_anyone(scene):
     lit = traffic_with(scene, "signal", [100.0])
-    unlit = traffic_with(scene, "signal", [100.0])
+    unlit = traffic_with(scene, None, [100.0])
     for _ in range(int(8 / DT)):
         lit.step(DT, world(scene, "green"))
-        unlit.step(DT, TrafficWorld(**{**_fields(world(scene)), "signals": {}}))
+        unlit.step(DT, world(scene))
     assert lit.agents[0].s == pytest.approx(unlit.agents[0].s)
-
-
-def _fields(w):
-    return {"ego": w.ego, "ego_route": w.ego_route, "t": w.t}
 
 
 def test_a_queue_stacks_up_behind_the_line_without_anyone_crossing(scene):
@@ -129,12 +125,15 @@ def test_a_yellow_that_can_be_stopped_for_is_stopped_for(scene):
         assert gap_to_line(agent) > 0.0
 
 
-def test_a_missing_phase_is_not_a_red(scene):
+def test_a_missing_phase_stops_traffic_as_it_stops_the_ego(scene):
+    """Reversed: traffic used to treat no phase as green, the ego as red.
+    `test_every_signal_traffic_obeys_has_a_phase` keeps this from parking
+    anyone at a light with no controller."""
     traffic = traffic_with(scene, "signal", [100.0])
     agent = traffic.agents[0]
     for _ in range(int(10 / DT)):
         traffic.step(DT, world(scene))
-    assert agent.s > LINE_S
+    assert 0.0 < gap_to_line(agent) < 2.0
 
 
 def test_a_stop_sign_means_a_full_stop_then_go(scene):
