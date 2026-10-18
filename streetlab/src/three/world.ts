@@ -162,8 +162,8 @@ interface Structure {
   half: number;
 }
 
-const carried = (road: Road): boolean =>
-  (road.elevation_m?.length ?? 0) === road.centerline.length && (road.bridge || road.tunnel);
+/** A way with its own surface heights: a deck, a ramp up to one, a tunnel floor. */
+const carried = (road: Road): boolean => (road.elevation_m?.length ?? 0) === road.centerline.length;
 
 /** Nearest point on `line` to (x, y): arc length, distance, unit tangent. */
 function project(line: Polyline, x: number, y: number) {
@@ -1025,7 +1025,7 @@ export function buildWorld(scene: SceneDescription): World {
       }
     }
     for (const st of structures.values()) {
-      if (st.road.bridge) {
+      if (!st.road.tunnel) {
         const below = [...surfacesByLayer].filter(([l]) => l < (st.road.layer ?? 0)).map(([, rs]) => rs);
         bridgeStructure(struct, st, below, heightAt);
       } else {

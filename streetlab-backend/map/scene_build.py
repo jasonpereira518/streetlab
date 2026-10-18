@@ -167,6 +167,10 @@ class _Head:
     heading: float
     centre: tuple[float, float]
     mast_arm_m: float = 0.0
+    # Where a divided street is involved, the crossing street's near kerb on
+    # the approach axis: its stop line is measured from there, since a route
+    # turning at that corner leaves the approach well short of the centre.
+    anchor: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,10 +182,60 @@ class _Street:
     lanes: int  # per direction
     road_class: str
     speed_mph: float
+    # A divided street: two one-way carriageways either side of a median
+    # this wide (its pavement drawn by each carriageway's median-side kerb).
+    median_m: float = 0.0
 
     @property
     def half_width(self) -> float:
-        return self.lanes * LANE_W
+        """Axis to outer kerb: the whole corridor, median included."""
+        return self.lanes * LANE_W + self.median_m / 2
+
+
+@dataclass(frozen=True, slots=True)
+class _Viaduct:
+    """Part of a street carried in the air: level with the ground at `feet`,
+    up to `deck_m` along `deck`, ramped straight between. Coordinates are
+    along the street's own axis (x for an east-west street)."""
+
+    street_id: str
+    feet: tuple[float, float]
+    deck: tuple[float, float]
+    deck_m: float
+
+    def spans(self, along: float) -> bool:
+        """Whether `along` is off the ground: a street crossing here meets nothing."""
+        return self.feet[0] < along < self.feet[1]
+
+    def profile(self) -> tuple[list[float], list[float]]:
+        """Stations along the axis and the surface height at each."""
+        return [self.feet[0], *self.deck, self.feet[1]], [0.0, self.deck_m, self.deck_m, 0.0]
+
+
+@dataclass(frozen=True, slots=True)
+class _Layout:
+    streets: tuple[_Street, ...]
+    extent: float = 130.0
+    viaducts: tuple[_Viaduct, ...] = ()
+
+    @property
+    def ns(self) -> tuple[_Street, ...]:
+        return tuple(s for s in self.streets if s.axis == "ns")
+
+    @property
+    def ew(self) -> tuple[_Street, ...]:
+        return tuple(s for s in self.streets if s.axis == "ew")
+
+    def viaduct(self, street: _Street) -> _Viaduct | None:
+        return next((v for v in self.viaducts if v.street_id == street.id), None)
+
+    def meets(self, ns: _Street, ew: _Street) -> bool:
+        """Whether two streets cross at grade."""
+        for street, along in ((ns, ew.at), (ew, ns.at)):
+            v = self.viaduct(street)
+            if v is not None and v.spans(along):
+                return False
+        return True
 
 
 STREETS: tuple[_Street, ...] = (
@@ -195,6 +249,40 @@ STREETS: tuple[_Street, ...] = (
 
 NS_STREETS = tuple(s for s in STREETS if s.axis == "ns")
 EW_STREETS = tuple(s for s in STREETS if s.axis == "ew")
+
+GRID = _Layout(STREETS, MAP_EXTENT)
+
+#: Deck over the streets it bridges: Caltrans' 4.4 m clearance plus the deck,
+#: the same figure `map.terrain.UNDERPASS_CLEARANCE_M` cuts OSM streets to.
+VIADUCT_DECK_M = 5.5
+#: 1:12, the steepest ramp the plan allows.
+_RAMP_M = VIADUCT_DECK_M * 12
+
+#: `grid-boulevard`'s city. California St is a 3+3 divided boulevard, and
+#: Bush St crosses Larkin and Hyde on a viaduct whose east ramp lands at the
+#: Leavenworth junction. The extent grows to fit the west ramp.
+BOULEVARD = _Layout(
+    (
+        _Street("st_larkin", "Larkin St", "ns", -80.0, 1, "collector", 25),
+        _Street("st_hyde", "Hyde St", "ns", 0.0, 2, "arterial", 35),
+        _Street("st_leavenworth", "Leavenworth St", "ns", 80.0, 1, "residential", 25),
+        _Street("st_pine", "Pine St", "ew", -80.0, 1, "collector", 25),
+        _Street("st_bush", "Bush St", "ew", -40.0, 1, "collector", 25),
+        _Street("st_california", "California St", "ew", 0.0, 3, "arterial", 35, median_m=2 * SIDEWALK_W),
+        _Street("st_sacramento", "Sacramento St", "ew", 80.0, 1, "residential", 25),
+    ),
+    extent=170.0,
+    viaducts=(
+        _Viaduct(
+            "st_bush",
+            # East foot at Leavenworth's west kerb; deck from 10 m west of
+            # Larkin to 10 m east of Hyde, clear of both streets' pavements.
+            feet=(-90.0 - _RAMP_M, 80.0 - LANE_W),
+            deck=(-90.0, 80.0 - LANE_W - _RAMP_M),
+            deck_m=VIADUCT_DECK_M,
+        ),
+    ),
+)
 
 # An intersection is signalised when an arterial is involved.
 _ARTERIAL_AT = 0.0
@@ -210,6 +298,7 @@ class _Scenario:
     block: tuple[float, float, float, float]
     traffic: int
     bookmarked: bool = False
+    layout: _Layout = GRID
 
 
 SCENARIOS: tuple[_Scenario, ...] = (
@@ -267,6 +356,22 @@ SCENARIOS: tuple[_Scenario, ...] = (
         # one-block leg leaves 64 m of kerb lane).
         (-80.0, 80.0, 0.0, 80.0),
         4,
+    ),
+    _Scenario(
+        "grid-boulevard",
+        "California Boulevard",
+        "A long loop: under the Bush St viaduct on Larkin, then down the divided boulevard's kerb lane.",
+        "moderate",
+        # Clockwise: north up Larkin under the viaduct, east along
+        # California's eastbound carriageway through the Hyde signal, south
+        # down Leavenworth across the viaduct's foot, west along Pine.
+        (-80.0, 80.0, -80.0, 0.0),
+        # Four, so no bus (the fifth profile): a rigid 11.5 m body turning
+        # off the kerb lane swings 0.6 m into the car waiting beside it in
+        # the middle lane (dense, seed 7). Ambient traffic has no buses for
+        # the same reason, until long vehicles off-track.
+        4,
+        layout=BOULEVARD,
     ),
 )
 
@@ -326,17 +431,20 @@ class SyntheticGrid:
 
     def build(self, scenario_id: str) -> BuiltScene:
         scenario = self._find(scenario_id)
+        lay = scenario.layout
         rng = Random(_seed(scenario.id))
         traffic = self._traffic_for(scenario)
 
-        ego_route = self._block_route(scenario.block)
+        ego_route = self._block_route(scenario.block, lay)
+        roads = self._roads(lay)
         # Per street, as the OSM source does: the arterials post 35 and the
         # side streets 25. Without this every grid circuit, "California
         # Arterial" included, ran at one scene-wide 25 mph.
-        ego_route.segment_limits = speed_limits_along(ego_route, self._roads())
+        ego_route.segment_limits = speed_limits_along(ego_route, roads)
         # Same rng order as before: buildings, then trees.
-        buildings = self._buildings(rng)
-        trees = self._trees(rng)
+        buildings = self._buildings(rng, lay)
+        trees = self._trees(rng, lay)
+        ext = lay.extent
         description = SceneDescription(
             protocol=PROTOCOL_VERSION,
             scene_id=f"synthetic-grid:{scenario.id}",
@@ -348,16 +456,16 @@ class SyntheticGrid:
             # geographically meaningful before Cycle 2 supplies a real one.
             origin=Origin(lat=37.7930, lon=-122.4161),
             bounds=Bounds(
-                min_x=-MAP_EXTENT, min_y=-MAP_EXTENT, max_x=MAP_EXTENT, max_y=MAP_EXTENT
+                min_x=-ext, min_y=-ext, max_x=ext, max_y=ext
             ),
-            roads=self._roads(),
+            roads=roads,
             buildings=buildings,
-            crosswalks=self._crosswalks(),
-            kerb_returns=kerb_returns(self._roads()),
-            traffic_lights=self._traffic_lights(),
-            stop_signs=self._stop_signs(),
+            crosswalks=self._crosswalks(lay),
+            kerb_returns=kerb_returns(roads),
+            traffic_lights=self._traffic_lights(lay),
+            stop_signs=self._stop_signs(lay),
             trees=trees,
-            street_signs=self._street_signs(buildings),
+            street_signs=self._street_signs(buildings, lay),
             reference_path=ego_route.resample(REFERENCE_STEP_M),
             # The grid is flat by construction, and its frozen detector
             # benchmarks were captured on flat ground.
@@ -373,24 +481,26 @@ class SyntheticGrid:
             description=description,
             ego_route=ego_route,
             agent_routes=self._agent_routes(scenario, ego_route, traffic),
-            signal_groups=self._signal_groups(),
-            speed_limit_mps=self._route_speed_limit(scenario.block),
+            signal_groups=self._signal_groups(lay),
+            speed_limit_mps=self._route_speed_limit(scenario.block, lay),
             traffic_count=traffic,
-            control_points=self._control_points(ego_route),
+            control_points=self._control_points(ego_route, lay),
             lanes=derive_lanes(ego_route, description.roads),
-            ambient_lanes=self._ambient_lanes(),
-            junctions=junctions(description.roads),
+            ambient_lanes=self._ambient_lanes(lay),
+            # Boxes from whole corridors: a divided street is ONE junction its
+            # signal governs, not one per carriageway.
+            junctions=junctions(self._roads(lay, divided=False)),
         )
 
-    def _ambient_lanes(self) -> list[AmbientLane]:
+    def _ambient_lanes(self, lay: _Layout = GRID) -> list[AmbientLane]:
         """Each street, each way, each lane: right of travel, end to end."""
         out = []
-        for s in STREETS:
-            a, b = self._street_ends(s)
+        for s in lay.streets:
+            a, b = self._street_ends(s, lay)
             for p, q in ((a, b), (b, a)):
                 for k in range(s.lanes):
-                    route = Route([p, q], closed=False).offset(-LANE_W * (k + 0.5))
-                    out.append(AmbientLane(route, self._control_points(route)))
+                    route = Route([p, q], closed=False).offset(-(s.median_m / 2 + LANE_W * (k + 0.5)))
+                    out.append(AmbientLane(route, self._control_points(route, lay)))
         return out
 
     # -- catalog ----------------------------------------------------------- #
@@ -406,70 +516,111 @@ class SyntheticGrid:
         # One lap, timed the way the HUD's ETA is: from route length and the
         # posted limit, not a number typed in by hand.
         # Not `self.build`: a built scene embeds this catalog.
-        route = self._block_route(scenario.block)
-        limit = self._route_speed_limit(scenario.block)
+        lay = scenario.layout
+        route = self._block_route(scenario.block, lay)
+        limit = self._route_speed_limit(scenario.block, lay)
         return ScenarioSummary(
             id=scenario.id,
             index=index,
             name=scenario.name,
             location="Synthetic Grid",
-            description=f"{scenario.description} {self._route_facts(scenario.block)}",
+            description=f"{scenario.description} {self._route_facts(scenario.block, lay)}",
             duration_s=estimate_travel_s(
                 route, 0.0, route.length_m, limit,
-                control_points=self._control_points(route), margin_mps=_DEFAULT_MARGIN_MPS,
+                control_points=self._control_points(route, lay), margin_mps=_DEFAULT_MARGIN_MPS,
             ),
             route_length_m=route.length_m,
             bookmarked=scenario.bookmarked,
             difficulty=scenario.difficulty,
-            preview_paths=self._preview_paths(),
+            preview_paths=self._preview_paths(lay),
             preview_route=self._preview_route(scenario),
         )
 
-    def _preview_paths(self) -> list[list[tuple[float, float]]]:
+    def _preview_paths(self, lay: _Layout = GRID) -> list[list[tuple[float, float]]]:
         """The street skeleton in the sidebar thumbnail's 0..100 box."""
         paths = []
-        for s in STREETS:
-            a, b = self._street_ends(s)
-            paths.append([_to_thumb(a), _to_thumb(b)])
+        for s in lay.streets:
+            a, b = self._street_ends(s, lay)
+            paths.append([_to_thumb(a, lay.extent), _to_thumb(b, lay.extent)])
         return paths
 
     def _preview_route(self, scenario: _Scenario) -> list[tuple[float, float]]:
-        route = self._block_route(scenario.block)
+        route = self._block_route(scenario.block, scenario.layout)
         step = route.length_m / 48
-        return [_to_thumb(route.point_at(i * step)) for i in range(49)]
+        return [_to_thumb(route.point_at(i * step), scenario.layout.extent) for i in range(49)]
 
     # -- geometry ---------------------------------------------------------- #
 
-    def _street_ends(self, s: _Street) -> tuple[tuple[float, float], tuple[float, float]]:
+    def _street_ends(
+        self, s: _Street, lay: _Layout = GRID
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        e = lay.extent
         if s.axis == "ns":
-            return (s.at, -MAP_EXTENT), (s.at, MAP_EXTENT)
-        return (-MAP_EXTENT, s.at), (MAP_EXTENT, s.at)
+            return (s.at, -e), (s.at, e)
+        return (-e, s.at), (e, s.at)
 
-    def _roads(self) -> list[Road]:
+    def _roads(self, lay: _Layout = GRID, divided: bool = True) -> list[Road]:
+        """Every street as roads. A divided street is two one-way
+        carriageways, unless `divided` is False: then one road as wide as the
+        whole corridor, which is what stop lines and junction boxes measure."""
         roads = []
-        for s in STREETS:
-            a, b = self._street_ends(s)
-            roads.append(
-                Road(
-                    id=s.id,
-                    name=s.name,
-                    road_class=s.road_class,
-                    centerline=[a, b],
-                    lanes_forward=s.lanes,
-                    lanes_backward=s.lanes,
-                    lane_width_m=LANE_W,
-                    speed_limit_mps=s.speed_mph * MPH,
-                    oneway=False,
-                    # Yellow divides opposing traffic; see `_center_marking`
-                    # in `map/lanes.py` for the rule both sources follow.
-                    center_marking="double_yellow" if s.lanes > 1 else "broken_yellow",
-                    sidewalk_left=True,
-                    sidewalk_right=True,
-                )
+        for s in lay.streets:
+            a, b = self._street_ends(s, lay)
+            base = Road(
+                id=s.id,
+                name=s.name,
+                road_class=s.road_class,
+                centerline=[a, b],
+                lanes_forward=s.lanes,
+                lanes_backward=s.lanes,
+                lane_width_m=LANE_W,
+                speed_limit_mps=s.speed_mph * MPH,
+                oneway=False,
+                # Yellow divides opposing traffic; see `_center_marking`
+                # in `map/lanes.py` for the rule both sources follow.
+                center_marking="double_yellow" if s.lanes > 1 else "broken_yellow",
+                sidewalk_left=True,
+                sidewalk_right=True,
             )
+            if s.median_m and divided:
+                off = s.median_m / 2 + s.lanes * LANE_W / 2
+                for tag, p, q in (("fwd", a, b), ("back", b, a)):
+                    # Right-hand traffic: each way keeps right of the median.
+                    route = Route([p, q], closed=False).offset(-off)
+                    roads.append(base.model_copy(update={
+                        "id": f"{s.id}_{tag}",
+                        "centerline": route.points,
+                        "lanes_backward": 0,
+                        "oneway": True,
+                        "center_marking": "none",
+                    }))
+            elif s.median_m:
+                roads.append(base.model_copy(update={"edge_m": s.median_m / 2}))
+            elif (v := lay.viaduct(s)) is not None:
+                roads.extend(self._viaduct_roads(s, v, base, lay))
+            else:
+                roads.append(base)
         return roads
 
-    def _block_route(self, block: tuple[float, float, float, float]) -> Route:
+    @staticmethod
+    def _viaduct_roads(s: _Street, v: _Viaduct, base: Road, lay: _Layout) -> list[Road]:
+        """At grade to the west foot, a ramp up, the deck, a ramp down, and at
+        grade beyond. Only the deck is a `bridge`: it is where the street is
+        off the ground over another, which is what the sim keeps apart
+        (`sim.levels`). The ramps are on layer 1 too, so nothing at grade
+        meets them, and carry their heights for the renderer."""
+        point = (lambda t: (s.at, t)) if s.axis == "ns" else (lambda t: (t, s.at))
+        (f0, d0, d1, f1), (_, top, _, _) = v.profile()
+        up = {"layer": 1}
+        return [
+            base.model_copy(update={"id": f"{s.id}_w", "centerline": [point(-lay.extent), point(f0)]}),
+            base.model_copy(update={**up, "id": f"{s.id}_ramp_w", "centerline": [point(f0), point(d0)], "elevation_m": [0.0, top]}),
+            base.model_copy(update={**up, "centerline": [point(d0), point(d1)], "bridge": True, "elevation_m": [top, top]}),
+            base.model_copy(update={**up, "id": f"{s.id}_ramp_e", "centerline": [point(d1), point(f1)], "elevation_m": [top, 0.0]}),
+            base.model_copy(update={"id": f"{s.id}_e", "centerline": [point(f1), point(lay.extent)]}),
+        ]
+
+    def _block_route(self, block: tuple[float, float, float, float], lay: _Layout = GRID) -> Route:
         """The ego's loop: block centrelines, shifted into the rightmost lane.
 
         The corners are traversed clockwise, which puts the block interior on the
@@ -481,16 +632,30 @@ class SyntheticGrid:
         """
         x0, x1, y0, y1 = block
         corners = [(x0, y0), (x0, y1), (x1, y1), (x1, y0)]
-        lane = Route(corners, closed=True).offset(-EGO_LANE_INSET)
+        # A divided street's leg is driven in its KERB lane, the lane a right
+        # turn on or off it belongs in.
+        w, e = (self._street_at(lay.ns, x) for x in (x0, x1))
+        s_, n = (self._street_at(lay.ew, y) for y in (y0, y1))
+        if not any(st.median_m for st in (w, e, s_, n)):
+            lane = Route(corners, closed=True).offset(-EGO_LANE_INSET)
+            return lane.fillet(radius_m=TURN_RADIUS_M)
+        d = {id(st): (st.half_width - LANE_W / 2 if st.median_m else EGO_LANE_INSET) for st in (w, e, s_, n)}
+        lx, rx = x0 + d[id(w)], x1 - d[id(e)]
+        by, ty = y0 + d[id(s_)], y1 - d[id(n)]
+        lane = Route([(lx, by), (lx, ty), (rx, ty), (rx, by)], closed=True)
         return lane.fillet(radius_m=TURN_RADIUS_M)
 
-    def _route_facts(self, block: tuple[float, float, float, float]) -> str:
+    @staticmethod
+    def _street_at(streets: tuple[_Street, ...], at: float) -> _Street:
+        return next(st for st in streets if st.at == at)
+
+    def _route_facts(self, block: tuple[float, float, float, float], lay: _Layout = GRID) -> str:
         """Corner controls and limits read off the street tables, so the catalog text cannot rot."""
         x0, x1, y0, y1 = block
         corners = [
             (ns, ew)
-            for ns in NS_STREETS
-            for ew in EW_STREETS
+            for ns in lay.ns
+            for ew in lay.ew
             if ns.at in (x0, x1) and ew.at in (y0, y1)
         ]
         lights = sum(self._is_signalised(ns, ew) for ns, ew in corners)
@@ -500,16 +665,16 @@ class SyntheticGrid:
             parts.append(f"{lights} signalised corner{'s' * (lights != 1)}")
         if stops:
             parts.append(f"{stops} all-way stop{'s' * (stops != 1)}")
-        used = [s for s in NS_STREETS if s.at in (x0, x1)]
-        used += [s for s in EW_STREETS if s.at in (y0, y1)]
+        used = [s for s in lay.ns if s.at in (x0, x1)]
+        used += [s for s in lay.ew if s.at in (y0, y1)]
         mph = sorted({int(s.speed_mph) for s in used})
         return f"{', '.join(parts)}; {'-'.join(map(str, mph))} mph."
 
-    def _route_speed_limit(self, block: tuple[float, float, float, float]) -> float:
+    def _route_speed_limit(self, block: tuple[float, float, float, float], lay: _Layout = GRID) -> float:
         """The lowest limit on the streets the loop uses — the binding one."""
         x0, x1, y0, y1 = block
-        used = [s for s in NS_STREETS if s.at in (x0, x1)]
-        used += [s for s in EW_STREETS if s.at in (y0, y1)]
+        used = [s for s in lay.ns if s.at in (x0, x1)]
+        used += [s for s in lay.ew if s.at in (y0, y1)]
         return min((s.speed_mph for s in used), default=25) * MPH
 
     def _agent_routes(
@@ -542,8 +707,9 @@ class SyntheticGrid:
 
     # -- intersections ----------------------------------------------------- #
 
-    def _intersections(self) -> list[tuple[_Street, _Street]]:
-        return [(ns, ew) for ns in NS_STREETS for ew in EW_STREETS]
+    def _intersections(self, lay: _Layout = GRID) -> list[tuple[_Street, _Street]]:
+        """Every crossing at grade; a viaduct passes over the streets it spans."""
+        return [(ns, ew) for ns in lay.ns for ew in lay.ew if lay.meets(ns, ew)]
 
     def _is_signalised(self, ns: _Street, ew: _Street) -> bool:
         return ns.at == _ARTERIAL_AT or ew.at == _ARTERIAL_AT
@@ -566,7 +732,7 @@ class SyntheticGrid:
             ("w", (-1.0, 0.0), ew, ns),
         ]
 
-    def _signal_heads(self) -> list[_Head]:
+    def _signal_heads(self, lay: _Layout = GRID) -> list[_Head]:
         """One mast-arm head per signalised approach, on that approach's kerb.
 
         The pole stands at the FAR right corner -- past the junction, on the
@@ -580,7 +746,7 @@ class SyntheticGrid:
         crossing carriageway beyond the line it governs.
         """
         heads = []
-        for ns, ew in self._intersections():
+        for ns, ew in self._intersections(lay):
             if not self._is_signalised(ns, ew):
                 continue
             cx, cy = ns.at, ew.at
@@ -600,12 +766,23 @@ class SyntheticGrid:
                         ),
                         heading=facing(travel),
                         centre=(cx, cy),
-                        mast_arm_m=approach.half_width / 2 + KERB_CLEARANCE_M,
+                        anchor=(
+                            _near_kerb(cx, cy, travel, approach, crossing)
+                            if approach.median_m or crossing.median_m
+                            else None
+                        ),
+                        # Out over the lanes to the inner one's centre on a
+                        # divided street's carriageway; half way otherwise.
+                        mast_arm_m=(
+                            approach.lanes * LANE_W - LANE_W / 2
+                            if approach.median_m
+                            else approach.half_width / 2
+                        ) + KERB_CLEARANCE_M,
                     )
                 )
         return heads
 
-    def _stop_sign_heads(self) -> list[_Head]:
+    def _stop_sign_heads(self, lay: _Layout = GRID) -> list[_Head]:
         """One sign per uncontrolled approach, at its NEAR right corner.
 
         Level with the stop bar (`STOP_BAR_SETBACK_M` past the crossing kerb),
@@ -615,7 +792,7 @@ class SyntheticGrid:
         kerb, which is both sides of wrong at once.
         """
         heads = []
-        for ns, ew in self._intersections():
+        for ns, ew in self._intersections(lay):
             if self._is_signalised(ns, ew):
                 continue
             cx, cy = ns.at, ew.at
@@ -638,7 +815,7 @@ class SyntheticGrid:
                 )
         return heads
 
-    def _traffic_lights(self) -> list[TrafficLight]:
+    def _traffic_lights(self, lay: _Layout = GRID) -> list[TrafficLight]:
         return [
             TrafficLight(
                 id=head.id,
@@ -650,23 +827,23 @@ class SyntheticGrid:
                 mast_arm_m=head.mast_arm_m,
                 height_m=6.0,
             )
-            for head in self._signal_heads()
+            for head in self._signal_heads(lay)
         ]
 
-    def _signal_groups(self) -> dict[str, str]:
+    def _signal_groups(self, lay: _Layout = GRID) -> dict[str, str]:
         """North/south heads share a phase; east/west heads share the other."""
         groups = {}
-        for light in self._traffic_lights():
+        for light in self._traffic_lights(lay):
             groups[light.id] = "ns" if light.id.endswith(("_n", "_s")) else "ew"
         return groups
 
-    def _stop_signs(self) -> list[StopSign]:
+    def _stop_signs(self, lay: _Layout = GRID) -> list[StopSign]:
         return [
             StopSign(id=head.id, position=head.position, heading=head.heading)
-            for head in self._stop_sign_heads()
+            for head in self._stop_sign_heads(lay)
         ]
 
-    def _control_points(self, ego_route: Route) -> list[ControlPoint]:
+    def _control_points(self, ego_route: Route, lay: _Layout = GRID) -> list[ControlPoint]:
         """The heads that face the ego where its route passes their junction.
 
         Four heads govern each signalised crossroads, in two opposing phase
@@ -676,14 +853,17 @@ class SyntheticGrid:
         them, so `lamp_heading + pi` is the direction that driver travels; the
         route heading at the junction picks it out.
         """
-        roads = self._roads()
+        roads = self._roads(lay, divided=False)
         candidates = []
-        for head in self._signal_heads():
-            if self._faces_the_route(ego_route, head.heading, head.centre):
+        for head in self._signal_heads(lay):
+            if head.anchor is not None:
+                if faces_the_route(ego_route, head.heading, head.anchor, STOP_BAR_SETBACK_M):
+                    candidates.append((head.id, "signal", head.anchor, STOP_BAR_SETBACK_M))
+            elif self._faces_the_route(ego_route, head.heading, head.centre):
                 candidates.append(
                     (head.id, "signal", head.centre, stop_line_setback(ego_route, head.centre, roads))
                 )
-        for head in self._stop_sign_heads():
+        for head in self._stop_sign_heads(lay):
             if self._faces_the_route(ego_route, head.heading, head.centre):
                 candidates.append(
                     (head.id, "stop_sign", head.centre, stop_line_setback(ego_route, head.centre, roads))
@@ -698,9 +878,9 @@ class SyntheticGrid:
         return faces_the_route(ego_route, lamp_heading, centre, STOP_LINE_SETBACK_M)
 
 
-    def _crosswalks(self) -> list[Crosswalk]:
+    def _crosswalks(self, lay: _Layout = GRID) -> list[Crosswalk]:
         walks = []
-        for ns, ew in self._intersections():
+        for ns, ew in self._intersections(lay):
             # Every junction here is controlled -- signalised or all-way stop --
             # and both kinds get painted crossings. Restricting these to the
             # signalised corners left the four-way stops with none, which is
@@ -721,6 +901,22 @@ class SyntheticGrid:
                 )
             # Crossing the east-west carriageway: pedestrians walk north-south.
             for name, pos in (("e", (cx + ns.half_width + 2.0, cy)), ("w", (cx - ns.half_width - 2.0, cy))):
+                if ew.median_m:
+                    # One crossing per carriageway, with the median a refuge
+                    # between them; wider, for the boulevard's crowds.
+                    off = ew.median_m / 2 + ew.lanes * LANE_W / 2
+                    for half, dy in (("s", -off), ("n", off)):
+                        walks.append(
+                            Crosswalk(
+                                id=f"cw_{tag}_{name}{half}",
+                                center=(pos[0], cy + dy),
+                                heading=math.pi / 2,
+                                width_m=5.0,
+                                length_m=ew.lanes * LANE_W,
+                                style="continental",
+                            )
+                        )
+                    continue
                 walks.append(
                     Crosswalk(
                         id=f"cw_{tag}_{name}",
@@ -733,12 +929,12 @@ class SyntheticGrid:
                 )
         return walks
 
-    def _street_signs(self, buildings: list[Building]) -> list[StreetSign]:
+    def _street_signs(self, buildings: list[Building], lay: _Layout = GRID) -> list[StreetSign]:
         """Street-name blades at each corner, and speed-limit signs from the
         road network (`build_speed_limit_signs`, shared with OSM scenes) --
         which replaces one hand-placed "35" per arterial."""
         signs = []
-        for ns, ew in self._intersections():
+        for ns, ew in self._intersections(lay):
             cx, cy = ns.at, ew.at
             corner = (cx + ns.half_width + 2.2, cy + ew.half_width + 2.2)
             tag = f"{int(cx)}_{int(cy)}"
@@ -751,37 +947,36 @@ class SyntheticGrid:
                     kind="street_name",
                 )
             )
-        roads = self._roads()
-        keep_out = KeepOut(roads, self._crosswalks(), buildings)
+        roads = self._roads(lay)
+        keep_out = KeepOut(roads, self._crosswalks(lay), buildings)
         return signs + build_speed_limit_signs(roads, keep_out)
 
     # -- block contents ---------------------------------------------------- #
 
-    def _blocks(self) -> list[tuple[float, float, float, float]]:
+    def _blocks(self, lay: _Layout = GRID) -> list[tuple[float, float, float, float]]:
         """Buildable rectangles between the streets, inset for pavement."""
-        xs = [-MAP_EXTENT] + [s.at for s in NS_STREETS] + [MAP_EXTENT]
-        ys = [-MAP_EXTENT] + [s.at for s in EW_STREETS] + [MAP_EXTENT]
+        xs = [-lay.extent] + [s.at for s in lay.ns] + [lay.extent]
+        ys = [-lay.extent] + [s.at for s in lay.ew] + [lay.extent]
         out = []
         for i in range(len(xs) - 1):
             for j in range(len(ys) - 1):
-                x0 = xs[i] + self._edge_clearance(xs[i], "ns")
-                x1 = xs[i + 1] - self._edge_clearance(xs[i + 1], "ns")
-                y0 = ys[j] + self._edge_clearance(ys[j], "ew")
-                y1 = ys[j + 1] - self._edge_clearance(ys[j + 1], "ew")
+                x0 = xs[i] + self._edge_clearance(xs[i], lay.ns)
+                x1 = xs[i + 1] - self._edge_clearance(xs[i + 1], lay.ns)
+                y0 = ys[j] + self._edge_clearance(ys[j], lay.ew)
+                y1 = ys[j + 1] - self._edge_clearance(ys[j + 1], lay.ew)
                 if x1 - x0 > 12 and y1 - y0 > 12:
                     out.append((x0, x1, y0, y1))
         return out
 
-    def _edge_clearance(self, at: float, axis: str) -> float:
-        streets = NS_STREETS if axis == "ns" else EW_STREETS
+    def _edge_clearance(self, at: float, streets: tuple[_Street, ...]) -> float:
         for s in streets:
             if s.at == at:
                 return s.half_width + SIDEWALK_W
         return 0.0
 
-    def _buildings(self, rng: Random) -> list[Building]:
+    def _buildings(self, rng: Random, lay: _Layout = GRID) -> list[Building]:
         buildings = []
-        for bi, (x0, x1, y0, y1) in enumerate(self._blocks()):
+        for bi, (x0, x1, y0, y1) in enumerate(self._blocks(lay)):
             # Two by two lots per block, with an alley gap between them.
             mx, my = (x0 + x1) / 2, (y0 + y1) / 2
             lots = [
@@ -809,20 +1004,23 @@ class SyntheticGrid:
                 )
         return buildings
 
-    def _trees(self, rng: Random) -> list[Tree]:
+    def _trees(self, rng: Random, lay: _Layout = GRID) -> list[Tree]:
         trees = []
-        for s in STREETS:
+        for s in lay.streets:
             verge = s.half_width + TREE_VERGE_M
+            viaduct = lay.viaduct(s)
             for side in (-1.0, 1.0):
-                pos = -MAP_EXTENT + 14.0
-                while pos < MAP_EXTENT - 14.0:
+                pos = -lay.extent + 14.0
+                while pos < lay.extent - 14.0:
                     along = pos + rng.uniform(-1.5, 1.5)
                     if s.axis == "ns":
                         point = (s.at + side * verge, along)
-                        blocked = any(abs(along - e.at) < e.half_width + 6 for e in EW_STREETS)
+                        blocked = any(abs(along - e.at) < e.half_width + 6 for e in lay.ew)
                     else:
                         point = (along, s.at + side * verge)
-                        blocked = any(abs(along - n.at) < n.half_width + 6 for n in NS_STREETS)
+                        blocked = any(abs(along - n.at) < n.half_width + 6 for n in lay.ns)
+                    # No canopy growing up through a viaduct's deck.
+                    blocked = blocked or (viaduct is not None and viaduct.spans(along))
                     if not blocked:
                         trees.append(
                             Tree(
@@ -843,14 +1041,29 @@ class SyntheticGrid:
 # --------------------------------------------------------------------------- #
 
 
+def _near_kerb(
+    cx: float, cy: float, travel: tuple[float, float], approach: _Street, crossing: _Street
+) -> tuple[float, float]:
+    """Where an approach's own carriageway meets the crossing street's near
+    kerb: back along `travel` by the crossing's half-width, and right of travel
+    by the approach carriageway's centre (a divided street's sits beside its
+    median, not on the axis)."""
+    right = (travel[1], -travel[0])
+    lat = approach.median_m / 2 + approach.lanes * LANE_W / 2 if approach.median_m else 0.0
+    return (
+        cx - travel[0] * crossing.half_width + right[0] * lat,
+        cy - travel[1] * crossing.half_width + right[1] * lat,
+    )
+
+
 def _seed(scenario_id: str) -> int:
     """A stable seed. Python's hash() is salted per process, so it cannot be used."""
     return int.from_bytes(hashlib.sha256(scenario_id.encode()).digest()[:8], "big")
 
 
-def _to_thumb(p: tuple[float, float]) -> tuple[float, float]:
+def _to_thumb(p: tuple[float, float], extent: float = MAP_EXTENT) -> tuple[float, float]:
     """World metres to the sidebar thumbnail's 0..100 box."""
     return (
-        round(min(max((p[0] + MAP_EXTENT) / (2 * MAP_EXTENT) * 100, 0.0), 100.0), 3),
-        round(min(max((p[1] + MAP_EXTENT) / (2 * MAP_EXTENT) * 100, 0.0), 100.0), 3),
+        round(min(max((p[0] + extent) / (2 * extent) * 100, 0.0), 100.0), 3),
+        round(min(max((p[1] + extent) / (2 * extent) * 100, 0.0), 100.0), 3),
     )

@@ -74,6 +74,7 @@ from schema import (
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
+from sim.levels import Levels
 from sim.route import estimate_travel_s
 from sim.scorecard import Scorecard
 from sim.vehicle import BicycleModel, VehicleState
@@ -313,6 +314,7 @@ class Simulation:
     def adopt_scene(self, scene: BuiltScene) -> None:
         """Install an already-built scene. The only mutation point for `scene`."""
         self.scene: BuiltScene = scene
+        self._levels = Levels(self.scene.description.roads)
         self._traffic: TrafficModel = IdmTraffic(
             routes=self.scene.agent_routes,
             speed_limit_mps=self.scene.speed_limit_mps,
@@ -324,6 +326,7 @@ class Simulation:
             ambient=self.scene.ambient_lanes,
             density_per_lane_km=float(self.world.params["traffic_density"]),
             junctions=self.scene.junctions,
+            levels=self._levels,
         )
         self._signals = SignalController(self.scene.signal_groups)
         # Every scene-scoped draw -- hazard schedule, placement jitter,
@@ -603,6 +606,10 @@ class Simulation:
         answer whenever no ML source exists.
         """
         ego, agents, route = self.world.ego, self._traffic.agents, self.scene.ego_route
+        if self._levels:
+            # Crossing above or below the ego, on a bridge or under one: not
+            # in its world, whatever the flat sim says about (x, y).
+            agents = [a for a in agents if not self._levels.apart(ego, a.state)]
         # Full ground truth stays available as the measurement reference /
         # shadow. The driving feed is what the cabin can resolve: FOV plus
         # building occlusion, with a short rear mirror cone so lane-change

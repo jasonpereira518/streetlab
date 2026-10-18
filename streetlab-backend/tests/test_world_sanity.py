@@ -9,10 +9,16 @@ import math
 
 import pytest
 
+from map import scene_build
 from map.scene_build import LANE_W, STREETS, SyntheticGrid
 from sim.loop import Simulation
 
 SCENARIOS = [s.id for s in SyntheticGrid().scenarios()]
+
+
+def streets_of(scenario_id):
+    """The scenario's own street table: `grid-boulevard` has its own city."""
+    return next(s for s in scene_build.SCENARIOS if s.id == scenario_id).layout.streets
 
 
 def inside(point, ring) -> bool:
@@ -25,11 +31,11 @@ def inside(point, ring) -> bool:
     return hit
 
 
-def distance_to_nearest_carriageway(point) -> float:
+def distance_to_nearest_carriageway(point, streets=STREETS) -> float:
     """How far outside the painted road surface a point is; 0 when on it."""
     x, y = point
     worst = math.inf
-    for street in STREETS:
+    for street in streets:
         if street.axis == "ns":
             worst = min(worst, abs(x - street.at) - street.half_width)
         else:
@@ -60,7 +66,7 @@ def test_the_ego_route_stays_on_the_carriageway(scenario_id):
     step = 0.5
     for i in range(int(route.length_m / step)):
         point = route.point_at(i * step)
-        assert distance_to_nearest_carriageway(point) == 0.0, (
+        assert distance_to_nearest_carriageway(point, streets_of(scenario_id)) == 0.0, (
             f"{scenario_id}: route leaves the road at "
             f"({point[0]:.1f}, {point[1]:.1f})"
         )
@@ -89,7 +95,7 @@ def test_the_ego_route_keeps_right_of_the_centreline(scenario_id):
         # Skip the corner arcs, where "which street" is ambiguous.
         if abs(math.remainder(heading - route.heading_at(s + 4.0), math.tau)) > 1e-6:
             continue
-        for street in STREETS:
+        for street in streets_of(scenario_id):
             if not travelling_along(street, heading):
                 continue
             if street.axis == "ns" and abs(x - street.at) <= street.half_width:
