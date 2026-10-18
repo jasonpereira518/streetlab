@@ -718,6 +718,8 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
     /** Absent leaves the set speed alone (or seeds it entering cruise/autosteer). */
     set_speed_mps: z.number().nonnegative().optional(),
   }),
+  /** The driver's turn signal under Assist/FSD; acked with the reason if refused. */
+  cmd({ cmd: z.literal('lane_change'), direction: z.enum(['left', 'right']) }),
   /** Held driver controls at ~30 Hz. Never queued or acked — latest wins. */
   cmd({
     cmd: z.literal('drive_input'),

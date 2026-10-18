@@ -854,6 +854,15 @@ class DriveInput(_Cmd):
     brake: Unit
 
 
+class LaneChangeCmd(_Cmd):
+    """The driver's turn signal under Assist/FSD: change lane that way (or,
+    signalling back from a requested lane, go home). Acked with the reason
+    when it is not legal or safe right now."""
+
+    cmd: Literal["lane_change"] = "lane_change"
+    direction: Literal["left", "right"]
+
+
 class CameraFrameCmd(_Cmd):
     cmd: Literal["camera_frame"] = "camera_frame"
     # Monotonic per connection; the backend drops anything out of order.
@@ -884,6 +893,7 @@ Command = Annotated[
         SetPerception,
         SetDriveMode,
         DriveInput,
+        LaneChangeCmd,
         CameraFrameCmd,
         Heartbeat,
     ],

@@ -167,6 +167,23 @@ describe('keyboard shortcuts and help', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('Q and E signal a lane change, and a refusal reaches the toast', () => {
+    harness = createHarness();
+    render(
+      <>
+        <Keys />
+        <AckToast />
+      </>,
+    );
+    harness.emitScene();
+    fireEvent.keyDown(window, { key: 'e' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'right' });
+    fireEvent.keyDown(window, { key: 'e' });
+    expect(within(screen.getByRole('status')).getByText('already changing lanes')).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Q' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'left' });
+  });
+
   it('leaves keys alone while typing or on a focused button', () => {
     harness = createHarness();
     render(

@@ -164,6 +164,8 @@ export class MockSim {
   private egoAccel = 0;
   private egoLatOffset = 0;
   private planLatTarget = 0;
+  /** A driver-requested lane, as a held lateral shift (+ left). See `lane_change`. */
+  private laneShift = 0;
   private planLat = 0;
   private steering = 0;
   private battery = 78;
@@ -211,6 +213,7 @@ export class MockSim {
     this.egoLatOffset = 0;
     this.planLat = 0;
     this.planLatTarget = 0;
+    this.laneShift = 0;
     this.steering = 0;
     this.battery = 78;
     this.driveMode = 'fsd';
@@ -557,7 +560,7 @@ export class MockSim {
 
     // Lane keeping: a slow wander plus an evasive nudge away from a cut-in.
     const evade = this.cutinPhase === 'merging' ? 0.55 : 0;
-    this.planLatTarget = evade + Math.sin(this.t * 0.42) * 0.12;
+    this.planLatTarget = this.laneShift + evade + Math.sin(this.t * 0.42) * 0.12;
     this.planLat += clamp(this.planLatTarget - this.planLat, -0.9 * dt, 0.9 * dt);
     this.egoLatOffset += clamp(
       this.planLat - this.egoLatOffset,
@@ -971,6 +974,8 @@ export class MockSim {
     if (ahead < -0.02) return 'turn_right';
     if (ahead > 0.02) return 'turn_left';
     if (this.cutinPhase === 'merging') return 'yield';
+    const across = this.laneShift - this.planLat;
+    if (Math.abs(across) > 0.3) return across > 0 ? 'lane_change_left' : 'lane_change_right';
     return 'keep_lane';
   }
 
@@ -1149,6 +1154,21 @@ export class MockSim {
         return { ok: true, message: `${command.layer}=${command.visible}` };
       case 'set_camera':
         return { ok: true, message: command.view };
+      case 'lane_change': {
+        // ponytail: the mock's road is one lane each way, so a "lane" here is
+        // a held 3.4 m shift; the real backend checks lanes, gaps and stops.
+        if (this.driveMode !== 'fsd' && this.driveMode !== 'autosteer') {
+          return { ok: false, message: 'lane changes need Assist or FSD' };
+        }
+        const dir = command.direction === 'left' ? 1 : -1;
+        if (this.laneShift !== 0 && Math.sign(this.laneShift) === -dir) {
+          this.laneShift = 0;
+          return { ok: true, message: 'returning to your lane' };
+        }
+        if (this.laneShift !== 0) return { ok: false, message: 'already changing lanes' };
+        this.laneShift = 3.4 * dir;
+        return { ok: true, message: `changing lane ${command.direction}` };
+      }
       case 'set_drive_mode':
         if (command.mode !== 'off' && this.gear === 'R') {
           if (this.egoSpeed < -0.05) {

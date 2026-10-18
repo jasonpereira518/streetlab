@@ -217,6 +217,22 @@ describe('mock commands', () => {
     expect(sim.apply({ id: 'f', cmd: 'set_drive_mode', mode: 'fsd' }).ok).toBe(false);
   });
 
+  it('changes lane on a signal and comes back on the opposite one', () => {
+    const sim = new MockSim();
+    for (let i = 0; i < 60; i++) sim.step();
+    expect(sim.apply({ id: 'l', cmd: 'lane_change', direction: 'left' })).toMatchObject({ ok: true });
+    let signalled = false;
+    for (let i = 0; i < 600; i++) {
+      sim.step();
+      if (sim.frame().ego.turn_signal === 'left') signalled = true;
+    }
+    expect(signalled).toBe(true);
+    expect(sim.frame().ego.turn_signal).toBe('off');
+    expect(sim.apply({ id: 'b', cmd: 'lane_change', direction: 'right' }).message).toBe('returning to your lane');
+    sim.apply({ id: 'm', cmd: 'set_drive_mode', mode: 'off' });
+    expect(sim.apply({ id: 'x', cmd: 'lane_change', direction: 'left' }).ok).toBe(false);
+  });
+
   it('applies a known parameter', () => {
     const sim = new MockSim();
     const res = sim.apply({

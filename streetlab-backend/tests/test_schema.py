@@ -330,6 +330,7 @@ COMMANDS = [
     {"id": "c15", "cmd": "set_drive_mode", "mode": "cruise", "set_speed_mps": 11.2},
     {"id": "c16", "cmd": "set_drive_mode", "mode": "fsd", "set_speed_mps": None},
     {"id": "c17", "cmd": "drive_input", "steer": -0.4, "throttle": 1.0, "brake": 0.0},
+    {"id": "c18", "cmd": "lane_change", "direction": "left"},
 ]
 
 

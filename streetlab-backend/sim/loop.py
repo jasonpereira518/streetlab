@@ -1424,6 +1424,25 @@ class Simulation:
             self._change_drive_mode("off")
         return CommandOutcome(ok=True)
 
+    def _cmd_lane_change(self, command) -> CommandOutcome:
+        if self.world.drive_mode not in _PLANNER_STEERS:
+            return CommandOutcome(ok=False, message="lane changes need Assist or FSD")
+        fsm = getattr(self._planner, "fsm", None)
+        if fsm is None or not hasattr(fsm, "request_lane_change"):
+            return CommandOutcome(ok=False, message="this planner cannot change lanes")
+        route, ego = self.scene.ego_route, self._ego_ahead()
+        ok, message = fsm.request_lane_change(
+            1 if command.direction == "left" else -1,
+            ego,
+            route,
+            route.project((ego.x, ego.y)),
+            self.scene.lanes,
+            self.world.detections,
+            self.scene.control_points,
+            {s.id: s for s in self.world.signals},
+        )
+        return CommandOutcome(ok=ok, message=message)
+
     def _cmd_set_perception(self, command) -> CommandOutcome:
         if command.mode == "ml" and self.perception_pipeline is None:
             return CommandOutcome(

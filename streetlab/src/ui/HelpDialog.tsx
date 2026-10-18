@@ -17,6 +17,8 @@ export const SHORTCUTS: Array<{ keys: string; does: string }> = [
   { keys: 'L', does: 'Assist (cruise + lane keep) on / off' },
   { keys: 'C', does: 'Cruise on / off' },
   { keys: '[ / ]', does: 'Set speed −5 / +5 mph' },
+  { keys: 'Q / E', does: 'Signal left / right: Assist or FSD changes lane (signal back to return)' },
+  { keys: 'Gamepad', does: 'Left stick steers, RT / LT throttle and brake; Y FSD, X Assist, B Cruise, d-pad set speed, LB / RB signal' },
   { keys: '?', does: 'Show / hide this help' },
   { keys: 'Esc', does: 'Close help or an open menu' },
 ];
@@ -64,6 +66,8 @@ export function useShortcuts(): void {
         s.toggleDriveMode('autosteer');
       } else if (e.key === 'c' || e.key === 'C') {
         s.toggleDriveMode('cruise');
+      } else if (e.key === 'q' || e.key === 'Q' || e.key === 'e' || e.key === 'E') {
+        s.signalLaneChange(e.key.toLowerCase() === 'q' ? 'left' : 'right');
       } else if (e.key === '[' || e.key === ']') {
         s.nudgeSetSpeed((e.key === ']' ? 5 : -5) * MPH_TO_MPS);
       }

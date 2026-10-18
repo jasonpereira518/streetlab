@@ -10,6 +10,8 @@
 import { useEffect } from 'react';
 import { useSimStore } from '../store/simStore';
 import { ownsTheKey } from '../ui/HelpDialog';
+import { MPH_TO_MPS } from '../units';
+import { firstPad, mergeAxes, padAxes, pressedSince, type PadAction } from './gamepad';
 
 export interface Axes {
   /** -1 full right .. +1 full left, matching `steering_angle`. */
@@ -75,15 +77,36 @@ export function isZero(a: Axes): boolean {
   return a.steer === 0 && a.throttle === 0 && a.brake === 0;
 }
 
-/** Mount once (App). Sends while any axis is live, plus one final zero frame. */
+/** A pad button's one-shot action, through the same store calls the keys use. */
+function runPadAction(action: PadAction): void {
+  const s = useSimStore.getState();
+  if (action === 'fsd') s.toggleDriveMode('fsd');
+  else if (action === 'assist') s.toggleDriveMode('autosteer');
+  else if (action === 'cruise') s.toggleDriveMode('cruise');
+  else if (action === 'faster') s.nudgeSetSpeed(5 * MPH_TO_MPS);
+  else if (action === 'slower') s.nudgeSetSpeed(-5 * MPH_TO_MPS);
+  else s.signalLaneChange(action === 'signalLeft' ? 'left' : 'right');
+}
+
+/** Mount once (App). Keyboard and gamepad share one 30 Hz sender: it sends
+ * while any axis is live, plus one final zero frame, and is silent at rest. */
 export function useDriveKeys(): void {
   useEffect(() => {
     const held = new Set<Control>();
     // Keys pressed since the last sample: a tap shorter than one 33 ms tick
     // still counts once, instead of slipping between samples unseen.
     const tapped = new Set<Control>();
-    let axes: Axes = ZERO_AXES;
+    let axes: Axes = ZERO_AXES; // the keyboard's ramped axes
+    let sent: Axes = ZERO_AXES; // what went out last, keyboard and pad merged
     let last = performance.now();
+    // Polled only while a pad is connected; Chrome exposes one only after a
+    // button is pressed with the page focused, which fires `gamepadconnected`.
+    let padOn = firstPad() !== null;
+    let padButtons: boolean[] = [];
+    const onPad = () => {
+      padOn = firstPad() !== null;
+      padButtons = [];
+    };
 
     const onDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -106,18 +129,31 @@ export function useDriveKeys(): void {
       const now = performance.now();
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      const next = shapeAxes(axes, new Set([...held, ...tapped]), dt);
+      axes = shapeAxes(axes, new Set([...held, ...tapped]), dt);
       tapped.clear();
-      if (!isZero(next) || !isZero(axes)) {
-        useSimStore.getState().send({ cmd: 'drive_input', ...next });
+      let next = axes;
+      const pad = padOn ? firstPad() : null;
+      const s = useSimStore.getState();
+      if (pad && !s.failure && !s.queue) {
+        next = mergeAxes(axes, padAxes(pad));
+        const { actions, now } = pressedSince(pad, padButtons);
+        padButtons = now;
+        actions.forEach(runPadAction);
       }
-      axes = next;
+      if (!isZero(next) || !isZero(sent)) {
+        s.send({ cmd: 'drive_input', ...next });
+      }
+      sent = next;
     }, 1000 / SEND_HZ);
 
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);
     window.addEventListener('blur', onBlur);
+    window.addEventListener('gamepadconnected', onPad);
+    window.addEventListener('gamepaddisconnected', onPad);
     return () => {
+      window.removeEventListener('gamepadconnected', onPad);
+      window.removeEventListener('gamepaddisconnected', onPad);
       clearInterval(timer);
       window.removeEventListener('keydown', onDown);
       window.removeEventListener('keyup', onUp);

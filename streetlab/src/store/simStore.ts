@@ -422,6 +422,8 @@ export interface SimStoreState {
   toggleDriveMode(mode: CruiseMode): void;
   /** Move the cruise/Assist set speed; a no-op in Manual and FSD. */
   nudgeSetSpeed(deltaMps: number): void;
+  /** The turn signal under Assist/FSD; a refusal says why in the AckToast. */
+  signalLaneChange(direction: 'left' | 'right'): void;
 }
 
 let transportRef: Transport | null = null;
@@ -727,6 +729,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     // doing right now, and the mode changes under us (the ladder) anyway.
     const current = frameBus.latest?.ego.cruise.mode;
     get().setDriveMode(current === mode ? 'off' : mode);
+  },
+
+  signalLaneChange(direction) {
+    get().send({ cmd: 'lane_change', direction });
   },
 
   nudgeSetSpeed(deltaMps) {
