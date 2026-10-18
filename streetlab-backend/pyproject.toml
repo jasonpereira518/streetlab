@@ -37,6 +37,7 @@ dev = [
 testpaths = ["tests", "../contract"]
 asyncio_mode = "auto"
 filterwarnings = ["error"]
+markers = ["slow: closed-loop replays of whole scenarios; PR CI skips them, main and the nightly run them"]
 
 [tool.setuptools]
 packages = ["server", "sim", "map", "perception", "plan", "evaluation"]

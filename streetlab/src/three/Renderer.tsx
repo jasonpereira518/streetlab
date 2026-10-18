@@ -28,6 +28,8 @@ import { buildWorld } from './world';
 import type { HeightFn } from './terrain';
 import type { World } from './world';
 import { EgoVehicle } from './ego';
+import { Cabin } from './cabin';
+import { FsdScreen } from './fsdScreen';
 import { TrafficFleet } from './agents';
 import { ChaseCamera } from './chaseCam';
 import { PathRibbon } from './pathRibbon';
@@ -376,6 +378,12 @@ function mount(
   assignChannel(ego.group, CH.EGO);
   assignChannel(radar.mesh, CH.OVERLAY);
   assignChannel(ribbon.mesh, CH.OVERLAY);
+  // The interior rides on the body mesh, so it rolls and pitches with it.
+  // Added after the EGO assignment above: it stays on its own CABIN channel.
+  const cabin = new Cabin();
+  ego.mesh.add(cabin.group);
+  cam.setCockpitMount(cabin.eyeAnchor);
+  const fsdScreen = new FsdScreen(cabin);
   scene.add(ego.group, fleet.group, ribbon.mesh, hazards.group);
 
   let world: World | null = null;
@@ -414,7 +422,7 @@ function mount(
     // World categories: hidden from the user's camera only. The traffic fleet
     // is world geometry too, so no toggle touches it -- `detections` governs
     // the annotations drawn over it.
-    applyMainLayers(cam.camera, layers);
+    applyMainLayers(cam.camera, layers, cameraView);
     hazards.setVisible(layers.detections);
     hazards.setLabelsVisible(layers.labels);
     shadowBoxes.setVisible(layers.detections);
@@ -472,7 +480,10 @@ function mount(
     if (state.sceneEpoch !== prev.sceneEpoch) rebuildWorld(state);
     if (state.layers !== prev.layers) applyLayers(state.layers);
     if (state.params !== prev.params) applyParams(state.params);
-    if (state.cameraView !== prev.cameraView) cameraView = state.cameraView;
+    if (state.cameraView !== prev.cameraView) {
+      cameraView = state.cameraView;
+      applyLayers(state.layers);
+    }
   });
 
   {
@@ -548,6 +559,16 @@ function mount(
     const egoGround = world ? world.groundFor(sample.pose.heading) : ground_;
     ego.setPose(sample.pose, egoGround);
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
+    if (cameraView === 'cockpit') {
+      cabin.update(
+        sample.steering_angle,
+        sample.accel_mps2,
+        sample.speed_mps,
+        frame.ego.turn_signal,
+        performance.now() / 1000,
+        dt,
+      );
+    }
     fleet.update(frame.world_agents, dt, world ? world.groundFor : null);
     ribbon.update(sample.plan, ground_);
     ribbon.setIntent(frame.plan.maneuver);
@@ -607,6 +628,11 @@ function mount(
     // tick, rather than trusting that a capture never outlives one frame. See
     // detectorCamera.ts's `capture()` for the timing this is guarding.
     if (!detectorCamera.renderTargetBusy()) {
+      // The centre screen's view first, so this tick's main render shows it.
+      // Same slot, same gate; synchronous and restored before it returns.
+      if (frame && cameraView === 'cockpit') {
+        fsdScreen.update(renderer, scene, ego.group, frame, frame.ego.turn_signal, now / 1000, dt);
+      }
       renderer.render(scene, cam.camera);
     }
 
@@ -695,6 +721,8 @@ function mount(
     canvas.removeEventListener('wheel', onWheel);
     world?.dispose();
     ego.dispose();
+    cabin.dispose();
+    fsdScreen.dispose();
     fleet.dispose();
     ribbon.dispose();
     hazards.dispose();

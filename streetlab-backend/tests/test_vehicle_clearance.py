@@ -224,16 +224,12 @@ def test_no_vehicle_ever_enters_a_building_or_a_prop(scenario_id, seed, run_s):
 DENSE_MARGIN_M = 0.05
 DENSE_CASES = [
     ("grid-loop", 7),
-    # Measured 2026-10-14: the 11.5 m bus on the ego's block loop (veh_04),
-    # turning right on its 6 m fillet, swings its body 0.38 m into a car
-    # waiting at the cross street's stop line (t=137.4 s). The body pivots
-    # about its centre; a real bus off-tracks (rear axle inside the path,
-    # front overhang out) and would not turn a block corner like a car.
-    pytest.param(
-        "grid-merge",
-        7,
-        marks=pytest.mark.xfail(strict=True, reason="loop bus swings into a car waiting at its line"),
-    ),
+    # Measured 2026-10-14: the 11.5 m bus on the ego's block loop (veh_04)
+    # swung its body 0.38 m into a car waiting at the receiving street's line
+    # (t=137.4 s). That approach is now set back (see the bus tests below).
+    ("grid-merge", 7),
+    # The other loop with a bus on it.
+    ("grid-arterial", 7),
     ("grid-signals", 7),
     # Dense Nob Hill, measured 2026-10-16: none touch over 180 s once traffic
     # gives way at junctions with no sign or signal (see test_right_of_way.py),
@@ -249,3 +245,42 @@ def test_dense_traffic_never_touches_leaves_the_road_or_enters_anything(scenario
     assert sep > DENSE_MARGIN_M, f"{where[1]} and {where[2]} {sep:+.2f} m apart at t={where[0]:.1f} s"
     assert off <= KERB_CUT_M, f"{where_off[1]} {off:.2f} m over the kerb at t={where_off[0]:.1f} s"
     assert bld == 0.0 and prop == 0.0
+
+
+# -- buses on the block loops ------------------------------------------------- #
+#
+# An 11.5 m bus on a loop takes the lane's 6 m corner from its line like
+# everything else, and its front overhang sweeps the receiving street's
+# oncoming approach: 0.38 m into a car waiting there (grid-merge seed 7,
+# dense). Measured 2026-10-17 at every bus-loop corner: exactly that one
+# approach conflicts, and a 4.0-7.5 m setback clears it by 0.3 m. Taking the
+# corner wider needs MORE (5.5-11 m): the body is a rigid box on its path.
+
+
+@pytest.mark.parametrize("scenario_id", ["grid-merge", "grid-arterial"])
+def test_the_loop_bus_is_back_on_the_loop(scenario_id):
+    sim = Simulation(SyntheticGrid(), scenario_id, seed=7)
+    assert next(a for a in sim._traffic.agents if a.id == "veh_04").cls == "bus"
+
+
+@pytest.mark.parametrize("scenario_id,plain", [("grid-merge", "grid-loop"), ("grid-arterial", "grid-night")])
+def test_receiving_approaches_are_set_back_where_the_loop_bus_turns(scenario_id, plain):
+    """Same block, with and without a bus on it: only the bus scenario's
+    lines move, one approach per loop corner, 4-8 m back, and the head that
+    governs each says so (`stop_bar_extra_m`) so the bar is painted there."""
+    bus = SyntheticGrid().build(scenario_id)
+    same = SyntheticGrid().build(plain)
+    lines = lambda b: {
+        (cp.id, round(lane.route.point_at(0.0)[0], 1), round(lane.route.point_at(0.0)[1], 1)): cp.s
+        for lane in b.ambient_lanes for cp in lane.control_points
+    }
+    moved = {k[0]: same_s - s for k, same_s in lines(same).items() for s in [lines(bus)[k]] if same_s - s > 1e-6}
+    assert len(moved) == 4, moved  # a block loop turns at its four corners
+    assert all(4.0 <= back <= 8.0 for back in moved.values()), moved
+    heads = {h.id: h for h in [*bus.description.stop_signs, *bus.description.traffic_lights]}
+    for head, back in moved.items():
+        assert heads[head].stop_bar_extra_m == pytest.approx(back)
+    plain_heads = [*same.description.stop_signs, *same.description.traffic_lights]
+    assert all(h.stop_bar_extra_m == 0.0 for h in plain_heads)
+    # The ego's own lines do not move: its approaches are never the receiving one.
+    assert [cp.s for cp in bus.control_points] == [cp.s for cp in same.control_points]

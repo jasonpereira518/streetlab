@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 11
+PROTOCOL_VERSION = 12
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -181,12 +181,17 @@ class TrafficLight(Wire):
     # Horizontal mast-arm reach; 0 means a pole-mounted head.
     mast_arm_m: NonNeg
     height_m: Pos
+    # How much further back than the standard bar the approach it governs
+    # stops: set back where a bus turns across it.
+    stop_bar_extra_m: NonNeg = 0.0
 
 
 class StopSign(Wire):
     id: str
     position: Vec2
     heading: Num
+    # As `TrafficLight.stop_bar_extra_m`. The sign stands level with the bar.
+    stop_bar_extra_m: NonNeg = 0.0
 
 
 class Tree(Wire):
@@ -576,6 +581,9 @@ class Cruise(Wire):
     set_speed_mps: NonNeg
 
 
+TurnSignal = Literal["off", "left", "right"]
+
+
 class Ego(Wire):
     pose: Pose
     speed_mps: Num
@@ -589,6 +597,8 @@ class Ego(Wire):
     speed_limit_mps: NonNeg
     cruise: Cruise
     size: Size
+    # Indicator state, decided by the planner ahead of the turn it announces.
+    turn_signal: TurnSignal
 
 
 class SignalState(Wire):

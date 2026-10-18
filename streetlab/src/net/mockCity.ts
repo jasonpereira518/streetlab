@@ -330,6 +330,7 @@ function buildTrafficLights(): TrafficLight[] {
         heading: Math.atan2(-dy, -dx),
         mast_arm_m: crossClear + 2.0,
         height_m: 5.6,
+        stop_bar_extra_m: 0,
       });
     }
   }
@@ -361,6 +362,7 @@ function buildStopSigns(): StopSign[] {
           iy - dy * (alongClear + 2.2) + ry * (crossClear + 2.0),
         ],
         heading: Math.atan2(-dy, -dx),
+        stop_bar_extra_m: 0,
       });
     }
   }

@@ -1,6 +1,6 @@
 {
   "type": "scene_description",
-  "protocol": 11,
+  "protocol": 12,
   "scene_id": "synthetic-grid:grid-merge",
   "scenario_id": "grid-merge",
   "name": "Hyde Street Merge",
@@ -2131,7 +2131,8 @@
       ],
       "heading": -1.5707963267948966,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_-80_0_s",
@@ -2141,7 +2142,8 @@
       ],
       "heading": 1.5707963267948966,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_-80_0_e",
@@ -2151,7 +2153,8 @@
       ],
       "heading": 3.141592653589793,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_-80_0_w",
@@ -2161,7 +2164,8 @@
       ],
       "heading": 0.0,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_-80_n",
@@ -2171,7 +2175,8 @@
       ],
       "heading": -1.5707963267948966,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_-80_s",
@@ -2181,7 +2186,8 @@
       ],
       "heading": 1.5707963267948966,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_-80_e",
@@ -2191,7 +2197,8 @@
       ],
       "heading": 3.141592653589793,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_-80_w",
@@ -2201,7 +2208,8 @@
       ],
       "heading": 0.0,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_0_n",
@@ -2211,7 +2219,8 @@
       ],
       "heading": -1.5707963267948966,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_0_s",
@@ -2221,7 +2230,8 @@
       ],
       "heading": 1.5707963267948966,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 4.0
     },
     {
       "id": "tl_0_0_e",
@@ -2231,7 +2241,8 @@
       ],
       "heading": 3.141592653589793,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_0_w",
@@ -2241,7 +2252,8 @@
       ],
       "heading": 0.0,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_80_n",
@@ -2251,7 +2263,8 @@
       ],
       "heading": -1.5707963267948966,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_80_s",
@@ -2261,7 +2274,8 @@
       ],
       "heading": 1.5707963267948966,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_80_e",
@@ -2271,7 +2285,8 @@
       ],
       "heading": 3.141592653589793,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_0_80_w",
@@ -2281,7 +2296,8 @@
       ],
       "heading": 0.0,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 4.0
     },
     {
       "id": "tl_80_0_n",
@@ -2291,7 +2307,8 @@
       ],
       "heading": -1.5707963267948966,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_80_0_s",
@@ -2301,7 +2318,8 @@
       ],
       "heading": 1.5707963267948966,
       "mast_arm_m": 3.0,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "tl_80_0_e",
@@ -2311,7 +2329,8 @@
       ],
       "heading": 3.141592653589793,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 7.5
     },
     {
       "id": "tl_80_0_w",
@@ -2321,7 +2340,8 @@
       ],
       "heading": 0.0,
       "mast_arm_m": 4.8,
-      "height_m": 6.0
+      "height_m": 6.0,
+      "stop_bar_extra_m": 0.0
     }
   ],
   "stop_signs": [
@@ -2331,7 +2351,8 @@
         -75.2,
         -88.8
       ],
-      "heading": -1.5707963267948966
+      "heading": -1.5707963267948966,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_-80_-80_s",
@@ -2339,7 +2360,8 @@
         -84.8,
         -71.2
       ],
-      "heading": 1.5707963267948966
+      "heading": 1.5707963267948966,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_-80_-80_e",
@@ -2347,7 +2369,8 @@
         -88.8,
         -84.8
       ],
-      "heading": 3.141592653589793
+      "heading": 3.141592653589793,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_-80_-80_w",
@@ -2355,7 +2378,8 @@
         -71.2,
         -75.2
       ],
-      "heading": 0.0
+      "heading": 0.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_-80_80_n",
@@ -2363,7 +2387,8 @@
         -75.2,
         71.2
       ],
-      "heading": -1.5707963267948966
+      "heading": -1.5707963267948966,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_-80_80_s",
@@ -2371,7 +2396,8 @@
         -84.8,
         88.8
       ],
-      "heading": 1.5707963267948966
+      "heading": 1.5707963267948966,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_-80_80_e",
@@ -2379,7 +2405,8 @@
         -88.8,
         75.2
       ],
-      "heading": 3.141592653589793
+      "heading": 3.141592653589793,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_-80_80_w",
@@ -2387,7 +2414,8 @@
         -71.2,
         84.8
       ],
-      "heading": 0.0
+      "heading": 0.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_80_-80_n",
@@ -2395,7 +2423,8 @@
         84.8,
         -88.8
       ],
-      "heading": -1.5707963267948966
+      "heading": -1.5707963267948966,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_80_-80_s",
@@ -2403,7 +2432,8 @@
         75.2,
         -71.2
       ],
-      "heading": 1.5707963267948966
+      "heading": 1.5707963267948966,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_80_-80_e",
@@ -2411,7 +2441,8 @@
         71.2,
         -84.8
       ],
-      "heading": 3.141592653589793
+      "heading": 3.141592653589793,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_80_-80_w",
@@ -2419,15 +2450,17 @@
         88.8,
         -75.2
       ],
-      "heading": 0.0
+      "heading": 0.0,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_80_80_n",
       "position": [
         84.8,
-        71.2
+        63.7
       ],
-      "heading": -1.5707963267948966
+      "heading": -1.5707963267948966,
+      "stop_bar_extra_m": 7.5
     },
     {
       "id": "ss_80_80_s",
@@ -2435,7 +2468,8 @@
         75.2,
         88.8
       ],
-      "heading": 1.5707963267948966
+      "heading": 1.5707963267948966,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_80_80_e",
@@ -2443,7 +2477,8 @@
         71.2,
         75.2
       ],
-      "heading": 3.141592653589793
+      "heading": 3.141592653589793,
+      "stop_bar_extra_m": 0.0
     },
     {
       "id": "ss_80_80_w",
@@ -2451,7 +2486,8 @@
         88.8,
         84.8
       ],
-      "heading": 0.0
+      "heading": 0.0,
+      "stop_bar_extra_m": 0.0
     }
   ],
   "trees": [

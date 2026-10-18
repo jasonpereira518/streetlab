@@ -63,6 +63,15 @@ def test_second_lookup_is_served_from_disk(tmp_path):
     assert inner.lookups == 1
 
 
+def test_a_remembered_place_is_found_offline_without_a_lookup(tmp_path):
+    """A picked suggestion never calls `lookup`; remembering it is what makes
+    typing the same address later work with no network."""
+    CachedGeocoder(CountingGeocoder(), DiskCache(tmp_path)).remember("Nob  Hill", PLACE)
+    offline = CountingGeocoder(error=GeocodeUnavailable("offline"))
+    assert CachedGeocoder(offline, DiskCache(tmp_path)).lookup("nob hill") == PLACE
+    assert offline.lookups == 0
+
+
 def test_key_is_case_and_whitespace_insensitive(tmp_path):
     inner = CountingGeocoder()
     g = CachedGeocoder(inner, DiskCache(tmp_path))
