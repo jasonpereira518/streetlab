@@ -816,6 +816,9 @@ export class MockSim {
           set_speed_mps: this.targetLimit(this.params.ego_speed_cap_mph * 0.44704),
         },
         size: EGO_SIZE,
+        // No lookahead here: the mock signals only while the turn or lane
+        // change is its current manoeuvre. The real planner signals ahead.
+        turn_signal: maneuver.endsWith('_left') ? 'left' : maneuver.endsWith('_right') ? 'right' : 'off',
       },
       detections,
       world_agents: detections.map((d) => ({

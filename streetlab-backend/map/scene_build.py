@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from random import Random
 from typing import Protocol, runtime_checkable
 
@@ -441,6 +442,13 @@ class SyntheticGrid:
         # side streets 25. Without this every grid circuit, "California
         # Arterial" included, ran at one scene-wide 25 mph.
         ego_route.segment_limits = speed_limits_along(ego_route, roads)
+        ambient = self._ambient_lanes(lay)
+        back = _bus_setbacks(scenario.block, traffic, lay)
+        if back:
+            ambient = [
+                AmbientLane(lane.route, [replace(cp, s=cp.s - back.get(cp.id, 0.0)) for cp in lane.control_points])
+                for lane in ambient
+            ]
         # Same rng order as before: buildings, then trees.
         buildings = self._buildings(rng, lay)
         trees = self._trees(rng, lay)
@@ -462,8 +470,21 @@ class SyntheticGrid:
             buildings=buildings,
             crosswalks=self._crosswalks(lay),
             kerb_returns=kerb_returns(roads),
-            traffic_lights=self._traffic_lights(lay),
-            stop_signs=self._stop_signs(lay),
+            traffic_lights=[
+                light.model_copy(update={"stop_bar_extra_m": back[light.id]}) if light.id in back else light
+                for light in self._traffic_lights(lay)
+            ],
+            # A sign stands level with its bar, so it goes back with it.
+            stop_signs=[
+                sign.model_copy(update={
+                    "stop_bar_extra_m": back[sign.id],
+                    "position": (
+                        sign.position[0] + math.cos(sign.heading) * back[sign.id],
+                        sign.position[1] + math.sin(sign.heading) * back[sign.id],
+                    ),
+                }) if sign.id in back else sign
+                for sign in self._stop_signs(lay)
+            ],
             trees=trees,
             street_signs=self._street_signs(buildings, lay),
             reference_path=ego_route.resample(REFERENCE_STEP_M),
@@ -486,7 +507,7 @@ class SyntheticGrid:
             traffic_count=traffic,
             control_points=self._control_points(ego_route, lay),
             lanes=derive_lanes(ego_route, description.roads),
-            ambient_lanes=self._ambient_lanes(lay),
+            ambient_lanes=ambient,
             # Boxes from whole corridors: a divided street is ONE junction its
             # signal governs, not one per carriageway.
             junctions=junctions(self._roads(lay, divided=False)),
@@ -1067,3 +1088,71 @@ def _to_thumb(p: tuple[float, float], extent: float = MAP_EXTENT) -> tuple[float
         round(min(max((p[0] + extent) / (2 * extent) * 100, 0.0), 100.0), 3),
         round(min(max((p[1] + extent) / (2 * extent) * 100, 0.0), 100.0), 3),
     )
+
+
+#: Clear space a car or truck waiting at a line keeps from a loop bus's turn.
+BUS_SWEEP_CLEAR_M = 0.3
+#: The furthest a line is moved back for one; measured need is 4.0-7.5 m.
+_MAX_BUS_SETBACK_M = 15.0
+
+
+@lru_cache(maxsize=None)
+def _bus_setbacks(
+    block: tuple[float, float, float, float], traffic: int, lay: _Layout = GRID
+) -> dict[str, float]:
+    """Head id -> how far back the approach it governs stops, where a bus on
+    this block's loop turns across it; empty with no bus on the loop.
+
+    A bus takes the lane's own 6 m corner from its line like everything else
+    (it waits in lane), and as a rigid 11.5 m box its front overhang sweeps the
+    receiving street's oncoming approach -- 0.38 m into a car waiting there
+    (grid-merge seed 7, dense). Measured 2026-10-17 at every bus-loop corner:
+    that is the one approach that conflicts, and 4.0-7.5 m clears it. Taking
+    the corner wider swept MORE of it (5.5-11 m). Worked out here from the
+    pose the sim draws, so the two cannot disagree.
+    """
+    from schema import Size
+    from sim.agents import _PROFILES, _STOP_SHORT_M, _body_heading
+    from sim.scorecard import _corners, obb_separation
+
+    buses = [p for i in range(traffic) for p in [_PROFILES[i % len(_PROFILES)]] if p[0] == "bus"]
+    if not buses:
+        return {}
+    _, length, width, _, _ = max(buses, key=lambda p: p[1])
+    grid = SyntheticGrid()
+    loop = grid._block_route(block, lay)
+    waiting = [(p[1], p[2]) for p in _PROFILES if p[0] in ("car", "truck")]
+    x0, x1, y0, y1 = block
+    out: dict[str, float] = {}
+    for centre in ((x0, y0), (x0, y1), (x1, y1), (x1, y0)):
+        at = loop.project(centre)
+        sweep = [
+            _corners(*loop.point_at(s), _body_heading(loop, s, length), length, width)
+            for s in [at - 30.0 + 0.5 * k for k in range(121)]
+        ]
+        for lane in grid._ambient_lanes(lay):
+            for cp in lane.control_points:
+                if cp.position != centre:
+                    continue
+                # The bus's own lane: what waits there queues ahead of it.
+                here = lane.route.point_at(cp.s - 3.0)
+                if math.dist(loop.point_at(loop.project(here)), here) < 1.0:
+                    continue
+                need = 0.0
+                for ln, wd in waiting:
+                    back = need
+                    while back <= _MAX_BUS_SETBACK_M:
+                        rest = cp.s - _STOP_SHORT_M - back
+                        box = _corners(*lane.route.point_at(rest), lane.route.heading_at(rest), ln, wd)
+                        reach = (length + ln) / 2 + 1.0
+                        if all(
+                            obb_separation(b, box) >= BUS_SWEEP_CLEAR_M
+                            for b in sweep
+                            if math.dist(b[0], box[0]) < reach + length
+                        ):
+                            break
+                        back += 0.5
+                    need = max(need, back)
+                if need > 0:
+                    out[cp.id] = max(out.get(cp.id, 0.0), need)
+    return out

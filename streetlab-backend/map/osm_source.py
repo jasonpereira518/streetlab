@@ -492,7 +492,10 @@ class OsmSceneSource:
         # bbox that reproduces the exact cache key the shipped extract was
         # recorded under, every time.
         _report(on_progress, "Geocoding address", 0.05)
+        remember = getattr(self.geocoder, "remember", None)
         place = spec.place if spec.place is not None else self.geocoder.lookup(spec.query)
+        if spec.place is not None and remember is not None:
+            remember(spec.query, place)
         origin = LatLon(lat=place.lat, lon=place.lon)
 
         dest_place: Place | None = None
@@ -504,6 +507,8 @@ class OsmSceneSource:
                 if spec.destination_place is not None
                 else self.geocoder.lookup(spec.destination)
             )
+            if spec.destination_place is not None and remember is not None:
+                remember(spec.destination, dest_place)
             dest_xy = to_local(dest_place.lat, dest_place.lon, origin)
             span_m = math.dist((0.0, 0.0), dest_xy)
             if span_m > MAX_TRIP_SPAN_M:

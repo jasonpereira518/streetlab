@@ -81,3 +81,11 @@ export function makeRng(seed: number): () => number {
     return s / 0x100000000;
   };
 }
+
+/** Road-wheel angle to hand-wheel angle; shared by the 2D gauge and the 3D cabin. */
+export const STEERING_RATIO = 14;
+export const MAX_WHEEL_DEG = 450;
+
+/** Hand-wheel angle in degrees for a road-wheel angle in radians (+ = left). */
+export const handWheelDeg = (roadWheelRad: number): number =>
+  clamp(roadWheelRad * RAD_TO_DEG * STEERING_RATIO, -MAX_WHEEL_DEG, MAX_WHEEL_DEG);

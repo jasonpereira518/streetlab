@@ -56,6 +56,25 @@ def test_picked_place_issues_no_geocode_request(src):
     assert geocoder.lookups == []
 
 
+def test_a_picked_place_is_remembered_for_next_time(tmp_path):
+    """After a picked load the same text must resolve with no network, so the
+    place is handed to the geocoder's `remember` (origin and destination)."""
+    class Spy(NoGeocode):
+        def __init__(self):
+            super().__init__()
+            self.remembered: dict[str, Place] = {}
+
+        def remember(self, query, place):
+            self.remembered[query] = place
+
+    g = Spy()
+    source = OsmSceneSource(g, OverpassClient(Replay(), DiskCache(tmp_path)), locations=())
+    dest = Place(lat=37.7960, lon=-122.4130, display_name="dest")
+    source.build_location("A", 600.0, destination="B", place=NOB, destination_place=dest)
+    assert g.remembered == {"A": NOB, "B": dest}
+    assert g.lookups == []
+
+
 def test_picked_destination_issues_no_geocode_request(src):
     source, geocoder = src
     dest = Place(lat=37.7960, lon=-122.4130, display_name="dest")

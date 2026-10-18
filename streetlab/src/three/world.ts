@@ -330,7 +330,8 @@ const approachKey = (road: number, crossing: number, dir: 1 | -1) => `${road}:${
 
 /**
  * Which junction approaches a stop sign or signal head governs, as
- * `approachKey`s: `dir` +1 for traffic travelling the way the centreline runs.
+ * `approachKey`s (`dir` +1 for traffic travelling the way the centreline
+ * runs), each with how much further back than standard its bar is painted.
  *
  * Worked out from the devices themselves, so it holds for every scene source
  * alike. A device faces the traffic it governs, which therefore travels
@@ -342,8 +343,8 @@ function controlledApproaches(
   scene: SceneDescription,
   lines: Polyline[],
   crossings: Crossing[][],
-): Set<string> {
-  const out = new Set<string>();
+): Map<string, number> {
+  const out = new Map<string, number>();
   const devices = [...scene.stop_signs, ...scene.traffic_lights];
   for (const d of devices) {
     const tx = -Math.cos(d.heading);
@@ -378,7 +379,10 @@ function controlledApproaches(
         pickGap = gap;
       }
     });
-    if (pick >= 0) out.add(approachKey(road, pick, dir));
+    if (pick >= 0) {
+      const key = approachKey(road, pick, dir);
+      out.set(key, Math.max(out.get(key) ?? 0, d.stop_bar_extra_m ?? 0));
+    }
   }
   return out;
 }
@@ -1128,8 +1132,10 @@ export function buildWorld(scene: SceneDescription): World {
           [forward, -h, 1],
           [backward, divide, -1],
         ] as const) {
-          if (lanes === 0 || !controlled.has(approachKey(i, ci, sign))) continue;
-          const at = c.s - sign * (c.reach + h * c.skew + STOP_BAR_SETBACK_M);
+          const extra = controlled.get(approachKey(i, ci, sign));
+          if (lanes === 0 || extra === undefined) continue;
+          // `extra`: set back where a bus turns across this approach.
+          const at = c.s - sign * (c.reach + h * c.skew + STOP_BAR_SETBACK_M + extra);
           if (at < span.from || at > span.to) continue;
           solid(
             { from: at - STOP_BAR_M / 2, to: at + STOP_BAR_M / 2 },

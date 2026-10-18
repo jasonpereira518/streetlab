@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 11;
+export const PROTOCOL_VERSION = 12;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -144,12 +144,17 @@ export const TrafficLightSchema = z.object({
   /** Horizontal mast-arm reach; 0 means a pole-mounted head. */
   mast_arm_m: z.number().nonnegative(),
   height_m: z.number().positive(),
+  /** How much further back than the standard bar the approach it governs
+   * stops: set back where a bus turns across it. */
+  stop_bar_extra_m: z.number().nonnegative().default(0),
 });
 
 export const StopSignSchema = z.object({
   id: z.string(),
   position: Vec2Schema,
   heading: z.number(),
+  /** As `TrafficLight.stop_bar_extra_m`. The sign stands level with the bar. */
+  stop_bar_extra_m: z.number().nonnegative().default(0),
 });
 
 export const TreeSchema = z.object({
@@ -542,6 +547,8 @@ export const EgoSchema = z.object({
     set_speed_mps: z.number().nonnegative(),
   }),
   size: SizeSchema,
+  /** Indicator state, decided by the planner ahead of the turn it announces. */
+  turn_signal: z.enum(['off', 'left', 'right']),
 });
 
 export const SignalStateSchema = z.object({

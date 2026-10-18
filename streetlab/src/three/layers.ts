@@ -14,9 +14,11 @@
  *    outlines, shadow boxes, plan ribbon, radar cone). Never in a detector
  *    frame -- a purple box drawn around a car must not become the car's pixels.
  *  - EGO: the ego mesh. The detector sits inside it.
+ *  - CABIN: the ego's interior. Only the main camera in cockpit view sees it,
+ *    and that view drops EGO instead: the exterior shell would wrap the eye.
  */
 import type { Object3D, Camera } from 'three/webgpu';
-import type { LayerKey } from '../schema';
+import type { CameraView, LayerKey } from '../schema';
 
 export const CH = {
   WORLD: 0,
@@ -28,6 +30,7 @@ export const CH = {
   TREES: 6,
   TRAFFIC_LIGHTS: 7,
   LABELS: 8,
+  CABIN: 9,
 } as const;
 
 /** UI toggle -> the world channel it hides from the main camera. */
@@ -62,9 +65,17 @@ export function setDetectorLayers(camera: Camera): void {
   camera.layers.mask = DETECTOR_LAYER_MASK;
 }
 
-/** The main camera: world, overlay and ego, minus any world category toggled off. */
-export function applyMainLayers(camera: Camera, layers: Record<LayerKey, boolean>): void {
-  camera.layers.mask = bit(CH.WORLD) | bit(CH.OVERLAY) | bit(CH.EGO);
+/**
+ * The main camera: world, overlay and either the ego (outside it) or its cabin
+ * (cockpit view), minus any world category toggled off.
+ */
+export function applyMainLayers(
+  camera: Camera,
+  layers: Record<LayerKey, boolean>,
+  view: CameraView = 'chase',
+): void {
+  camera.layers.mask =
+    bit(CH.WORLD) | bit(CH.OVERLAY) | bit(view === 'cockpit' ? CH.CABIN : CH.EGO);
   for (const [key, channel] of Object.entries(TOGGLE_CHANNEL)) {
     if (layers[key as LayerKey]) camera.layers.enable(channel as number);
   }

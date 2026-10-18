@@ -28,7 +28,8 @@ it('is protocol 9', () => {
   // old client, matching the reasoning above. Then 8 for the required
   // `SceneDescription.reference_path`, and 9 for the required-nullable
   // `terrain`: an old client would drop it and draw a hilly scene flat.
-  expect(PROTOCOL_VERSION).toBe(11);
+  // 12 added the required `Ego.turn_signal` for the cockpit's indicators.
+  expect(PROTOCOL_VERSION).toBe(12);
 });
 
 it('accepts load_location with and without a radius', () => {
@@ -101,6 +102,7 @@ const sample: StateUpdate = {
     speed_limit_mps: 11.176,
     cruise: { mode: 'fsd', set_speed_mps: 20.1 },
     size: { length: 4.9, width: 1.96, height: 1.44 },
+    turn_signal: 'off',
   },
   detections: [
     {
@@ -291,7 +293,7 @@ describe('StateUpdate', () => {
     delete noSource.plan.reaction_source_id;
     expect(StateUpdateSchema.safeParse(noSource).success).toBe(false);
 
-    expect(PROTOCOL_VERSION).toBe(11);
+    expect(PROTOCOL_VERSION).toBe(12);
   });
 });
 
