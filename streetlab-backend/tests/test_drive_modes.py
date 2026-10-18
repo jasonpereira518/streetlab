@@ -193,8 +193,10 @@ def test_off_route_refuses_assist_and_fsd_but_allows_cruise(sim):
 
 def test_off_route_cruise_holds_speed_instead_of_obeying_the_route(sim):
     assert mode(sim, "off").ok
-    e = sim.ego
-    sim.ego = replace(e, x=e.x + 30, y=e.y + 30)
+    # Northbound on Larkin: open road, but not this scene's route. (Anywhere
+    # off the tarmac would now be dragged down; inside a block, stopped dead.)
+    sim.ego = replace(sim.ego, x=-78.2, y=-40.0, heading=math.pi / 2)
+    assert not sim.route_available()
     assert mode(sim, "cruise", set_speed_mps=5.0).ok
     advance(sim, 8.0)
     assert sim.ego.speed_mps == pytest.approx(5.0, abs=0.3)

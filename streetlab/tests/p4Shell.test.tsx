@@ -106,6 +106,21 @@ describe('hazard menu', () => {
     expect(within(status).getByText(/only stages cut_in/)).toBeTruthy();
   });
 
+  it('shows a collision where the driver is looking', () => {
+    harness = createHarness();
+    render(<AckToast />);
+    harness.emitScene();
+    for (let i = 0; i < 5; i++) harness.sim.step();
+    const frame = harness.sim.frame();
+    harness.emit({
+      ...frame,
+      events: [{ t: frame.t, level: 'critical', code: 'collision', message: 'hit a building' }],
+    });
+    const status = screen.getByRole('status');
+    expect(within(status).getByText('Collision')).toBeTruthy();
+    expect(within(status).getByText('hit a building')).toBeTruthy();
+  });
+
   it('stays quiet for routine acks', () => {
     harness = createHarness();
     render(<AckToast />);

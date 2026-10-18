@@ -85,6 +85,7 @@ from schema import (
     parse_command,
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
+from sim.contact import Surroundings
 from sim.route import estimate_travel_s
 from sim.scorecard import Scorecard
 from sim.vehicle import BicycleModel, VehicleState
@@ -143,6 +144,17 @@ _ROUTE_HEADING_RAD = math.radians(45.0)
 _HANDOVER_S = 1.0
 #: Below this a set speed is seeded from the posted limit, not the crawl speed.
 _MIN_SET_SPEED_MPS = 2.0
+#: Modes in which a person steers, and so can hit things (see `sim/contact.py`).
+_DRIVER_STEERS = ("off", "cruise")
+#: Off the tarmac, anything faster than this (~5.6 mph) is dragged down hard.
+_OFFROAD_MPS = 2.5
+_OFFROAD_DECEL_MPS2 = 5.0
+#: Overlap area below this (m^2) is float noise, not contact.
+_CONTACT_EPS = 1e-6
+#: A new `collision` needs the car to have backed this far clear first: a
+#: blocked step leaves it a hair off the wall, and creeping back into the same
+#: wall is the same crash, not a new one.
+_CONTACT_RELEASE_M = 0.5
 #: Slower than this the car counts as stopped, for shifting gear.
 _STOPPED_MPS = 0.05
 #: How long the brake (in D) or throttle (in R) must be held at a stop to shift.
@@ -228,6 +240,9 @@ class WorldState:
     gear: str = "D"
     # Seconds the shift pedal has been held at a stop (see `_shift`).
     shift_hold_s: float = 0.0
+    # Latches so `collision` / `off_road` fire once per contact, not per tick.
+    in_contact: bool = False
+    off_road: bool = False
 
 
 class SignalController:
@@ -371,6 +386,8 @@ class Simulation:
             junctions=self.scene.junctions,
         )
         self._signals = SignalController(self.scene.signal_groups)
+        # Built on first need: only a person-driven car ever asks (`_surroundings`).
+        self._contact_map: Surroundings | None = None
         # Every scene-scoped draw -- hazard schedule, placement jitter,
         # spontaneous cut-ins -- comes from this one stream, reseeded here so a
         # reset replays. A scene installed by anything but `_cmd_load_preset`
@@ -407,6 +424,8 @@ class Simulation:
         self.world.mode_changed_t = -math.inf
         self.world.gear = "D"
         self.world.shift_hold_s = 0.0
+        self.world.in_contact = False
+        self.world.off_road = False
         self.world.plan_result = None
         self.world.detections = []
         self.world.detections_shadow = None
@@ -505,6 +524,7 @@ class Simulation:
         result = self._plan(dt)
         self._check_trip_complete()
         accel, steer = self._drive(result, dt)
+        before = self.world.ego
         self.world.ego = self._model.step(
             self.world.ego,
             accel_mps2=accel,
@@ -512,6 +532,8 @@ class Simulation:
             dt=dt,
             reverse=self.world.gear == "R",
         )
+        if self.world.drive_mode in _DRIVER_STEERS:
+            self.world.ego = self._resolve_contact(before, self.world.ego)
         self._guard_world()
         self.world.odometer_m += abs(self.world.ego.speed_mps) * dt
 
@@ -575,7 +597,8 @@ class Simulation:
 
         if mode == "off":
             self._shift(controls, dt)
-            return self._manual.accel(controls, ego, dt, reverse=world.gear == "R"), steer
+            accel = self._manual.accel(controls, ego, dt, reverse=world.gear == "R")
+            return self._kerb_drag(accel), steer
 
         accel = result.accel_mps2
         if mode == "cruise" and not self.route_available():
@@ -591,7 +614,52 @@ class Simulation:
             accel = jerk_limit(pedal, ego.accel_mps2, dt)
         if world.t - world.mode_changed_t < _HANDOVER_S:
             accel = jerk_limit(accel, ego.accel_mps2, dt)
+        if mode == "cruise":
+            accel = self._kerb_drag(accel)
         return accel, steer
+
+    @property
+    def _surroundings(self) -> Surroundings:
+        if self._contact_map is None:
+            self._contact_map = Surroundings(self.scene.description)
+        return self._contact_map
+
+    def _kerb_drag(self, accel: float) -> float:
+        """Off the tarmac the car bumps along: above a crawl it is dragged
+        down hard, whatever the pedals say. A penalty, not a wall -- driving
+        onto the pavement is allowed, just slow."""
+        ego = self.world.ego
+        # ponytail: judged at the car's centre, so half a car on the pavement
+        # is still "on the road". Probe the four wheels if that reads wrong.
+        off = not self._surroundings.on_road(ego.x, ego.y)
+        if off != self.world.off_road:
+            self.world.off_road = off
+            if off:
+                self._emit("off_road", "left the road", "warn")
+        if off and abs(ego.speed_mps) > _OFFROAD_MPS:
+            return -math.copysign(_OFFROAD_DECEL_MPS2, ego.speed_mps)
+        return accel
+
+    def _resolve_contact(self, before: VehicleState, after: VehicleState) -> VehicleState:
+        """Refuse a step that drives the car deeper into a wall or another
+        car: it stops dead where it was. A step that backs out (or slides
+        along without going deeper) is allowed, so the driver can always
+        reverse or steer away."""
+        size = (self._model.length_m, self._model.width_m)
+        agents = self._traffic.agents
+        depth, what = self._surroundings.overlap(after, size, agents)
+        if depth <= _CONTACT_EPS:
+            if self.world.in_contact:
+                near, _ = self._surroundings.overlap(after, size, agents, _CONTACT_RELEASE_M)
+                self.world.in_contact = near > _CONTACT_EPS
+            return after
+        if not self.world.in_contact:
+            self.world.in_contact = True
+            self._emit("collision", f"hit {what}", "critical")
+        was, _ = self._surroundings.overlap(before, size, agents)
+        if depth > was + _CONTACT_EPS:
+            return replace(before, speed_mps=0.0, accel_mps2=0.0, yaw_rate=0.0)
+        return after
 
     def _shift(self, controls: Controls, dt: float) -> None:
         """Manual gear changes: hold the brake at a stop to shift into reverse,
