@@ -316,8 +316,10 @@ def build_stop_signs(
     keep_out: KeepOut | None = None,
     *,
     keep_crowded: bool = False,
+    tag_value: str = "stop",
 ) -> list[StopSign]:
     """One sign per tagged approach, on that approach's right-hand kerb.
+    `tag_value="give_way"` builds yield signs the same way (`osm_gw_<node>`).
 
     OSM already models stop signs per approach -- a `highway=stop` node sits on
     the way it governs, at the stop line -- so there is no clustering to do
@@ -337,7 +339,8 @@ def build_stop_signs(
     owner = _ways_by_node(graph)
     blocked = _post_blocker(graph, origin, keep_out)
     signs, orphaned, crowded = [], 0, 0
-    for node in _tagged_nodes(graph, "highway", "stop"):
+    prefix = _SIGN_PREFIX[tag_value]
+    for node in _tagged_nodes(graph, "highway", tag_value):
         placed = None
         for way, (points, index) in _approach_candidates(graph, node, owner, origin):
             travel = _governed_travel(points, index, {**way.tags, **node.tags})
@@ -369,7 +372,7 @@ def build_stop_signs(
                 continue
         signs.append(
             StopSign(
-                id=f"osm_ss_{node.id}",
+                id=f"{prefix}{node.id}",
                 position=position,
                 heading=facing(travel),
             )
@@ -752,6 +755,9 @@ def junction_of(light_id: str) -> str:
     return parts[0] if len(parts) == 2 and parts[1].isdigit() else light_id
 
 
+_SIGN_PREFIX = {"stop": "osm_ss_", "give_way": "osm_gw_"}
+
+
 def stop_node_id(sign_id: str) -> int | None:
     """The OSM node behind `osm_ss_<node>`, or None if the id is not one.
 
@@ -761,9 +767,10 @@ def stop_node_id(sign_id: str) -> int | None:
     conservative branch -- the full junction setback -- instead of inventing a
     node number.
     """
-    if not sign_id.startswith("osm_ss_"):
+    prefix = next((p for p in _SIGN_PREFIX.values() if sign_id.startswith(p)), None)
+    if prefix is None:
         return None
-    raw = sign_id[len("osm_ss_") :]
+    raw = sign_id[len(prefix) :]
     return int(raw) if raw.isdigit() else None
 
 
@@ -783,13 +790,14 @@ def control_anchors(
     The junction node is the right origin, and it is what the head positions
     were derived from in the first place. Keyed by `osm_tl_<node>` (the
     junction, shared by all its heads -- see `_junction_of`) and by
-    `osm_ss_<node>` (one sign, one line).
+    `osm_ss_<node>` / `osm_gw_<node>` (one sign, one line).
     """
     anchors = {cluster.id: cluster.hub for cluster in signal_clusters(graph, origin)}
     anchors.update(
         {
-            f"osm_ss_{node.id}": to_local(node.lat, node.lon, origin)
-            for node in _tagged_nodes(graph, "highway", "stop")
+            f"{prefix}{node.id}": to_local(node.lat, node.lon, origin)
+            for tag_value, prefix in _SIGN_PREFIX.items()
+            for node in _tagged_nodes(graph, "highway", tag_value)
         }
     )
     return anchors
