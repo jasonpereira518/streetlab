@@ -19,7 +19,10 @@ from sim.route import ControlPoint
 from sim.vehicle import VehicleState
 
 DT = 1 / 20
-LINE_S = 150.0
+#: On a straight: grid-loop's kerb-lane loop (phase 7c) turns at s = 142-150,
+#: where 150 used to be straight road, and a car still rounding the corner
+#: came to rest 2.18 m short of a line placed there.
+LINE_S = 175.0
 
 
 @pytest.fixture(scope="module")
@@ -131,7 +134,8 @@ def test_a_missing_phase_stops_traffic_as_it_stops_the_ego(scene):
     anyone at a light with no controller."""
     traffic = traffic_with(scene, "signal", [100.0])
     agent = traffic.agents[0]
-    for _ in range(int(10 / DT)):
+    # 20 s: the line is round a corner from the start.
+    for _ in range(int(20 / DT)):
         traffic.step(DT, world(scene))
     assert 0.0 < gap_to_line(agent) < 2.0
 
