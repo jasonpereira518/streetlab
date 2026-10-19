@@ -50,6 +50,8 @@ class Agent:
     route: Route
     s: float
     target_speed_mps: float
+    # Parked at the kerb: never moves, and the traffic step skips it.
+    parked: bool = False
     # A temporary speed override, used by hazard injection. `None` means the
     # agent is cruising normally.
     override_speed_mps: float | None = None
@@ -718,6 +720,7 @@ class IdmTraffic(ScriptedTraffic):
         density_per_lane_km: float = 0.0,
         junctions: Sequence[Junction] = (),
         levels: Levels | None = None,
+        parked: Sequence[tuple[float, float, float]] = (),
     ) -> None:
         super().__init__(routes, speed_limit_mps, seed=seed, speed_scale=speed_scale)
         self._junctions = list(junctions)
@@ -789,6 +792,16 @@ class IdmTraffic(ScriptedTraffic):
             agent.lane_id = by_route.get(id(agent.route))
             self._arrive_able_to_stop(agent)
         self.set_density(density_per_lane_km)
+        cls, length, width, height, _ = _PROFILES[0]
+        for k, (x, y, h) in enumerate(parked):
+            # A two-point route along the kerb, so it has a heading to be judged by.
+            route = Route([(x - math.cos(h), y - math.sin(h)), (x + math.cos(h), y + math.sin(h))], closed=False)
+            self._agents.append(Agent(
+                id=f"pkd_{k:03d}", cls=cls,
+                state=VehicleState(x=x, y=y, heading=h, speed_mps=0.0),
+                size=Size(length=length, width=width, height=height),
+                route=route, s=1.0, target_speed_mps=0.0, parked=True,
+            ))
 
     def set_density(self, per_lane_km: float) -> None:
         """Repopulate ambient traffic at `per_lane_km` cars per lane-kilometre,
@@ -1123,6 +1136,8 @@ class IdmTraffic(ScriptedTraffic):
         self._index_cells()
 
         for agent in self._agents:
+            if agent.parked:
+                continue
             self._expire_overrides(agent)
             if agent.meet_s is not None and world is not None:
                 self._retime(agent, world, ego_s_by_route)

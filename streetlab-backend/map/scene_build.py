@@ -92,6 +92,8 @@ class BuiltScene:
     # Where roads cross or meet, for traffic to take turns at (right of way
     # where no sign or signal says who goes).
     junctions: list[Junction] = field(default_factory=list)
+    # Cars parked along the kerb, `(x, y, heading)`: they never move.
+    parked: list[tuple[float, float, float]] = field(default_factory=list)
 
 
 @runtime_checkable
