@@ -23,6 +23,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.strtree import STRtree
 
 from schema import Building, Crosswalk, KerbReturn, Road, Tree
+from sim.route import Junction
 
 log = logging.getLogger("streetlab.map")
 
@@ -179,20 +180,12 @@ def _leg_dirs(line: LineString, s: float) -> list[tuple[Vec2, float]]:
     return out
 
 
-def kerb_returns(
-    roads: Sequence[Road], passes_under: frozenset[str] = frozenset()
-) -> list[KerbReturn]:
-    """One `KerbReturn` for each corner between two angularly neighbouring
-    legs of every junction.
-
-    A junction is wherever two roads cross or meet, except two ways of one
-    street meeting end to end at a shallow angle -- OSM splits a street at
-    every tag change, and that joint is a continuation (the renderer's
-    `findCrossings` rule). Each road through the point contributes a leg each
-    way it runs on; neighbouring legs are joined by a fillet tangent to both
-    kerbs. A leg too short for the whole fillet gets a smaller one. Ways in
-    `passes_under` (tunnels) cross the streets above without meeting them.
-    """
+def _junction_legs(
+    roads: Sequence[Road], passes_under: frozenset[str]
+) -> tuple[list[Road], list[tuple[Vec2, dict]]]:
+    """Every junction (see `kerb_returns`) with the legs that leave it:
+    `{(road index, direction): (unit dir, leg length)}`, road indices into
+    the returned road list."""
     roads = [r for r in roads if r.id not in passes_under]
     lines = [LineString(r.centerline) for r in roads]
     index = STRtree(lines)
@@ -228,6 +221,61 @@ def kerb_returns(
                     for n, (u, length) in enumerate(_leg_dirs(ln, s)):
                         legs[(k, n)] = (u, length)
 
+    return roads, junctions
+
+
+def junctions(
+    roads: Sequence[Road], passes_under: frozenset[str] = frozenset()
+) -> list[Junction]:
+    """Where roads cross or meet, for traffic to take turns at: the centre and
+    the radius of the box -- the widest road there's half-width, plus a metre."""
+    kept, found = _junction_legs(roads, passes_under)
+    return [
+        Junction(
+            centre=at,
+            radius_m=max(kept[k].half_width_m for (k, _) in legs) + 1.0,
+            major_headings=_major_headings([(u, kept[k].road_class) for (k, _), (u, _) in legs.items()]),
+        )
+        for at, legs in found
+        if legs
+    ]
+
+
+_CLASS_RANK = {"arterial": 3, "collector": 2, "residential": 1, "service": 0}
+
+
+def _major_headings(legs: list[tuple[Vec2, str | None]]) -> tuple[float, ...]:
+    """The bearings of the legs with priority: the highest road class when it
+    outranks another leg; else, at a T, the two legs that run straight on --
+    the street that ends there gives way to the one that does not."""
+    ranks = [_CLASS_RANK.get(cls or "", 1) for _, cls in legs]
+    if max(ranks) > min(ranks):
+        top = max(ranks)
+        return tuple(math.atan2(u[1], u[0]) for (u, _), r in zip(legs, ranks) if r == top)
+    if len(legs) == 3:
+        for a in range(3):
+            for b in range(a + 1, 3):
+                (ua, _), (ub, _) = legs[a], legs[b]
+                if ua[0] * ub[0] + ua[1] * ub[1] < -0.9:
+                    return (math.atan2(ua[1], ua[0]), math.atan2(ub[1], ub[0]))
+    return ()
+
+
+def kerb_returns(
+    roads: Sequence[Road], passes_under: frozenset[str] = frozenset()
+) -> list[KerbReturn]:
+    """One `KerbReturn` for each corner between two angularly neighbouring
+    legs of every junction.
+
+    A junction is wherever two roads cross or meet, except two ways of one
+    street meeting end to end at a shallow angle -- OSM splits a street at
+    every tag change, and that joint is a continuation (the renderer's
+    `findCrossings` rule). Each road through the point contributes a leg each
+    way it runs on; neighbouring legs are joined by a fillet tangent to both
+    kerbs. A leg too short for the whole fillet gets a smaller one. Ways in
+    `passes_under` (tunnels) cross the streets above without meeting them.
+    """
+    roads, junctions = _junction_legs(roads, passes_under)
     out: list[KerbReturn] = []
     for at, legs in junctions:
         ordered = sorted(

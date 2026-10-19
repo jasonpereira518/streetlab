@@ -272,10 +272,13 @@ def test_traffic_speed_scale_stops_traffic(sim):
     assert all(d.speed_mps == pytest.approx(0.0, abs=1e-6) for d in sim.state_update().detections)
 
 
-def test_assist_enabled_drives_assist_active(sim):
-    assert sim.state_update().assist_active is True
-    sim.apply_dict({"id": "a", "cmd": "set_param", "key": "assist_enabled", "value": False})
-    assert sim.state_update().assist_active is False
+def test_drive_mode_drives_assist_active_and_the_cruise_chip(sim):
+    frame = sim.state_update()
+    assert frame.assist_active is True and frame.ego.cruise.mode == "fsd"
+    assert frame.ego.cruise.fsd_available is True
+    assert sim.apply_dict({"id": "a", "cmd": "set_drive_mode", "mode": "off"}).ok
+    frame = sim.state_update()
+    assert frame.assist_active is False and frame.ego.cruise.mode == "off"
 
 
 def test_inject_hazard_emits_an_event(sim):
@@ -1326,7 +1329,15 @@ def test_snapshot_returns_the_epoch_and_a_frame_from_the_same_read():
         loop.submit_scene(lambda _progress: SyntheticGrid().build("grid-arterial"))
         deadline = time.monotonic() + 5.0
         epoch, frame = loop.snapshot()
-        while epoch == before and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            # Never AHEAD: a frame for the new scenario must not be paired
+            # with the old epoch. The epoch is bumped before `step()`, so for
+            # one step the pair is (new epoch, previous frame); that gap is
+            # real and a slow runner widens it (a CI run caught it), so this
+            # waits for the new frame instead of demanding it at once.
+            if frame is not None and frame.scenario_id == "grid-arterial":
+                assert epoch == before + 1
+                break
             time.sleep(0.005)
             epoch, frame = loop.snapshot()
         assert epoch == before + 1

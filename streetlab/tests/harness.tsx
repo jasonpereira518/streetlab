@@ -39,7 +39,6 @@ const INITIAL = {
   tripComplete: false,
   addressSuggestions: {},
   paused: false,
-  assistActive: false,
   hasFrames: false,
   perception: null,
   perceptionMode: 'ground-truth' as const,
@@ -103,6 +102,10 @@ export function createHarness(scenarioId?: string): Harness {
         command.cmd === 'heartbeat'
       )
         return;
+      if (command.cmd === 'drive_input') {
+        sim.driveInput(command);
+        return;
+      }
       const res = sim.apply(command);
       handlers?.onMessage({
         type: 'ack',

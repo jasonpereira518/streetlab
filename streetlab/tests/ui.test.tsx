@@ -81,8 +81,44 @@ describe('TopToolbar', () => {
 
     const expected = String(Math.round(toMph(frame.ego.speed_mps)));
     expect(screen.getByText('mph').previousSibling?.textContent).toBe(expected);
-    expect(screen.getByText('Assist active')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'FSD' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Manual' }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByText('Full Self-Driving')).toBeTruthy();
+    expect(screen.queryByTestId('set-speed')).toBeNull();
+  });
+
+  it('switches drive mode from the toolbar and shows the set speed in Cruise', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    harness.emitFrame(60);
+    tick();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cruise' }));
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'set_drive_mode', mode: 'cruise' });
+    harness.emitFrame(1);
+    tick();
+    expect(screen.getByRole('button', { name: 'Cruise' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('set-speed').textContent).not.toBe('—');
+
+    fireEvent.click(screen.getByLabelText('Raise set speed'));
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'set_drive_mode', mode: 'cruise' });
+  });
+
+  it('greys out Assist and FSD while off route', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    for (let i = 0; i < 10; i++) harness.sim.step();
+    const frame = harness.sim.frame();
+    // One frame only: `useFrameValue` throttles, so a second back-to-back frame
+    // would be sampled out (live, the next window picks it up).
+    harness.emit({ ...frame, ego: { ...frame.ego, cruise: { ...frame.ego.cruise, fsd_available: false } } });
+    tick();
+    const fsd = screen.getByRole('button', { name: 'FSD' }) as HTMLButtonElement;
+    expect(fsd.disabled).toBe(true);
+    expect(fsd.title).toBe('FSD unavailable: off route');
+    expect((screen.getByRole('button', { name: 'Cruise' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('shows how far is left of the lap, from the trip on the wire', () => {
@@ -768,6 +804,55 @@ describe('Address suggestions', () => {
 
     expect(box.value).toBe('Nob Hill, San Francisco, CA');
     expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  function pickSuggestion(box: HTMLInputElement) {
+    fireEvent.change(box, { target: { value: 'nob' } });
+    fireEvent.focus(box);
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    const cmd = harness!.sent.find((c) => c.cmd === 'suggest_address');
+    act(() => {
+      harness!.emit({
+        type: 'address_suggestions',
+        protocol: 1,
+        id: cmd!.id,
+        query: 'nob',
+        suggestions: [{ label: 'Nob Hill, San Francisco, CA', lat: 37.79, lon: -122.42 }],
+      });
+    });
+    fireEvent.mouseDown(screen.getByRole('option', { name: 'Nob Hill, San Francisco, CA' }));
+  }
+
+  it('sends the picked suggestion coordinates with load_location', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    pickSuggestion(box);
+    fireEvent.submit(box.closest('form')!);
+    expect(harness.sent.find((c) => c.cmd === 'load_location')).toMatchObject({
+      query: 'Nob Hill, San Francisco, CA',
+      lat: 37.79,
+      lon: -122.42,
+    });
+  });
+
+  it('discards the pick as soon as the text is edited', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    render(<LeftScenarioSidebar />);
+    harness.emitScene();
+    const box = screen.getByLabelText('Start address') as HTMLInputElement;
+    pickSuggestion(box);
+    fireEvent.change(box, { target: { value: 'Nob Hill, San Francisco, CA 94108' } });
+    fireEvent.submit(box.closest('form')!);
+    const sent = harness.sent.find((c) => c.cmd === 'load_location') as Record<string, unknown>;
+    expect(sent.query).toBe('Nob Hill, San Francisco, CA 94108');
+    expect('lat' in sent).toBe(false);
+    expect('lon' in sent).toBe(false);
   });
 
   it('never shows a stale reply that no longer matches the box, even if it arrives late', () => {

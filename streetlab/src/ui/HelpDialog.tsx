@@ -5,11 +5,21 @@
  */
 import { useEffect } from 'react';
 import { headlightsOn, useSimStore } from '../store/simStore';
+import { MPH_TO_MPS } from '../units';
 
 export const SHORTCUTS: Array<{ keys: string; does: string }> = [
   { keys: 'Space', does: 'Pause / resume the simulation' },
   { keys: 'R', does: 'Reset the scenario' },
-  { keys: 'L', does: 'Headlights on / off' },
+  { keys: 'W / ↑', does: 'Accelerate (takes over speed; FSD keeps steering). Brakes in reverse' },
+  { keys: 'S / ↓', does: 'Brake (drops to Manual). Hold at a stop to reverse' },
+  { keys: 'A D / ← →', does: 'Steer (Assist or FSD drops to Cruise)' },
+  { keys: 'F', does: 'FSD on / off' },
+  { keys: 'L', does: 'Assist (cruise + lane keep) on / off' },
+  { keys: 'C', does: 'Cruise on / off' },
+  { keys: '[ / ]', does: 'Set speed −5 / +5 mph' },
+  { keys: 'Q / E', does: 'Signal left / right: Assist or FSD changes lane (signal back to return)' },
+  { keys: 'Gamepad', does: 'Left stick steers, RT / LT throttle and brake; Y FSD, X Assist, B Cruise, d-pad set speed, LB / RB signal' },
+  { keys: 'H', does: 'Headlights on / off' },
   { keys: '?', does: 'Show / hide this help' },
   { keys: 'Esc', does: 'Close help or an open menu' },
 ];
@@ -22,7 +32,7 @@ const LEGEND: Array<{ swatch: string; name: string; does: string }> = [
 ];
 
 /** Keys that mean something else when a control or text field has focus. */
-function ownsTheKey(target: EventTarget | null, key: string): boolean {
+export function ownsTheKey(target: EventTarget | null, key: string): boolean {
   const el = target as HTMLElement | null;
   if (!el || !el.tagName) return false;
   if (el.isContentEditable) return true;
@@ -49,10 +59,20 @@ export function useShortcuts(): void {
         s.togglePaused();
       } else if (e.key === 'r' || e.key === 'R') {
         s.resetSim();
-      } else if (e.key === 'l' || e.key === 'L') {
+      } else if (e.key === 'h' || e.key === 'H') {
         s.setParam('headlights', headlightsOn(s.params) ? 'off' : 'on');
       } else if (e.key === '?') {
         s.setHelpOpen(!s.helpOpen);
+      } else if (e.key === 'f' || e.key === 'F') {
+        s.toggleDriveMode('fsd');
+      } else if (e.key === 'l' || e.key === 'L') {
+        s.toggleDriveMode('autosteer');
+      } else if (e.key === 'c' || e.key === 'C') {
+        s.toggleDriveMode('cruise');
+      } else if (e.key === 'q' || e.key === 'Q' || e.key === 'e' || e.key === 'E') {
+        s.signalLaneChange(e.key.toLowerCase() === 'q' ? 'left' : 'right');
+      } else if (e.key === '[' || e.key === ']') {
+        s.nudgeSetSpeed((e.key === ']' ? 5 : -5) * MPH_TO_MPS);
       }
     };
     window.addEventListener('keydown', onKey);

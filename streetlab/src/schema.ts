@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 13;
 
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
@@ -141,12 +141,17 @@ export const TrafficLightSchema = z.object({
   /** Horizontal mast-arm reach; 0 means a pole-mounted head. */
   mast_arm_m: z.number().nonnegative(),
   height_m: z.number().positive(),
+  /** How much further back than the standard bar the approach it governs
+   * stops: set back where a bus turns across it. */
+  stop_bar_extra_m: z.number().nonnegative().default(0),
 });
 
 export const StopSignSchema = z.object({
   id: z.string(),
   position: Vec2Schema,
   heading: z.number(),
+  /** As `TrafficLight.stop_bar_extra_m`. The sign stands level with the bar. */
+  stop_bar_extra_m: z.number().nonnegative().default(0),
 });
 
 export const TreeSchema = z.object({
@@ -535,8 +540,11 @@ export const EgoSchema = z.object({
   gear: z.enum(['P', 'R', 'N', 'D']),
   speed_limit_mps: z.number().nonnegative(),
   cruise: z.object({
+    /** Who drives: off = Manual, cruise, autosteer = Assist, fsd. */
     mode: CruiseModeSchema,
     set_speed_mps: z.number().nonnegative(),
+    /** Whether Assist/FSD can engage: false while the ego is off its route. */
+    fsd_available: z.boolean(),
   }),
   size: SizeSchema,
   /** Indicator state, decided by the planner ahead of the turn it announces. */
@@ -679,11 +687,17 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('run_summary') }),
   cmd({
     cmd: z.literal('load_location'),
-    query: z.string().min(1),
+    query: z.string().min(1).max(200),
     radius_m: z.number().positive().optional(),
     /** A second address to route TO. Absent means "drive an auto-discovered
      * loop near `query`", exactly as before this existed. */
-    destination: z.string().min(1).optional(),
+    destination: z.string().min(1).max(200).optional(),
+    /** The coordinates of a suggestion the user picked, so the backend does
+     * not geocode the label a second time. Each pair is both-or-neither. */
+    lat: z.number().min(-90).max(90).optional(),
+    lon: z.number().min(-180).max(180).optional(),
+    destination_lat: z.number().min(-90).max(90).optional(),
+    destination_lon: z.number().min(-180).max(180).optional(),
   }),
   cmd({
     cmd: z.literal('set_param'),
@@ -698,9 +712,25 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
   cmd({ cmd: z.literal('set_camera'), view: CameraViewSchema }),
   cmd({ cmd: z.literal('inject_hazard'), kind: z.string() }),
   cmd({ cmd: z.literal('set_perception'), mode: PerceptionModeSchema }),
+  cmd({
+    cmd: z.literal('set_drive_mode'),
+    mode: CruiseModeSchema,
+    /** Absent leaves the set speed alone (or seeds it entering cruise/autosteer). */
+    set_speed_mps: z.number().nonnegative().optional(),
+  }),
+  /** The driver's turn signal under Assist/FSD; acked with the reason if refused. */
+  cmd({ cmd: z.literal('lane_change'), direction: z.enum(['left', 'right']) }),
+  /** Held driver controls at ~30 Hz. Never queued or acked — latest wins. */
+  cmd({
+    cmd: z.literal('drive_input'),
+    /** -1 full right .. +1 full left, matching `steering_angle`. */
+    steer: z.number().min(-1).max(1),
+    throttle: z.number().min(0).max(1),
+    brake: z.number().min(0).max(1),
+  }),
   /** Answered directly by the server's connection handler, not routed
    * through the sim command queue — see `SuggestAddress` in schema.py. */
-  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1) }),
+  cmd({ cmd: z.literal('suggest_address'), query: z.string().min(1).max(200) }),
   /** Hosted mode: "still here" from input that sends no other command
    * (orbiting the camera), so it counts against the idle timeout. No ack. */
   cmd({ cmd: z.literal('heartbeat') }),

@@ -13,7 +13,7 @@ data — either behind `--source osm` at startup or typed into the running app's
 address box; Cycle 3's junction compliance, lane changes, reactive
 IDM/MOBIL traffic and five distinct hazard scenarios; and Cycle 4's real ONNX
 detector, which runs and is measured honestly — including the result that it
-can't drive the car yet. See the root [`README.md`](README.md#roadmap) for
+can't drive the car yet. See the [roadmap](docs/ARCHITECTURE.md#roadmap) for
 what's deliberately not built yet.
 
 Two ways to run it — pick one:
@@ -88,6 +88,20 @@ centerline planner, with a blue plan ribbon ahead of it; the six telemetry
 cards along the bottom (speed, lane position, radar, vehicle status,
 trajectory, steering) update live from the real simulation, not the mock.
 
+## Take the wheel
+
+The toolbar's **Manual · Cruise · Assist · FSD** switch says who is driving.
+Click into the viewport and drive with **W/S** or the arrow keys (throttle,
+brake) and **A/D** (steer). Touching the controls hands over the way a
+driver-assist car does: steering under Assist or FSD drops to Cruise (speed
+held, you steer), braking drops to Manual, and the throttle speeds you up
+without taking the wheel. **F**, **L** and **C** engage FSD, Assist and Cruise,
+and **[ / ]** move the set speed by 5 mph. A full brake in Manual stops much harder than FSD's comfort braking, and holding **S** at a standstill shifts into reverse (W brakes; hold W at a stop to go back to Drive). Drive into a building or another car and you stop dead against it (reverse to back out); drive onto the pavement and the car is dragged down to a crawl. Both show a notice over the road. FSD and Assist never leave the road, so none of this applies to them. Under Assist or FSD, **Q / E** signal left / right: the car changes lane when it is legal and safe and holds the new lane (signal back to return); a refusal says why. A gamepad works too: left stick steers, RT / LT are throttle and brake, Y / X / B are FSD / Assist / Cruise, the d-pad moves the set speed and LB / RB signal. Assist and FSD pick up from wherever
+the car is, blending the steering and acceleration back in rather than
+snapping. They grey out while the car is more than 3 m or 45° off its route.
+Only time under Assist or FSD counts toward a run's scorecard. A hint line over the road always shows what the keys do in the current mode, and **On-screen controls** adds gas, brake and steering buttons (on by default on a touch screen). Press **?** for
+the full key list.
+
 ## Run a walkthrough preset
 
 Above the scenario catalog, the left sidebar's **Walkthrough** list holds
@@ -99,13 +113,14 @@ good scorecard looks like, and the honest limits (per-tab hosted worlds with
 a session cap, assumed noisy-truth parameters, a detector with no vehicle true positives)
 are in [`docs/walkthrough.md`](docs/walkthrough.md).
 
-## Load any address
+## Load any address, or drive a trip
 
-The left sidebar's **Start address** box sends a real `load_location`
-command to the backend — type an address or place name and press Enter to
-build and drive it. Option A's packaged app already runs on real map data, so
-the box works there with no extra flags. Under Option B it only does anything
-useful when you started the backend with real map data yourself:
+The left sidebar has two boxes, **Start address** and **Destination (optional)**,
+and a **Go** button. Both boxes suggest as you type (after three characters, five
+suggestions); Enter in either box also submits. Option A's packaged app already
+runs on real map data, so this works there with no extra flags. Under Option B it
+only does anything useful when you started the backend with real map data
+yourself:
 
 ```bash
 cd streetlab-backend
@@ -123,27 +138,50 @@ new scene, and those were the only two things that used to clear the pending
 state — so the search box *and* every scenario play button stayed disabled
 until you reloaded.)
 
-The box shows `Building <query>…` the instant you press Enter — before
-anything has actually been fetched — and disables itself, along with the
-scenario list, until the build finishes or fails. The new scene arrives a
-few seconds later, unannounced, over the same mechanism a scenario swap
-uses, not as a direct reply to the command; the sidebar's location heading
-and the `© OpenStreetMap contributors` attribution update together with it.
-A bad address — one Nominatim can't resolve, or one with no drivable roads
-in range — surfaces as a `location_failed` entry in the right panel's
-**Events** tab instead of leaving the box stuck disabled forever.
-(`e2e/location.spec.ts` proves both paths against a real backend
-subprocess: a real address loading and driving, and a bad one surfacing
-that event and re-enabling the box.)
+**Start only** drives a loop near that address, found for you. **Start and
+destination** drives a trip: the car routes from one to the other, once, and
+stops. The route respects one-way streets (including roundabouts), leaves out
+private-access ways, and avoids driveways and parking aisles unless it has to use
+one. While the trip runs the toolbar shows the distance remaining and an ETA;
+on arrival the maneuver label reads **Arrived** and the sidebar says
+`Arrived at destination.` Two addresses at the same intersection, a destination
+more than 8 km (straight-line) away, or two points the map data doesn't connect
+are refused with a plain sentence rather than a half-built scene.
 
-**The first load of a brand-new address needs network** — a real geocode
-call to Nominatim, then a real Overpass fetch for that neighbourhood's
-streets and buildings; typically a few seconds, occasionally longer if
-Overpass is under load. Once built, that location is cached to disk, and
-every later load of it — this session or a future one — is instant and
-fully offline, the same as the app's one bundled location (Nob Hill), which
-ships its own extract and never touches the network at all, even on a
-completely fresh install.
+Picking a suggestion sends its coordinates along with the text, so the address
+you picked is the address that gets built. Typing without picking works too: the
+backend geocodes the text instead. Suggestions come from Photon (Nominatim's
+usage policy forbids client-side as-you-type use); a submitted address is
+geocoded by Nominatim at no more than one request per second, and the answer is cached on disk.
+
+The sidebar shows `Building <query>…` with a progress bar and the current stage
+the instant you press Go — before anything has actually been fetched — and
+disables itself, along with the scenario list, until the build finishes or fails.
+The new scene arrives a few seconds later, unannounced, over the same mechanism a
+scenario swap uses, not as a direct reply to the command; the sidebar's location
+heading and the `© OpenStreetMap contributors` attribution update together with
+it. A bad address — one that can't be geocoded, or one with no drivable roads in
+range — surfaces as a `location_failed` entry in the right panel's **Events** tab
+instead of leaving the box stuck disabled forever. (`e2e/location.spec.ts` proves
+both paths against a real backend subprocess: a real address loading and driving,
+and a bad one surfacing that event and re-enabling the box.)
+
+**Offline.** The first load of a brand-new address needs network: a geocode call,
+then an Overpass fetch for that neighbourhood's streets and buildings, typically a
+few seconds and occasionally longer if Overpass is under load. If Overpass
+answers with a truncated or error body it is rejected and never cached, and a
+busy server's `Retry-After` is honoured before falling back to a mirror. Once an
+address has been built, the map extract and the address's coordinates are cached on
+disk, whether you typed it or picked it from the suggestions, so loading the same
+text again — this session or a later one — needs no network. (Picking it from the
+dropdown again does, because the dropdown itself is a live lookup.) The app's one
+bundled location, Nob Hill, ships its own extract and never touches the network
+at all, even on a completely fresh install.
+
+**Size limits.** A loop looks within 500 m of the address and widens the search
+up to 5 km if it finds no drivable road; a trip fetches a box around both
+addresses. Either way the scene keeps the 5,000 buildings and 2,000 trees nearest
+the route and says so in the Events tab when it trims.
 
 ## Inject a hazard
 
@@ -305,8 +343,9 @@ yet.
 
 ## What this demo does not show
 
-- Turn restrictions, multi-tile streaming, or OSM-driven signal phase timing
-  — a loaded address still drives a single, fixed-radius extract, and every
+- Turn restrictions, streaming map tiles, or OSM-driven signal phase timing
+  — a loaded address builds one extract up front (a loop near it, or a box
+  around a trip's two ends), routing ignores turn restrictions, and every
   intersection uses the same fixed-timing signal controller as the synthetic
   grid regardless of what the real signals actually do.
 - A perception model that works (Cycle 5) — Cycle 4's detector is real and

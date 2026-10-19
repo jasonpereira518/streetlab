@@ -146,6 +146,9 @@ JUNCTION_CLEAR_M = 14.0
 #: All-way stops, shared with traffic (`sim/agents.py`): a vehicle at rest
 #: this far from a junction's centre, facing it, is waiting at a line; arrivals
 #: this close count as together; a box this long empty breaks a tie all round.
+#: `WAIT_MAX_M` must reach `STOP_ZONE_M` past the furthest line (12.0 m out,
+#: on a turning route): at 18 the ego stood in STOP 6.9 m short of one for
+#: 44.7 s, waiting to itself and to nobody else.
 WAIT_MIN_M = 6.0
 #: 22 m, not 18: a route turning at the junction puts its line further out,
 #: and a car resting at it sat 18.9 m from the centre (measured, grid-arterial).
@@ -159,6 +162,15 @@ CROSS_TRAFFIC_HEADING_RAD = 0.7
 
 #: Speed above which a near vehicle is still "moving through" the junction.
 MOVING_MPS = 0.5
+
+#: Unprotected left on a green: how far out oncoming traffic is looked for,
+#: the gap in it a left needs (`sim/agents.py` `_LEFT_GAP_S`), and the heading
+#: change past the stop line that makes the route a left turn there
+#: (`plan/control.py` `_TURN_THRESHOLD_RAD`, over a junction's width).
+LEFT_LOOK_M = 60.0
+LEFT_GAP_S = 5.0
+LEFT_TURN_RAD = 0.45
+LEFT_TURN_SPAN_M = 25.0
 
 #: Speed while edging across a junction.
 #:
@@ -350,6 +362,13 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 #: The three phases of one manoeuvre, in order. Strings rather than an Enum to
 #: match `BehaviorState`'s `str` mixin and keep `LaneChange` cheap to inspect
 #: in a debugger.
+#: Beyond the trip-home runout (which alone guarantees the car is back before
+#: the lane ends), how much lane a driver-requested change must have ahead: a
+#: little hold, not a cross-and-straight-back. Measured on grid-loop with
+#: traffic over 120 s of probes every 0.5 s: 30 m let 8 requests through
+#: (the grid's 80 m blocks rarely have it), 15 m 16, 5 m 43.
+LANE_CHANGE_REQUEST_ROOM_M = 10.0
+
 OUTBOUND = "outbound"
 PASSING = "passing"
 RETURNING = "returning"
@@ -399,6 +418,16 @@ class LaneChange:
     #: Less than 1.0 when a junction (or a failed traverse) turned the car round
     #: part-way across.
     blend_at_return: float = 0.0
+    #: The driver asked for this change (turn signal under Assist/FSD), rather
+    #: than the FSM deciding to overtake. There is no lead to pass, so the
+    #: passing phase HOLDS the new lane until the driver signals back -- or a
+    #: lane end or junction sends it home, exactly as for an overtake.
+    requested: bool = False
+
+    @property
+    def holding(self) -> bool:
+        """Settled in a lane the driver asked for: not changing, just keeping it."""
+        return self.requested and self.phase == PASSING
 
     @property
     def returning(self) -> bool:
@@ -567,6 +596,12 @@ class BehaviorFSM:
             self.state = BehaviorState.APPROACH
 
         distance = route.signed_gap(ego_s, target.s)
+        # An unprotected left gives way to oncoming traffic, green or not.
+        yield_left = (
+            target.kind == "signal"
+            and _turns_left(route, target.s)
+            and self._oncoming(ego, target, detections)
+        )
         if target.kind == "stop_sign":
             self._track_waiters(target, detections)
             self._note_own_wait(ego, target)
@@ -574,7 +609,7 @@ class BehaviorFSM:
         # Already committed and moving through: re-check clearance so a late
         # crosser can put us back to a hold, the way a human driver would.
         if self.state is BehaviorState.CREEP:
-            if not self._intersection_clear(ego, target, detections):
+            if yield_left or not self._intersection_clear(ego, target, detections):
                 self.state = BehaviorState.STOP
                 # Do not zero dwell: we already fulfilled the stop obligation
                 # for this line. Recovery is clearance-only — requiring a
@@ -587,13 +622,13 @@ class BehaviorFSM:
         if distance <= STOP_ZONE_M and ego.speed_mps <= STOPPED_MPS:
             self.state = BehaviorState.STOP
             self.dwell_s += dt
-            if self._may_proceed(target, signals, ego, detections, distance=distance):
+            if not yield_left and self._may_proceed(target, signals, ego, detections, distance=distance):
                 self.state = BehaviorState.CREEP
                 return BehaviorDecision(BehaviorState.CREEP, CREEP_MPS, "yield", target)
             maneuver = "arrived" if target.kind == "arrival" else "stop"
             return BehaviorDecision(BehaviorState.STOP, 0.0, maneuver, target)
 
-        if not self._must_stop(target, signals, distance, ego):
+        if not yield_left and not self._must_stop(target, signals, distance, ego):
             # Rolling through. Latched only once the car is past the point of
             # stopping comfortably -- otherwise a light that goes red at 40 m
             # would be waved through on the strength of having been green.
@@ -885,6 +920,25 @@ class BehaviorFSM:
         # Green (or flashing / off): still yield to anyone already in the box.
         return self._intersection_clear(ego, target, detections)
 
+    @staticmethod
+    def _oncoming(ego: VehicleState, target: ControlPoint, detections: Sequence[Detection]) -> bool:
+        """Anyone coming the other way, toward this junction, inside the gap a
+        left turn across them needs -- or already in it and moving."""
+        tx, ty = target.position
+        for d in detections:
+            dist = math.hypot(d.pose.x - tx, d.pose.y - ty)
+            if dist > LEFT_LOOK_M or d.speed_mps < MOVING_MPS:
+                continue
+            if abs(math.remainder(d.pose.heading - ego.heading, math.tau)) < math.pi - CROSS_TRAFFIC_HEADING_RAD:
+                continue  # not the other way: cross traffic is the light's business
+            toward = math.cos(math.atan2(ty - d.pose.y, tx - d.pose.x) - d.pose.heading)
+            # Facing the junction, or inside it and not yet past its centre.
+            if toward <= 0.5 and dist > JUNCTION_CLEAR_M * 0.45:
+                continue
+            if dist / d.speed_mps < LEFT_GAP_S or dist < JUNCTION_CLEAR_M * 0.45:
+                return True
+        return False
+
     def _intersection_clear(
         self,
         ego: VehicleState,
@@ -1082,6 +1136,9 @@ class BehaviorFSM:
         lc = self.lane_change
         assert lc is not None
         lc.pass_s += dt
+        if lc.requested:
+            # Nothing to pass and no clock: the driver chose this lane.
+            return self._changing()
         lead = next((d for d in detections if d.id == lc.lead_id), None)
         gap = (
             None
@@ -1098,6 +1155,47 @@ class BehaviorFSM:
             self._decline(lc.lead_id)
             self._begin_return()
         return self._changing()
+
+    def request_lane_change(
+        self,
+        direction: int,
+        ego: VehicleState,
+        route: Route,
+        ego_s: float,
+        lanes: "LaneSet | None",
+        detections: Sequence[Detection],
+        control_points: Sequence[ControlPoint] = (),
+        signals: Mapping[str, SignalState] | None = None,
+    ) -> tuple[bool, str]:
+        """The driver signalled `direction` (+1 left, -1 right) under Assist or
+        FSD. Start a lane change that way if it is legal and safe now -- by the
+        very checks an overtake must pass -- or say plainly why not. Signalling
+        back toward home while in (or heading for) a requested lane goes home."""
+        side = "left" if direction > 0 else "right"
+        lc = self.lane_change
+        if lc is not None:
+            if lc.requested and not lc.returning and direction == -lc.direction:
+                self._begin_return()
+                return True, "returning to your lane"
+            return False, "already changing lanes"
+        if lanes is None:
+            return False, "no lane markings here"
+        if self.state is not BehaviorState.CRUISE:
+            return False, "stopping ahead"
+        target = lanes.neighbour(direction)
+        if target is None or not lanes.may_change_at(ego_s, direction):
+            return False, f"no lane to the {side}"
+        runout = self._return_runout_m(ego) + LANE_CHANGE_REQUEST_ROOM_M
+        if self._lane_ends_within(lanes, ego_s, direction, runout):
+            return False, f"the {side} lane ends ahead"
+        if self._next_stop_line_m(route, ego_s, control_points, signals) < runout:
+            return False, "too close to the junction"
+        if not self._gap_is_acceptable(
+            route, ego_s, detections, direction, ego.speed_mps, target.offset_m
+        ):
+            return False, f"traffic in the {side} lane"
+        self.lane_change = LaneChange(lanes.ego.id, target.id, direction, requested=True)
+        return True, f"changing lane {side}"
 
     def _junction_abort(
         self,
@@ -1365,6 +1463,11 @@ class BehaviorFSM:
         label = (
             "lane_change_left" if self.lane_change.direction > 0 else "lane_change_right"
         )
+        if self.lane_change.holding:
+            # In the lane the driver asked for and staying there: that is
+            # keeping a lane, and the indicator (derived from this label in
+            # `plan/control.py`) cancels, as a stalk does once you are across.
+            label = "keep_lane"
         return BehaviorDecision(
             state=BehaviorState.CRUISE,
             speed_ceiling_mps=math.inf,
@@ -1446,3 +1549,9 @@ class BehaviorFSM:
             if -rear < gap < front:
                 return False
         return True
+
+
+def _turns_left(route: Route, s: float) -> bool:
+    """Whether `route` turns left within `LEFT_TURN_SPAN_M` past `s`."""
+    turn = math.remainder(route.heading_at(route.normalise(s + LEFT_TURN_SPAN_M)) - route.heading_at(route.normalise(s)), math.tau)
+    return turn > LEFT_TURN_RAD

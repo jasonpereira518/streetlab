@@ -331,3 +331,38 @@ describe('crossing styles are painted as they are on the road', () => {
     expect(bars).toBe(0);
   });
 });
+
+describe('stop bars set back for a turning bus', () => {
+  /** Centroids of every stop bar: white transverse paint 0.5 m deep. */
+  function bars(scene: SceneDescription): Array<[number, number]> {
+    return marks(scene)
+      .filter((m) => !m.yellow)
+      .filter((m) => {
+        const xs = m.tri.map((p) => p[0]);
+        const ys = m.tri.map((p) => p[1]);
+        const w = Math.max(...xs) - Math.min(...xs);
+        const h = Math.max(...ys) - Math.min(...ys);
+        return Math.min(w, h) > 0.3 && Math.min(w, h) < 0.7;
+      })
+      .map((m) => [m.x, m.y]);
+  }
+  const near = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.3;
+
+  it('paints the bar stop_bar_extra_m further back, toward the sign, and moves nothing else', () => {
+    const scene = JSON.parse(
+      readFileSync(resolve(__dirname, '../../contract/fixtures/scene_description.json'), 'utf8'),
+    ) as SceneDescription;
+    expect(scene.stop_signs.length).toBeGreaterThan(0);
+    const sign = scene.stop_signs[0];
+    const before = bars(scene);
+    expect(before.length).toBeGreaterThan(0);
+    const moved = { ...scene, stop_signs: scene.stop_signs.map((s, i) => (i === 0 ? { ...s, stop_bar_extra_m: 6 } : s)) };
+    const after = bars(moved);
+    const gone = before.filter((b) => !after.some((a) => near(a, b)));
+    const added = after.filter((a) => !before.some((b) => near(a, b)));
+    expect(gone.length).toBeGreaterThan(0);
+    expect(added.length).toBe(gone.length);
+    const [dx, dy] = [Math.cos(sign.heading) * 6, Math.sin(sign.heading) * 6];
+    for (const g of gone) expect(added.some((a) => near(a, [g[0] + dx, g[1] + dy]))).toBe(true);
+  });
+});

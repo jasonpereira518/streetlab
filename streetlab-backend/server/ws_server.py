@@ -300,6 +300,7 @@ class _Connection:
         self.ws = ws
         self.loop = loop
         self.geocoder = geocoder
+        self._suggest_task: asyncio.Task | None = None
         self.period = 1.0 / tick_hz
         self.seq = 0
         # Any inbound text counts as the user being present (hosted idle timeout).
@@ -458,8 +459,22 @@ class _Connection:
         if raw.get("cmd") == "heartbeat":
             return  # `receive` already noted the time; nothing to answer
 
+        # Held driver controls at ~30 Hz: latest-wins into the sim thread's
+        # slot, never queued (they would stack up) and never acked (30 acks a
+        # second would bury every ack the user actually wants to see).
+        if raw.get("cmd") == "drive_input":
+            self.loop.set_drive_input(raw)
+            return
+
         if raw.get("cmd") == "suggest_address":
-            await self._suggest_address(raw)
+            # A task, not an await: awaiting here would park this client's
+            # receive loop (pause, hazards, the submit itself) behind a slow
+            # geocoder. Latest wins -- the previous suggestion, if still
+            # running, is cancelled so its reply is never sent. (The geocoder
+            # thread itself cannot be interrupted; its result is discarded.)
+            if self._suggest_task is not None:
+                self._suggest_task.cancel()
+            self._suggest_task = asyncio.create_task(self._run_suggest(raw))
             return
 
         command_id = raw.get("id")
@@ -486,6 +501,12 @@ class _Connection:
         except asyncio.TimeoutError:
             log.error("simulation did not answer command in time: %r", raw)
             return CommandOutcome(ok=False, message="simulation busy")
+
+    async def _run_suggest(self, raw: dict) -> None:
+        try:
+            await self._suggest_address(raw)
+        except Exception as exc:  # the socket closed mid-reply; nothing to tell anyone
+            log.debug("suggest_address reply dropped: %r", exc)
 
     async def _suggest_address(self, raw: dict) -> None:
         """Answer a `suggest_address` with candidates, or an empty list.
@@ -758,6 +779,8 @@ async def _run_connection(
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
         task.cancel()
+    if conn._suggest_task is not None:
+        conn._suggest_task.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
 
     for task in done:

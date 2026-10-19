@@ -331,7 +331,7 @@ describe('stop bars', () => {
   it('paints one per controlled approach, on that approach', () => {
     // Eastbound traffic on `ew` arrives from the west; its sign faces west
     // (heading pi) and stands on the right-hand (south) kerb before the junction.
-    const scene = crossroads([{ id: 'ss_eb', position: [-9, -5], heading: Math.PI }]);
+    const scene = crossroads([{ id: 'ss_eb', position: [-9, -5], heading: Math.PI, stop_bar_extra_m: 0 }]);
     const found = bars(scene);
     expect(found.length).toBeGreaterThan(0);
     for (const t of found) {

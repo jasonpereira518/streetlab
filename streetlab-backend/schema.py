@@ -27,11 +27,11 @@ Three transcription hazards are handled deliberately; see the tests that pin the
 
 from typing import Annotated, Any, Generic, Literal, TypeVar, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 12
+PROTOCOL_VERSION = 13
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -178,12 +178,17 @@ class TrafficLight(Wire):
     # Horizontal mast-arm reach; 0 means a pole-mounted head.
     mast_arm_m: NonNeg
     height_m: Pos
+    # How much further back than the standard bar the approach it governs
+    # stops: set back where a bus turns across it.
+    stop_bar_extra_m: NonNeg = 0.0
 
 
 class StopSign(Wire):
     id: str
     position: Vec2
     heading: Num
+    # As `TrafficLight.stop_bar_extra_m`. The sign stands level with the bar.
+    stop_bar_extra_m: NonNeg = 0.0
 
 
 class Tree(Wire):
@@ -569,8 +574,12 @@ CruiseMode = Literal["off", "cruise", "autosteer", "fsd"]
 
 
 class Cruise(Wire):
+    # Who drives: `off` = manual, `cruise` = speed held while you steer,
+    # `autosteer` = Assist (cruise + lane keep), `fsd` = the full planner.
     mode: CruiseMode
     set_speed_mps: NonNeg
+    # Whether Assist/FSD can engage: false while the ego is off its route.
+    fsd_available: bool
 
 
 TurnSignal = Literal["off", "left", "right"]
@@ -702,6 +711,10 @@ LayerKey = Literal[
 
 CameraView = Literal["chase", "overhead", "cockpit", "free"]
 
+#: Longest address text a command may carry (mirrored in the zod schema).
+MAX_QUERY_LEN = 200
+
+
 class _Cmd(Wire):
     """Every command carries a client-generated id so an Ack can be correlated."""
 
@@ -751,13 +764,28 @@ class RunSummaryCmd(_Cmd):
 
 class LoadLocation(_Cmd):
     cmd: Literal["load_location"] = "load_location"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
     # Absent means "use the location's default". zod `.optional()` allows the
     # key to be missing, unlike `.nullable()` which would require it present.
     radius_m: Pos | None = None
     # A second address to route TO. Absent (the common case) means "drive an
     # auto-discovered loop near `query`", exactly as before this existed.
-    destination: Annotated[str, Field(min_length=1)] | None = None
+    destination: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)] | None = None
+    # The coordinates of a suggestion the user picked, so the backend does not
+    # geocode its label a second time. Each pair is both-or-neither. Commands
+    # only travel client -> server, so `None` here never reaches a zod schema.
+    lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+    destination_lat: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None = None
+    destination_lon: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None = None
+
+    @model_validator(mode="after")
+    def _pairs_are_both_or_neither(self) -> "LoadLocation":
+        if (self.lat is None) != (self.lon is None):
+            raise ValueError("lat and lon must be given together")
+        if (self.destination_lat is None) != (self.destination_lon is None):
+            raise ValueError("destination_lat and destination_lon must be given together")
+        return self
 
 
 class SuggestAddress(_Cmd):
@@ -767,7 +795,7 @@ class SuggestAddress(_Cmd):
     bypasses it: a network geocode call must not stall the physics step."""
 
     cmd: Literal["suggest_address"] = "suggest_address"
-    query: Annotated[str, Field(min_length=1)]
+    query: Annotated[str, Field(min_length=1, max_length=MAX_QUERY_LEN)]
 
 
 class Heartbeat(_Cmd):
@@ -805,6 +833,36 @@ class SetPerception(_Cmd):
     mode: PerceptionMode
 
 
+class SetDriveMode(_Cmd):
+    cmd: Literal["set_drive_mode"] = "set_drive_mode"
+    mode: CruiseMode
+    # Absent leaves the set speed alone (or seeds it, entering cruise/autosteer).
+    set_speed_mps: NonNeg | None = None
+
+
+# -1 full right .. +1 full left, matching `Ego.steering_angle`.
+SteerAxis = Annotated[float, Field(ge=-1, le=1, allow_inf_nan=False)]
+
+
+class DriveInput(_Cmd):
+    """Held driver controls at ~30 Hz. Like `heartbeat`, never queued and never
+    acked (see `server/ws_server.py`): the newest one wins at the next tick."""
+
+    cmd: Literal["drive_input"] = "drive_input"
+    steer: SteerAxis
+    throttle: Unit
+    brake: Unit
+
+
+class LaneChangeCmd(_Cmd):
+    """The driver's turn signal under Assist/FSD: change lane that way (or,
+    signalling back from a requested lane, go home). Acked with the reason
+    when it is not legal or safe right now."""
+
+    cmd: Literal["lane_change"] = "lane_change"
+    direction: Literal["left", "right"]
+
+
 class CameraFrameCmd(_Cmd):
     cmd: Literal["camera_frame"] = "camera_frame"
     # Monotonic per connection; the backend drops anything out of order.
@@ -833,6 +891,9 @@ Command = Annotated[
         SetCamera,
         InjectHazard,
         SetPerception,
+        SetDriveMode,
+        DriveInput,
+        LaneChangeCmd,
         CameraFrameCmd,
         Heartbeat,
     ],

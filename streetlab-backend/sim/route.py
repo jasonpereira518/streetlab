@@ -37,13 +37,28 @@ class ControlPoint:
     """
 
     id: str
-    #: "signal", "stop_sign", or "arrival". A signal resolves its phase
+    #: "signal", "stop_sign", "yield", or "arrival". "yield" (OSM give_way,
+    #: ambient lanes only) never stops a car by itself -- it only makes the
+    #: approach give way to through traffic. A signal resolves its phase
     #: through `PlanContext.signals[id]`; a stop sign always requires a stop;
     #: "arrival" (`map.lanes.arrival_control_point`) marks an OPEN route's own
     #: end and always requires a stop that never releases.
     kind: str
     s: float
     position: Point
+
+
+@dataclass(frozen=True, slots=True)
+class Junction:
+    """Where roads cross or meet: traffic takes turns inside `radius_m` of
+    `centre` (`map.clearance.junctions`)."""
+
+    centre: Point
+    radius_m: float
+    #: Bearings (radians, either way along them) of the legs that have
+    #: priority here: the higher road class, or a T's through street. Empty
+    #: when no road outranks another, which leaves first-come/on-the-right.
+    major_headings: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

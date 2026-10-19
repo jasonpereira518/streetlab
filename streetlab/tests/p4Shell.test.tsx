@@ -106,6 +106,21 @@ describe('hazard menu', () => {
     expect(within(status).getByText(/only stages cut_in/)).toBeTruthy();
   });
 
+  it('shows a collision where the driver is looking', () => {
+    harness = createHarness();
+    render(<AckToast />);
+    harness.emitScene();
+    for (let i = 0; i < 5; i++) harness.sim.step();
+    const frame = harness.sim.frame();
+    harness.emit({
+      ...frame,
+      events: [{ t: frame.t, level: 'critical', code: 'collision', message: 'hit a building' }],
+    });
+    const status = screen.getByRole('status');
+    expect(within(status).getByText('Collision')).toBeTruthy();
+    expect(within(status).getByText('hit a building')).toBeTruthy();
+  });
+
   it('stays quiet for routine acks', () => {
     harness = createHarness();
     render(<AckToast />);
@@ -150,6 +165,35 @@ describe('keyboard shortcuts and help', () => {
     for (const k of SHORTCUTS) expect(within(dialog).getByText(k.does)).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('Q and E signal a lane change, and a refusal reaches the toast', () => {
+    harness = createHarness();
+    render(
+      <>
+        <Keys />
+        <AckToast />
+      </>,
+    );
+    harness.emitScene();
+    fireEvent.keyDown(window, { key: 'e' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'right' });
+    fireEvent.keyDown(window, { key: 'e' });
+    expect(within(screen.getByRole('status')).getByText('already changing lanes')).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Q' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'left' });
+  });
+
+  it('H toggles the headlights and L is Assist: the two features never share a key', () => {
+    harness = createHarness();
+    render(<Keys />);
+    harness.emitScene();
+    const before = useSimStore.getState().params.headlights;
+    fireEvent.keyDown(window, { key: 'h' });
+    expect(useSimStore.getState().params.headlights).not.toBe(before);
+    expect(harness.sent.some((c) => c.cmd === 'set_drive_mode')).toBe(false);
+    fireEvent.keyDown(window, { key: 'l' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'set_drive_mode', mode: 'autosteer' });
   });
 
   it('leaves keys alone while typing or on a focused button', () => {
