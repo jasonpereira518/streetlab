@@ -1209,3 +1209,59 @@ def _place_limit_sign(road, line, along, direction, mph, half, keep_out) -> Stre
         text=str(mph),
         kind="speed_limit",
     )
+
+
+#: Parked cars: the pitch a parallel-parked car takes, how full a parking lane
+#: is, how much carriageway beyond the driven lanes a side needs to hold one
+#: (a 1.9 m car and a little), how far from a junction box or a crossing none
+#: is left, and the most kept (nearest the ego's route), for the frame time.
+PARKED_PITCH_M = 6.5
+PARKED_FILL = 0.6
+PARKED_MIN_EDGE_M = 2.1
+PARKED_CLEAR_M = 6.0
+MAX_PARKED = 40
+
+
+def parked_cars(
+    graph: OsmGraph,
+    roads: list[Road],
+    junctions,
+    crosswalks: list[Crosswalk],
+    near_route,
+) -> list[tuple[float, float, float]]:
+    """`(x, y, heading)` of cars parked along the sides OSM tags with
+    parking, where the side's strip beyond the driven lanes holds one.
+
+    The carriageway is symmetric about its centreline (`edge_width_m`), so a
+    street parked on one side gets half its parking width on each: 1.1 m, in
+    which a car would stand 0.8 m in the lane. Only a side with
+    `PARKED_MIN_EDGE_M` takes cars. Bridges and tunnels take none.
+    """
+    from map.tags import _parking_m
+    from sim.route import Route
+
+    tags = {f"osm_w{w.id}": w.tags for w in graph.ways}
+    keep = [(tuple(j.centre), j.radius_m + PARKED_CLEAR_M) for j in junctions]
+    keep += [(tuple(c.center), c.width_m / 2 + PARKED_CLEAR_M) for c in crosswalks]
+    out = []
+    for road in roads:
+        t = tags.get(road.id)
+        if t is None or road.bridge or road.tunnel or road.edge_m < PARKED_MIN_EDGE_M:
+            continue
+        line = Route(list(road.centerline), closed=False)
+        rng = Random(int(hashlib.sha256(road.id.encode()).hexdigest()[:8], 16))
+        lateral = road.half_width_m - road.edge_m / 2
+        for side, sign in (("left", 1.0), ("right", -1.0)):
+            if _parking_m(t, side) <= 0.0:
+                continue
+            s = PARKED_PITCH_M / 2
+            while s < line.length_m - PARKED_PITCH_M / 2:
+                x, y = line.point_at(s)
+                h = line.heading_at(s)
+                px, py = x - math.sin(h) * sign * lateral, y + math.cos(h) * sign * lateral
+                clear = all(math.dist((px, py), at) > r for at, r in keep)
+                if clear and rng.random() < PARKED_FILL:
+                    out.append((px, py, h))
+                s += PARKED_PITCH_M
+    out.sort(key=near_route)
+    return out[:MAX_PARKED]

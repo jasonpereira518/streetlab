@@ -34,6 +34,7 @@ from map.terrain import to_wire as terrain_to_wire
 from map.clearance import KeepOut, clear_trees, fit_road_widths
 from map.clearance import junctions as find_junctions
 from map.features import (
+    parked_cars,
     build_buildings,
     build_crosswalks,
     build_stop_signs,
@@ -733,6 +734,10 @@ class OsmSceneSource:
         # Yield signs too, and a give-way line wherever the ego enters a
         # junction nothing governs from off its priority road.
         scene_junctions = find_junctions(roads, under)
+        parked = parked_cars(
+            graph, roads, scene_junctions, crosswalks,
+            lambda p: math.dist(p[:2], ego_route.point_at(ego_route.project(p[:2]))),
+        )
         control_points = route_controls(ego_route)
         control_points = sorted(
             [*control_points, *junction_yields(ego_route, scene_junctions, control_points)],
@@ -762,6 +767,7 @@ class OsmSceneSource:
             build_notes=build_notes,
             ambient_lanes=ambient,
             junctions=scene_junctions,
+            parked=parked,
         )
 
     @staticmethod

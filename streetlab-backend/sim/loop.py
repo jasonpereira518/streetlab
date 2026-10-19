@@ -387,6 +387,7 @@ class Simulation:
             density_per_lane_km=float(self.world.params["traffic_density"]),
             junctions=self.scene.junctions,
             levels=self._levels,
+            parked=self.scene.parked,
         )
         self._signals = SignalController(self.scene.signal_groups)
         # Built on first need: only a person-driven car ever asks (`_surroundings`).
