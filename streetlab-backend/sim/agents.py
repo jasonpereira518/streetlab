@@ -610,6 +610,11 @@ _ACROSS_BEHIND_M = 15.0
 _ROW_NOSE_IN_M = 3.0
 _TURN_PROBE_M = 5.0
 _MAJOR_ALIGN_COS = 0.9
+#: A route passes a junction if it comes this much outside its box: a right
+#: turn on a 6 m fillet cuts the corner ~5 m from the centre (5.8 from a kerb
+#: lane), outside a 4.6 m box, and skipped right of way altogether. Only for
+#: turns: a route going straight that near passes beside the box, not into it.
+_PASSAGE_REACH_M = 4.0
 #: How far past a signal's line a route is read for a right on red.
 _RED_TURN_SPAN_M = 25.0
 #: Street ends: how near another lane must pass to be turned onto, the road
@@ -1654,7 +1659,8 @@ class IdmTraffic(ScriptedTraffic):
             line = LineString(route.points + ([route.points[0]] if route.closed else []))
             controls = self._controls.get(id(route), [])
             for j in self._junctions:
-                if line.distance(Point(j.centre)) > j.radius_m:
+                off = line.distance(Point(j.centre))
+                if off > j.radius_m + _PASSAGE_REACH_M:
                     continue
                 s = route.project(j.centre)
                 kind = next(
@@ -1666,11 +1672,14 @@ class IdmTraffic(ScriptedTraffic):
                     None,
                 )
                 before = route.heading_at(route.normalise(s - j.radius_m - _TURN_PROBE_M))
+                turn = self._movement(route, s, j.radius_m, before)
+                if off > j.radius_m and turn == "straight":
+                    continue
                 major = None
                 if j.major_headings:
                     major = any(abs(math.cos(before - b)) > _MAJOR_ALIGN_COS for b in j.major_headings)
                 out.append(
-                    _Passage(_junction_key(j.centre), j.centre, s, j.radius_m, kind, self._movement(route, s, j.radius_m, before), major)
+                    _Passage(_junction_key(j.centre), j.centre, s, j.radius_m, kind, turn, major)
                 )
         out.sort(key=lambda p: p.s)
         self._passages[id(route)] = out

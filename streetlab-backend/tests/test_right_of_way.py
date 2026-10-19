@@ -230,3 +230,12 @@ def test_every_signal_traffic_obeys_has_a_phase(nob_hill_scene):
 def test_nob_hill_finds_main_roads_at_its_unsigned_junctions(nob_hill_scene):
     with_major = [j for j in nob_hill_scene.junctions if j.major_headings]
     assert len(with_major) > len(nob_hill_scene.junctions) // 4
+
+
+def test_a_right_turn_cutting_the_corner_still_passes_through_the_junction():
+    """A 6 m fillet from a 1.8 m lane offset comes ~5.0 m from the centre,
+    outside the 4.6 m box: such turns had no passage and skipped right of way."""
+    arc = [(-7.8 + 6 * math.sin(a), -7.8 + 6 * math.cos(a)) for a in (i * math.pi / 2 / 12 for i in range(13))]
+    turn = Route([(-80.0, -1.8), *arc, (-1.8, -80.0)], closed=False)
+    traffic = IdmTraffic(routes=[], speed_limit_mps=11.0, ambient=[AmbientLane(turn, [])], junctions=[BOX], ego_route=FAR_EGO.ego_route)
+    assert [p.turn for p in traffic._passages_of(turn)] == ["right"]

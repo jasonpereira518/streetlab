@@ -1843,6 +1843,10 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
 _YIELD_CONTROL_REACH_M = 20.0
 _YIELD_PROBE_M = 5.0
 _YIELD_MAJOR_COS = 0.9
+#: A route enters a junction it comes this much outside its box: a right turn
+#: cuts the corner (traffic's `_PASSAGE_REACH_M`); going straight, it passes beside it.
+_YIELD_PASSAGE_REACH_M = 4.0
+_YIELD_TURN_RAD = math.radians(30.0)
 #: The ego's give-way line: this far outside the junction's box.
 YIELD_LINE_OUTSIDE_M = 1.0
 
@@ -1860,7 +1864,8 @@ def junction_yields(
     line = LineString(route.points + ([route.points[0]] if route.closed else []))
     out = []
     for j in junctions:
-        if line.distance(Point(j.centre)) > j.radius_m:
+        off = line.distance(Point(j.centre))
+        if off > j.radius_m + _YIELD_PASSAGE_REACH_M:
             continue
         s = route.project(j.centre)
         governed = any(
@@ -1871,6 +1876,10 @@ def junction_yields(
         if governed:
             continue
         before = route.heading_at(route.normalise(s - j.radius_m - _YIELD_PROBE_M))
+        if off > j.radius_m:
+            after = route.heading_at(route.normalise(s + j.radius_m + _YIELD_PROBE_M))
+            if abs(math.remainder(after - before, math.tau)) < _YIELD_TURN_RAD:
+                continue  # beside the box, not through it
         if any(abs(math.cos(before - b)) > _YIELD_MAJOR_COS for b in j.major_headings):
             continue  # on the priority road: the others give way to it
         line_s = s - j.radius_m - YIELD_LINE_OUTSIDE_M
