@@ -5,10 +5,10 @@
  * frame stream at ~10 Hz and only re-renders when the displayed value changes.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CameraView, Maneuver, PerceptionMode } from '../schema';
+import type { CameraView, CruiseMode, Maneuver, PerceptionMode } from '../schema';
 import { useFrameValue } from '../store/hooks';
 import { hasPipeline, useSimStore } from '../store/simStore';
-import { formatClock, formatKm, formatTtc, toMph } from '../units';
+import { formatClock, formatKm, formatTtc, MPH_TO_MPS, toMph } from '../units';
 import {
   ActivityIcon,
   BrandMark,
@@ -39,12 +39,20 @@ export const PERCEPTION_LABELS: Record<PerceptionMode, string> = {
   ml: 'ML',
 };
 
-const CRUISE_LABELS: Record<string, string> = {
+const CRUISE_LABELS: Record<CruiseMode, string> = {
   off: 'Manual',
   cruise: 'Cruise',
-  autosteer: 'Autosteer',
+  autosteer: 'Assist',
   fsd: 'Full Self-Driving',
 };
+
+/** The segmented drive-mode switch, in ladder order, with its hotkey. */
+const DRIVE_MODES: Array<{ mode: CruiseMode; label: string; key: string; hint: string }> = [
+  { mode: 'off', label: 'Manual', key: '', hint: 'W/S to drive, A/D to steer' },
+  { mode: 'cruise', label: 'Cruise', key: 'C', hint: 'Holds the set speed; you steer' },
+  { mode: 'autosteer', label: 'Assist', key: 'L', hint: 'Holds the set speed and the lane' },
+  { mode: 'fsd', label: 'FSD', key: 'F', hint: 'The planner drives' },
+];
 
 // Typed as exhaustive over `Maneuver`, not `Record<string, string>`: a wire
 // maneuver with no label here would otherwise silently fall back to '—' (see
@@ -65,7 +73,8 @@ const MANEUVER_LABELS: Record<Maneuver, string> = {
 
 export function TopToolbar() {
   const paused = useSimStore((s) => s.paused);
-  const assist = useSimStore((s) => s.assistActive);
+  const setDriveMode = useSimStore((s) => s.setDriveMode);
+  const nudgeSetSpeed = useSimStore((s) => s.nudgeSetSpeed);
   const status = useSimStore((s) => s.status);
   const sourceLabel = useSimStore((s) => s.sourceLabel);
   const cameraView = useSimStore((s) => s.cameraView);
@@ -86,7 +95,9 @@ export function TopToolbar() {
   const helpOpen = useSimStore((s) => s.helpOpen);
   const setHelpOpen = useSimStore((s) => s.setHelpOpen);
 
-  const mph = useFrameValue((f) => Math.round(toMph(f.ego.speed_mps)), 12);
+  // A magnitude: reversing reads as "3 mph" with an R, not "-3".
+  const mph = useFrameValue((f) => Math.round(toMph(Math.abs(f.ego.speed_mps))), 12);
+  const reversing = useFrameValue((f) => f.ego.gear === 'R', 10);
   // Primitives, not the trip object, so the toolbar re-renders only when a
   // shown figure changes: tenths of a km, whole seconds, the lap number.
   const tripLeft = useFrameValue((f) => formatKm(f.telemetry.trip.distance_remaining_m), 4);
@@ -97,7 +108,10 @@ export function TopToolbar() {
     (f) => (f.telemetry.ttc_s == null ? null : Math.round(f.telemetry.ttc_s * 10) / 10),
     8,
   );
-  const cruise = useFrameValue((f) => f.ego.cruise.mode, 4);
+  const cruise = useFrameValue((f) => f.ego.cruise.mode, 10);
+  const fsdAvailable = useFrameValue((f) => f.ego.cruise.fsd_available, 4);
+  const setMph = useFrameValue((f) => Math.round(toMph(f.ego.cruise.set_speed_mps)), 10);
+  const holdsSetSpeed = cruise === 'cruise' || cruise === 'autosteer';
   const maneuver = useFrameValue((f) => f.plan.maneuver, 4);
   const reaction = useFrameValue((f) => f.plan.reaction_source_id, 4);
 
@@ -147,16 +161,41 @@ export function TopToolbar() {
       </div>
 
       <div className="toolbar-group toolbar-group--status">
-        <div className={`status-pill${assist ? ' is-on' : ''}`}>
-          <span className="status-dot" />
-          <span className="status-label">
-            {assist ? 'Assist active' : 'Assist off'}
-          </span>
+        <div className="drive-modes" role="group" aria-label="Drive mode">
+          {DRIVE_MODES.map(({ mode, label, key, hint }) => {
+            const blocked = (mode === 'fsd' || mode === 'autosteer') && fsdAvailable === false;
+            return (
+              <button
+                key={mode}
+                type="button"
+                className={`drive-mode drive-mode--${mode}${cruise === mode ? ' is-on' : ''}`}
+                aria-pressed={cruise === mode}
+                disabled={blocked}
+                title={blocked ? `${label} unavailable: off route` : `${hint}${key ? ` (${key})` : ''}`}
+                onClick={() => setDriveMode(mode)}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
+
+        {holdsSetSpeed && (
+          <div className="set-speed" aria-label="Set speed">
+            <button type="button" onClick={() => nudgeSetSpeed(-5 * MPH_TO_MPS)} aria-label="Lower set speed">
+              −
+            </button>
+            <span className="readout-value" data-testid="set-speed">{setMph ?? '—'}</span>
+            <span className="readout-unit">set</span>
+            <button type="button" onClick={() => nudgeSetSpeed(5 * MPH_TO_MPS)} aria-label="Raise set speed">
+              +
+            </button>
+          </div>
+        )}
 
         <div className="readout">
           <span className="readout-value">{mph ?? '—'}</span>
-          <span className="readout-unit">mph</span>
+          <span className="readout-unit">{reversing ? 'mph · R' : 'mph'}</span>
         </div>
 
         <div

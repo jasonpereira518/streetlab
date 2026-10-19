@@ -102,7 +102,6 @@ class PlanLimits:
     speed_limit_mps: float
     speed_cap_mps: float
     follow_distance_s: float = 1.5
-    assist_enabled: bool = True
     #: How far over the limit the car may go (the user's "Speed margin").
     speed_margin_mps: float = 0.0
 
@@ -310,7 +309,7 @@ class CenterlineFollower:
                 ),
                 target_speed_mps=max(0.0, target),
                 maneuver=_label(decision.maneuver, reaction, route, s),
-                confidence=1.0 if limits.assist_enabled else 0.35,
+                confidence=1.0,
                 reaction_source_id=reaction.source_id or source_id,
             ),
             steer_rad=steer,

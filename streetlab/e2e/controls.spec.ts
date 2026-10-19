@@ -58,3 +58,42 @@ test('the ML perception item says why it is disabled', async ({ page }) => {
   await expect(ml).toBeDisabled();
   await expect(ml).toHaveAttribute('title', /no perception pipeline running/i);
 });
+
+test('drive keys: F hands over, held up-arrow speeds up, brackets move the set speed', async ({ page }) => {
+  const mode = (name: string) => page.getByRole('button', { name, exact: true });
+  const mph = page.locator('.readout').first().locator('.readout-value');
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
+  await expect(mode('FSD')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.keyboard.press('f');
+  await expect(mode('Manual')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.mode-chip-title')).toHaveText('Manual');
+
+  // Coast down a little, then hold the throttle and watch the speed climb.
+  await page.waitForTimeout(500);
+  const before = Number(await mph.textContent());
+  await page.keyboard.down('ArrowUp');
+  await page.waitForTimeout(2000);
+  await page.keyboard.up('ArrowUp');
+  await expect.poll(async () => Number(await mph.textContent())).toBeGreaterThan(before + 2);
+
+  // Braking under FSD drops straight to Manual.
+  await page.keyboard.press('f');
+  await expect(mode('FSD')).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.down('s');
+  await expect(mode('Manual')).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.up('s');
+
+  await page.keyboard.press('c');
+  await expect(mode('Cruise')).toHaveAttribute('aria-pressed', 'true');
+  const setSpeed = page.getByTestId('set-speed');
+  const start = Number(await setSpeed.textContent());
+  await page.keyboard.press(']');
+  await expect(setSpeed).toHaveText(String(start + 5));
+  await page.keyboard.press('[');
+  await page.keyboard.press('[');
+  await expect(setSpeed).toHaveText(String(start - 5));
+
+  await page.keyboard.press('?');
+  await expect(page.getByRole('dialog', { name: /help/i })).toContainText('FSD on / off');
+});

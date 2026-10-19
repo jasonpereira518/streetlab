@@ -241,6 +241,9 @@ export function createWebSocketTransport(
       if (res.value.cmd === 'suggest_address') return;
       // A heartbeat queued during a disconnect proves nothing about now.
       if (res.value.cmd === 'heartbeat') return;
+      // Held controls queued during a disconnect would replay stale key
+      // presses on reconnect; the backend releases them after 0.5 s anyway.
+      if (res.value.cmd === 'drive_input') return;
       queue.push(res.value);
       while (queue.length > queueLimit) queue.shift();
     },

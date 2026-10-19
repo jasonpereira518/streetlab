@@ -487,39 +487,57 @@ canvas {
   box-shadow: 0 1px 3px rgba(255, 122, 26, 0.4);
 }
 
-.status-pill {
+.drive-modes {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 11px 5px 9px;
+  padding: 2px;
   border-radius: var(--r-pill, 999px);
   background: var(--c-surface-sunken, #edf1f6);
-  color: var(--c-text-faint, #9aa7b6);
-  font-size: 11.5px;
-  font-weight: 600;
 }
 
-.status-pill.is-on {
+.drive-mode {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--r-pill, 999px);
+  background: transparent;
+  color: var(--c-text-muted, #5f6e80);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.drive-mode:hover:not(:disabled) { color: var(--c-text, #1b2430); }
+.drive-mode:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.drive-mode.is-on {
+  background: var(--c-surface, #fff);
+  color: var(--c-text, #1b2430);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.drive-mode--fsd.is-on,
+.drive-mode--autosteer.is-on {
   background: var(--c-ok-soft, #e6f9ee);
   color: #15803d;
 }
 
-.status-dot {
-  width: 7px;
-  height: 7px;
+.set-speed {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.set-speed button {
+  width: 20px;
+  height: 20px;
+  border: 0;
   border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 3px transparent;
-}
-
-.status-pill.is-on .status-dot {
-  background: var(--c-ok, #22c55e);
-  animation: pulse-dot 2.4s ease-in-out infinite;
-}
-
-@keyframes pulse-dot {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45); }
-  60% { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
+  background: var(--c-surface-sunken, #edf1f6);
+  color: var(--c-text-muted, #5f6e80);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  align-self: center;
 }
 
 .readout {
@@ -1859,3 +1877,96 @@ canvas {
 .help-swatch--hazard { background: #ff7a1a; }
 .help-swatch--det { background: #5f6e80; }
 .help-note { margin: 0; color: var(--c-text-muted, #5f6e80); line-height: 1.4; }
+
+/* ------------------------------------------------------------------ */
+/* Drive HUD: key hints and on-screen controls over the road          */
+/* ------------------------------------------------------------------ */
+
+.drive-hud {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--gutter) + 12px);
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 2 * var(--gutter) - 24px);
+  pointer-events: none;
+}
+
+.drive-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px 6px 12px;
+  border-radius: var(--r-pill, 999px);
+  background: rgba(22, 25, 29, 0.62);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  pointer-events: auto;
+  backdrop-filter: blur(6px);
+}
+
+.drive-gear {
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--c-warn, #ff7a1a);
+  font-weight: 700;
+}
+
+.drive-pad-toggle {
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--r-pill, 999px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.drive-pad-toggle[aria-pressed='true'] { background: rgba(255, 255, 255, 0.2); }
+
+.drive-pad {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  pointer-events: auto;
+}
+
+.drive-pad-group { display: flex; gap: 8px; }
+
+.drive-pad-btn {
+  min-width: 64px;
+  min-height: 56px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(22, 25, 29, 0.62);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.drive-pad-btn:active { background: rgba(22, 25, 29, 0.85); }
+.drive-pad-btn--gas { min-height: 76px; background: rgba(21, 128, 61, 0.78); }
+.drive-pad-btn--brake { background: rgba(185, 28, 28, 0.75); }
+.drive-pad-btn--mode { min-height: 40px; min-width: 88px; }
+
+@media (max-width: 720px) {
+  .drive-hint { font-size: 11px; }
+  .drive-pad { gap: 12px; }
+}
