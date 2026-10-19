@@ -1,5 +1,8 @@
 # Phase 3 opening measurements: how the ego stops, and what a prototype does about it
 
+> **Superseded in part (2026-10-19):** the stop work this prototype explored was done on main by #40, and
+> the corner-exit cap by #21. Kept as the measurement record; see `2026-10-19-ego-jerk.md` for what is left.
+
 **Date:** 2026-10-04. **Code measured:** `claude/driving-realism-phase2-lane-changes` at `8729361`
 (PR #19, merged, plus PR #21, open), `CenterlineFollower` unmodified for the baseline.
 **The prototype is scratch**: a wrapper planner and monkeypatched constants, run from a scratchpad.
