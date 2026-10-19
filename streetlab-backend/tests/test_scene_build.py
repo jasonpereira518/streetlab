@@ -69,13 +69,14 @@ def test_building_footprints_are_simple_rings(built):
         assert building.footprint[0] != building.footprint[-1]
 
 
-def test_catalog_has_six_scenarios_with_unique_ids(source):
-    """Five, plus grid-overtake: the one grid circuit long enough to pass a
-    slow car honestly."""
+def test_catalog_has_seven_scenarios_with_unique_ids(source):
+    """Five, plus grid-overtake (the one grid circuit long enough to pass a
+    slow car honestly) and grid-boulevard (its own city: a divided boulevard
+    and a viaduct)."""
     catalog = source.scenarios()
-    assert len(catalog) == 6
-    assert len({s.id for s in catalog}) == 6
-    assert [s.index for s in catalog] == [1, 2, 3, 4, 5, 6]
+    assert len(catalog) == 7
+    assert len({s.id for s in catalog}) == 7
+    assert [s.index for s in catalog] == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_every_catalog_entry_is_buildable(source):
@@ -102,8 +103,11 @@ def test_preview_route_is_a_real_path_not_a_placeholder(source):
         assert len(route) >= 8
         xs = [p[0] for p in route]
         ys = [p[1] for p in route]
-        assert max(xs) - min(xs) > 20
-        assert max(ys) - min(ys) > 20
+        # 15, not 20: grid-boulevard's 66 m-tall loop sits in a 340 m box
+        # (19.5 units), where the other grids' are 260 m. A placeholder
+        # diagonal is still caught by the point count.
+        assert max(xs) - min(xs) > 15
+        assert max(ys) - min(ys) > 15
 
 
 def test_preview_paths_describe_the_road_skeleton(source):

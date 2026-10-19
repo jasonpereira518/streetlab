@@ -25,6 +25,7 @@ from schema import SignalState, Size
 from plan.behavior import BOX_TIMEOUT_S, STOP_TIE_S, WAIT_MAX_M, WAIT_MIN_M
 from sim.route import EGO_LANE_ID, AmbientLane, ControlPoint, Junction, Lane, LaneSet, Route
 from sim.vehicle import BicycleModel, VehicleState
+from sim.levels import Levels
 
 # How quickly a scripted agent converges on its target speed. Not a physical
 # limit — just enough smoothing that traffic does not teleport between speeds
@@ -702,9 +703,13 @@ class IdmTraffic(ScriptedTraffic):
         ambient: Sequence[AmbientLane] = (),
         density_per_lane_km: float = 0.0,
         junctions: Sequence[Junction] = (),
+        levels: Levels | None = None,
     ) -> None:
         super().__init__(routes, speed_limit_mps, seed=seed, speed_scale=speed_scale)
         self._junctions = list(junctions)
+        #: A bridge and the street under it: vehicles crossing on different
+        #: levels never yield to or follow each other.
+        self._levels = levels if levels is not None else Levels(())
         #: id(route) -> that route's junction passages, by arc length.
         self._passages: dict[int, list[_Passage]] = {}
         #: This tick: each vehicle's next junction passage (id(agent), or
@@ -1235,7 +1240,11 @@ class IdmTraffic(ScriptedTraffic):
                 gap = bumper_gap(other_s, other.size.length, my_s, agent.size.length, loop)
                 if gap < best_gap:
                     best_gap, best_speed = gap, other.state.speed_mps
-            if world is not None and _within(agent.state, world.ego, _EGO_NEAR_M):
+            if (
+                world is not None
+                and _within(agent.state, world.ego, _EGO_NEAR_M)
+                and not self._levels.apart(agent.state, world.ego)
+            ):
                 ego_s, ego_lat = self._ego_on(route, world, ego_s_by_route)
                 # Ahead is not enough: the ego has to be in THIS lane. Phase 2
                 # gave it lane changes, and a car that has pulled out to
@@ -1286,6 +1295,8 @@ class IdmTraffic(ScriptedTraffic):
         for other in self._near((agent.state.x, agent.state.y), _IDM_HORIZON_M + _NEAR_PAD_M):
             if other is agent or id(other.route) in mine or id(other.from_route) in mine:
                 continue
+            if self._levels.apart(agent.state, other.state):
+                continue
             # Nothing that cannot reach this lane ahead within the lookahead,
             # body and all, is worth the full test: most of the street grid.
             dx, dy = other.state.x - agent.state.x, other.state.y - agent.state.y
@@ -1308,7 +1319,7 @@ class IdmTraffic(ScriptedTraffic):
             gap = self._crossing_gap(agent, other)
             if gap < best_gap:
                 best_gap, best_speed = gap, 0.0
-        if world is not None:
+        if world is not None and not self._levels.apart(agent.state, world.ego):
             # The ego turning or pulling across in front, by where its route
             # takes it.
             ego_s, _ = self._ego_on(world.ego_route, world, ego_s_by_route)

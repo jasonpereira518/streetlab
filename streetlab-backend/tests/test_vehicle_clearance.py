@@ -39,7 +39,9 @@ RUN_S = 180.0
 #: the assertion leaves room for it by demanding a margin, not mere contact.
 SAMPLE_EVERY = 6
 
-GRID_SCENARIOS = ["grid-loop", "grid-merge", "grid-signals", "grid-night", "grid-arterial", "grid-overtake"]
+GRID_SCENARIOS = [
+    "grid-loop", "grid-merge", "grid-signals", "grid-night", "grid-arterial", "grid-overtake", "grid-boulevard",
+]
 SEEDS = [7, 11]
 #: The real extract, one seed and a shorter run: a Nob Hill lap is ~1.2 km and
 #: the build alone costs seconds.
@@ -74,14 +76,15 @@ def _nob_hill_source() -> OsmSceneSource:
 
 
 def footprints(sim: Simulation):
+    """(id, corners, state) of every vehicle."""
     ego = sim.world.ego
-    out = [("ego", _corners(ego.x, ego.y, ego.heading, _EGO.length_m, _EGO.width_m))]
+    out = [("ego", _corners(ego.x, ego.y, ego.heading, _EGO.length_m, _EGO.width_m), ego)]
     for agent in sim._traffic.agents:
         if agent.cls == "pedestrian":
             continue
         st = agent.state
         out.append(
-            (agent.id, _corners(st.x, st.y, st.heading, agent.size.length, agent.size.width))
+            (agent.id, _corners(st.x, st.y, st.heading, agent.size.length, agent.size.width), st)
         )
     return out
 
@@ -127,12 +130,15 @@ def measure(scenario_id: str, seed: int, run_s: float = RUN_S, density: float = 
             continue
         boxes = footprints(sim)
         for j in range(len(boxes)):
-            (ida, a) = boxes[j]
+            (ida, a, sa) = boxes[j]
             ca = a[0]
             for k in range(j + 1, len(boxes)):
-                (idb, b) = boxes[k]
+                (idb, b, sb) = boxes[k]
                 # Cheap reject: two vehicles 20 m apart cannot touch.
                 if math.hypot(ca[0] - b[0][0], ca[1] - b[0][1]) > 20.0:
+                    continue
+                # One on a bridge, one crossing under it.
+                if sim._levels.apart(sa, sb):
                     continue
                 sep = obb_separation(a, b)
                 if sep < worst_sep[0]:
@@ -236,6 +242,9 @@ DENSE_CASES = [
     # leaves a street's end by turning onto the street it meets, and streets
     # are chained without doubling back. Before: 1.0 m deep at three junctions.
     ("osm-nob-hill", 7),
+    # The divided boulevard, and Bush St's viaduct carrying traffic over
+    # Larkin and Hyde while theirs passes beneath (`sim.levels`).
+    ("grid-boulevard", 7),
 ]
 
 
