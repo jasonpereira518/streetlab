@@ -36,9 +36,6 @@ BASELINE_FAILS: dict[tuple[str, str], str] = {
     # the 3.0 m/s^2 rate a yellow is designed around -- over a 2.5 budget.
     ("ego_decel", "nobhill"): "2.98 m/s2, firm stops at 3 yellow onsets",
     ("stop_decel", "nobhill"): "2.94-2.98 m/s2 at the 3 yellow-onset stops",
-    ("ego_jerk", "nobhill"): "p99 3.4, max 213 m/s3",
-    ("ego_jerk", "grid"): "p99 4.5, max 135 m/s3",
-    ("ego_jerk", "grid_slow"): "p99 4.3, max 179 m/s3",
 }
 
 
