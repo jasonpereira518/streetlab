@@ -330,15 +330,28 @@ async def test_render_only_param_is_accepted_and_ignored(server):
 async def test_backend_param_changes_behaviour(server):
     async with connect(server) as ws:
         await recv_typed(ws, "scene_description")
-        await send(ws, {"id": "s2", "cmd": "set_param", "key": "assist_enabled", "value": False})
-        assert (await recv_typed(ws, "ack")).ok
-        for _ in range(30):
-            frame = await recv_typed(ws, "state_update")
-            if frame.assist_active is False:
-                break
-        assert frame.assist_active is False
-        await send(ws, {"id": "s3", "cmd": "set_param", "key": "assist_enabled", "value": True})
+        await send(ws, {"id": "s2", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 30})
+        ack = await recv_typed(ws, "ack")
+        assert ack.ok and ack.message == "ego_speed_cap_mph = 30"
+        await send(ws, {"id": "s3", "cmd": "set_param", "key": "ego_speed_cap_mph", "value": 45.0})
         await recv_typed(ws, "ack")
+
+
+async def test_drive_input_is_never_acked_but_takes_the_wheel(server):
+    async with connect(server) as ws:
+        await recv_typed(ws, "scene_description")
+        # Braking under FSD drops to Manual: visible in the frames, never acked.
+        await send(ws, {"id": "d1", "cmd": "drive_input", "steer": 0.0, "throttle": 0.0, "brake": 1.0})
+        for _ in range(60):
+            frame = await recv_typed(ws, "state_update")
+            if frame.ego.cruise.mode == "off":
+                break
+        assert frame.ego.cruise.mode == "off"
+        assert frame.assist_active is False
+        # The next ack is the mode change's: `d1` produced none.
+        await send(ws, {"id": "d2", "cmd": "set_drive_mode", "mode": "fsd"})
+        ack = await recv_typed(ws, "ack")
+        assert ack.id == "d2" and ack.ok, ack.message
 
 
 async def test_step_and_reset_are_acked(server):

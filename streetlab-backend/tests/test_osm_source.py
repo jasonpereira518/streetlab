@@ -750,8 +750,14 @@ def test_build_location_racing_the_same_query_from_many_threads_yields_one_entry
     ]
     for t in threads:
         t.start()
+    # One shared deadline, not a timeout per join: this only has to catch a
+    # thread that HANGS. The eight builds contend for the GIL, so the run
+    # takes ~20 s on an M-series Mac alone (one build is 1.4 s) and more on a
+    # 2-vCPU CI runner mid-suite -- where a 30 s budget timed out with every
+    # thread still building (PR #63, 2026-10-19; build time unchanged by #65).
+    deadline = time.monotonic() + 120
     for t in threads:
-        t.join(timeout=30)
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
 
     assert not errors
     assert all(r is not None for r in results), "a worker thread never finished in time"
