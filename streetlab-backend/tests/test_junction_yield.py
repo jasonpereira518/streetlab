@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
+
 from plan.behavior import STOP_DWELL_S, BehaviorFSM, BehaviorState
-from schema import Detection, Pose, Size
+from schema import Detection, Pose, SignalState, Size
 from sim.route import ControlPoint, Route
 from sim.vehicle import VehicleState
 
@@ -98,3 +100,36 @@ def test_creep_abort_recovers_past_the_line_without_a_fresh_phase():
     # Junction clears, phase unknown (lamp behind us) — still release.
     d = fsm.step(_ego(21.5, 0.2), road, 21.5, cps, {}, DT, detections=[])
     assert d.state is BehaviorState.CREEP
+
+
+def _left_road():
+    """East 50 m, then left, north."""
+    return Route([(0.0, 0.0), (50.0, 0.0), (50.0, 100.0)], closed=False)
+
+
+GREEN = {"tl": SignalState(id="tl", phase="green", time_to_change_s=20.0)}
+
+
+def test_an_unprotected_left_on_a_green_waits_for_oncoming_traffic():
+    """Turning left across a car coming the other way 3 s out: hold at the
+    line, and go once it has passed."""
+    fsm = BehaviorFSM()
+    road = _left_road()
+    cps = [ControlPoint(id="tl", kind="signal", s=40.0, position=(50.0, 0.0))]
+    oncoming = [_det(80.0, 1.8, heading=math.pi, speed=10.0)]
+    d = fsm.step(_ego(20.0, 8.0), road, 20.0, cps, signals=GREEN, dt=DT, detections=oncoming)
+    assert d.state is BehaviorState.APPROACH and d.maneuver == "stop"
+    for _ in range(int(STOP_DWELL_S / DT) + 5):
+        d = fsm.step(_ego(40.0, 0.0), road, 40.0, cps, signals=GREEN, dt=DT, detections=oncoming)
+    assert d.state is BehaviorState.STOP
+    gone = [_det(20.0, 1.8, heading=math.pi, speed=10.0)]  # past the junction, going away
+    d = fsm.step(_ego(40.0, 0.0), road, 40.0, cps, signals=GREEN, dt=DT, detections=gone)
+    assert d.state is BehaviorState.CREEP
+
+
+def test_going_straight_on_a_green_ignores_oncoming_traffic():
+    fsm = BehaviorFSM()
+    cps = [ControlPoint(id="tl", kind="signal", s=40.0, position=(50.0, 0.0))]
+    oncoming = [_det(80.0, 1.8, heading=math.pi, speed=10.0)]
+    d = fsm.step(_ego(20.0, 8.0), _road(), 20.0, cps, signals=GREEN, dt=DT, detections=oncoming)
+    assert d.state is BehaviorState.CRUISE

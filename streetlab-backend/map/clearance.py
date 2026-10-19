@@ -231,10 +231,34 @@ def junctions(
     the radius of the box -- the widest road there's half-width, plus a metre."""
     kept, found = _junction_legs(roads, passes_under)
     return [
-        Junction(centre=at, radius_m=max(kept[k].half_width_m for (k, _) in legs) + 1.0)
+        Junction(
+            centre=at,
+            radius_m=max(kept[k].half_width_m for (k, _) in legs) + 1.0,
+            major_headings=_major_headings([(u, kept[k].road_class) for (k, _), (u, _) in legs.items()]),
+        )
         for at, legs in found
         if legs
     ]
+
+
+_CLASS_RANK = {"arterial": 3, "collector": 2, "residential": 1, "service": 0}
+
+
+def _major_headings(legs: list[tuple[Vec2, str | None]]) -> tuple[float, ...]:
+    """The bearings of the legs with priority: the highest road class when it
+    outranks another leg; else, at a T, the two legs that run straight on --
+    the street that ends there gives way to the one that does not."""
+    ranks = [_CLASS_RANK.get(cls or "", 1) for _, cls in legs]
+    if max(ranks) > min(ranks):
+        top = max(ranks)
+        return tuple(math.atan2(u[1], u[0]) for (u, _), r in zip(legs, ranks) if r == top)
+    if len(legs) == 3:
+        for a in range(3):
+            for b in range(a + 1, 3):
+                (ua, _), (ub, _) = legs[a], legs[b]
+                if ua[0] * ub[0] + ua[1] * ub[1] < -0.9:
+                    return (math.atan2(ua[1], ua[0]), math.atan2(ub[1], ub[0]))
+    return ()
 
 
 def kerb_returns(

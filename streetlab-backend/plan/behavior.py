@@ -163,6 +163,15 @@ CROSS_TRAFFIC_HEADING_RAD = 0.7
 #: Speed above which a near vehicle is still "moving through" the junction.
 MOVING_MPS = 0.5
 
+#: Unprotected left on a green: how far out oncoming traffic is looked for,
+#: the gap in it a left needs (`sim/agents.py` `_LEFT_GAP_S`), and the heading
+#: change past the stop line that makes the route a left turn there
+#: (`plan/control.py` `_TURN_THRESHOLD_RAD`, over a junction's width).
+LEFT_LOOK_M = 60.0
+LEFT_GAP_S = 5.0
+LEFT_TURN_RAD = 0.45
+LEFT_TURN_SPAN_M = 25.0
+
 #: Speed while edging across a junction.
 #:
 #: WARNING for whoever next retunes this, `CLEARED_M` below,
@@ -570,6 +579,12 @@ class BehaviorFSM:
             self.state = BehaviorState.APPROACH
 
         distance = route.signed_gap(ego_s, target.s)
+        # An unprotected left gives way to oncoming traffic, green or not.
+        yield_left = (
+            target.kind == "signal"
+            and _turns_left(route, target.s)
+            and self._oncoming(ego, target, detections)
+        )
         if target.kind == "stop_sign":
             self._track_waiters(target, detections)
             self._note_own_wait(ego, target)
@@ -577,7 +592,7 @@ class BehaviorFSM:
         # Already committed and moving through: re-check clearance so a late
         # crosser can put us back to a hold, the way a human driver would.
         if self.state is BehaviorState.CREEP:
-            if not self._intersection_clear(ego, target, detections):
+            if yield_left or not self._intersection_clear(ego, target, detections):
                 self.state = BehaviorState.STOP
                 # Do not zero dwell: we already fulfilled the stop obligation
                 # for this line. Recovery is clearance-only — requiring a
@@ -590,13 +605,13 @@ class BehaviorFSM:
         if distance <= STOP_ZONE_M and ego.speed_mps <= STOPPED_MPS:
             self.state = BehaviorState.STOP
             self.dwell_s += dt
-            if self._may_proceed(target, signals, ego, detections, distance=distance):
+            if not yield_left and self._may_proceed(target, signals, ego, detections, distance=distance):
                 self.state = BehaviorState.CREEP
                 return BehaviorDecision(BehaviorState.CREEP, CREEP_MPS, "yield", target)
             maneuver = "arrived" if target.kind == "arrival" else "stop"
             return BehaviorDecision(BehaviorState.STOP, 0.0, maneuver, target)
 
-        if not self._must_stop(target, signals, distance, ego):
+        if not yield_left and not self._must_stop(target, signals, distance, ego):
             # Rolling through. Latched only once the car is past the point of
             # stopping comfortably -- otherwise a light that goes red at 40 m
             # would be waved through on the strength of having been green.
@@ -887,6 +902,25 @@ class BehaviorFSM:
             return False
         # Green (or flashing / off): still yield to anyone already in the box.
         return self._intersection_clear(ego, target, detections)
+
+    @staticmethod
+    def _oncoming(ego: VehicleState, target: ControlPoint, detections: Sequence[Detection]) -> bool:
+        """Anyone coming the other way, toward this junction, inside the gap a
+        left turn across them needs -- or already in it and moving."""
+        tx, ty = target.position
+        for d in detections:
+            dist = math.hypot(d.pose.x - tx, d.pose.y - ty)
+            if dist > LEFT_LOOK_M or d.speed_mps < MOVING_MPS:
+                continue
+            if abs(math.remainder(d.pose.heading - ego.heading, math.tau)) < math.pi - CROSS_TRAFFIC_HEADING_RAD:
+                continue  # not the other way: cross traffic is the light's business
+            toward = math.cos(math.atan2(ty - d.pose.y, tx - d.pose.x) - d.pose.heading)
+            # Facing the junction, or inside it and not yet past its centre.
+            if toward <= 0.5 and dist > JUNCTION_CLEAR_M * 0.45:
+                continue
+            if dist / d.speed_mps < LEFT_GAP_S or dist < JUNCTION_CLEAR_M * 0.45:
+                return True
+        return False
 
     def _intersection_clear(
         self,
@@ -1449,3 +1483,9 @@ class BehaviorFSM:
             if -rear < gap < front:
                 return False
         return True
+
+
+def _turns_left(route: Route, s: float) -> bool:
+    """Whether `route` turns left within `LEFT_TURN_SPAN_M` past `s`."""
+    turn = math.remainder(route.heading_at(route.normalise(s + LEFT_TURN_SPAN_M)) - route.heading_at(route.normalise(s)), math.tau)
+    return turn > LEFT_TURN_RAD
