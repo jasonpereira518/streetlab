@@ -615,6 +615,11 @@ _MAJOR_ALIGN_COS = 0.9
 #: lane), outside a 4.6 m box, and skipped right of way altogether. Only for
 #: turns: a route going straight that near passes beside the box, not into it.
 _PASSAGE_REACH_M = 4.0
+#: A lane beside a route this far to its right (centre to centre), going its
+#: way, within this of its end, makes it not the kerb lane (`_lane_on_right`).
+_RIGHT_LANE_MIN_M = 2.0
+_RIGHT_LANE_MAX_M = 4.5
+_RIGHT_LANE_PROBE_M = 30.0
 #: How far past a signal's line a route is read for a right on red.
 _RED_TURN_SPAN_M = 25.0
 #: Street ends: how near another lane must pass to be turned onto, the road
@@ -753,7 +758,9 @@ class IdmTraffic(ScriptedTraffic):
         #: Each (route, length)'s tight corners and their sweeps (`_tight_turns`).
         self._turns: dict[tuple[int, float], list] = {}
         self._ego_start = ego_route.point_at(0.0) if ego_route is not None else None
-        self._exits = _street_exits([lane.route for lane in self._ambient])
+        self._exits = _street_exits(
+            [lane.route for lane in self._ambient], {id(lane.route): lane.kerb_at_end for lane in self._ambient}
+        )
         #: Turn routes built so far, by (from lane, to lane), and the street
         #: lane each comes round on.
         self._turns: dict[tuple[int, int, float], Route] = {}
@@ -2344,16 +2351,22 @@ class _Passage:
     major: bool | None = None
 
 
-def _street_exits(routes: Sequence[Route]) -> dict[int, list[Route]]:
+def _street_exits(routes: Sequence[Route], kerb_at_end: dict[int, bool | None] | None = None) -> dict[int, list[Route]]:
     """For each open route, the routes a car at its end can turn onto: those
     passing within `_EXIT_REACH_M` of its end with room left to drive, right
-    turns first, then straight on, then left -- never back the way it came."""
+    turns first, then straight on, then left -- never back the way it came.
+    A right turn only from the kerb lane: with a lane going its way on its
+    right, a car turns left or goes on (measured, Nob Hill: 6 of 49 right
+    turns were from the second or third lane)."""
     out: dict[int, list[Route]] = {}
     for route in routes:
         if route.closed:
             continue
         end = route.point_at(route.length_m)
         heading = route.heading_at(route.length_m - 1.0)
+        kerb = (kerb_at_end or {}).get(id(route))
+        if kerb is None:
+            kerb = not _lane_on_right(route, routes)
         found = []
         for other in routes:
             if other is route or other.closed:
@@ -2365,9 +2378,33 @@ def _street_exits(routes: Sequence[Route]) -> dict[int, list[Route]]:
             if abs(turn) > _EXIT_MAX_TURN_RAD:
                 continue
             rank = 0 if turn < -_STRAIGHT_RAD else 1 if abs(turn) <= _STRAIGHT_RAD else 2
+            if rank == 0 and not kerb:
+                continue
             found.append((rank, math.dist(other.point_at(s), end), other))
         out[id(route)] = [other for _, _, other in sorted(found, key=lambda f: (f[0], f[1]))]
     return out
+
+
+def _lane_on_right(route: Route, routes: Sequence[Route]) -> bool:
+    """Whether another lane runs `route`'s way just to its right anywhere over
+    its last `_RIGHT_LANE_PROBE_M`: then `route` is not the kerb lane there."""
+    for back in (5.0, 15.0, _RIGHT_LANE_PROBE_M):
+        at = max(0.0, route.length_m - back)
+        x, y = route.point_at(at)
+        h = route.heading_at(at)
+        for other in routes:
+            if other is route:
+                continue
+            s = other.project((x, y))
+            ox, oy = other.point_at(s)
+            side = math.cos(h) * (oy - y) - math.sin(h) * (ox - x)  # + left, - right
+            if (
+                -_RIGHT_LANE_MAX_M <= side <= -_RIGHT_LANE_MIN_M
+                and math.dist((ox, oy), (x, y)) <= _RIGHT_LANE_MAX_M + 0.1
+                and math.cos(other.heading_at(s) - h) > _MAJOR_ALIGN_COS
+            ):
+                return True
+    return False
 
 
 def _within(a: VehicleState, b: VehicleState, d: float) -> bool:

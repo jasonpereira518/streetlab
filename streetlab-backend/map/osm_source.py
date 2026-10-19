@@ -208,6 +208,29 @@ def describe_build_failure(exc: Exception) -> str:
     return "Something went wrong loading this location. Try a different address."
 
 
+def _kerb_at_end(route: Route, roads: list[Road]) -> bool:
+    """Whether `route` ends in the kerb lane of the road it ends on. A chained
+    street takes its narrowest road's lanes, so where it widens its lanes sit
+    off the kerb with no traffic lane beside them to say so: 1 of Nob Hill's
+    44 right turns was from California's second lane at the extract's edge."""
+    from shapely.geometry import LineString
+
+    s = max(0.0, route.length_m - 15.0)
+    x, y = route.point_at(s)
+    h = route.heading_at(s)
+    road = min(roads, key=lambda r: LineString(r.centerline).distance(Point(x, y)))
+    line = LineString(road.centerline)
+    d = line.project(Point(x, y))
+    a, b = line.interpolate(d), line.interpolate(min(d + 0.5, line.length))
+    if math.dist((a.x, a.y), (b.x, b.y)) < 1e-6:
+        a, b = line.interpolate(max(d - 0.5, 0.0)), a
+    along = math.atan2(b.y - a.y, b.x - a.x)
+    side = math.cos(along) * (y - a.y) - math.sin(along) * (x - a.x)  # + left of the road's way
+    if math.cos(h - along) < 0:
+        side = -side
+    return side + road.half_width_m - road.edge_m <= road.lane_width_m + 0.3
+
+
 def _centroid(points: list[tuple[float, float]]) -> tuple[float, float]:
     n = len(points)
     return (sum(p[0] for p in points) / n, sum(p[1] for p in points) / n)
@@ -794,7 +817,7 @@ class OsmSceneSource:
                     )
                     route.segment_limits = speed_limits_along(route, roads)
                     near = min(math.dist(p, q) for p in route.resample(20.0) for q in ego)
-                    lanes.append((near, AmbientLane(route, route_controls(route), w)))
+                    lanes.append((near, AmbientLane(route, route_controls(route), w, _kerb_at_end(route, roads))))
         return [lane for _, lane in sorted(lanes, key=lambda pair: pair[0])]
 
     def _bounds(

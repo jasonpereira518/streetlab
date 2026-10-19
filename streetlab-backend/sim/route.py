@@ -74,6 +74,9 @@ class AmbientLane:
     control_points: list[ControlPoint]
     # How wide the lane is: what may be driven in it (`IdmTraffic._fits`).
     lane_width_m: float = 3.6
+    # Whether it ends in its street's kerb lane, so may turn right there;
+    # None works it out from the lanes beside it (`sim.agents._street_exits`).
+    kerb_at_end: bool | None = None
 
 
 @dataclass(slots=True)
