@@ -17,10 +17,11 @@ import * as THREE from 'three/webgpu';
 import { attribute, float } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { DEG_TO_RAD, clamp, damp, handWheelDeg } from '../units';
-import { EGO_STYLE, paint, slab } from './ego';
+import { EGO_STYLE, paint, slab, type TurnSignal } from './ego';
 import { CH, assignChannel } from './layers';
 
-export type TurnSignal = 'off' | 'left' | 'right';
+export type { TurnSignal };
+export { BLINK_HZ, blinkOn } from './ego';
 
 const TRIM = '#43474D';
 const TRIM_DARK = '#2C2F34';
@@ -35,9 +36,6 @@ const WHEEL = { x: 0.2, y: 0.93, z: EYE.z, r: 0.18, tilt: -0.35 } as const;
 /** Centre screen, landscape, ~15 inch. */
 export const SCREEN = { x: 0.5, y: 0.99, z: 0.02, w: 0.34, h: 0.21, tilt: 0.18 } as const;
 
-/** Indicator cadence: 1.5 Hz, half on, half off. */
-export const BLINK_HZ = 1.5;
-export const blinkOn = (t: number): boolean => (t * BLINK_HZ) % 1 < 0.5;
 
 /** A box spanning two points, `w` x `h` in cross-section. */
 function beam(a: THREE.Vector3, b: THREE.Vector3, w: number, h: number): THREE.BufferGeometry {

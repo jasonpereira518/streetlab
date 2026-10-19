@@ -89,6 +89,8 @@ export const lighting = {
   midday: { sky: '#CFE3F5', horizon: '#EFF4F8', sun: '#FFFAF0', ground: '#D6D3CB', elev: 0.95, azim: 0.9, intensity: 1.55, ambient: 2.7 },
   golden: { sky: '#E8D9E8', horizon: '#FFE2C2', sun: '#FFD39B', ground: '#DCCBB8', elev: 0.24, azim: 2.6, intensity: 1.5, ambient: 2.35 },
   overcast: { sky: '#DEE4EA', horizon: '#E9EDF1', sun: '#F2F5F8', ground: '#D5D8DB', elev: 0.7, azim: 1.2, intensity: 0.55, ambient: 3.1 },
+  // Moonlit: dark enough that the ego's headlight beams carry the road ahead.
+  night: { sky: '#0D1626', horizon: '#1B283B', sun: '#AFC3E8', ground: '#22262C', elev: 0.62, azim: 1.3, intensity: 0.4, ambient: 0.95 },
 } as const;
 
 export type LightingPreset = keyof typeof lighting;

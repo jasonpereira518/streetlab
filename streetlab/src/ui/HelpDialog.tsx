@@ -4,11 +4,12 @@
  * read, so the visible list cannot drift from what the keys do.
  */
 import { useEffect } from 'react';
-import { useSimStore } from '../store/simStore';
+import { headlightsOn, useSimStore } from '../store/simStore';
 
 export const SHORTCUTS: Array<{ keys: string; does: string }> = [
   { keys: 'Space', does: 'Pause / resume the simulation' },
   { keys: 'R', does: 'Reset the scenario' },
+  { keys: 'L', does: 'Headlights on / off' },
   { keys: '?', does: 'Show / hide this help' },
   { keys: 'Esc', does: 'Close help or an open menu' },
 ];
@@ -48,6 +49,8 @@ export function useShortcuts(): void {
         s.togglePaused();
       } else if (e.key === 'r' || e.key === 'R') {
         s.resetSim();
+      } else if (e.key === 'l' || e.key === 'L') {
+        s.setParam('headlights', headlightsOn(s.params) ? 'off' : 'on');
       } else if (e.key === '?') {
         s.setHelpOpen(!s.helpOpen);
       }
