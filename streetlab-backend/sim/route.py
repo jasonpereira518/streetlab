@@ -46,6 +46,9 @@ class ControlPoint:
     kind: str
     s: float
     position: Point
+    #: "crosswalk" only: the crossing's (heading, half-length, half-width), so
+    #: the planner can tell who is on it. `s` is 1 m short of its near edge.
+    extent: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

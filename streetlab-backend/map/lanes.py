@@ -1885,6 +1885,38 @@ def junction_yields(
     return out
 
 
+def crosswalk_points(route: Route, crosswalks) -> list[ControlPoint]:
+    """A `crosswalk` point 1 m short of each crossing `route` drives over,
+    carrying the crossing's rectangle: where the ego stops while anyone is on
+    it (`plan.behavior`). Kept out of the scene's `control_points`, which
+    traffic copies and the ETA reads."""
+    from shapely.geometry import LineString, Polygon
+
+    line = LineString(route.points + ([route.points[0]] if route.closed else []))
+    out = []
+    for cw in crosswalks:
+        c, s_ = math.cos(cw.heading), math.sin(cw.heading)
+        hl, hw = cw.length_m / 2, cw.width_m / 2
+        cx, cy = cw.center
+        poly = Polygon([
+            (cx + c * a - s_ * b, cy + s_ * a + c * b) for a, b in ((hl, hw), (-hl, hw), (-hl, -hw), (hl, -hw))
+        ])
+        hit = line.intersection(poly)
+        if hit.is_empty:
+            continue
+        pieces = getattr(hit, "geoms", [hit])
+        for piece in pieces:
+            coords = list(piece.coords)
+            if not coords:
+                continue
+            near = min(route.project(p) for p in coords[:1] + coords[-1:])
+            out.append(ControlPoint(
+                id=f"{cw.id}@{near:.0f}", kind="crosswalk", s=route.normalise(near - 1.0),
+                position=(cx, cy), extent=(cw.heading, hl + 1.0, hw),
+            ))
+    return sorted(out, key=lambda cp: cp.s)
+
+
 CONTROL_POINT_MATCH_M = 12.0
 
 #: Stop lines closer together than this are the same junction. Several OSM

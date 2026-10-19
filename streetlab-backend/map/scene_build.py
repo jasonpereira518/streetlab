@@ -23,7 +23,7 @@ from typing import Protocol, runtime_checkable
 
 from map.clearance import KERB_RETURN_M, KeepOut, junctions, kerb_returns
 from map.features import build_speed_limit_signs
-from map.lanes import derive_lanes, project_control_points, speed_limits_along
+from map.lanes import crosswalk_points, derive_lanes, project_control_points, speed_limits_along
 from map.placement import (
     KERB_CLEARANCE_M,
     SIDEWALK_W_M,
@@ -94,6 +94,9 @@ class BuiltScene:
     junctions: list[Junction] = field(default_factory=list)
     # Cars parked along the kerb, `(x, y, heading)`: they never move.
     parked: list[tuple[float, float, float]] = field(default_factory=list)
+    # Crossings on the ego's route (`map.lanes.crosswalk_points`): the planner
+    # stops short of one while anyone is on it.
+    crossings: list[ControlPoint] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -513,6 +516,7 @@ class SyntheticGrid:
             # Boxes from whole corridors: a divided street is ONE junction its
             # signal governs, not one per carriageway.
             junctions=junctions(self._roads(lay, divided=False)),
+            crossings=crosswalk_points(ego_route, description.crosswalks),
         )
 
     def _ambient_lanes(self, lay: _Layout = GRID) -> list[AmbientLane]:

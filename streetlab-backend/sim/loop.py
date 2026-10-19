@@ -741,7 +741,7 @@ class Simulation:
             t=self.world.t,
             dt=dt,
             signals=observed,
-            control_points=self.scene.control_points,
+            control_points=[*self.scene.control_points, *self.scene.crossings],
             # Wired at the same moment `CenterlineFollower` gains the
             # execution behind a lane-change decision (Task 5, Cycle 3
             # Phase 2) -- so the wire's `lane_change_left`/`_right` label and

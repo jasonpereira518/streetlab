@@ -72,6 +72,7 @@ from map.lanes import (
     derive_lanes,
     junction_node_ids,
     nearest_junction,
+    crosswalk_points,
     junction_yields,
     project_control_points,
     select_ego_route,
@@ -768,6 +769,7 @@ class OsmSceneSource:
             ambient_lanes=ambient,
             junctions=scene_junctions,
             parked=parked,
+            crossings=crosswalk_points(ego_route, description.crosswalks),
         )
 
     @staticmethod
