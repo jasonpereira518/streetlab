@@ -372,11 +372,11 @@ SCENARIOS: tuple[_Scenario, ...] = (
         # California's eastbound carriageway through the Hyde signal, south
         # down Leavenworth across the viaduct's foot, west along Pine.
         (-80.0, 80.0, -80.0, 0.0),
-        # Four, so no bus (the fifth profile): a rigid 11.5 m body turning
-        # off the kerb lane swings 0.6 m into the car waiting beside it in
-        # the middle lane (dense, seed 7). Ambient traffic has no buses for
-        # the same reason, until long vehicles off-track.
-        4,
+        # Five, so the loop has its bus (the fifth profile). Off the kerb
+        # lane (7c) with its two set-back approaches, dense seeds 1/3/7 keep
+        # >= 0.88 m everywhere (2026-10-19); before, from the middle lane, it
+        # swung 0.6 m into a car beside it. Ambient traffic still has none.
+        5,
         layout=BOULEVARD,
     ),
 )

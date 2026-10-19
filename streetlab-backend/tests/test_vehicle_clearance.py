@@ -266,7 +266,7 @@ def test_dense_traffic_never_touches_leaves_the_road_or_enters_anything(scenario
 # corner wider needs MORE (5.5-11 m): the body is a rigid box on its path.
 
 
-@pytest.mark.parametrize("scenario_id", ["grid-merge", "grid-arterial"])
+@pytest.mark.parametrize("scenario_id", ["grid-merge", "grid-arterial", "grid-boulevard"])
 def test_the_loop_bus_is_back_on_the_loop(scenario_id):
     sim = Simulation(SyntheticGrid(), scenario_id, seed=7)
     assert next(a for a in sim._traffic.agents if a.id == "veh_04").cls == "bus"
