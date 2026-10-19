@@ -716,7 +716,10 @@ def _cyclist_drift(sim: "Simulation") -> str | Declined:
     lane" from the jaywalker's fast perpendicular crossing.
     """
     route = sim.scene.ego_route
-    kerb = -(_lane_width(sim) / 2 + CYCLIST_KERB_MARGIN_M)
+    at = _ego_s(sim) + CYCLIST_AHEAD_M
+    # At the kerb, inside it: half a lane out was 0.55 m up the pavement
+    # with the ego in the kerb lane (7c), where the kerb is ~1.5 m away.
+    kerb = -min(_lane_width(sim) / 2 + CYCLIST_KERB_MARGIN_M, _kerb_room(sim, route, at) - 0.35 - CYCLIST_KERB_MARGIN_M)
     agent = _spawn(
         sim,
         kind="cyclist_drift",
@@ -727,7 +730,7 @@ def _cyclist_drift(sim: "Simulation") -> str | Declined:
         speed_mps=CYCLIST_SPEED_MPS,
         lifetime_s=CYCLIST_LIFE_S,
     )
-    _place(agent, route, _ego_s(sim) + CYCLIST_AHEAD_M, lateral_m=kerb)
+    _place(agent, route, at, lateral_m=kerb)
     agent.lane_id = EGO_LANE_ID if sim.scene.lanes is not None else None
     agent.lateral_rate_mps = CYCLIST_DRIFT_MPS * sim.rng.uniform(*DRIFT_JITTER)
     # Drifting is the scenario; changing lane outright would be a different one.
@@ -965,6 +968,22 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
     agent.meet_ego_s = at
     agent.meet_until_s = _traffic(sim)._elapsed + seen_by_s
     return f"{agent.id} running the red {gap:.0f} m ahead"
+
+
+def _kerb_room(sim: "Simulation", route: Route, s: float) -> float:
+    """Metres from `route` at `s` to the carriageway's edge on its right."""
+    cached = getattr(sim, "_events_keep_out", None)
+    if cached is None or cached[0] is not sim.scene:
+        from map.clearance import KeepOut
+
+        cached = sim._events_keep_out = (sim.scene, KeepOut(sim.scene.description.roads))
+    keep_out = cached[1]
+    x, y = route.point_at(s)
+    nx, ny = lateral_unit(route, s)
+    room = 0.0
+    while room < 10.0 and keep_out.in_carriageway((x - nx * (room + 0.1), y - ny * (room + 0.1))):
+        room += 0.1
+    return room
 
 
 def _lane_width(sim: "Simulation", side: int = -1) -> float:

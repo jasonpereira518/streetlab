@@ -327,7 +327,13 @@ def test_a_cyclist_drifts_in_from_the_kerb_at_its_own_slow_rate(sim):
     (rider,) = _spawned(sim, "cyclist_drift")
     assert rider.cls == "cyclist"
     start = rider.lateral_m
-    assert start < -1.8, f"it has to start outside the ego's lane, not at {start:.2f} m"
+    # At the kerb, wholly on the carriageway: half a lane out put it 0.55 m up
+    # the pavement once the ego drove the kerb lane (7c).
+    from sim.events import _kerb_room
+
+    room = _kerb_room(sim, rider.route, rider.s)
+    assert start < -0.9, f"it has to start well right of the ego's path, not at {start:.2f} m"
+    assert -start + rider.size.width / 2 <= room + 1e-6, f"{-start + rider.size.width / 2:.2f} m out, kerb at {room:.2f} m"
     rate = rider.lateral_rate_mps
     assert CYCLIST_DRIFT_MPS * DRIFT_JITTER[0] <= rate <= CYCLIST_DRIFT_MPS * DRIFT_JITTER[1]
     advance(sim, 2.0)
