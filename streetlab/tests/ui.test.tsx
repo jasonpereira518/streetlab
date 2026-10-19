@@ -81,8 +81,44 @@ describe('TopToolbar', () => {
 
     const expected = String(Math.round(toMph(frame.ego.speed_mps)));
     expect(screen.getByText('mph').previousSibling?.textContent).toBe(expected);
-    expect(screen.getByText('Assist active')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'FSD' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Manual' }).getAttribute('aria-pressed')).toBe('false');
     expect(screen.getByText('Full Self-Driving')).toBeTruthy();
+    expect(screen.queryByTestId('set-speed')).toBeNull();
+  });
+
+  it('switches drive mode from the toolbar and shows the set speed in Cruise', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    harness.emitFrame(60);
+    tick();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cruise' }));
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'set_drive_mode', mode: 'cruise' });
+    harness.emitFrame(1);
+    tick();
+    expect(screen.getByRole('button', { name: 'Cruise' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('set-speed').textContent).not.toBe('—');
+
+    fireEvent.click(screen.getByLabelText('Raise set speed'));
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'set_drive_mode', mode: 'cruise' });
+  });
+
+  it('greys out Assist and FSD while off route', () => {
+    harness = createHarness();
+    render(<TopToolbar />);
+    harness.emitScene();
+    for (let i = 0; i < 10; i++) harness.sim.step();
+    const frame = harness.sim.frame();
+    // One frame only: `useFrameValue` throttles, so a second back-to-back frame
+    // would be sampled out (live, the next window picks it up).
+    harness.emit({ ...frame, ego: { ...frame.ego, cruise: { ...frame.ego.cruise, fsd_available: false } } });
+    tick();
+    const fsd = screen.getByRole('button', { name: 'FSD' }) as HTMLButtonElement;
+    expect(fsd.disabled).toBe(true);
+    expect(fsd.title).toBe('FSD unavailable: off route');
+    expect((screen.getByRole('button', { name: 'Cruise' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('shows how far is left of the lap, from the trip on the wire', () => {

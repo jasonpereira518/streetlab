@@ -48,6 +48,8 @@ class BicycleModel:
     wheelbase_m: float = 2.9
     max_steer_rad: float = math.radians(35.0)
     max_speed_mps: float = 60.0
+    #: Top speed in reverse, m/s (~7 mph). Only the ego ever reverses.
+    max_reverse_mps: float = 3.0
     length_m: float = 4.7
     width_m: float = 1.9
     height_m: float = 1.45
@@ -59,13 +61,16 @@ class BicycleModel:
         accel_mps2: float,
         steer_rad: float,
         dt: float,
+        reverse: bool = False,
     ) -> VehicleState:
         steer = _clamp(steer_rad, -self.max_steer_rad, self.max_steer_rad)
 
-        # Speed is integrated first and clamped to a forward-only range: this
-        # cycle has no reverse gear, and a braking agent must settle at rest
-        # rather than roll backwards through zero.
-        speed = _clamp(state.speed_mps + accel_mps2 * dt, 0.0, self.max_speed_mps)
+        # Speed is integrated first and clamped to the gear's range: forward
+        # in drive, backward in reverse. Either way a braking car settles at
+        # rest rather than rolling through zero into the other direction --
+        # changing direction takes a gear change (`Simulation._shift`).
+        lo, hi = (-self.max_reverse_mps, 0.0) if reverse else (0.0, self.max_speed_mps)
+        speed = _clamp(state.speed_mps + accel_mps2 * dt, lo, hi)
 
         yaw_rate = speed * math.tan(steer) / self.wheelbase_m
         heading = state.heading + yaw_rate * dt
