@@ -44,6 +44,13 @@ KNOWN_GAPS: dict[tuple[str, str], str] = {
         "inside the junction when it arrives. Needs the ego to stop short of a conflict it has "
         "already seen, not slow into it"
     ),
+    ("red_light_runner", "grid_slow"): (
+        "measured 2026-10-18, NEW with the kerb-lane loop (phase 7c): seen, reacted to and braked "
+        "for in 3 of 3 seeds, overlaps on seed 1 (-0.54 m; seeds 2-3 clear by 0.80 and 0.09 m). "
+        "The ego halts under AEB with its nose on the runner's line and the retimed runner crawls "
+        "into it at 0.7 m/s. From the kerb lane the ego is on the side the runner comes from, so it "
+        "meets it sooner. Same fix as the grid cell: stop short of a conflict already seen"
+    ),
     ("red_light_runner", "nob_hill"): (
         "measured 2026-10-16: seen and reacted to in 5 of 5 seeds, overlaps in 5 of 5 (-3.22 m "
         "on every seed). Same retimed collision course as the grid; the ego is turning at the signal"

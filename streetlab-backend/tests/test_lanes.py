@@ -495,7 +495,8 @@ def test_no_lane_change_is_legal_through_a_junction_turn():
             assert lanes.legal_along[i] == (), f"segment {i} is a turn and allows {lanes.legal_along[i]}"
         elif lanes.road_along[i].lanes_forward >= 2:
             legal += 1
-            assert -1 in lanes.legal_along[i]
+            # From the kerb lane (phase 7c), the lane beside it is to the left.
+            assert 1 in lanes.legal_along[i]
     assert turning >= 16 and legal >= 2
 
 

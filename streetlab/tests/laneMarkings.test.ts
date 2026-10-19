@@ -195,6 +195,7 @@ describe('lane markings follow the US convention', () => {
       bridge: false,
       tunnel: false,
       edge_m: 0,
+      elevation_m: [],
     };
     const painted = marks({ ...osmScene(), roads: [road], crosswalks: [], buildings: [] });
     const h = half(road); // 5.4 m
@@ -240,6 +241,7 @@ describe('lane markings follow the US convention', () => {
       bridge: false,
       tunnel: false,
       edge_m: 0,
+      elevation_m: [],
     };
     const painted = marks({ ...osmScene(), roads: [road], crosswalks: [], buildings: [] });
     const h = half(road);

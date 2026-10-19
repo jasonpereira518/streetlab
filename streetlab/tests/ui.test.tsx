@@ -370,7 +370,7 @@ describe('LeftScenarioSidebar', () => {
 
     expect(screen.getAllByText('Synthetic Grid').length).toBeGreaterThan(0);
     const saved = within(screen.getByRole('list', { name: 'Saved scenarios' }));
-    expect(saved.getAllByRole('listitem')).toHaveLength(6);
+    expect(saved.getAllByRole('listitem')).toHaveLength(7);
     expect(screen.getByText('01')).toBeTruthy();
     expect(screen.getByText('05')).toBeTruthy();
     expect(screen.getByText('Signal Ladder')).toBeTruthy();
@@ -409,7 +409,7 @@ describe('LeftScenarioSidebar', () => {
     harness.emitScene();
 
     const thumbs = container.querySelectorAll('.scenario-thumb canvas');
-    expect(thumbs).toHaveLength(6);
+    expect(thumbs).toHaveLength(7);
     // Each thumbnail actually drew its road skeleton and route.
     for (const t of thumbs) {
       const calls = canvasCalls(t as HTMLCanvasElement);

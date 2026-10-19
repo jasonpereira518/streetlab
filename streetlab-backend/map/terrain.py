@@ -46,6 +46,9 @@ BLEND_M = 8.0
 PROFILE_SMOOTH_M = 30.0
 #: Station spacing along a centreline when building its profile.
 STATION_M = 2.0
+#: Deck top to the road beneath a bridge: 4.4 m (14'6", Caltrans' minimum
+#: vertical clearance) plus ~1.1 m of deck.
+UNDERPASS_CLEARANCE_M = 5.5
 
 
 def _half(road: Road) -> float:
@@ -75,23 +78,36 @@ def _stations(points: Sequence[tuple[float, float]]) -> tuple[np.ndarray, np.nda
     return np.asarray(s_out), np.asarray(xy_out), vertex_at
 
 
-def road_profiles(field: Heightfield, roads: Sequence[Road]) -> list[tuple[np.ndarray, np.ndarray]]:
-    """`(s, z)` stations for each road: smoothed, pinned at junctions and ends."""
+def road_profiles(
+    field: Heightfield,
+    roads: Sequence[Road],
+    caps: dict[int, list[tuple[float, float]]] | None = None,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """`(s, z)` stations for each road: smoothed, pinned at junctions and ends.
+
+    `caps[i]` lists `(s, z_max)` for road `i`: points where it passes under a
+    bridge, pinned no higher than `z_max` so the deck clears it.
+    """
     uses: dict[tuple[int, int], int] = {}
     for r in roads:
         for p in {_key(p) for p in r.centerline}:
             uses[p] = uses.get(p, 0) + 1
 
     out = []
-    for road in roads:
+    for ri, road in enumerate(roads):
         s, xy, vertex_at = _stations(road.centerline)
         raw = field.sample_many(xy)
-        pins = sorted(
-            {0, len(s) - 1}
-            | {vertex_at[i] for i, p in enumerate(road.centerline) if uses.get(_key(p), 0) > 1}
-        )
+        pins = {0, len(s) - 1} | {
+            vertex_at[i] for i, p in enumerate(road.centerline) if uses.get(_key(p), 0) > 1
+        }
+        target = raw.copy()
+        for s_c, z_max in (caps or {}).get(ri, []):
+            k = int(np.argmin(np.abs(s - s_c)))
+            target[k] = min(target[k], z_max)
+            pins.add(k)
+        pins = sorted(pins)
         if len(s) < 3 or s[-1] < 1e-6:
-            out.append((s, raw))
+            out.append((s, target))
             continue
         # Moving average by arc length (stations are near-uniform).
         window = max(1, int(round(PROFILE_SMOOTH_M / max(s[-1] / (len(s) - 1), 1e-6))))
@@ -99,7 +115,7 @@ def road_profiles(field: Heightfield, roads: Sequence[Road]) -> list[tuple[np.nd
         padded = np.pad(raw, pad, mode="edge")
         smooth = np.convolve(padded, np.ones(window) / window, mode="same")[pad : pad + len(raw)]
         # Correct the smoothed curve so it passes through raw ground at every pin.
-        correction = np.interp(s, s[pins], raw[pins] - smooth[pins])
+        correction = np.interp(s, s[pins], target[pins] - smooth[pins])
         out.append((s, smooth + correction))
     return out
 
@@ -109,11 +125,15 @@ def grade(field: Heightfield, roads: Sequence[Road], passes_under: frozenset[str
 
     Ways in `passes_under` (tunnels) are left out: grading the hill above the
     Broadway Tunnel down to the tunnel's floor would carve a canyon through it.
+    Bridges are left out too, or the ground beneath would be filled up to the
+    deck; a road passing under one is cut down to clear it instead.
     """
-    surface = [r for r in roads if r.id not in passes_under and len(r.centerline) >= 2]
+    surface = [
+        r for r in roads if r.id not in passes_under and not r.bridge and len(r.centerline) >= 2
+    ]
     if field.source == "flat" or not surface:
         return field
-    profiles = road_profiles(field, surface)
+    profiles = road_profiles(field, surface, _underpass_caps(field, surface, roads))
     lines = [LineString(r.centerline) for r in surface]
     corridors = np.array([_half(r) + SIDEWALK_W_M + field.cell_m for r in surface])
     reach = float(corridors.max() + BLEND_M)
@@ -161,6 +181,48 @@ def grade(field: Heightfield, roads: Sequence[Road], passes_under: frozenset[str
         heights.reshape(field.rows, field.cols).astype(np.float32),
         field.source,
     )
+
+
+def structure_elevations(field: Heightfield, roads: Sequence[Road]) -> dict[str, list[float]]:
+    """Surface height at each centreline vertex of every bridge and tunnel:
+    straight between the ground at its two ends, by arc length. The scene
+    passes the GRADED field, so a deck meets the streets either side exactly
+    as they are drawn."""
+    out: dict[str, list[float]] = {}
+    for r in roads:
+        if not (r.bridge or r.tunnel):
+            continue
+        cum = np.concatenate([[0.0], np.cumsum([math.dist(a, b) for a, b in zip(r.centerline, r.centerline[1:])])])
+        z0, z1 = field.sample(*r.centerline[0]), field.sample(*r.centerline[-1])
+        f = cum / cum[-1] if cum[-1] > 1e-6 else np.zeros_like(cum)
+        out[r.id] = [round(float(z0 + (z1 - z0) * t), 3) for t in f]
+    return out
+
+
+def _underpass_caps(
+    field: Heightfield, surface: Sequence[Road], roads: Sequence[Road]
+) -> dict[int, list[tuple[float, float]]]:
+    """Where each surface road passes under a bridge, the highest it may be."""
+    bridges = [r for r in roads if r.bridge]
+    decks = structure_elevations(field, bridges)
+    caps: dict[int, list[tuple[float, float]]] = {}
+    for b in bridges:
+        bl = LineString(b.centerline)
+        cum = [0.0] + [bl.project(shapely.Point(p)) for p in b.centerline[1:]]
+        for i, r in enumerate(surface):
+            if r.layer >= b.layer:
+                continue
+            rl = LineString(r.centerline)
+            hit = rl.intersection(bl)
+            for p in getattr(hit, "geoms", [hit]):
+                # Touching an end is an approach meeting the deck, not passing under.
+                if p.is_empty or p.geom_type != "Point" or min(p.distance(bl.boundary.geoms[0]), p.distance(bl.boundary.geoms[-1])) < 0.5:
+                    continue
+                deck = float(np.interp(bl.project(p), cum, decks[b.id]))
+                # 0.5 m spare: the deck is laid on the GRADED ground at its ends,
+                # which the cut beside them pulls down by up to ~0.3 m.
+                caps.setdefault(i, []).append((rl.project(p), deck - UNDERPASS_CLEARANCE_M - 0.5))
+    return caps
 
 
 def to_wire(field: Heightfield) -> Terrain | None:

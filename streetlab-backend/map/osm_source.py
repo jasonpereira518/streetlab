@@ -29,7 +29,7 @@ from shapely.geometry import Point, Polygon
 
 from map.cache import BundledExtracts, DiskCache, default_cache_dir
 from map.elevation import ElevationClient, HttpxTileFetcher
-from map.terrain import TERRAIN_CELL_M, grade
+from map.terrain import TERRAIN_CELL_M, grade, structure_elevations
 from map.terrain import to_wire as terrain_to_wire
 from map.clearance import KeepOut, clear_trees, fit_road_widths
 from map.clearance import junctions as find_junctions
@@ -71,6 +71,7 @@ from map.lanes import (
     derive_lanes,
     junction_node_ids,
     nearest_junction,
+    junction_yields,
     project_control_points,
     select_ego_route,
     select_route_to_destination,
@@ -625,7 +626,11 @@ class OsmSceneSource:
             field = self.elevation.heightfield(
                 origin, (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y), TERRAIN_CELL_M
             )
-            terrain = terrain_to_wire(grade(field, roads, under))
+            graded = grade(field, roads, under)
+            terrain = terrain_to_wire(graded)
+            if terrain is not None:
+                decks = structure_elevations(graded, roads)
+                roads = [r.model_copy(update={"elevation_m": decks[r.id]}) if r.id in decks else r for r in roads]
             if field.source == "terrarium":
                 attribution = f"{ATTRIBUTION} · {ELEVATION_ATTRIBUTION}"
 
@@ -725,7 +730,14 @@ class OsmSceneSource:
                     candidates.append((sign.id, kind, at, setback))
             return project_control_points(route, candidates)
 
-        control_points = route_controls(ego_route, yields=False)
+        # Yield signs too, and a give-way line wherever the ego enters a
+        # junction nothing governs from off its priority road.
+        scene_junctions = find_junctions(roads, under)
+        control_points = route_controls(ego_route)
+        control_points = sorted(
+            [*control_points, *junction_yields(ego_route, scene_junctions, control_points)],
+            key=lambda cp: cp.s,
+        )
         # An open, point-to-point route needs one more stop the planner
         # already knows how to bisect towards: the trip's own end. A closed
         # loop has no such end -- `arrival_control_point` returns `None` for
@@ -749,7 +761,7 @@ class OsmSceneSource:
             lanes=derive_lanes(ego_route, roads),
             build_notes=build_notes,
             ambient_lanes=ambient,
-            junctions=find_junctions(roads, under),
+            junctions=scene_junctions,
         )
 
     @staticmethod
@@ -774,7 +786,7 @@ class OsmSceneSource:
                     )
                     route.segment_limits = speed_limits_along(route, roads)
                     near = min(math.dist(p, q) for p in route.resample(20.0) for q in ego)
-                    lanes.append((near, AmbientLane(route, route_controls(route))))
+                    lanes.append((near, AmbientLane(route, route_controls(route), w)))
         return [lane for _, lane in sorted(lanes, key=lambda pair: pair[0])]
 
     def _bounds(

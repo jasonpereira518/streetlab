@@ -86,6 +86,7 @@ from schema import (
 )
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
 from sim.contact import Surroundings
+from sim.levels import Levels
 from sim.route import estimate_travel_s
 from sim.scorecard import Scorecard
 from sim.vehicle import BicycleModel, VehicleState
@@ -373,6 +374,7 @@ class Simulation:
     def adopt_scene(self, scene: BuiltScene) -> None:
         """Install an already-built scene. The only mutation point for `scene`."""
         self.scene: BuiltScene = scene
+        self._levels = Levels(self.scene.description.roads)
         self._traffic: TrafficModel = IdmTraffic(
             routes=self.scene.agent_routes,
             speed_limit_mps=self.scene.speed_limit_mps,
@@ -384,6 +386,7 @@ class Simulation:
             ambient=self.scene.ambient_lanes,
             density_per_lane_km=float(self.world.params["traffic_density"]),
             junctions=self.scene.junctions,
+            levels=self._levels,
         )
         self._signals = SignalController(self.scene.signal_groups)
         # Built on first need: only a person-driven car ever asks (`_surroundings`).
@@ -646,7 +649,8 @@ class Simulation:
         along without going deeper) is allowed, so the driver can always
         reverse or steer away."""
         size = (self._model.length_m, self._model.width_m)
-        agents = self._traffic.agents
+        # A car on the deck above or the road below is not in the way.
+        agents = [a for a in self._traffic.agents if not (self._levels and self._levels.apart(after, a.state))]
         depth, what = self._surroundings.overlap(after, size, agents)
         if depth <= _CONTACT_EPS:
             if self.world.in_contact:
@@ -812,6 +816,10 @@ class Simulation:
         answer whenever no ML source exists.
         """
         ego, agents, route = self._ego_ahead(), self._traffic.agents, self.scene.ego_route
+        if self._levels:
+            # Crossing above or below the ego, on a bridge or under one: not
+            # in its world, whatever the flat sim says about (x, y).
+            agents = [a for a in agents if not self._levels.apart(ego, a.state)]
         # Full ground truth stays available as the measurement reference /
         # shadow. The driving feed is what the cabin can resolve: FOV plus
         # building occlusion, with a short rear mirror cone so lane-change

@@ -242,3 +242,24 @@ def test_a_car_queued_behind_you_is_not_ahead_of_you_at_an_all_way_stop():
     far = VehicleState(x=200.0, y=200.0, heading=0.0, speed_mps=0.0)
     world = TrafficWorld(ego=far, ego_route=built.ego_route, t=10.0)
     assert traffic._may_take_box(front, target, world)
+
+
+def test_every_nob_hill_ambient_lane_stays_on_its_carriageway(nob_hill_scene):
+    """A chain of ways is driven with the fewest lanes any of them has. With
+    its first way's, California Street's 2+2 kerb lane ran on where the street
+    narrows to 1+1, 1.8 m over the pavement: a car 3.0 m over the kerb in
+    dense Nob Hill (seed 7), surfaced when the ego's route moved."""
+    from shapely.geometry import Point
+    from shapely.ops import unary_union
+
+    from map.clearance import carriageway
+
+    d = nob_hill_scene.description
+    road = unary_union(carriageway(d.roads, d.kerb_returns))
+    worst = (0.0, None)
+    for lane in nob_hill_scene.ambient_lanes:
+        for p in lane.route.resample(5.0):
+            off = road.distance(Point(p))
+            if off > worst[0]:
+                worst = (off, p)
+    assert worst[0] < 0.05, f"an ambient lane centre {worst[0]:.2f} m off the road at {worst[1]}"

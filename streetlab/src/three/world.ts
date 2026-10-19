@@ -28,6 +28,7 @@ import {
   dashRuns,
   stripe,
   subtractIntervals,
+  worldToThree,
 } from './meshBuilder';
 import type { Interval, P3 } from './meshBuilder';
 import { CH, TOGGLE_CHANNEL, assignChannel } from './layers';
@@ -54,6 +55,8 @@ const C = {
   signalBody: new THREE.Color('#2E353D'),
   stopRed: new THREE.Color('#C0392B'),
   signGreen: new THREE.Color('#0B6B45'),
+  concrete: new THREE.Color('#B4B0A8'),
+  tunnelMouth: new THREE.Color('#1B1E22'),
 };
 
 const CANOPY_GREENS = ['#7FA867', '#6E9A5C', '#8CB575', '#5F8E52'];
@@ -135,12 +138,74 @@ export interface World {
   heightAt: HeightFn;
   /** The lowest ground in the scene, for anything that must sit below it all. */
   groundMin: number;
+  /**
+   * What a vehicle heading `heading` stands on: a bridge deck or tunnel floor
+   * it is driving along, else the ground. Heading tells a car on a deck from
+   * one crossing beneath it. Null on flat ground with no structures.
+   */
+  groundFor(heading: number): HeightFn | null;
   /** Drive signal lamps from the live frame. */
   updateSignals(states: SignalState[], time: number): void;
   dispose(): void;
 }
 
 const carriagewayHalfWidth = roadHalfWidth;
+
+/* ------------------------------------------------------------------ */
+/* Bridges and tunnels                                                 */
+/* ------------------------------------------------------------------ */
+
+/** A way carried off the ground, with its surface height along it. */
+interface Structure {
+  road: Road;
+  line: Polyline;
+  half: number;
+}
+
+/** A way with its own surface heights: a deck, a ramp up to one, a tunnel floor. */
+const carried = (road: Road): boolean => (road.elevation_m?.length ?? 0) === road.centerline.length;
+
+/** Nearest point on `line` to (x, y): arc length, distance, unit tangent. */
+function project(line: Polyline, x: number, y: number) {
+  let best = { s: 0, d: Infinity, tx: 1, ty: 0 };
+  const pts = line.points;
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1];
+    const len = line.cum[i] - line.cum[i - 1];
+    if (len < 1e-9) continue;
+    const tx = (pts[i][0] - ax) / len;
+    const ty = (pts[i][1] - ay) / len;
+    const t = Math.max(0, Math.min(len, (x - ax) * tx + (y - ay) * ty));
+    const d = Math.hypot(x - ax - tx * t, y - ay - ty * t);
+    if (d < best.d) best = { s: line.cum[i - 1] + t, d, tx, ty };
+  }
+  return best;
+}
+
+/** The structure's surface height at arc length `s`, straight between vertices. */
+function elevationAt(st: Structure, s: number): number {
+  const { cum } = st.line;
+  const z = st.road.elevation_m;
+  let i = 1;
+  while (i < cum.length - 1 && cum[i] < s) i++;
+  const f = (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+  return z[i - 1] + (z[i] - z[i - 1]) * Math.max(0, Math.min(1, f));
+}
+
+/** Height along a structure, for draping its own deck and markings. */
+const deckFn = (st: Structure): HeightFn => (x, y) => elevationAt(st, project(st.line, x, y).s);
+
+/** Within this of its direction a vehicle is driving ALONG a structure. */
+const ALONG_COS = Math.cos((40 * Math.PI) / 180);
+/** Deck slab depth below the tarmac, and railing height above the pavement. */
+const DECK_DEPTH_M = 1.1;
+const RAILING_H_M = 1.05;
+/** Longest unsupported span before a pier goes in. */
+const PIER_SPACING_M = 20;
+const PIER_W_M = 1.2;
+/** Tunnel portal: clear height over the floor, and wall thickness. */
+const PORTAL_H_M = 5.2;
+const PORTAL_WALL_M = 1.0;
 
 /* ------------------------------------------------------------------ */
 /* Intersections                                                       */
@@ -195,7 +260,8 @@ function findCrossings(roads: Road[], lines: Polyline[]): Crossing[][] {
   const out: Crossing[][] = roads.map(() => []);
   for (let i = 0; i < roads.length; i++) {
     for (let j = 0; j < roads.length; j++) {
-      if (i === j) continue;
+      // A bridge and the street beneath it cross without meeting.
+      if (i === j || (roads[i].layer ?? 0) !== (roads[j].layer ?? 0)) continue;
       const li = lines[i];
       const lj = lines[j];
       for (let si = 1; si < li.points.length; si++) {
@@ -847,11 +913,39 @@ export function buildWorld(scene: SceneDescription): World {
   const paving = new MeshBuilder();
   surface.ground = ground;
   paving.ground = ground;
-  const roadSurfaces = new RoadSurfaces(scene.roads, lines, kerbReturns);
+  // One set of carriageways per layer: a pavement on a deck stops only at the
+  // tarmac it meets up there, not at the street passing beneath.
+  const surfacesByLayer = new Map<number, RoadSurfaces>();
+  for (const layer of new Set(scene.roads.map((r) => r.layer ?? 0))) {
+    const idx = scene.roads.flatMap((r, i) => ((r.layer ?? 0) === layer ? [i] : []));
+    surfacesByLayer.set(
+      layer,
+      new RoadSurfaces(
+        idx.map((i) => scene.roads[i]),
+        idx.map((i) => lines[i]),
+        layer === 0 ? kerbReturns : [],
+      ),
+    );
+  }
+  const roadSurfaces = surfacesByLayer.get(0) ?? new RoadSurfaces([], []);
+  const structures = new Map<number, Structure>();
+  scene.roads.forEach((road, i) => {
+    if (carried(road)) structures.set(i, { road, line: lines[i], half: carriagewayHalfWidth(road) });
+  });
+  // What each road's surface is laid on: its own deck, or the ground.
+  const laidOn = (i: number): HeightFn | null => {
+    const st = structures.get(i);
+    return st ? deckFn(st) : ground;
+  };
 
   scene.roads.forEach((road, i) => {
+    // A tunnel's tarmac is under the hill; only its portals show.
+    if (road.tunnel) return;
     const line = lines[i];
     const half = carriagewayHalfWidth(road);
+    const surfaces = surfacesByLayer.get(road.layer ?? 0) ?? roadSurfaces;
+    surface.ground = laidOn(i);
+    paving.ground = laidOn(i);
     // Where two carriageways overlap at a junction, the arterial draws on top.
     // Same-class overlaps are the same colour, so their tie is invisible. This
     // used to be a step per road INDEX, which climbed past the paint (0.05)
@@ -874,12 +968,14 @@ export function buildWorld(scene: SceneDescription): World {
         side * (half + SIDEWALK_W),
         Y.sidewalk,
         C.sidewalk,
-        roadSurfaces,
+        surfaces,
       );
       // Kerb face, so the pavement reads as raised rather than painted.
-      pavedKerb(paving, line, side * (half + 0.02), yRoad, roadSurfaces);
+      pavedKerb(paving, line, side * (half + 0.02), yRoad, surfaces);
     }
   });
+  surface.ground = ground;
+  paving.ground = ground;
 
   for (const kr of kerbReturns) kerbReturn(surface, paving, kr, roadSurfaces);
 
@@ -918,11 +1014,43 @@ export function buildWorld(scene: SceneDescription): World {
   root.add(paveMesh);
   disposables.push(roadMesh.geometry, paveMesh.geometry, surfaceMat);
 
+  /* -------- bridges and tunnel portals -------- */
+
+  if (structures.size) {
+    const struct = new MeshBuilder();
+    const ends = new Set<string>();
+    for (const st of structures.values()) {
+      if (!st.road.tunnel) continue;
+      for (const p of [st.line.points[0], st.line.points[st.line.points.length - 1]]) {
+        const k = `${p[0].toFixed(1)}:${p[1].toFixed(1)}`;
+        // Seen twice: two tunnel ways joined underground, so no portal there.
+        if (ends.has(k)) ends.delete(k);
+        else ends.add(k);
+      }
+    }
+    for (const st of structures.values()) {
+      if (!st.road.tunnel) {
+        const below = [...surfacesByLayer].filter(([l]) => l < (st.road.layer ?? 0)).map(([, rs]) => rs);
+        bridgeStructure(struct, st, below, heightAt);
+      } else {
+        tunnelPortals(struct, st, ends);
+      }
+    }
+    const structMat = surfaceMaterial();
+    const structMesh = new THREE.Mesh(struct.build(), structMat);
+    structMesh.castShadow = true;
+    structMesh.receiveShadow = true;
+    structMesh.name = 'structures';
+    root.add(structMesh);
+    disposables.push(structMesh.geometry, structMat);
+  }
+
   /* -------- lane markings -------- */
 
   const markings = new MeshBuilder();
-  markings.ground = ground;
   scene.roads.forEach((road, i) => {
+    if (road.tunnel) return;
+    markings.ground = laidOn(i);
     const line = lines[i];
     // Markings span the DRIVEN lanes; a parking or bus edge lies outside them.
     const h = carriagewayHalfWidth(road) - (road.edge_m ?? 0);
@@ -1274,6 +1402,18 @@ export function buildWorld(scene: SceneDescription): World {
     root,
     heightAt,
     groundMin: terrain.min,
+    groundFor(heading) {
+      if (!structures.size) return ground;
+      const hx = Math.cos(heading);
+      const hy = Math.sin(heading);
+      return (x, y) => {
+        for (const st of structures.values()) {
+          const p = project(st.line, x, y);
+          if (p.d <= st.half && Math.abs(p.tx * hx + p.ty * hy) >= ALONG_COS) return elevationAt(st, p.s);
+        }
+        return heightAt(x, y);
+      };
+    },
     updateSignals(states, time) {
       signals?.update(states, time);
     },
@@ -1764,4 +1904,113 @@ function lampMaterial(hex: string): THREE.MeshBasicNodeMaterial {
     color: new THREE.Color(hex),
     toneMapped: false,
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Bridges and tunnels                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A vertical panel from world `p` to `q`, bottom `z0p`/`z0q` to top
+ * `z1p`/`z1q` (absolute heights), visible from both sides.
+ */
+function panel(
+  b: MeshBuilder,
+  p: Vec2,
+  q: Vec2,
+  z0p: number,
+  z0q: number,
+  z1p: number,
+  z1q: number,
+  color: THREE.Color,
+): void {
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const a = worldToThree(p[0], p[1], z0p);
+  const bq = worldToThree(q[0], q[1], z0q);
+  const c = worldToThree(q[0], q[1], z1q);
+  const d = worldToThree(p[0], p[1], z1p);
+  b.quad(a, bq, c, d, [dy / len, 0, dx / len], color);
+  b.quad(bq, a, d, c, [-dy / len, 0, -dx / len], color);
+}
+
+/** Deck edge fascia, its underside, railings, and piers where they can stand. */
+function bridgeStructure(b: MeshBuilder, st: Structure, below: RoadSurfaces[], heightAt: HeightFn): void {
+  const { road, line, half } = st;
+  const step = 2;
+  const n = Math.max(1, Math.ceil(line.length / step));
+  const edge = (side: 1 | -1) =>
+    side * (half + ((side === 1 ? road.sidewalk_left : road.sidewalk_right) ? SIDEWALK_W : 0.3));
+  for (let k = 0; k < n; k++) {
+    const s0 = (k / n) * line.length;
+    const s1 = ((k + 1) / n) * line.length;
+    const z0 = elevationAt(st, s0);
+    const z1 = elevationAt(st, s1);
+    for (const side of [1, -1] as const) {
+      const lat = edge(side);
+      const p = line.offsetAt(s0, lat);
+      const q = line.offsetAt(s1, lat);
+      panel(b, p, q, z0 - DECK_DEPTH_M, z1 - DECK_DEPTH_M, z0 + Y.sidewalk, z1 + Y.sidewalk, C.concrete);
+      panel(b, p, q, z0 + Y.sidewalk, z1 + Y.sidewalk, z0 + Y.sidewalk + RAILING_H_M, z1 + Y.sidewalk + RAILING_H_M, C.pole);
+    }
+    // Soffit, so the deck reads as a slab from the street beneath.
+    const l0 = line.offsetAt(s0, edge(1));
+    const r0 = line.offsetAt(s0, edge(-1));
+    const l1 = line.offsetAt(s1, edge(1));
+    const r1 = line.offsetAt(s1, edge(-1));
+    b.quad(
+      worldToThree(r0[0], r0[1], z0 - DECK_DEPTH_M),
+      worldToThree(l0[0], l0[1], z0 - DECK_DEPTH_M),
+      worldToThree(l1[0], l1[1], z1 - DECK_DEPTH_M),
+      worldToThree(r1[0], r1[1], z1 - DECK_DEPTH_M),
+      [0, -1, 0],
+      C.concrete,
+    );
+  }
+  // Piers: one row every PIER_SPACING_M, each foot clear of the carriageways
+  // beneath by a metre.
+  const spans = Math.ceil(line.length / PIER_SPACING_M);
+  for (let k = 1; k < spans; k++) {
+    const s = (k / spans) * line.length;
+    const top = elevationAt(st, s) - DECK_DEPTH_M;
+    for (const lat of [half - PIER_W_M, -(half - PIER_W_M)]) {
+      const [x, y] = line.offsetAt(s, lat);
+      if (below.some((rs) => rs.covers(x, y, -1))) continue;
+      const g = heightAt(x, y);
+      if (top - g < 0.5) continue;
+      const h = PIER_W_M / 2;
+      b.box(x - h, y - h, x + h, y + h, g, top, C.concrete);
+    }
+  }
+}
+
+/** A portal at each tunnel end that opens to daylight: walls, lintel, mouth. */
+function tunnelPortals(b: MeshBuilder, st: Structure, open: Set<string>): void {
+  const { line, half } = st;
+  const last = line.points.length - 1;
+  for (const [pt, s, inward] of [
+    [line.points[0], 0, 1],
+    [line.points[last], line.length, -1],
+  ] as const) {
+    if (!open.has(`${pt[0].toFixed(1)}:${pt[1].toFixed(1)}`)) continue;
+    const at = line.at(s);
+    const z = elevationAt(st, s);
+    const w = half + 0.5;
+    const top = z + PORTAL_H_M;
+    const crown = top + 1.2;
+    // Across the mouth, left to right as seen driving in.
+    const across = (lat: number, depth = 0): Vec2 => [
+      at.x - at.ty * lat + at.tx * inward * depth,
+      at.y + at.tx * lat + at.ty * inward * depth,
+    ];
+    // The dark mouth, a little inside, then the headwall around it.
+    panel(b, across(w, 0.4), across(-w, 0.4), z, z, top, top, C.tunnelMouth);
+    panel(b, across(w + PORTAL_WALL_M), across(-w - PORTAL_WALL_M), top, top, crown, crown, C.concrete);
+    for (const side of [1, -1]) {
+      const inner = side * w;
+      const outer = side * (w + PORTAL_WALL_M);
+      panel(b, across(outer), across(inner), z, z, crown, crown, C.concrete);
+    }
+  }
 }

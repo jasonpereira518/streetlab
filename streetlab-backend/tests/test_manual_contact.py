@@ -13,7 +13,7 @@ DT = 1 / 60
 
 # Synthetic grid landmarks (see map/scene_build.py): California runs east-west
 # along y=0 with its north kerb at y~7.2; a building fills x,y in [11.1, 38.7];
-# Hyde's northbound lane is x=1.8.
+# Hyde's northbound kerb lane, the ego's (phase 7c), is x=5.4.
 
 
 @pytest.fixture
@@ -73,7 +73,8 @@ def test_driving_into_a_stopped_car_stops_at_it(sim):
     sim.ego = replace(sim.ego, x=1.8, y=0.0, heading=math.pi / 2)
     assert sim.apply_dict({"id": "h", "cmd": "inject_hazard", "kind": "obstacle"}).ok
     obstacle = next(a for a in sim._traffic.agents if a.id.startswith("hzd_obstacle"))
-    sim.ego = replace(sim.ego, x=1.8, y=obstacle.state.y - 15.0)
+    # Square behind it, in whichever lane it was staged in (the ego's).
+    sim.ego = replace(sim.ego, x=obstacle.state.x, y=obstacle.state.y - 15.0)
     seen = collect(sim, 8.0, throttle=1.0)
     hits = [e for e in seen if e.code == "collision"]
     assert [e.message for e in hits] == [f"hit an obstacle ({obstacle.id})"]
