@@ -414,6 +414,7 @@ function mount(
     hemi.color.set(preset.sky);
     hemi.groundColor.set(preset.ground);
     hemi.intensity = preset.ambient;
+    ego.setReflections(preset.ambient / lighting.midday.ambient);
     sun.color.set(preset.sun);
     sun.intensity = preset.intensity;
     sunDir = new THREE.Vector3(

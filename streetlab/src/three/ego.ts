@@ -11,7 +11,7 @@ import { attribute, float, mix } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Pose, Size } from '../schema';
 import { attitudeOn, type HeightFn } from './terrain';
-import { LENS, buildEgoBody, buildEgoWheel, egoMaterial } from './egoBody';
+import { LENS, REFLECT, buildEgoBody, buildEgoWheel, egoMaterial } from './egoBody';
 
 export interface VehicleStyle {
   body: string;
@@ -363,6 +363,15 @@ export class EgoVehicle {
   setAttitude(steering: number, accel: number): void {
     this.mesh.rotation.z = THREE.MathUtils.clamp(accel * 0.012, -0.03, 0.03);
     this.mesh.rotation.x = THREE.MathUtils.clamp(steering * 0.05, -0.04, 0.04);
+  }
+
+  /**
+   * Scale the paint's reflections with the scene's light, 0..1 of daylight.
+   * Squared: the reflected street is lit by the same light, so at night (about
+   * a third of the daylight ambient) it should be near-black, not a third.
+   */
+  setReflections(k: number): void {
+    this.material.envMapIntensity = REFLECT * THREE.MathUtils.clamp(k, 0, 1) ** 2;
   }
 
   setHeadlights(on: boolean): void {
