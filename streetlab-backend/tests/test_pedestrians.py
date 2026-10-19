@@ -9,7 +9,7 @@ import pytest
 from map.clearance import KeepOut
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
-from sim.pedestrians import ID_PREFIX, MAX_CROSSING, PedestrianFlow
+from sim.pedestrians import ID_PREFIX, KERB_STEP_M, MAX_CROSSING, PedestrianFlow
 from sim.scorecard import _corners, obb_separation
 from tests.test_vehicle_clearance import _nob_hill_source
 
@@ -127,3 +127,31 @@ def test_the_ego_waits_while_anyone_is_on_the_crossing_even_on_its_far_side():
     assert _crossing_drive(0.0) < 42.0
     assert _crossing_drive(None) > 100.0
     assert _crossing_drive(9.5) > 100.0  # on the pavement beyond it
+
+
+def test_pavement_walkers_cross_streets_only_on_the_crossings():
+    """At a block's end a stroller takes a crossing and walks on beyond it;
+    on a carriageway it is only ever on a crossing, or stepping off the kerb
+    onto one: the paint stops ~0.75 m short of the kerb."""
+    sim = _sim("grid-loop", traffic=0.0)
+    keep_out = KeepOut(sim.scene.description.roads, [], [])
+    crosswalks = sim.scene.description.crosswalks
+
+    def on_a_crossing(x, y):
+        for cw in crosswalks:
+            dx, dy = x - cw.center[0], y - cw.center[1]
+            c, s = math.cos(cw.heading), math.sin(cw.heading)
+            if abs(dx * c + dy * s) <= cw.length_m / 2 + KERB_STEP_M and abs(-dx * s + dy * c) <= cw.width_m / 2 + 0.5:
+                return True
+        return False
+
+    crossed = set()
+    for i in range(int(RUN_S / sim.dt)):
+        sim.step()
+        if i % 6:
+            continue
+        for a in sim._traffic.agents:
+            if a.id.startswith(ID_PREFIX + "s") and keep_out.in_carriageway((a.state.x, a.state.y)):
+                assert on_a_crossing(a.state.x, a.state.y), (a.id, a.state.x, a.state.y)
+                crossed.add(a.id)
+    assert crossed, "no stroller crossed a street"
