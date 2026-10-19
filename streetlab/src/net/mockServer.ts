@@ -218,7 +218,9 @@ export class MockSim {
       LOOP_BLOCK.y0 - EGO_LANE_INSET,
       LOOP_BLOCK.x1 + EGO_LANE_INSET,
       LOOP_BLOCK.y1 + EGO_LANE_INSET,
-      12,
+      // A rigid 8.2 m truck's corners swing out of a turn: 0.62 m on a 12 m
+      // one, past the 0.55 m its kerb lane leaves it; 0.48 m on 16.
+      16,
       false,
     );
 
@@ -241,8 +243,10 @@ export class MockSim {
         route: this.route,
         s: this.egoS - 16,
         speed: 12,
-        lateral: -(EGO_LANE_INSET - KERB_LANE_INSET),
-        targetLateral: -(EGO_LANE_INSET - KERB_LANE_INSET),
+        // The lane beside the ego's, on its left: the ego drives the kerb
+        // lane, and on its right was the pavement.
+        lateral: EGO_LANE_INSET - KERB_LANE_INSET,
+        targetLateral: EGO_LANE_INSET - KERB_LANE_INSET,
         role: 'cutin',
       },
       {
@@ -369,7 +373,7 @@ export class MockSim {
 
   private stepCutinScript(dt: number): void {
     const cutin = this.agents.find((a) => a.role === 'cutin')!;
-    const kerb = -(EGO_LANE_INSET - KERB_LANE_INSET);
+    const beside = EGO_LANE_INSET - KERB_LANE_INSET;
 
     switch (this.cutinPhase) {
       case 'idle':
@@ -381,8 +385,8 @@ export class MockSim {
           if (Math.abs(this.route.gap(this.egoS, cutin.s)) > 40) {
             cutin.s = this.route.wrap(this.egoS - 12);
           }
-          cutin.lateral = kerb;
-          cutin.targetLateral = kerb;
+          cutin.lateral = beside;
+          cutin.targetLateral = beside;
           cutin.speed = this.egoSpeed + 3.2;
         }
         break;
@@ -396,7 +400,7 @@ export class MockSim {
           this.pushEvent(
             'warn',
             'CUTIN_DETECTED',
-            'Vehicle cutting in from right lane',
+            'Vehicle cutting in from left lane',
           );
         }
         break;
@@ -418,7 +422,7 @@ export class MockSim {
             mean > 0
               ? this.t + Math.max(CUTIN_FLOOR_S, -Math.log(1 - this.rng()) * mean)
               : Infinity;
-          cutin.targetLateral = kerb;
+          cutin.targetLateral = beside;
           this.pushEvent('info', 'CUTIN_CLEARED', 'Cut-in vehicle settled');
         }
         break;
@@ -496,7 +500,8 @@ export class MockSim {
     this.odometer += this.egoSpeed * dt;
 
     // Lane keeping: a slow wander plus an evasive nudge away from a cut-in.
-    const evade = this.cutinPhase === 'merging' ? 0.55 : 0;
+    // Away from it: the cut-in comes from the left, so right, within the kerb lane.
+    const evade = this.cutinPhase === 'merging' ? -0.55 : 0;
     this.planLatTarget = evade + Math.sin(this.t * 0.42) * 0.12;
     this.planLat += clamp(this.planLatTarget - this.planLat, -0.9 * dt, 0.9 * dt);
     this.egoLatOffset += clamp(
