@@ -345,6 +345,10 @@ AEB_MARGIN_M = 2.0
 #: `yield_to_entry` stays on this long after the conflict has gone, so one
 #: noisy tick at the edge of the window cannot release and re-fire it.
 YIELD_RELEASE_S = 0.3
+#: Clearance `yield_to_entry` keeps short of where the detection will be, as
+#: `AEB_MARGIN_M` does. With none the ego stopped with its nose on a red-light
+#: runner's path, and the runner crawled into it (grid at 0.45x, -0.54 m).
+YIELD_MARGIN_M = 2.0
 
 #: Speed ceiling meaning "no reaction".
 _NO_CEILING = math.inf
@@ -483,6 +487,12 @@ class YieldToEntryRule:
         best: tuple[float, StripWindow] | None = None
         for w in inp.windows:
             t_c = conflict_time(w)
+            if t_c is None and w.detection_id == self.active_id and 0.0 < w.t_in <= HAZARD_TTC_S:
+                # Held while what it yields to is still coming: slowing for it
+                # is what makes the ego stop "closing", which otherwise read as
+                # the conflict gone, released the yield, and rolled the ego
+                # into the path as it arrived.
+                t_c = w.t_in
             if t_c is None or w.t_in <= 0.0:
                 continue
             if best is None or t_c < best[0]:
@@ -502,7 +512,7 @@ class YieldToEntryRule:
         # Where the detection's near edge will be when the ego arrives, less the
         # ego's own front: how far the ego may still travel.
         line_s = w.near_edge_s + w.along_speed_mps * t_c
-        distance = line_s - inp.ego_s - EGO_LENGTH_M / 2
+        distance = line_s - inp.ego_s - EGO_LENGTH_M / 2 - YIELD_MARGIN_M
         return Reaction(
             kind="yield_to_entry",
             speed_ceiling_mps=stop_ceiling(max(distance, 0.0), inp.ego.speed_mps),

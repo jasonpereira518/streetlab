@@ -110,6 +110,10 @@ class Agent:
     #: re-times itself every tick to arrive when the ego does.
     meet_s: float | None = None
     meet_ego_s: float | None = None
+    #: Traffic time after which it stops re-timing and holds its speed: the
+    #: last moment the ego could still see it in time to stop. A runner that
+    #: kept re-timing slowed as the ego braked and chased it into a collision.
+    meet_until_s: float | None = None
     #: Seconds held at an unsigned junction's edge, giving way.
     junction_wait_s: float = 0.0
 
@@ -914,6 +918,9 @@ class IdmTraffic(ScriptedTraffic):
         the ego's current pace. Timed once at staging it missed by 6.4 m: the
         ego slows for the corner it turns at, and the runner was already
         committed to the ego's speed on the straight."""
+        if agent.meet_until_s is not None and self._elapsed > agent.meet_until_s:
+            agent.meet_s = agent.meet_ego_s = None  # committed: no more adapting
+            return
         ego_s, _ = self._ego_on(world.ego_route, world, ego_s_by_route)
         ego_left = world.ego_route.signed_gap(ego_s, agent.meet_ego_s)
         mine_left = agent.meet_s - agent.s

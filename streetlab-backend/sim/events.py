@@ -187,6 +187,12 @@ RUNNER_MIN_EGO_MPS = 2.0
 #: now sit at the bar, a crossing-dependent distance, so it is anchored to the
 #: junction itself.
 RUNNER_BEFORE_CENTRE_M = 3.0
+#: The runner is staged only at a light the ego goes straight through: its path
+#: is perpendicular to the route there, which is the cross street only on a
+#: straight. Where the route turns it cut diagonally through the corner block,
+#: hidden by its buildings until it was on the ego (the old "mid-turn" gaps).
+RUNNER_STRAIGHT_RAD = math.radians(20.0)
+RUNNER_STRAIGHT_SPAN_M = 30.0
 #: The ego's green must outlast its arrival by this much, or it stops for the
 #: change and the runner crosses an empty junction.
 RUNNER_GREEN_MARGIN_S = 2.0
@@ -814,37 +820,65 @@ def _oncoming_drift(sim: "Simulation") -> str | Declined:
     return f"{agent.id} drifting over the centre line {ONCOMING_AHEAD_M:.0f} m ahead"
 
 
-def _runner_hidden(
-    sim: "Simulation", crossing: Route, speed: float, eta: float
-) -> str | None:
-    """Why the ego could never see this runner coming, or `None` if it can.
+#: What a sighting of the red-light runner must leave beyond the ego's own
+#: stopping distance, nose to the runner's near side, and the speed the
+#: forecast may be short by: on grid-overtake the forecast ego was ~2 m/s
+#: slower than the real one, which saw the runner 15 m out needing 21.
+RUNNER_SIGHT_MARGIN_M = 3.0
+RUNNER_SIGHT_SPEED_SLACK_MPS = 2.0
 
-    A staging nobody could see is not a test of the ego. Walks the ego along its
-    route, on its own speed law, until it reaches the crossing (`eta`), with the
-    runner along its own, and asks `can_see` -- the driving feed's own test,
-    buildings included -- whether the runner is resolvable at any step. Measured
-    before this check: on Nob Hill the runner came out from behind a corner and
-    entered the ego's feed only after their outlines already overlapped, in 5
-    runs of 5. On the grid it is visible about 0.9 s before the crossing, which
-    is late and is not refused: the ego does brake for it there. Whether a
-    sighting is EARLY ENOUGH is left to the closed-loop sweep (`hazard_matrix`),
-    because a forecast cannot say: asked "can the ego stop?" with a constant
-    speed or with free acceleration, it called the grid's runner unavoidable
-    when the ego demonstrably avoids it.
+
+#: The slowest a runner may be staged at to come into view in time.
+RUNNER_MIN_MPS = 3.0
+
+
+def _runner_sighting(
+    sim: "Simulation", cx: float, cy: float, nx: float, ny: float, eta: float, to_cross: float, top: float
+) -> tuple[float, float] | str:
+    """The runner's speed, so it is in the ego's view while the ego can still
+    stop short of the crossing; or why no such staging exists.
+
+    A staging nobody could see in time is not a test of the ego. The latest
+    pose it may be seen from is the last on the ego's own speed law that
+    leaves its measured stopping distance (`stopping_distance`, the tracker's
+    taper included) plus `RUNNER_SIGHT_MARGIN_M`, nose to the runner's near
+    side. From there the ego sees `x` metres up the cross street (`can_see`,
+    buildings included); the runner is staged that far out at that moment and
+    reaches the crossing when the ego does, at `x / (eta - t)`, capped at
+    `top`. Staged at the limit, as it was, a runner down a building-lined
+    street came into view 4 m off (kerb lane, grid at 0.45x) or only once the
+    outlines met (Nob Hill), and the ego, braking from the instant it saw it,
+    could not help being hit.
     """
     route = sim.scene.ego_route
     ego_s = _ego_s(sim)
     buildings = sim.scene.description.buildings
-    ego = sim.world.ego
-    for t, d, _v in _ego_path(sim, horizon_s=eta, hold_speed=True):
-        ex, ey = route.point_at(ego_s + d)
-        rx, ry = crossing.point_at(speed * t)
-        pose = VehicleState(
-            x=ex, y=ey, heading=route.heading_at(ego_s + d), speed_mps=ego.speed_mps
-        )
-        if can_see(pose, rx, ry, crossing.heading_at(speed * t), CAR_SIZE, buildings):
-            return None
-    return "buildings hide the crossing road from the ego until the car is on it"
+    latest = None
+    # On its own speed law, not holding its speed: measured on grid-overtake,
+    # the ego went from 9 to 13 m/s on the way and came within 11 m before the
+    # runner was in view, where it needs ~25 m to stop.
+    for t, d, v in _ego_path(sim, horizon_s=eta):
+        room = to_cross - d - EGO_LENGTH_M / 2 - CAR_SIZE.width / 2
+        if room < stopping_distance(v + RUNNER_SIGHT_SPEED_SLACK_MPS) + RUNNER_SIGHT_MARGIN_M:
+            break
+        latest = (t, d, v)
+    if latest is None:
+        return "the ego is too close to stop for a car it has not yet seen"
+    t, d, v = latest
+    pose = VehicleState(
+        x=route.point_at(ego_s + d)[0], y=route.point_at(ego_s + d)[1],
+        heading=route.heading_at(ego_s + d), speed_mps=v,
+    )
+    heading = math.atan2(ny, nx)
+    x = 0.0
+    while x < top * eta and can_see(pose, cx - nx * (x + 1.0), cy - ny * (x + 1.0), heading, CAR_SIZE, buildings):
+        x += 1.0
+    if eta - t <= 0.0 or x <= 0.0:
+        return "buildings hide the crossing road from the ego until too late to stop for it"
+    speed = min(top, x / (eta - t))
+    if speed < RUNNER_MIN_MPS:
+        return "buildings hide the crossing road from the ego until too late to stop for it"
+    return speed, t
 
 
 def _red_light_runner(sim: "Simulation") -> str | Declined:
@@ -869,6 +903,15 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
     ]
     if not ahead:
         return Declined(f"no signal within {RUNNER_SEARCH_M:.0f} m ahead")
+    ahead = [
+        (gap, cp)
+        for gap, cp in ahead
+        if abs(math.remainder(
+            route.heading_at(route.normalise(cp.s + RUNNER_STRAIGHT_SPAN_M)) - route.heading_at(cp.s), math.tau
+        )) < RUNNER_STRAIGHT_RAD
+    ]
+    if not ahead:
+        return Declined("the ego turns at the signal ahead")
     gap, cp = min(ahead, key=lambda pair: pair[0])
     at = route.project(cp.position) - RUNNER_BEFORE_CENTRE_M
     to_cross = route.signed_gap(ego_s, at)
@@ -883,17 +926,20 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
 
     # `to_cross` (the ego's centre to the crossing point, from main) and when the ego gets
     # there: along its own speed law, which slows for the junction's turn.
-    eta = next((t for t, d, _v in _ego_path(sim, hold_speed=True) if d >= to_cross), None)
+    eta = next((t for t, d, _v in _ego_path(sim) if d >= to_cross), None)
     if eta is None:
         return Declined("the ego would not reach the junction within 30 s")
     if signal.time_to_change_s is not None and signal.time_to_change_s < eta + RUNNER_GREEN_MARGIN_S:
         return Declined("the signal ahead changes before the ego would reach it")
 
     pace = _pace(sim)
-    speed = sim.scene.speed_limit_mps * pace
     cx, cy = route.point_at(at)
     heading = route.heading_at(at)
     nx, ny = -math.sin(heading), math.cos(heading)
+    sighting = _runner_sighting(sim, cx, cy, nx, ny, eta, to_cross, sim.scene.speed_limit_mps * pace)
+    if isinstance(sighting, str):
+        return Declined(sighting)
+    speed, seen_by_s = sighting
     approach = speed * eta
     crossing = Route(
         [
@@ -902,25 +948,22 @@ def _red_light_runner(sim: "Simulation") -> str | Declined:
         ],
         closed=False,
     )
-    hidden = _runner_hidden(sim, crossing, speed, eta)
-    if hidden is not None:
-        return Declined(hidden)
-
     agent = _spawn(
         sim,
         kind="red_light_runner",
         cls="car",
         size=CAR_SIZE,
         route=crossing,
-        # Its target is the limit; the traffic model scales it by `pace`, so it
-        # keeps the pace `approach` was worked out with.
-        speed_mps=sim.scene.speed_limit_mps,
+        # The traffic model scales its target by `pace`, so this keeps the
+        # speed `approach` was worked out with.
+        speed_mps=speed / pace,
         # Gone before the end of its open route, where arc length wraps.
         lifetime_s=(crossing.length_m - 1.0) / speed,
     )
     _start_at_pace(agent, speed)
     agent.meet_s = approach
     agent.meet_ego_s = at
+    agent.meet_until_s = _traffic(sim)._elapsed + seen_by_s
     return f"{agent.id} running the red {gap:.0f} m ahead"
 
 
