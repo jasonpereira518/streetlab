@@ -118,3 +118,21 @@ def test_step_returns_a_new_state_and_leaves_the_input_untouched():
     start = VehicleState(x=1.0, y=2.0, heading=0.3, speed_mps=5.0)
     model.step(start, accel_mps2=1.0, steer_rad=0.1, dt=0.1)
     assert (start.x, start.y, start.heading, start.speed_mps) == (1.0, 2.0, 0.3, 5.0)
+
+
+def test_reverse_is_clamped_to_its_own_range_and_backs_along_the_heading():
+    from sim.vehicle import BicycleModel, VehicleState
+
+    model = BicycleModel()
+    state = VehicleState(x=0.0, y=0.0, heading=0.0, speed_mps=0.0)
+    for _ in range(600):
+        state = model.step(state, accel_mps2=-1.5, steer_rad=0.0, dt=1 / 60, reverse=True)
+    assert state.speed_mps == -model.max_reverse_mps
+    assert state.x < -10.0 and abs(state.y) < 1e-9
+    # Braking in reverse settles at rest, never rolling forward through zero.
+    for _ in range(600):
+        state = model.step(state, accel_mps2=4.0, steer_rad=0.0, dt=1 / 60, reverse=True)
+    assert state.speed_mps == 0.0
+    # And drive stays forward-only, as before.
+    fwd = model.step(state, accel_mps2=-4.0, steer_rad=0.0, dt=1 / 60)
+    assert fwd.speed_mps == 0.0
