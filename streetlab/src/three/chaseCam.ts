@@ -13,6 +13,11 @@ import type { HeightFn } from './terrain';
 
 /** Closest a floating camera may get to the ground beneath it. */
 const MIN_CLEARANCE_M = 1.2;
+/** The car is underground once its surface is this far below the terrain. */
+const BURIED_M = 2.0;
+/** In a tunnel the camera stays this far above the floor at most: under the
+ *  5.2 m ceiling `world.ts` draws (`PORTAL_H_M`). */
+const TUNNEL_EYE_MAX_M = 4.4;
 
 /** Where on the car the camera's line of sight lands, above the ground under it. */
 const EGO_EYE_M = 1.0;
@@ -145,12 +150,41 @@ export class ChaseCamera {
     this.ground = ground;
   }
 
+  /**
+   * What the car stands on (`World.groundFor`): a bridge deck or a tunnel
+   * floor where it is on one. Views are measured from it, and while it is
+   * buried -- in a tunnel, below the hill -- the camera follows it there,
+   * under the tunnel's ceiling, instead of rising above the ground over itself
+   * (which put it on top of the hill, looking at grass).
+   */
+  private surface: ((x: number, y: number, heading: number) => number) | null = null;
+
+  setSurface(surface: ((x: number, y: number, heading: number) => number) | null): void {
+    this.surface = surface;
+  }
+
+  private buried = false;
+
+  /** The car's own surface height, and whether it is underground. */
+  private base(pose: Pose): number {
+    const terrain = this.groundAt(pose.x, -pose.y);
+    const g = this.surface ? this.surface(pose.x, pose.y, pose.heading) : terrain;
+    this.buried = g < terrain - BURIED_M;
+    return g;
+  }
+
+  /** A floating camera's height: above the ground under it, or in a tunnel, between the floor and ceiling. */
+  private clampY(y: number, x: number, z: number, g: number): number {
+    if (this.buried) return clamp(y, g + MIN_CLEARANCE_M, g + TUNNEL_EYE_MAX_M);
+    return Math.max(y, this.groundAt(x, z) + MIN_CLEARANCE_M);
+  }
+
   private groundAt(x: number, z: number): number {
     return this.ground ? this.ground(x, -z) : 0;
   }
 
   reset(pose: Pose, blockers?: Blockers): void {
-    const g = this.groundAt(pose.x, -pose.y);
+    const g = this.base(pose);
     this.vx = pose.x;
     this.vz = -pose.y;
     this.vHeading = pose.heading;
@@ -172,7 +206,7 @@ export class ChaseCamera {
     this.targetPullback = this.pullback;
     this.sinceCast = 0;
     this.camPos.set(pose.x - fx * dist, g + CHASE.heightNear, -pose.y - fz * dist);
-    this.camPos.y = Math.max(this.camPos.y, this.groundAt(this.camPos.x, this.camPos.z) + MIN_CLEARANCE_M);
+    this.camPos.y = this.clampY(this.camPos.y, this.camPos.x, this.camPos.z, g);
     this.lookAt.set(
       pose.x + fx * CHASE.lookAhead,
       g + 1.15,
@@ -280,7 +314,7 @@ export class ChaseCamera {
   ): void {
     const ex = pose.x;
     const ez = -pose.y;
-    const g = this.groundAt(ex, ez);
+    const g = this.base(pose);
 
     if (!this.started) this.reset(pose, blockers);
 
@@ -398,7 +432,7 @@ export class ChaseCamera {
       this.lookAt.x = damp(this.lookAt.x, this.desiredLook.x, CHASE.targetSmoothing, dt);
       this.lookAt.y = damp(this.lookAt.y, this.desiredLook.y, CHASE.targetSmoothing, dt);
       this.lookAt.z = damp(this.lookAt.z, this.desiredLook.z, CHASE.targetSmoothing, dt);
-      this.camPos.y = Math.max(this.camPos.y, this.groundAt(this.camPos.x, this.camPos.z) + MIN_CLEARANCE_M);
+      this.camPos.y = this.clampY(this.camPos.y, this.camPos.x, this.camPos.z, g);
     }
 
     this.camera.position.copy(this.camPos);
