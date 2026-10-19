@@ -4,6 +4,7 @@ import { createTransportFromLocation } from './net/wsClient';
 import { useSimStore } from './store/simStore';
 import { Renderer } from './three/Renderer';
 import { AckToast } from './ui/AckToast';
+import { DriveHud } from './ui/DriveHud';
 import { useDriveKeys } from './input/driveKeys';
 import { HelpDialog, useShortcuts } from './ui/HelpDialog';
 import { LeftScenarioSidebar } from './ui/LeftScenarioSidebar';
@@ -81,6 +82,7 @@ export default function App() {
         {!collapsed.scenarios && <LeftScenarioSidebar />}
         <main className="stage-main">
           <Renderer />
+          <DriveHud />
           <PanelHandle panel="scenarios" edge="left" />
           <PanelHandle panel="inspector" edge="right" />
           <PanelHandle panel="telemetry" edge="bottom" />

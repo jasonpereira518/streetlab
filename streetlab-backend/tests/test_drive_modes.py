@@ -18,6 +18,7 @@ from plan.manual import (
     ManualDriver,
     live,
     max_steer,
+    resistance,
 )
 from sim.loop import Simulation
 from sim.vehicle import BicycleModel, VehicleState
@@ -79,7 +80,7 @@ def test_steer_and_accel_stay_inside_their_rate_limits_under_any_key_pattern():
 
 def test_full_stick_steering_shrinks_with_speed():
     assert max_steer(1.0) == pytest.approx(math.radians(35))
-    assert max_steer(13.4) < math.radians(2)  # 30 mph: ~2 m/s^2 lateral at full stick
+    assert max_steer(13.4) < math.radians(5)  # 30 mph: 4.5 m/s^2 lateral at full stick
     assert max_steer(5.0) > max_steer(10.0) > max_steer(20.0)
 
 
@@ -89,8 +90,9 @@ def test_stale_input_coasts_rather_than_holding_the_key():
     released = live(held, 0.6)
     assert released.throttle == 0.0
     driver = ManualDriver()
-    ego = VehicleState(x=0, y=0, heading=0, speed_mps=10.0, accel_mps2=-COAST_DECEL_MPS2)
-    assert driver.accel(released, ego, DT) == pytest.approx(-COAST_DECEL_MPS2)
+    coast = -(COAST_DECEL_MPS2 + resistance(10.0))
+    ego = VehicleState(x=0, y=0, heading=0, speed_mps=10.0, accel_mps2=coast)
+    assert driver.accel(released, ego, DT) == pytest.approx(coast)
 
 
 def test_a_stopped_car_with_no_pedal_reports_no_braking():
@@ -315,7 +317,8 @@ def test_a_full_manual_brake_stops_far_shorter_than_the_planners_comfort_ceiling
         peak = min(peak, sim.ego.accel_mps2)
         steps += 1
     dist = math.dist(start, (sim.ego.x, sim.ego.y))
-    assert peak == pytest.approx(-MANUAL_MAX_DECEL_MPS2)
+    # The brake's full 8 m/s^2, plus a little drag on top.
+    assert -MANUAL_MAX_DECEL_MPS2 - 0.5 < peak <= -MANUAL_MAX_DECEL_MPS2
     # v^2 / 2a at 4.5 m/s^2 is 20 m; at 8 m/s^2 with a 0.3 s ramp it is ~13 m.
     assert dist < 14.0
     assert steps * DT < 2.2
@@ -378,3 +381,39 @@ def test_traffic_and_the_planner_never_see_a_negative_ego_speed(sim):
     assert sim._ego_ahead().speed_mps == 0.0
     hold(sim, 1.0, brake=1.0)  # many reversing ticks run clean
     assert all(math.isfinite(v) for v in (sim.ego.x, sim.ego.y, sim.ego.heading))
+
+
+# -- handling and powertrain ------------------------------------------------ #
+
+
+def _full_throttle(seconds):
+    model, driver = BicycleModel(), ManualDriver()
+    ego, t, marks = VehicleState(x=0, y=0, heading=0, speed_mps=0.0), 0.0, {}
+    while t < seconds:
+        ego = model.step(ego, accel_mps2=driver.accel(Controls(throttle=1.0), ego, DT), steer_rad=0.0, dt=DT)
+        t += DT
+        for mph in (30, 60):
+            if mph not in marks and ego.speed_mps >= mph * 0.44704:
+                marks[mph] = t
+    return ego, marks
+
+
+def test_full_throttle_feels_like_a_car_and_tops_out():
+    ego, marks = _full_throttle(120.0)
+    assert 3.5 < marks[30] < 5.5  # was 6.3 s with a flat 2.2 m/s^2
+    assert 7.5 < marks[60] < 11.0  # was 12.4 s
+    top_mph = ego.speed_mps / 0.44704
+    assert 80 < top_mph < 95  # was unbounded (134 mph after 60 s and climbing)
+
+
+def test_a_junction_corner_is_drivable_at_city_speed():
+    radius = 2.9 / math.tan(max_steer(15 * 0.44704))
+    assert radius < 11.0  # 22.5 m before: a 15 mph right turn ran wide
+    assert 2.9 / math.tan(max_steer(1.0)) < 4.5  # full lock at a crawl: a three-point turn
+
+
+def test_coasting_slows_harder_at_speed():
+    driver = ManualDriver()
+    slow = VehicleState(x=0, y=0, heading=0, speed_mps=5.0, accel_mps2=-1.0)
+    fast = VehicleState(x=0, y=0, heading=0, speed_mps=30.0, accel_mps2=-1.0)
+    assert driver.accel(Controls(), fast, DT) < driver.accel(Controls(), slow, DT) < 0

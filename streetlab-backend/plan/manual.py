@@ -12,11 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from plan.control import (
-    _MAX_ACCEL_MPS2,
-    _MAX_LATERAL_MPS2,
-    MAX_STEER_RATE_RAD_S,
-)
+from plan.control import MAX_STEER_RATE_RAD_S
 from sim.vehicle import VehicleState
 
 #: Below this an axis is a resting finger, not an input (also the ladder's deadband).
@@ -29,7 +25,20 @@ BRAKE_JERK_MPS3 = 25.0
 MANUAL_MAX_DECEL_MPS2 = 8.0
 #: Pulling away in reverse, m/s^2.
 REVERSE_ACCEL_MPS2 = 1.5
-#: Engine braking and rolling resistance with neither pedal held.
+#: Full-stick cornering, m/s^2 (~0.45 g). The planner holds itself to 2.0 for
+#: comfort; a driver needs more to take a junction corner at 15 mph (10 m
+#: radius here, 22 m at 2.0). Still well inside a road car's ~0.8 g, so full
+#: stick on a keyboard cannot spin it.
+MANUAL_MAX_LATERAL_MPS2 = 4.5
+#: The powertrain, per unit mass: full throttle gives MANUAL_LAUNCH_MPS2 until
+#: power runs out at MANUAL_POWER / v (~45 mph), then tapers. Against rolling
+#: and air drag, measured: 0-30 mph 4.3 s, 0-60 mph 9.5 s, top speed 89 mph --
+#: an ordinary family car (was a flat 2.2 m/s^2: 12.4 s, and no top speed).
+MANUAL_LAUNCH_MPS2 = 3.5
+MANUAL_POWER_W_PER_KG = 70.0
+ROLLING_MPS2 = 0.15
+AERO_PER_V2 = 0.001
+#: Regenerative / engine braking on top of drag with neither pedal held.
 COAST_DECEL_MPS2 = 0.3
 #: Input older than this (sim seconds) is treated as released: a dropped
 #: connection must not leave a key held down.
@@ -57,11 +66,22 @@ def axis(v: float) -> float:
     return 0.0 if abs(v) < DEADBAND else v
 
 
+def resistance(speed_mps: float) -> float:
+    """Rolling plus air drag, m/s^2, opposing motion (a magnitude)."""
+    v = abs(speed_mps)
+    return 0.0 if v == 0.0 else ROLLING_MPS2 + AERO_PER_V2 * v * v
+
+
+def drive_accel(speed_mps: float) -> float:
+    """Full-throttle tractive acceleration: launch-limited, then power-limited."""
+    return min(MANUAL_LAUNCH_MPS2, MANUAL_POWER_W_PER_KG / max(abs(speed_mps), 0.1))
+
+
 def max_steer(speed_mps: float, wheelbase_m: float = 2.9) -> float:
     """Full lock at walking pace, shrinking with speed so full stick holds the
     comfort lateral acceleration: kappa = a_lat / v^2, delta = atan(L kappa)."""
     v = max(speed_mps, 1.0)
-    return min(_MAX_STEER_RAD, math.atan(wheelbase_m * _MAX_LATERAL_MPS2 / (v * v)))
+    return min(_MAX_STEER_RAD, math.atan(wheelbase_m * MANUAL_MAX_LATERAL_MPS2 / (v * v)))
 
 
 def jerk_limit(target: float, previous: float, dt: float) -> float:
@@ -69,8 +89,9 @@ def jerk_limit(target: float, previous: float, dt: float) -> float:
     return _clamp(target, previous - step, previous + step)
 
 
-def throttle_accel(inp: Controls) -> float:
-    return axis(inp.throttle) * _MAX_ACCEL_MPS2
+def throttle_accel(inp: Controls, speed_mps: float) -> float:
+    """The pedal's ask under an assisted mode: the same powertrain as Manual."""
+    return axis(inp.throttle) * drive_accel(speed_mps) - resistance(speed_mps)
 
 
 def live(inp: Controls, t: float) -> Controls:
@@ -94,11 +115,12 @@ class ManualDriver:
         if reverse:
             go, stop = stop, go
         sign = -1.0 if reverse else 1.0  # +1: "forward" for this gear
-        top = REVERSE_ACCEL_MPS2 if reverse else _MAX_ACCEL_MPS2
+        top = REVERSE_ACCEL_MPS2 if reverse else drive_accel(ego.speed_mps)
+        drag = resistance(ego.speed_mps)
         if go or stop:
-            target = sign * (go * top - stop * MANUAL_MAX_DECEL_MPS2)
+            target = sign * (go * top - stop * MANUAL_MAX_DECEL_MPS2 - drag)
         else:
-            target = -sign * COAST_DECEL_MPS2
+            target = -sign * (COAST_DECEL_MPS2 + drag)
         moving = sign * ego.speed_mps  # speed in this gear's direction, >= 0
         if moving <= 0.0 and sign * target < 0.0:
             # Stopped: nothing to brake against. No jerk ramp, or the stored

@@ -1877,3 +1877,96 @@ canvas {
 .help-swatch--hazard { background: #ff7a1a; }
 .help-swatch--det { background: #5f6e80; }
 .help-note { margin: 0; color: var(--c-text-muted, #5f6e80); line-height: 1.4; }
+
+/* ------------------------------------------------------------------ */
+/* Drive HUD: key hints and on-screen controls over the road          */
+/* ------------------------------------------------------------------ */
+
+.drive-hud {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--gutter) + 12px);
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 2 * var(--gutter) - 24px);
+  pointer-events: none;
+}
+
+.drive-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px 6px 12px;
+  border-radius: var(--r-pill, 999px);
+  background: rgba(22, 25, 29, 0.62);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  pointer-events: auto;
+  backdrop-filter: blur(6px);
+}
+
+.drive-gear {
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--c-warn, #ff7a1a);
+  font-weight: 700;
+}
+
+.drive-pad-toggle {
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--r-pill, 999px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.drive-pad-toggle[aria-pressed='true'] { background: rgba(255, 255, 255, 0.2); }
+
+.drive-pad {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  pointer-events: auto;
+}
+
+.drive-pad-group { display: flex; gap: 8px; }
+
+.drive-pad-btn {
+  min-width: 64px;
+  min-height: 56px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(22, 25, 29, 0.62);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+.drive-pad-btn:active { background: rgba(22, 25, 29, 0.85); }
+.drive-pad-btn--gas { min-height: 76px; background: rgba(21, 128, 61, 0.78); }
+.drive-pad-btn--brake { background: rgba(185, 28, 28, 0.75); }
+.drive-pad-btn--mode { min-height: 40px; min-width: 88px; }
+
+@media (max-width: 720px) {
+  .drive-hint { font-size: 11px; }
+  .drive-pad { gap: 12px; }
+}

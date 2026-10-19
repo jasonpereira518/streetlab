@@ -22,7 +22,21 @@ export interface Axes {
 
 export const ZERO_AXES: Axes = { steer: 0, throttle: 0, brake: 0 };
 
-type Control = 'throttle' | 'brake' | 'left' | 'right';
+export type Control = 'throttle' | 'brake' | 'left' | 'right';
+
+/** Controls held by on-screen buttons (touch / mouse): virtual keys, merged
+ * into the keyboard's held set every tick, so they get the same ramps. */
+const virtualHeld = new Set<Control>();
+const virtualTapped = new Set<Control>();
+
+export function pressVirtual(control: Control): void {
+  virtualHeld.add(control);
+  virtualTapped.add(control);
+}
+
+export function releaseVirtual(control: Control): void {
+  virtualHeld.delete(control);
+}
 
 const KEYS: Record<string, Control> = {
   w: 'throttle',
@@ -98,7 +112,6 @@ export function useDriveKeys(): void {
     const tapped = new Set<Control>();
     let axes: Axes = ZERO_AXES; // the keyboard's ramped axes
     let sent: Axes = ZERO_AXES; // what went out last, keyboard and pad merged
-    let last = performance.now();
     // Polled only while a pad is connected; Chrome exposes one only after a
     // button is pressed with the page focused, which fires `gamepadconnected`.
     let padOn = firstPad() !== null;
@@ -123,14 +136,18 @@ export function useDriveKeys(): void {
       if (control) held.delete(control);
     };
     // Alt-tab with a key down never delivers its keyup.
-    const onBlur = () => held.clear();
+    const onBlur = () => {
+      held.clear();
+      virtualHeld.clear();
+    };
 
     const timer = setInterval(() => {
-      const now = performance.now();
-      const dt = Math.min(0.1, (now - last) / 1000);
-      last = now;
-      axes = shapeAxes(axes, new Set([...held, ...tapped]), dt);
+      // A fixed step, not wall-clock: the ramps are a feel, and a throttled
+      // background timer must not make one tick jump a whole key press.
+      const dt = 1 / SEND_HZ;
+      axes = shapeAxes(axes, new Set([...held, ...tapped, ...virtualHeld, ...virtualTapped]), dt);
       tapped.clear();
+      virtualTapped.clear();
       let next = axes;
       const pad = padOn ? firstPad() : null;
       const s = useSimStore.getState();

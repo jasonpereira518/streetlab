@@ -609,7 +609,7 @@ class Simulation:
             accel = max(-_MAX_DECEL_MPS2, min(_MAX_ACCEL_MPS2, accel))
         if aeb:
             return accel, steer  # nothing overrides an emergency brake
-        pedal = throttle_accel(controls)
+        pedal = throttle_accel(controls, ego.speed_mps)
         if pedal > 0.0 and pedal > accel:
             accel = jerk_limit(pedal, ego.accel_mps2, dt)
         if world.t - world.mode_changed_t < _HANDOVER_S:
