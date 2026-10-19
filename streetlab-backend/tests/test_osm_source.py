@@ -1129,11 +1129,13 @@ def test_the_osm_scene_carries_control_points_for_the_driven_route(nob_hill_scen
     assert len(scene.control_points) < 40, "matched far more props than the route passes"
     assert len(scene.control_points) >= 6, "matched far fewer props than the route passes"
     kinds = {cp.kind for cp in scene.control_points}
-    assert kinds <= {"signal", "stop_sign"}
+    assert kinds <= {"signal", "stop_sign", "yield"}
     by_kind = Counter(cp.kind for cp in scene.control_points)
-    assert by_kind == {"stop_sign": 11, "signal": 11}, (
+    # Plus one give-way line (phase 8a): the one junction on the loop with
+    # nothing governing it that the loop enters off its priority road.
+    assert by_kind == {"stop_sign": 11, "signal": 11, "yield": 1}, (
         f"expected the 11 stop signs and 11 signalised junctions facing the "
-        f"route, got {dict(by_kind)}"
+        f"route, and 1 give-way line, got {dict(by_kind)}"
     )
 
 
