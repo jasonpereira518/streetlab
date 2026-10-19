@@ -71,6 +71,7 @@ from map.lanes import (
     derive_lanes,
     junction_node_ids,
     nearest_junction,
+    junction_yields,
     project_control_points,
     select_ego_route,
     select_route_to_destination,
@@ -729,7 +730,14 @@ class OsmSceneSource:
                     candidates.append((sign.id, kind, at, setback))
             return project_control_points(route, candidates)
 
-        control_points = route_controls(ego_route, yields=False)
+        # Yield signs too, and a give-way line wherever the ego enters a
+        # junction nothing governs from off its priority road.
+        scene_junctions = find_junctions(roads, under)
+        control_points = route_controls(ego_route)
+        control_points = sorted(
+            [*control_points, *junction_yields(ego_route, scene_junctions, control_points)],
+            key=lambda cp: cp.s,
+        )
         # An open, point-to-point route needs one more stop the planner
         # already knows how to bisect towards: the trip's own end. A closed
         # loop has no such end -- `arrival_control_point` returns `None` for
@@ -753,7 +761,7 @@ class OsmSceneSource:
             lanes=derive_lanes(ego_route, roads),
             build_notes=build_notes,
             ambient_lanes=ambient,
-            junctions=find_junctions(roads, under),
+            junctions=scene_junctions,
         )
 
     @staticmethod

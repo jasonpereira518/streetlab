@@ -38,7 +38,7 @@ from map.tags import (
     street_name,
 )
 from schema import Road
-from sim.route import EGO_LANE_ID, ControlPoint, Lane, LaneSet, Route
+from sim.route import EGO_LANE_ID, ControlPoint, Junction, Lane, LaneSet, Route
 
 log = logging.getLogger("streetlab.map")
 
@@ -1836,6 +1836,55 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
 #: metres away; 12 m clears the widest carriageway here without reaching the
 #: next block. Measured on Nob Hill: 4 lights and 12 stop signs fall inside
 #: this radius, and widening it to 30 m adds nothing.
+#: `junction_yields`: how far before a junction a sign or signal still governs
+#: it, and where the heading that decides "on the major road" is read. The
+#: same figures traffic uses (`sim/agents.py` `_CONTROL_REACH_M`,
+#: `_TURN_PROBE_M`, `_MAJOR_ALIGN_COS`), so the two agree on who has priority.
+_YIELD_CONTROL_REACH_M = 20.0
+_YIELD_PROBE_M = 5.0
+_YIELD_MAJOR_COS = 0.9
+#: The ego's give-way line: this far outside the junction's box.
+YIELD_LINE_OUTSIDE_M = 1.0
+
+
+def junction_yields(
+    route: Route, junctions: Sequence[Junction], controls: Sequence[ControlPoint]
+) -> list[ControlPoint]:
+    """A give-way line before every junction `route` enters with nothing
+    governing it and not on the major road: a side street onto a priority
+    road, or two equal streets, where first-come/on-the-right decides. Traffic
+    always let the ego go there; with these it gives way, and traffic, seeing
+    it controlled, no longer waits for it (`IdmTraffic._right_of_way`)."""
+    from shapely.geometry import LineString, Point
+
+    line = LineString(route.points + ([route.points[0]] if route.closed else []))
+    out = []
+    for j in junctions:
+        if line.distance(Point(j.centre)) > j.radius_m:
+            continue
+        s = route.project(j.centre)
+        governed = any(
+            cp.kind in ("signal", "stop_sign", "yield", "arrival")
+            and 0.0 <= (s - cp.s) % route.length_m <= j.radius_m + _YIELD_CONTROL_REACH_M
+            for cp in controls
+        )
+        if governed:
+            continue
+        before = route.heading_at(route.normalise(s - j.radius_m - _YIELD_PROBE_M))
+        if any(abs(math.cos(before - b)) > _YIELD_MAJOR_COS for b in j.major_headings):
+            continue  # on the priority road: the others give way to it
+        line_s = s - j.radius_m - YIELD_LINE_OUTSIDE_M
+        if not route.closed and line_s < 0.0:
+            continue  # starts inside it
+        out.append(ControlPoint(
+            id=f"jn_{j.centre[0]:.0f}_{j.centre[1]:.0f}",
+            kind="yield",
+            s=route.normalise(line_s),
+            position=j.centre,
+        ))
+    return out
+
+
 CONTROL_POINT_MATCH_M = 12.0
 
 #: Stop lines closer together than this are the same junction. Several OSM

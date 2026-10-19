@@ -198,6 +198,14 @@ LEFT_TURN_SPAN_M = 25.0
 #: `test_creep_headroom_covers_the_tracker_at_full_creep_speed` in
 #: `tests/test_control.py`, which pins the relationship, not these values).
 CREEP_MPS = 2.5
+#: A give-way line (`ControlPoint(kind="yield")`: a yield sign, or a junction
+#: nothing governs entered off its priority road). The ego slows to this by
+#: the line, from which a firm stop takes ~4 m, so traffic that turns up late
+#: is still given way to; crossing traffic due within `YIELD_GAP_S` (traffic's
+#: own `_ROW_GAP_S`) is waited for; it is looked for this far out.
+YIELD_APPROACH_MPS = 5.0
+YIELD_GAP_S = 4.0
+YIELD_LOOK_M = 45.0
 
 #: Once the line is this far behind, it is done with.
 CLEARED_M = 2.0
@@ -579,12 +587,14 @@ class BehaviorFSM:
             self.state = BehaviorState.APPROACH
 
         distance = route.signed_gap(ego_s, target.s)
-        # An unprotected left gives way to oncoming traffic, green or not.
+        # An unprotected left gives way to oncoming traffic, green or not; at
+        # a give-way line, crossing traffic too.
+        turning_left = _turns_left(route, target.s)
         yield_left = (
-            target.kind == "signal"
-            and _turns_left(route, target.s)
+            target.kind in ("signal", "yield")
+            and turning_left
             and self._oncoming(ego, target, detections)
-        )
+        ) or (target.kind == "yield" and self._crossing_due(ego, target, detections))
         if target.kind == "stop_sign":
             self._track_waiters(target, detections)
             self._note_own_wait(ego, target)
@@ -610,6 +620,16 @@ class BehaviorFSM:
                 return BehaviorDecision(BehaviorState.CREEP, CREEP_MPS, "yield", target)
             maneuver = "arrived" if target.kind == "arrival" else "stop"
             return BehaviorDecision(BehaviorState.STOP, 0.0, maneuver, target)
+
+        if target.kind == "yield" and not yield_left:
+            # Nothing to give way to: through at walking-plus pace, latched
+            # once over the line.
+            if distance <= 0.0:
+                self.honoured[target.id] = ego_s
+                return self._cruise()
+            self.state = BehaviorState.APPROACH
+            ceiling = math.hypot(YIELD_APPROACH_MPS, stop_ceiling(distance, ego.speed_mps))
+            return BehaviorDecision(BehaviorState.APPROACH, ceiling, "yield", target)
 
         if not yield_left and not self._must_stop(target, signals, distance, ego):
             # Rolling through. Latched only once the car is past the point of
@@ -808,6 +828,8 @@ class BehaviorFSM:
     ) -> bool:
         if target.kind in ("stop_sign", "arrival"):
             return True
+        if target.kind == "yield":
+            return False  # only for traffic, which `_junction_step` decides
         phase = self._phase(target, signals)
         if phase is None:
             # No observed phase: the ego has not resolved this light by sight.
@@ -879,6 +901,8 @@ class BehaviorFSM:
     ) -> bool:
         if target.kind == "arrival":
             return False  # the trip's own end: holds forever, by design
+        if target.kind == "yield":
+            return self._intersection_clear(ego, target, detections)
         if target.kind == "stop_sign":
             if not self._intersection_clear(ego, target, detections):
                 self.box_clear_since_s = None
@@ -919,6 +943,28 @@ class BehaviorFSM:
             if toward <= 0.5 and dist > JUNCTION_CLEAR_M * 0.45:
                 continue
             if dist / d.speed_mps < LEFT_GAP_S or dist < JUNCTION_CLEAR_M * 0.45:
+                return True
+        return False
+
+    @staticmethod
+    def _crossing_due(ego: VehicleState, target: ControlPoint, detections: Sequence[Detection]) -> bool:
+        """Crossing traffic -- not going the ego's way or the opposite one --
+        moving toward this junction and due at it within `YIELD_GAP_S`, or
+        already in it."""
+        tx, ty = target.position
+        for d in detections:
+            if d.cls == "pedestrian":
+                continue
+            dist = math.hypot(d.pose.x - tx, d.pose.y - ty)
+            if dist > YIELD_LOOK_M:
+                continue
+            diff = abs(math.remainder(d.pose.heading - ego.heading, math.tau))
+            if diff < CROSS_TRAFFIC_HEADING_RAD or diff > math.pi - CROSS_TRAFFIC_HEADING_RAD:
+                continue
+            if dist < JUNCTION_CLEAR_M * 0.45:
+                return True  # in the box
+            toward = math.cos(math.atan2(ty - d.pose.y, tx - d.pose.x) - d.pose.heading)
+            if d.speed_mps >= MOVING_MPS and toward > 0.5 and dist / d.speed_mps < YIELD_GAP_S:
                 return True
         return False
 
