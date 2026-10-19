@@ -1696,7 +1696,9 @@ class IdmTraffic(ScriptedTraffic):
         * two cars with nothing to stop them: the one on the major road
           (`Junction.major_headings`) goes; with no major road, whoever gets
           there first, and arriving together, the one on the right. The ego
-          is always let go (it does not yet yield at an unsigned junction).
+          is let go where it has priority; where it does not, its route
+          carries a give-way line (`map.lanes.junction_yields`), so its
+          passage is controlled and traffic goes first.
 
         Stopped cars arriving together all round each have one on their right;
         whoever has waited longest goes once it has waited `BOX_TIMEOUT_S`.
