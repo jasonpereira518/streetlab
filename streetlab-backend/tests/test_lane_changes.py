@@ -1040,7 +1040,10 @@ _NO_VOLUNTARY_TURNAROUND = pytest.mark.xfail(
 @pytest.mark.parametrize(
     "scene_name",
     [
-        pytest.param("nob_hill", marks=_NO_VOLUNTARY_TURNAROUND),
+        # Since the kerb lane (phase 7c) Nob Hill passes on the LEFT along
+        # California Street, and one pass turns round of its own accord after
+        # holding the lane: there is something to judge again, and it holds.
+        "nob_hill",
         pytest.param("grid_overtake", marks=_NO_VOLUNTARY_TURNAROUND),
     ],
 )

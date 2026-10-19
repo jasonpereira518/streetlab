@@ -37,6 +37,10 @@ BASELINE_FAILS: dict[tuple[str, str], str] = {
     ("ego_decel", "nobhill"): "2.98 m/s2, firm stops at 3 yellow onsets",
     ("stop_decel", "nobhill"): "2.94-2.98 m/s2 at the 3 yellow-onset stops",
     ("ego_jerk", "nobhill"): "p99 3.4, max 213 m/s3",
+    # The kerb-lane loop (phase 7c, 2026-10-18) reaches a light on grid_slow as it
+    # turns yellow with the ego at 4.5 m/s, 108.3 s in: the same yellow-onset stop.
+    ("ego_decel", "grid_slow"): "2.74 m/s2, one firm stop at a yellow onset",
+    ("stop_decel", "grid_slow"): "2.74 m/s2 at the yellow-onset stop (t=111.2 s)",
     ("ego_jerk", "grid"): "p99 4.5, max 135 m/s3",
     ("ego_jerk", "grid_slow"): "p99 4.3, max 179 m/s3",
 }

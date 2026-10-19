@@ -778,10 +778,19 @@ def _oncoming_drift(sim: "Simulation") -> str | Declined:
 
     start = ego_s - ONCOMING_ROUTE_BEHIND_M
     steps = int((ONCOMING_AHEAD_M + ONCOMING_ROUTE_BEHIND_M + ONCOMING_ROUTE_PAST_M) / ONCOMING_ROUTE_STEP_M)
-    alongside = Route(
-        [route.point_at(start + i * ONCOMING_ROUTE_STEP_M) for i in range(steps + 1)],
-        closed=False,
-    ).offset(car_left)
+    # Each point the same distance over the centre line AT ITS OWN STATION:
+    # the ego's offset from the centre line changes from street to street
+    # (the kerb lane is 1.8 m out on a one-lane street, 5.4 m on a two-lane
+    # one), so one offset for the whole route put the car 3.5 m over the line
+    # wherever it met the ego past a corner.
+    points = []
+    for i in range(steps + 1):
+        si = start + i * ONCOMING_ROUTE_STEP_M
+        x, y = route.point_at(si)
+        h = route.heading_at(si)
+        d = car_left - centre_line - lanes.ego_offset_at(si)
+        points.append((x - math.sin(h) * d, y + math.cos(h) * d))
+    alongside = Route(points, closed=False)
     lane = Route(list(reversed(alongside.points)), closed=False)
 
     speed = sim.scene.speed_limit_mps

@@ -6,9 +6,9 @@ why the only thing `sim/agents.py` could offer a blocked follower was to sit
 behind the block forever.
 
 Judged on `SyntheticGrid`'s grid-loop, whose Hyde St and California St sides
-are two-lane arterials: `LaneSet.legal_at` permits a change to the kerbside
-lane over s = 230.0-295.2 m and s = 0.0-75.0 m (one run of ~140 m through the
-wrap) and nowhere else. That "and nowhere else" is half of what is tested here
+are two-lane arterials. The loop drives their kerb lane (phase 7c), so
+`LaneSet.legal_at` permits a change to the inner lane, to the left, along
+those two sides (one run through the wrap) and nowhere else. That "and nowhere else" is half of what is tested here
 -- a lane that exists on 47 % of a loop is one an agent has to LEAVE again.
 """
 
@@ -23,7 +23,7 @@ from sim.vehicle import VehicleState
 
 DT = 1 / 60
 
-#: A station where the kerbside lane is legal, and one where it is not.
+#: A station where the inner lane is legal, and one where it is not.
 INSIDE_S, OUTSIDE_S = 20.0, 150.0
 
 
@@ -71,7 +71,7 @@ def test_the_legality_this_module_is_built_on(scene):
     fixture ever stops having one.
     """
     lanes = scene.lanes
-    assert -1 in lanes.legal_at(INSIDE_S)
+    assert 1 in lanes.legal_at(INSIDE_S)
     assert not lanes.legal_at(OUTSIDE_S)
 
 
@@ -93,7 +93,7 @@ def test_an_agent_stuck_behind_a_slow_leader_changes_lane(scene):
     for _ in range(60 * 20):
         traffic.step(DT, world(scene))
         if follower.lane_id != EGO_LANE_ID:
-            assert follower.route is scene.lanes.neighbour(-1).route
+            assert follower.route is scene.lanes.neighbour(+1).route
             return
     pytest.fail("the follower crawled behind the slow leader for twenty seconds")
 
@@ -109,9 +109,9 @@ def test_an_agent_does_not_change_into_an_occupied_gap(scene):
     lead.target_speed_mps = 1.0
     place(traffic, follower, INSIDE_S)
 
-    kerb = scene.lanes.neighbour(-1)
-    blocker.lane_id, blocker.route = kerb.id, kerb.route
-    place(traffic, blocker, kerb.route.project(scene.ego_route.point_at(INSIDE_S + 1.0)))
+    inner = scene.lanes.neighbour(+1)
+    blocker.lane_id, blocker.route = inner.id, inner.route
+    place(traffic, blocker, inner.route.project(scene.ego_route.point_at(INSIDE_S + 1.0)))
 
     for _ in range(120):
         traffic.step(DT, world(scene))
@@ -119,17 +119,17 @@ def test_an_agent_does_not_change_into_an_occupied_gap(scene):
 
 
 def test_an_agent_leaves_a_lane_the_carriageway_stops_having(scene):
-    """The kerbside lane runs out at s = 75 m. An agent that stayed in it would
-    be driving on the pavement -- the shipped defect this whole seam replaces,
-    just one lane over.
+    """The inner lane runs out where the loop turns off the two-lane streets.
+    An agent that stayed in it would be driving onto the one-lane street's
+    oncoming side -- the shipped defect this whole seam replaces, one lane over.
     """
     traffic = make(scene)
-    kerb = scene.lanes.neighbour(-1)
+    inner = scene.lanes.neighbour(+1)
     agent = traffic.agents[0]
     for other in traffic.agents[1:]:
         place(traffic, other, OUTSIDE_S)
-    agent.lane_id, agent.route = kerb.id, kerb.route
-    place(traffic, agent, kerb.route.project(scene.ego_route.point_at(60.0)))
+    agent.lane_id, agent.route = inner.id, inner.route
+    place(traffic, agent, inner.route.project(scene.ego_route.point_at(60.0)))
 
     seen_home = False
     for _ in range(60 * 40):
@@ -140,8 +140,8 @@ def test_an_agent_leaves_a_lane_the_carriageway_stops_having(scene):
         elif seen_home:
             continue
         else:
-            assert -1 in scene.lanes.legal_at(here), (
-                f"still in the kerbside lane at s={here:.1f} m, where it does not exist"
+            assert 1 in scene.lanes.legal_at(here), (
+                f"still in the inner lane at s={here:.1f} m, where it does not exist"
             )
         if seen_home:
             break
@@ -194,8 +194,8 @@ def test_lane_changing_traffic_is_deterministic(scene):
     ]
 
 
-def _stuck_in_the_kerbside_lane(scene):
-    """A kerbside agent with a crawler in front of it, and an empty ego lane.
+def _stuck_in_the_inner_lane(scene):
+    """A inner-lane agent with a crawler in front of it, and an empty ego lane.
 
     Staged so the incentive to pull out is unambiguous -- `_evaluate` is only
     reached at all when the mover has a leader worth escaping -- and so the ONLY
@@ -203,28 +203,28 @@ def _stuck_in_the_kerbside_lane(scene):
     into. Returns `(traffic, mover)`.
     """
     traffic = make(scene)
-    kerb = scene.lanes.neighbour(-1)
+    inner = scene.lanes.neighbour(+1)
     mover, crawler = traffic.agents[0], traffic.agents[1]
     for other in traffic.agents[2:]:
         place(traffic, other, OUTSIDE_S)
     for agent, at in ((mover, 30.0), (crawler, 45.0)):
-        agent.lane_id, agent.route = kerb.id, kerb.route
-        place(traffic, agent, kerb.route.project(scene.ego_route.point_at(at)))
+        agent.lane_id, agent.route = inner.id, inner.route
+        place(traffic, agent, inner.route.project(scene.ego_route.point_at(at)))
     crawler.target_speed_mps = 0.5
     return traffic, mover
 
 
-def test_an_agent_pulls_out_of_the_kerbside_lane_when_the_road_is_clear(scene):
+def test_an_agent_pulls_out_of_the_inner_lane_when_the_road_is_clear(scene):
     """The control for the test below: with nothing in the ego lane, this
     change is made. Without it, "did not pull out in front of the ego" could
     just as well mean the agent never wanted to pull out at all.
     """
-    traffic, mover = _stuck_in_the_kerbside_lane(scene)
+    traffic, mover = _stuck_in_the_inner_lane(scene)
     for _ in range(60 * 10):
         traffic.step(DT, world(scene))
         if mover.lane_id == EGO_LANE_ID:
             return
-    pytest.fail("never left the kerbside lane despite a crawler in front of it")
+    pytest.fail("never left the inner lane despite a crawler in front of it")
 
 
 def test_an_agent_does_not_pull_out_in_front_of_the_ego(scene):
@@ -234,7 +234,7 @@ def test_an_agent_does_not_pull_out_in_front_of_the_ego(scene):
     occupancy scan the gap reads as empty road and the agent drops into its
     path a car length ahead of it.
     """
-    traffic, mover = _stuck_in_the_kerbside_lane(scene)
+    traffic, mover = _stuck_in_the_inner_lane(scene)
     route = scene.ego_route
     x, y = route.point_at(26.0)
     right_behind = TrafficWorld(
@@ -251,12 +251,12 @@ def test_an_agent_does_not_change_into_the_lane_the_ego_is_overtaking_in(scene):
     """The other half of the Phase 2 seam.
 
     `_evaluate` counted the ego as an occupant of the EGO lane and of nothing
-    else, so once Phase 2's lane changes put the ego in the kerbside lane it
+    else, so once Phase 2's lane changes put the ego in the inner lane it
     became invisible to the safety criterion exactly where it mattered.
     Measured before the fix: the mover dropped into `lane_right` 1.9 m from the
     ego on the first tick, which is inside both vehicles' half-lengths.
     """
-    kerb = scene.lanes.neighbour(-1)
+    inner = scene.lanes.neighbour(+1)
     traffic = make(scene)
     mover, crawler = traffic.agents[0], traffic.agents[1]
     for other in traffic.agents[2:]:
@@ -265,7 +265,7 @@ def test_an_agent_does_not_change_into_the_lane_the_ego_is_overtaking_in(scene):
     place(traffic, crawler, INSIDE_S + 18.0, speed=6.0)
     crawler.target_speed_mps = 0.5
 
-    # The ego, mid-overtake, sitting in the kerbside lane right where the
+    # The ego, mid-overtake, sitting in the inner lane right where the
     # mover would land.
     route = scene.ego_route
     at = INSIDE_S + 2.0
@@ -273,8 +273,8 @@ def test_an_agent_does_not_change_into_the_lane_the_ego_is_overtaking_in(scene):
     heading = route.heading_at(at)
     alongside = TrafficWorld(
         ego=VehicleState(
-            x=x - math.sin(heading) * kerb.offset_m,
-            y=y + math.cos(heading) * kerb.offset_m,
+            x=x - math.sin(heading) * inner.offset_m,
+            y=y + math.cos(heading) * inner.offset_m,
             heading=heading,
             speed_mps=6.0,
         ),
@@ -287,11 +287,11 @@ def test_an_agent_does_not_change_into_the_lane_the_ego_is_overtaking_in(scene):
     changed = False
     for _ in range(60 * 10):
         traffic.step(DT, alongside)
-        if mover.lane_id != kerb.id:
+        if mover.lane_id != inner.id:
             continue
         changed = True
         gap = abs(route.signed_gap(route.project((mover.state.x, mover.state.y)), at))
-        assert gap > 5.0, f"moved into the kerbside lane {gap:.1f} m from the ego"
+        assert gap > 5.0, f"moved into the inner lane {gap:.1f} m from the ego"
     assert changed, "never changed at all, so this measured nothing"
 
 
@@ -310,14 +310,14 @@ def test_an_agent_mid_change_still_blocks_the_lane_it_is_leaving(scene):
     from the lane it was still physically half inside, and the car behind it
     there drove straight into its tail.
     """
-    kerb = scene.lanes.neighbour(-1)
+    inner = scene.lanes.neighbour(+1)
     traffic = make(scene)
     mover, chaser = traffic.agents[0], traffic.agents[1]
     for other in traffic.agents[2:]:
         place(traffic, other, OUTSIDE_S)
     for agent, at, speed in ((mover, 40.0, 2.0), (chaser, 28.0, 9.0)):
-        agent.lane_id, agent.route = kerb.id, kerb.route
-        place(traffic, agent, kerb.route.project(scene.ego_route.point_at(at)), speed=speed)
+        agent.lane_id, agent.route = inner.id, inner.route
+        place(traffic, agent, inner.route.project(scene.ego_route.point_at(at)), speed=speed)
     mover.target_speed_mps = 2.0
     chaser.lane_change_cooldown_s = 60.0
     traffic._move(mover, scene.lanes.ego)
@@ -325,24 +325,24 @@ def test_an_agent_mid_change_still_blocks_the_lane_it_is_leaving(scene):
 
     while mover.lateral_m:
         traffic.step(DT, world(scene))
-        if chaser.lane_id != kerb.id:
+        if chaser.lane_id != inner.id:
             break
-        gap = _clearance(kerb.route, chaser, mover)
+        gap = _clearance(inner.route, chaser, mover)
         assert gap > 0.5, f"closed to {gap:+.2f} m on a car still half in its lane"
 
 
 def test_an_agent_mid_change_is_seen_in_the_lane_it_is_entering(scene):
     """The mirror case: a follower in the target lane whose leader is a car
     sliding in from the side, still well off that lane's centreline."""
-    kerb = scene.lanes.neighbour(-1)
+    inner = scene.lanes.neighbour(+1)
     traffic = make(scene)
     mover, chaser = traffic.agents[0], traffic.agents[1]
     for other in traffic.agents[2:]:
         place(traffic, other, OUTSIDE_S)
     place(traffic, chaser, 28.0, speed=9.0)
     chaser.lane_change_cooldown_s = 60.0
-    mover.lane_id, mover.route = kerb.id, kerb.route
-    place(traffic, mover, kerb.route.project(scene.ego_route.point_at(40.0)), speed=2.0)
+    mover.lane_id, mover.route = inner.id, inner.route
+    place(traffic, mover, inner.route.project(scene.ego_route.point_at(40.0)), speed=2.0)
     mover.target_speed_mps = 2.0
     traffic._move(mover, scene.lanes.ego)
     for _ in range(3):  # the slide is under way
@@ -356,19 +356,19 @@ def test_an_agent_mid_change_is_seen_in_the_lane_it_is_entering(scene):
 
 
 def test_a_forced_return_waits_for_a_gap_instead_of_merging_into_the_ego(scene):
-    """The kerbside lane ends at s = 75 m, and leaving it was 'mandatory,
+    """The inner lane ends at s = 75 m, and leaving it was 'mandatory,
     immediate, and not subject to' anything -- including the ego stopped
     alongside. Measured on grid-night: an agent merged 3 m in front of the
     stationary ego's centre, 1.0 m of bodywork overlapping. It must stop
     short of the lane's end and wait instead.
     """
-    kerb = scene.lanes.neighbour(-1)
+    inner = scene.lanes.neighbour(+1)
     traffic = make(scene)
     mover = traffic.agents[0]
     for other in traffic.agents[1:]:
         place(traffic, other, OUTSIDE_S)
-    mover.lane_id, mover.route = kerb.id, kerb.route
-    place(traffic, mover, kerb.route.project(scene.ego_route.point_at(40.0)), speed=9.0)
+    mover.lane_id, mover.route = inner.id, inner.route
+    place(traffic, mover, inner.route.project(scene.ego_route.point_at(40.0)), speed=9.0)
 
     route = scene.ego_route
     ego_at = 73.0
@@ -387,8 +387,8 @@ def test_a_forced_return_waits_for_a_gap_instead_of_merging_into_the_ego(scene):
             assert clear > 0.5, f"merged {clear:+.2f} m from the stopped ego"
         else:
             front = here + mover.size.length / 2
-            assert -1 in scene.lanes.legal_at(here) and front < 75.0 + 1.0, (
-                f"ran past the end of the kerbside lane to s={front:.1f} m"
+            assert 1 in scene.lanes.legal_at(here) and front < 75.0 + 1.0, (
+                f"ran past the end of the inner lane to s={front:.1f} m"
             )
 
 
@@ -434,25 +434,25 @@ def test_a_sliding_body_keeps_its_rear_corner_inside_the_lane():
 
 def test_a_lane_that_ends_is_left_with_room_to_finish_the_slide(scene):
     """`_lane_end` is where the merge must be COMPLETE, so the virtual leader
-    stands a run-out short of the kerb: a lane width at the crab angle at
+    stands a run-out short of its end: a lane width at the crab angle at
     least, three seconds of travel at speed."""
     from sim.agents import _LANE_END_MARGIN_M, _MOBIL_TRAVERSE_MPS, _crab_tan
 
     traffic = make(scene)
     lanes = scene.lanes
-    right = lanes.by_id("lane_right")
+    left = lanes.by_id("lane_left")
     for agent in traffic.agents:
-        # A station on the ego route where the kerbside lane exists but ends
+        # A station on the ego route where the inner lane exists but ends
         # within the horizon.
         s = next(
             s for s in range(0, int(lanes.ego.route.length_m), 2)
-            if 0.0 < lanes.legal_for(float(s), -1, 90.0) < 90.0
+            if 0.0 < lanes.legal_for(float(s), 1, 90.0) < 90.0
         )
         x, y = lanes.ego.route.point_at(float(s))
         agent.state = VehicleState(x=x, y=y, heading=lanes.ego.route.heading_at(float(s)), speed_mps=8.0)
-        traffic._move(agent, right)
+        traffic._move(agent, left)
         agent.lateral_m = 0.0
-        remaining = lanes.legal_for(lanes.ego.route.project((x, y)), -1, 90.0)
+        remaining = lanes.legal_for(lanes.ego.route.project((x, y)), 1, 90.0)
         slowest = 3.6 / _crab_tan(agent)
         fastest = 3.6 * 8.0 / _MOBIL_TRAVERSE_MPS
         expected = remaining - agent.size.length / 2 - _LANE_END_MARGIN_M - max(slowest, fastest)
@@ -460,7 +460,7 @@ def test_a_lane_that_ends_is_left_with_room_to_finish_the_slide(scene):
 
 
 def test_no_agent_changes_into_a_lane_that_ends_before_it_could_change_back(scene):
-    """The kerb lane is a candidate only where it runs two merge run-outs
+    """The inner lane is a candidate only where it runs two merge run-outs
     further: one to slide in, one to be back home before it ends."""
     from sim.agents import _crab_tan
 
@@ -469,19 +469,19 @@ def test_no_agent_changes_into_a_lane_that_ends_before_it_could_change_back(scen
     agent = traffic.agents[0]
     place(traffic, agent, 0.0, speed=0.0)
     runout = 3.6 / _crab_tan(agent)
-    # Walk the ego route: wherever the kerb lane is legal but ends within two
+    # Walk the ego route: wherever the inner lane is legal but ends within two
     # run-outs, it must not be offered; wherever it runs on, it must be.
     offered = refused = 0
     for s in range(0, int(lanes.ego.route.length_m), 2):
-        remaining = lanes.legal_for(float(s), -1, 1000.0)
+        remaining = lanes.legal_for(float(s), 1, 1000.0)
         if remaining <= 0.0:
             continue
         ids = {lane.id for lane in traffic._candidates(agent, lanes, float(s))}
         if remaining < 2 * runout:
-            assert "lane_right" not in ids, f"kerb lane offered {remaining:.0f} m before its end at s={s}"
+            assert "lane_left" not in ids, f"inner lane offered {remaining:.0f} m before its end at s={s}"
             refused += 1
         else:
-            assert "lane_right" in ids
+            assert "lane_left" in ids
             offered += 1
     assert offered and refused
 
@@ -508,15 +508,15 @@ def test_an_agent_never_changes_lane_into_a_stop_line(scene):
     stops = [cp.s for cp in scene.control_points]
     refused = offered = 0
     for s in range(0, int(route.length_m), 2):
-        if lanes.legal_for(float(s), -1, 1000.0) < needed:
+        if lanes.legal_for(float(s), 1, 1000.0) < needed:
             continue  # the lane-end rule decides here, not this one
         to_line = min((c - s) % route.length_m for c in stops)
         ids = {lane.id for lane in traffic._candidates(agent, lanes, float(s))}
         if to_line < needed:
-            assert "lane_right" not in ids, f"offered {to_line:.0f} m before a stop line at s={s}"
+            assert "lane_left" not in ids, f"offered {to_line:.0f} m before a stop line at s={s}"
             refused += 1
         else:
-            assert "lane_right" in ids
+            assert "lane_left" in ids
             offered += 1
     assert refused and offered
 

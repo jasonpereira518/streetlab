@@ -653,14 +653,13 @@ class SyntheticGrid:
         """
         x0, x1, y0, y1 = block
         corners = [(x0, y0), (x0, y1), (x1, y1), (x1, y0)]
-        # A divided street's leg is driven in its KERB lane, the lane a right
-        # turn on or off it belongs in.
+        # Every leg in its KERB lane: every corner of a clockwise loop is a
+        # right turn, made from the kerb lane into the kerb lane. On the
+        # two-lane streets the loop used to drive the inner lane and turn
+        # across the kerb lane, through anything waiting or driving in it.
         w, e = (self._street_at(lay.ns, x) for x in (x0, x1))
         s_, n = (self._street_at(lay.ew, y) for y in (y0, y1))
-        if not any(st.median_m for st in (w, e, s_, n)):
-            lane = Route(corners, closed=True).offset(-EGO_LANE_INSET)
-            return lane.fillet(radius_m=TURN_RADIUS_M)
-        d = {id(st): (st.half_width - LANE_W / 2 if st.median_m else EGO_LANE_INSET) for st in (w, e, s_, n)}
+        d = {id(st): st.half_width - LANE_W / 2 for st in (w, e, s_, n)}
         lx, rx = x0 + d[id(w)], x1 - d[id(e)]
         by, ty = y0 + d[id(s_)], y1 - d[id(n)]
         lane = Route([(lx, by), (lx, ty), (rx, ty), (rx, by)], closed=True)

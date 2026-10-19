@@ -63,6 +63,8 @@ class AmbientLane:
 
     route: "Route"
     control_points: list[ControlPoint]
+    # How wide the lane is: what may be driven in it (`IdmTraffic._fits`).
+    lane_width_m: float = 3.6
 
 
 @dataclass(slots=True)

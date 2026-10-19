@@ -553,6 +553,14 @@ MAX_DENSITY_PER_LANE_KM = 40.0
 #: so the cars that exist are the ones it meets.
 MAX_AMBIENT_AGENTS = 56
 _AMBIENT_SPAWN_CLEAR_M = 3.0
+#: What a car coming round keeps from any body beside its new pose: enough
+#: not to land on one, little enough that the opposite lane's car beside the
+#: street's start (1.7 m off) does not hold it at the end for good.
+_COME_ROUND_CLEAR_M = 0.5
+#: Room a body keeps each side in its lane: a 2.4 m truck needs a 3.2 m lane.
+#: In a 3.0 m one (Broadway, narrowed by the buildings either side) a truck
+#: following the street's bend into a junction swung 0.13 m over the kerb.
+_FIT_MARGIN_M = 0.4
 _AMBIENT_JUNCTION_CLEAR_M = 16.0
 _AMBIENT_RESPAWN_HIDDEN_M = 40.0
 _SAME_WAY_COS = math.cos(math.radians(30.0))
@@ -638,6 +646,12 @@ def _crab_tan(agent: Agent) -> float:
     room = max(0.0, (_LANE_W_M - agent.size.width) / 2)
     return min(_MAX_CRAB_TAN, room / max(agent.size.length / 2, 1e-6))
 
+
+#: What a swinging rear corner keeps from a body beside it, and the
+#: shallowest slide, so a car can always finish one.
+_SWING_MARGIN_M = 0.1
+_MIN_CRAB_TAN = math.tan(math.radians(3.0))
+
 # Traffic control. Restated from `plan/behavior.py` rather than imported for
 # the same reason `_SAME_LANE_M` is: `sim` does not depend on `plan`.
 
@@ -707,6 +721,7 @@ class IdmTraffic(ScriptedTraffic):
         self._controls = _controls_by_route(control_points, ego_route, lanes)
         self._ambient = list(ambient)
         self._ambient_routes = {id(lane.route) for lane in self._ambient}
+        self._lane_w = {id(lane.route): lane.lane_width_m for lane in self._ambient}
         for lane in self._ambient:
             self._controls[id(lane.route)] = sorted(lane.control_points, key=lambda cp: cp.s)
         self._next_ambient = 0
@@ -716,7 +731,7 @@ class IdmTraffic(ScriptedTraffic):
         self._exits = _street_exits([lane.route for lane in self._ambient])
         #: Turn routes built so far, by (from lane, to lane), and the street
         #: lane each comes round on.
-        self._turns: dict[tuple[int, int], Route] = {}
+        self._turns: dict[tuple[int, int, float], Route] = {}
         self._home: dict[int, Route] = {}
         self._curv_cache: dict[tuple[int, int], float] = {}
         #: All-way stops: who is waiting where since when, when each box was
@@ -785,8 +800,11 @@ class IdmTraffic(ScriptedTraffic):
                     spawned += 1
 
     def _spawn_ambient(self, route: Route, s: float, speed: float | None = None) -> Agent | None:
-        """One ambient car at `s` on `route`, unless its lane is taken there."""
+        """One ambient car at `s` on `route`, unless its lane is taken there.
+        A profile too wide for the lane is a car instead."""
         cls, length, width, height, mult = _AMBIENT_PROFILES[self._next_ambient % len(_AMBIENT_PROFILES)]
+        if not self._fits(width, route):
+            cls, length, width, height, mult = _AMBIENT_PROFILES[0]
         if self._lane_taken(route, s, length):
             return None
         if self._ego_start is not None and _in_lane(route, s, length, self._ego_start, _EGO_LENGTH_M):
@@ -888,9 +906,9 @@ class IdmTraffic(ScriptedTraffic):
         on a jump (measured, dense Nob Hill)."""
         here = (agent.state.x, agent.state.y)
         for lane in self._exits.get(id(agent.route), ()):
-            if self._exit_busy(lane, lane.project(here), agent, world):
+            if not self._fits(agent.size.width, lane) or self._exit_busy(lane, lane.project(here), agent, world):
                 continue
-            turn = self._turn_route(agent.route, lane)
+            turn = self._turn_route(agent.route, lane, agent.size.length)
             agent.route = turn
             agent.s = turn.project(here)
             agent.lane_id = None
@@ -901,28 +919,37 @@ class IdmTraffic(ScriptedTraffic):
             return True
         return False
 
-    def _turn_route(self, frm: Route, to: Route) -> Route:
+    def _fits(self, width: float, route: Route) -> bool:
+        return width <= self._lane_w.get(id(route), 3.6) - 2 * _FIT_MARGIN_M
+
+    def _turn_route(self, frm: Route, to: Route, length: float = 0.0) -> Route:
         """The last of `frm` turned round a `_TURN_RADIUS_M` corner into `to`
         from where `to` passes `frm`'s end, built once per pair. It takes on
         `to`'s stop lines and exits; a car that must come round on it does so
-        at `to`'s own start."""
-        key = (id(frm), id(to))
+        at `to`'s own start.
+
+        The fillet is trimmed to half its shorter leg, and the leg onto `to`
+        is `_TURN_LEAD_M`, so a car's corner is ~3 m. A body longer than that
+        leg gets a leg its own length, and a rounder corner: a 7.8 m truck on
+        the car's corner cut the kerb by 0.03 m (dense Nob Hill, Polk St)."""
+        lead_m = max(_TURN_LEAD_M, length)
+        key = (id(frm), id(to), lead_m)
         hit = self._turns.get(key)
         if hit is not None:
             return hit
         end = frm.point_at(frm.length_m)
         s_to = to.project(end)
-        head = [to.point_at(s_to + _TURN_LEAD_M)] + [
-            p for p in to.points if to.project(p) > s_to + _TURN_LEAD_M + 0.5
+        head = [to.point_at(s_to + lead_m)] + [
+            p for p in to.points if to.project(p) > s_to + lead_m + 0.5
         ]
         tail = [frm.point_at(frm.length_m - _TURN_TAIL_M), end]
         turn = Route(tail + head, closed=False).fillet(radius_m=_TURN_RADIUS_M)
         turn.segment_limits = None
-        joined = turn.project(to.point_at(s_to + _TURN_LEAD_M))
+        joined = turn.project(to.point_at(s_to + lead_m))
         self._controls[id(turn)] = [
-            ControlPoint(id=cp.id, kind=cp.kind, s=cp.s - (s_to + _TURN_LEAD_M) + joined, position=cp.position)
+            ControlPoint(id=cp.id, kind=cp.kind, s=cp.s - (s_to + lead_m) + joined, position=cp.position)
             for cp in self._controls.get(id(to), [])
-            if cp.s > s_to + _TURN_LEAD_M
+            if cp.s > s_to + lead_m
         ]
         self._exits[id(turn)] = self._exits.get(id(to), [])
         self._ambient_routes.add(id(turn))
@@ -1014,6 +1041,17 @@ class IdmTraffic(ScriptedTraffic):
         if self._lane_taken(route, start, agent.size.length, ignore=agent):
             return
         x, y = route.point_at(start)
+        # Nor onto a body that is not in the lane: a truck mid-turn across the
+        # street's start, which `_lane_taken` (lane centres only) never sees.
+        # Measured on dense Nob Hill: a car came round 2.55 m deep into one.
+        body = np.array([_box(x, y, route.heading_at(start), agent.size.length, agent.size.width)])
+        for other in self._near((x, y), agent.size.length + 15.0):
+            if other is agent or other.cls == "pedestrian":
+                continue
+            st = other.state
+            near = np.array(_box(st.x, st.y, st.heading, other.size.length, other.size.width))
+            if _box_separation(body, near).min() < _COME_ROUND_CLEAR_M:
+                return
         agent.route = route
         agent.s = start
         agent.cleared_control_id = None
@@ -1078,7 +1116,7 @@ class IdmTraffic(ScriptedTraffic):
             # A car only moves sideways by moving forward at an angle, so the
             # slide is bounded by the forward speed: standing still it stays
             # put, and creeping it crabs no more than `_MAX_CRAB_RAD`.
-            rate = min(rate, speed * _crab_tan(agent))
+            rate = min(rate, speed * self._slide_tan(agent, was))
             agent.lateral_m = _approach(was, 0.0, rate * dt)
             if not agent.lateral_m:
                 agent.from_route = None
@@ -1097,6 +1135,30 @@ class IdmTraffic(ScriptedTraffic):
                 # A vehicle commanded to a standstill is not looking for a
                 # better lane. One commanded to a speed still is.
                 self._consider_lane_change(agent, world, ego_s_by_route)
+
+    def _slide_tan(self, agent: Agent, offset: float) -> float:
+        """`_crab_tan`, bounded by what stands beside the car's rear half on
+        the side its rear swings to (away from the slide). `_crab_tan` sizes
+        the swing for a car centred in its lane; one stopped at a red 0.87 m
+        out of it, resuming at the full 15 degrees, swung its rear 0.03 m
+        into the truck stopped beside it (dense grid-merge, seed 7)."""
+        crab = _crab_tan(agent)
+        if not offset:
+            return crab
+        st = agent.state
+        c, s = math.cos(st.heading), math.sin(st.heading)
+        side = 1.0 if offset > 0 else -1.0  # + is left of travel
+        half = agent.size.length / 2
+        for other in self._near((st.x, st.y), 2 * half + 10.0):
+            if other is agent or other.cls == "pedestrian":
+                continue
+            dx, dy = other.state.x - st.x, other.state.y - st.y
+            along, lat = dx * c + dy * s, -dx * s + dy * c
+            if lat * side <= 0 or not -half - other.size.length / 2 < along < other.size.length / 2:
+                continue
+            spare = abs(lat) - (agent.size.width + other.size.width) / 2 - _SWING_MARGIN_M
+            crab = min(crab, max(_MIN_CRAB_TAN, spare / half))
+        return crab
 
     def _project_ego(self, world: TrafficWorld | None) -> dict[int, tuple[float, float]]:
         """This tick's ego `(arc length, lateral offset)` on each route traffic

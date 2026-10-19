@@ -393,30 +393,21 @@ def test_the_lane_count_reported_matches_the_road_the_ego_is_on():
         assert frame.telemetry.lane.lane_count == sim.scene.lanes.count_at(s)
 
 
-def test_the_ego_starts_in_the_leftmost_forward_lane():
-    """The mirror, corrected -- and the reason this test used to say the
-    opposite (`lane_index == lane_count - 1`, "the kerbside lane the ego
-    drives").
-
-    It does not drive the kerbside lane. `EGO_LANE_INSET` is a fixed half-lane
-    inset from `Road.centerline`, which on a two-way street IS the divider, so
-    on grid-loop's California St -- 2 lanes each way, forward carriageway
-    `[-7.2, 0]` signed left-positive -- the ego route sits at -1.8 m and is the
-    INNER forward lane. `LanePosition.tsx:47-48` counts `lane_index` from the
-    left (`leftExists = lane_index > 0`), so the honest index there is 0, and
-    the `count - 1 - from_right` this replaces reported its mirror image, 1.
-
-    The markings are pinned alongside it because they are what makes the index
-    legible: index 0 means the lane's left edge is the centre divider, and
-    California St really does carry a double yellow.
+def test_the_ego_starts_in_the_kerb_lane():
+    """Grid-loop starts on California St, two lanes each way, and the ego
+    drives its KERB lane (phase 7c: every corner of the loop is a right turn,
+    made from the kerb lane). `LanePosition.tsx` counts `lane_index` from the
+    left, so that is index 1 of 2, with lane-line paint on its left and the
+    white edge line on its right. It used to drive the inner lane, index 0,
+    and turn right across the kerb lane.
     """
     sim = Simulation(SyntheticGrid(), seed=7)
     sim.step()
     lane = sim.state_update().telemetry.lane
     assert lane.lane_count == 2, "grid-loop no longer starts on a two-lane street"
-    assert lane.lane_index == 0
-    assert lane.left_marking == "double_yellow"
-    assert lane.right_marking == "dashed_white"
+    assert lane.lane_index == 1
+    assert lane.left_marking == "dashed_white"
+    assert lane.right_marking == "solid_white"
 
 
 def test_the_left_marking_is_the_governing_roads_own(nob_hill_scene):
@@ -450,8 +441,10 @@ def test_the_left_marking_is_the_governing_roads_own(nob_hill_scene):
     # Non-vacuity: every marking the extract actually carries is reached, so
     # this cannot pass on a walk that only ever saw one of them. `solid_white`
     # is gone from this set because a white line never divides opposing
-    # traffic -- see `_center_marking` in `map/lanes.py`.
-    assert set(reported) == {"none", "broken_yellow", "double_yellow"}, reported
+    # traffic -- see `_center_marking` in `map/lanes.py`. `double_yellow` is
+    # gone too: California St is the loop's only 2+2 street, and the ego now
+    # drives its kerb lane (index 1) into the right turn at its end.
+    assert set(reported) == {"none", "broken_yellow"}, reported
 
 
 def test_the_lane_index_is_always_inside_the_lane_count():
