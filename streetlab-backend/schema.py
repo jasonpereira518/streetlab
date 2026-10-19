@@ -129,6 +129,9 @@ class Road(Wire):
     # Carriageway beyond the driven lanes on each side: parking lanes and
     # kerbside bus lanes. Not driven; it widens the kerb to kerb width.
     edge_m: NonNeg = 0.0
+    # Surface height at each centreline vertex, for a way carried off the
+    # ground (a bridge deck, a tunnel floor). Empty: it lies on the terrain.
+    elevation_m: list[Num] = []
 
     @property
     def half_width_m(self) -> float:

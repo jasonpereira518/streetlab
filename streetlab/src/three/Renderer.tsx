@@ -556,7 +556,8 @@ function mount(
   let captureSeq = 0;
 
   const applyFrame = (frame: StateUpdate, sample: RenderSample, dt: number) => {
-    ego.setPose(sample.pose, ground_);
+    const egoGround = world ? world.groundFor(sample.pose.heading) : ground_;
+    ego.setPose(sample.pose, egoGround);
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
     if (cameraView === 'cockpit') {
       cabin.update(
@@ -568,7 +569,7 @@ function mount(
         dt,
       );
     }
-    fleet.update(frame.world_agents, dt, ground_);
+    fleet.update(frame.world_agents, dt, world ? world.groundFor : null);
     ribbon.update(sample.plan, ground_);
     ribbon.setIntent(frame.plan.maneuver);
     hazards.update(frame.detections, cam.camera, ground_);
@@ -579,7 +580,7 @@ function mount(
     // Keep the shadow frustum centred on the car so a 160 m box is enough.
     sunTarget.position.set(
       sample.pose.x,
-      ground_ ? ground_(sample.pose.x, sample.pose.y) : 0,
+      egoGround ? egoGround(sample.pose.x, sample.pose.y) : 0,
       -sample.pose.y,
     );
     sun.position.copy(sunTarget.position).addScaledVector(sunDir, 150);
@@ -660,7 +661,9 @@ function mount(
           // for the sun target above.
           z: -frame.ego.pose.y,
           heading: frame.ego.pose.heading,
-          ground: ground_ ? ground_(frame.ego.pose.x, frame.ego.pose.y) : 0,
+          ground: ((g) => (g ? g(frame.ego.pose.x, frame.ego.pose.y) : 0))(
+            world ? world.groundFor(frame.ego.pose.heading) : ground_,
+          ),
         });
         const capturedAtT = frame.t;
         const seq = captureSeq++;
