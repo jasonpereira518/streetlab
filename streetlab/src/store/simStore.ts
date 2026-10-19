@@ -155,6 +155,19 @@ export const PARAM_DEFS: ParamDef[] = [
     unit: '/lane-km',
   },
   {
+    // Walkers released per crossing per minute near the car, plus a few on
+    // the pavements (`sim/pedestrians.py`). `serve` starts at 2.
+    key: 'pedestrian_density',
+    label: 'Pedestrians',
+    kind: 'slider',
+    group: 'traffic',
+    default: 2,
+    min: 0,
+    max: 6,
+    step: 0.5,
+    unit: '/crossing/min',
+  },
+  {
     key: 'traffic_speed_scale',
     label: 'Traffic speed',
     kind: 'slider',

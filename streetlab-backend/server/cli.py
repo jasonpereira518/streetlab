@@ -107,6 +107,8 @@ DETECTOR_SCORE_THRESHOLD = 0.5
 #: What `serve` drives at unless told otherwise: dense. `Simulation` itself
 #: defaults to none, so tests, contract fixtures and benchmarks stay pinned.
 DEFAULT_SERVE_DENSITY = 12.0
+#: Walkers per crossing per minute under `serve` (`sim.pedestrians`).
+DEFAULT_SERVE_PEDESTRIANS = 2.0
 
 def scene_source_for(source: str, traffic: int | None = None) -> SceneSource:
     """Pick a world. The seam that makes real map data a one-flag change.
@@ -326,6 +328,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SERVE_DENSITY,
         help="ambient cars per lane-km on every street, both ways (0 = only the "
         "ego-lane traffic the scenario defines); the slider changes it live",
+    )
+    serve.add_argument(
+        "--pedestrian-density",
+        type=float,
+        default=DEFAULT_SERVE_PEDESTRIANS,
+        help="walkers released per crossing per minute, plus a few on the "
+        "pavements (0 = none)",
     )
     serve.add_argument(
         "--capture",
@@ -583,6 +592,7 @@ def _serve(args) -> int:
     if args.perception == "noisy-truth":
         sim.select_perception("noisy-truth")
     sim.apply_dict({"id": "cli", "cmd": "set_param", "key": "traffic_density", "value": args.traffic_density})
+    sim.apply_dict({"id": "cli", "cmd": "set_param", "key": "pedestrian_density", "value": args.pedestrian_density})
 
     port = _resolve_port(args.port)
     sock = _bind(args.host, port)

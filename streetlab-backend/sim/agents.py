@@ -1321,6 +1321,7 @@ class IdmTraffic(ScriptedTraffic):
                     best_gap, best_speed = gap, other.state.speed_mps
             if (
                 world is not None
+                and agent.cls != "pedestrian"  # on the pavement: the ego is not in its way
                 and _within(agent.state, world.ego, _EGO_NEAR_M)
                 and not self._levels.apart(agent.state, world.ego)
             ):
@@ -1335,6 +1336,17 @@ class IdmTraffic(ScriptedTraffic):
         gap, speed = self._cross_route_leader(agent, routes, world, ego_s_by_route)
         if gap < best_gap:
             best_gap, best_speed = gap, speed
+        if agent.cls == "pedestrian" and agent.lifetime_s is not None:
+            # A walker on a crossing gives way to nothing coming, but does not
+            # walk through a body standing in its path: measured on dense Nob
+            # Hill, one walked 1.46 m into a truck stopped over the crossing.
+            bodies = [(o.state, o.size) for o in self._near((agent.state.x, agent.state.y), 20.0) if o.cls != "pedestrian"]
+            if world is not None:
+                bodies.append((world.ego, _EGO_SIZE))
+            for state, size in bodies:
+                gap = _intrusion_gap(agent, state, size)
+                if gap < best_gap:
+                    best_gap, best_speed = gap, 0.0
         if agent.size.length >= _TAIL_CHECK_LENGTH_M and agent.state.speed_mps < _STANDSTILL_MPS:
             # At rest short of a tight corner: pull off only into a clear sweep.
             if not self._tail_clear(agent):
@@ -1363,7 +1375,7 @@ class IdmTraffic(ScriptedTraffic):
         the ego's streets, and matching by route alone drove one through the
         other. Judged in the agent's own frame: straight ahead, within half a
         lane sideways, heading within 30 degrees."""
-        if not self._ambient_routes or agent.lifetime_s is not None:
+        if not self._ambient_routes or agent.lifetime_s is not None or agent.cls == "pedestrian":
             # A staged hazard (a red-light runner, a tailgater) does what it
             # was staged to do; yielding would be no test of the ego.
             return math.inf, 0.0
