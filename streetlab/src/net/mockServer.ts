@@ -76,6 +76,20 @@ const EW_YELLOW_END = 31;
 const DEFAULT_CUTIN_PERIOD = 22;
 /** Floor on a drawn cut-in interval, mirroring the backend's. */
 const CUTIN_FLOOR_S = 5;
+/**
+ * A right turn is taken from the kerb lane, never the lane beside it: within
+ * this of a corner the cut-in car is in the ego's lane, behind it (a lane
+ * change takes ~1.4 s at `CUTIN_MERGE_MPS`, ~13 m at corner speeds).
+ */
+const CUTIN_CORNER_LOOK_M = 13;
+/** A pass starts only with this much straight ahead: out, past, and back in. */
+const CUTIN_PASS_ROOM_M = 35;
+/** Centre-to-centre, behind the ego, before it moves into the ego's lane... */
+const CUTIN_TUCK_BEHIND_M = 7;
+/** ...or ahead of it. */
+const CUTIN_TUCK_AHEAD_M = 7;
+/** Sideways speed of a deliberate lane change. */
+const CUTIN_MERGE_MPS = 2.5;
 /** A deceleration harder than this counts as a hard brake / a reaction. */
 const HARD_BRAKE_MPS2 = -3;
 const REACTION_MPS2 = -1.5;
@@ -243,10 +257,10 @@ export class MockSim {
         route: this.route,
         s: this.egoS - 16,
         speed: 12,
-        // The lane beside the ego's, on its left: the ego drives the kerb
-        // lane, and on its right was the pavement.
-        lateral: EGO_LANE_INSET - KERB_LANE_INSET,
-        targetLateral: EGO_LANE_INSET - KERB_LANE_INSET,
+        // In the ego's lane behind it; on a straight it waits in the lane
+        // beside, on the ego's LEFT (on its right is the pavement).
+        lateral: 0,
+        targetLateral: 0,
         role: 'cutin',
       },
       {
@@ -375,9 +389,12 @@ export class MockSim {
     const cutin = this.agents.find((a) => a.role === 'cutin')!;
     const beside = EGO_LANE_INSET - KERB_LANE_INSET;
 
+    const corner = this.cornerWithin(cutin.s, CUTIN_CORNER_LOOK_M);
     switch (this.cutinPhase) {
       case 'idle':
-        if (this.t >= this.nextCutinAt) {
+        // Beside the ego on a straight; in its lane, behind it, for a corner.
+        cutin.targetLateral = corner ? 0 : beside;
+        if (this.t >= this.nextCutinAt && !this.cornerWithin(cutin.s, CUTIN_PASS_ROOM_M)) {
           this.cutinPhase = 'approach';
           this.cutinTimer = 0;
           // Only reposition if it has drifted out of the scripted window —
@@ -385,7 +402,6 @@ export class MockSim {
           if (Math.abs(this.route.gap(this.egoS, cutin.s)) > 40) {
             cutin.s = this.route.wrap(this.egoS - 12);
           }
-          cutin.lateral = beside;
           cutin.targetLateral = beside;
           cutin.speed = this.egoSpeed + 3.2;
         }
@@ -393,7 +409,15 @@ export class MockSim {
       case 'approach': {
         this.cutinTimer += dt;
         const gap = this.route.gap(this.egoS, cutin.s);
-        if (gap > 8 || this.cutinTimer > 8) {
+        // Into the ego's lane only if the move finishes before the corner.
+        const fits = this.toCorner(cutin.s, 60) > (Math.abs(cutin.lateral) / CUTIN_MERGE_MPS) * cutin.speed + 2;
+        if ((corner && gap <= 6) || (gap > 6 && !fits)) {
+          // Not past in time: drop back in behind and try again later.
+          this.cutinPhase = 'idle';
+          this.nextCutinAt = this.t + 2;
+          break;
+        }
+        if (gap > 6 || (this.cutinTimer > 8 && fits)) {
           this.cutinPhase = 'merging';
           this.cutinTimer = 0;
           cutin.targetLateral = 0;
@@ -429,8 +453,17 @@ export class MockSim {
     }
 
     // Lateral tracking: bounded merge rate, so the box slides rather than snaps.
-    const rate = this.cutinPhase === 'merging' ? 1.7 : 0.9;
-    const d = cutin.targetLateral - cutin.lateral;
+    // Briskly for a pass, a merge or a corner; lazily drifting back out.
+    const rate = this.cutinPhase === 'idle' && !corner ? 0.9 : CUTIN_MERGE_MPS;
+    let target = cutin.targetLateral;
+    // Into the ego's lane only once clear behind it (or, cutting in, ahead).
+    const behind = -this.route.gap(this.egoS, cutin.s);
+    if (target === 0 && this.cutinPhase === 'idle' && behind > -CUTIN_TUCK_AHEAD_M && behind < CUTIN_TUCK_BEHIND_M) {
+      // Not clear of the ego: wholly back in the lane beside. Frozen half in
+      // the ego's lane, the ego waited on it while it waited on the ego.
+      target = beside;
+    }
+    const d = target - cutin.lateral;
     cutin.lateral += clamp(d, -rate * dt, rate * dt);
   }
 
@@ -446,13 +479,28 @@ export class MockSim {
         }
         case 'cutin': {
           const gap = this.route.gap(this.egoS, a.s);
+          const behind = -gap;
           const target =
             this.cutinPhase === 'approach'
-              ? (this.egoSpeed + 3.4) * scale
-              : gap > 0
-                ? (this.egoSpeed - 0.6) * scale
-                : (this.egoSpeed + 2.0) * scale;
-          a.speed += clamp(target - a.speed, -3.5 * dt, 2.6 * dt);
+              ? (this.egoSpeed + 7) * scale
+              : this.cutinPhase === 'idle' && this.cornerWithin(a.s, CUTIN_CORNER_LOOK_M) && behind < CUTIN_TUCK_BEHIND_M + 3
+                ? // Into the ego's lane for the corner: clear ahead of it if
+                  // already in front, else clear behind.
+                  behind < 0
+                  ? (this.egoSpeed + 3) * scale
+                  : Math.max(0, this.egoSpeed + clamp((behind - CUTIN_TUCK_BEHIND_M - 3) * 0.6, -3, 0)) * scale
+                : this.cutinPhase === 'idle' && behind < 0 && Math.abs(a.lateral) < LANE_W / 2
+                  ? // Still ahead in the ego's lane: never slow for it, or the
+                    // ego following it slows too, and both stop for good.
+                    (this.egoSpeed + 1) * scale
+                  : this.cutinPhase === 'idle'
+                  ? // Waiting in the lane beside, just behind the ego.
+                    Math.max(0, this.egoSpeed + clamp((behind - 3) * 0.5, -2, 2)) * scale
+                  : gap > 0
+                    ? (this.egoSpeed - 0.6) * scale
+                    : (this.egoSpeed + 2.0) * scale;
+          // Flooring it to pass; otherwise an ordinary car's pace.
+          a.speed += clamp(target - a.speed, -3.5 * dt, (this.cutinPhase === 'approach' ? 4 : 2.6) * dt);
           break;
         }
         case 'oncoming': {
@@ -460,6 +508,14 @@ export class MockSim {
           a.speed += clamp(target - a.speed, -2.0 * dt, 1.4 * dt);
           break;
         }
+      }
+      if (a.role === 'cutin' && this.cutinPhase !== 'approach' && Math.abs(a.lateral) > 0.3) {
+        // Not yet wholly in the kerb lane: stop short of the corner rather
+        // than turn right from beside it (and, idle, tuck in behind once the
+        // ego has gone). A braking curve from 40 m out. A pass decides for
+        // itself whether its merge will finish in time (`stepCutinScript`).
+        const room = this.toCorner(a.s, 40) - a.size.length / 2;
+        a.speed = Math.min(a.speed, Math.sqrt(2 * 3 * Math.max(0, room)));
       }
       a.speed = Math.max(0, a.speed);
       a.s = a.route.wrap(a.s + a.speed * dt);
@@ -646,6 +702,19 @@ export class MockSim {
       precision: null,
       recall: null,
     });
+  }
+
+  /** Whether the ego's route turns within `ahead` metres of `s`. */
+  private cornerWithin(s: number, ahead: number): boolean {
+    return this.toCorner(s, ahead) <= ahead;
+  }
+
+  /** Metres from `s` to where the ego's route next turns, or Infinity past `ahead`. */
+  private toCorner(s: number, ahead: number): number {
+    for (let d = 0; d <= ahead; d += 0.5) {
+      if (Math.abs(this.route.sample(s + d).curvature) > 1e-3) return d;
+    }
+    return Infinity;
   }
 
   private nearestLead(): { speed: number; gap: number } | null {

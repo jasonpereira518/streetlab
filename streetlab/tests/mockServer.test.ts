@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MockSim, createMockTransport } from '../src/net/mockServer';
-import { SCENARIOS } from '../src/net/mockCity';
+import { SCENARIOS, makeEgoRoute } from '../src/net/mockCity';
 import { StateUpdateSchema, parseServerMessage } from '../src/schema';
 import type { SceneDescription, ServerMessage, StateUpdate } from '../src/schema';
 import { roadHalfWidth } from '../src/schema';
@@ -621,5 +621,38 @@ describe('mock vehicles stay on the road', () => {
       }
     }
     expect(off).toEqual([]);
+  });
+});
+
+describe('mock turns', () => {
+  it('takes every right turn from the kerb lane, never the lane beside it', () => {
+    const sim = new MockSim();
+    sim.apply({ id: 'p', cmd: 'set_param', key: 'cutin_period_s', value: 6 });
+    const route = makeEgoRoute();
+    const wide: string[] = [];
+    let cutins = 0;
+    let seen = false;
+    for (let i = 0; i < 60 * 300; i++) {
+      sim.step();
+      const f = sim.frame();
+      const merging = f.events?.some((e) => e.code === 'CUTIN_DETECTED') ?? false;
+      if (merging) cutins++;
+      const car = f.world_agents.find((a) => a.id === 'veh_cutin');
+      if (!car) continue;
+      seen = true;
+      let on = route.sample(0);
+      let off = Infinity;
+      for (let s = 0; s < route.length; s += 0.25) {
+        const p = route.sample(s);
+        const d = Math.hypot(car.pose.x - p.x, car.pose.y - p.y);
+        if (d < off) [on, off] = [p, d];
+      }
+      if (Math.abs(on.curvature) > 1e-3 && off > 0.5 && wide.length < 5) {
+        wide.push(`t=${(i / 60).toFixed(1)} ${off.toFixed(2)} m off the kerb lane mid-turn`);
+      }
+    }
+    expect(seen).toBe(true);
+    expect(wide).toEqual([]);
+    expect(cutins).toBeGreaterThan(3); // and it still cuts in
   });
 });

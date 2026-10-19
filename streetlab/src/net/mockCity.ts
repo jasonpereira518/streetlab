@@ -70,8 +70,12 @@ const street = (axis: 'ns' | 'ew', at: number): StreetSpec => {
   return s;
 };
 
-/** The block the ego route circles, in street-centreline coordinates. */
-export const LOOP_BLOCK = { x0: 0, x1: 80, y0: 0, y1: 80 };
+/**
+ * The blocks the ego route circles, in street-centreline coordinates: two, so
+ * its 160 m legs leave a car room to pass and cut in, then be back in the kerb
+ * lane before the next right turn. Round one 80 m block it never could.
+ */
+export const LOOP_BLOCK = { x0: -80, x1: 80, y0: 0, y1: 80 };
 
 /**
  * The line the ego drives: the inner lane of `LOOP_BLOCK`, filleted at the
