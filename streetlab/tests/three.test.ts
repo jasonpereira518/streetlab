@@ -709,18 +709,112 @@ describe('TrafficFleet', () => {
 });
 
 describe('EgoVehicle', () => {
-  it('is a single white mesh placed by pose', () => {
-    const ego = new EgoVehicle({ length: 4.9, width: 1.96, height: 1.44 });
-    expect(drawables(ego.group)).toHaveLength(1);
+  const SIZE = { length: 4.7, width: 1.9, height: 1.5 };
+  const named = (ego: EgoVehicle, name: string) => {
+    const out: THREE.Object3D[] = [];
+    ego.group.traverse((o) => o.name === name && out.push(o));
+    return out;
+  };
+  const glow = (ego: EgoVehicle, lamp: string) =>
+    (named(ego, `ego-lamp-${lamp}`)[0] as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardNodeMaterial>)
+      .material.emissiveIntensity;
+
+  it('is a shell, four wheels and four lamp groups, placed by pose', () => {
+    const ego = new EgoVehicle(SIZE);
+    expect(drawables(ego.group)).toHaveLength(1 + 4 + 4);
 
     ego.setPose({ x: 12, y: -7, heading: Math.PI / 2 });
     expect(ego.group.position.toArray()).toEqual([12, 0, 7]);
     expect(ego.group.rotation.y).toBeCloseTo(Math.PI / 2, 6);
+    ego.dispose();
+  });
 
-    // Body roll follows steering, bounded so it never looks like a capsize.
+  it('is drawn at the size the sim collides with', () => {
+    const ego = new EgoVehicle({ length: 4.9, width: 1.96, height: 1.44 });
+    ego.setSize(SIZE);
+    const box = new THREE.Box3().setFromObject(ego.group);
+    const dims = box.getSize(new THREE.Vector3());
+    expect(dims.x).toBeCloseTo(SIZE.length, 1);
+    expect(Math.abs(dims.x / SIZE.length - 1)).toBeLessThan(0.02);
+    expect(Math.abs(dims.z / SIZE.width - 1)).toBeLessThan(0.02);
+    expect(Math.abs(dims.y / SIZE.height - 1)).toBeLessThan(0.02);
+    expect(box.min.y).toBeCloseTo(0, 2); // tyres on the ground
+    ego.dispose();
+  });
+
+  it('pitches with acceleration and rolls out of a turn, gently', () => {
+    const ego = new EgoVehicle(SIZE);
     ego.setAttitude(0.4, 2);
-    expect(ego.mesh.rotation.z).toBeLessThan(0);
+    expect(ego.mesh.rotation.z).toBeGreaterThan(0); // nose up under throttle
+    expect(ego.mesh.rotation.x).toBeGreaterThan(0); // roof leans right in a left turn
     expect(Math.abs(ego.mesh.rotation.z)).toBeLessThan(0.05);
+    expect(Math.abs(ego.mesh.rotation.x)).toBeLessThan(0.05);
+    ego.setAttitude(0, -4);
+    expect(ego.mesh.rotation.z).toBeLessThan(0); // nose dips under braking
+    ego.dispose();
+  });
+
+  it('rolls its wheels with speed and steers only the front pair', () => {
+    const ego = new EgoVehicle(SIZE);
+    const wheels = named(ego, 'ego-wheel');
+    expect(wheels).toHaveLength(4);
+    const tyre = wheels[0] as THREE.Mesh;
+    tyre.geometry.computeBoundingBox();
+    const r = tyre.geometry.boundingBox!.max.y;
+    for (let i = 0; i < 5; i++) ego.update(10, 0.2, 0, 'off', 0, 0.1);
+    for (const w of wheels) {
+      const spin = w.parent!;
+      const pivot = spin.parent!;
+      expect(spin.rotation.z).toBeCloseTo(-((10 * 0.5) / r) % (2 * Math.PI), 5);
+      const front = pivot.position.x > 0;
+      expect(pivot.rotation.y).toBeCloseTo(front ? 0.2 : 0, 6);
+    }
+    ego.dispose();
+  });
+
+  it('switches headlights and their beams together', () => {
+    const ego = new EgoVehicle(SIZE);
+    expect(ego.beams.every((b) => b.intensity === 0)).toBe(true);
+    ego.setHeadlights(true);
+    expect(ego.beams.every((b) => b.intensity > 0)).toBe(true);
+    expect(glow(ego, 'head')).toBeGreaterThan(0);
+    ego.update(0, 0, 0, 'off', 0, 0);
+    expect(glow(ego, 'tail')).toBeGreaterThan(0); // running lights
+    ego.setHeadlights(false);
+    ego.update(0, 0, 0, 'off', 0, 0);
+    expect(ego.beams.every((b) => b.intensity === 0)).toBe(true);
+    expect(glow(ego, 'head')).toBe(0);
+    expect(glow(ego, 'tail')).toBe(0);
+    ego.dispose();
+  });
+
+  it('lights the brake lights brighter than the running lights, headlights or not', () => {
+    const ego = new EgoVehicle(SIZE);
+    ego.setHeadlights(true);
+    ego.update(0, 0, 0, 'off', 0, 0);
+    const running = glow(ego, 'tail');
+    ego.update(0, 0, 0.5, 'off', 0, 0);
+    expect(glow(ego, 'tail')).toBeGreaterThan(running);
+    ego.setHeadlights(false);
+    ego.update(0, 0, 0.5, 'off', 0, 0);
+    expect(glow(ego, 'tail')).toBeGreaterThan(running);
+    ego.dispose();
+  });
+
+  it('blinks only the indicators on the signalled side', () => {
+    const ego = new EgoVehicle(SIZE);
+    ego.update(0, 0, 0, 'left', 0.1, 0); // on-phase
+    expect(glow(ego, 'indicatorLeft')).toBeGreaterThan(0);
+    expect(glow(ego, 'indicatorRight')).toBe(0);
+    ego.update(0, 0, 0, 'left', 0.5, 0); // off-phase
+    expect(glow(ego, 'indicatorLeft')).toBe(0);
+    ego.update(0, 0, 0, 'right', 0.1, 0);
+    expect(glow(ego, 'indicatorRight')).toBeGreaterThan(0);
+    expect(glow(ego, 'indicatorLeft')).toBe(0);
+    // The left indicators really are on the car's left (-Z).
+    const left = named(ego, 'ego-lamp-indicatorLeft')[0] as THREE.Mesh;
+    left.geometry.computeBoundingBox();
+    expect(left.geometry.boundingBox!.max.z).toBeLessThan(0);
     ego.dispose();
   });
 });

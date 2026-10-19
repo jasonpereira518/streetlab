@@ -4,7 +4,7 @@
  * read, so the visible list cannot drift from what the keys do.
  */
 import { useEffect } from 'react';
-import { useSimStore } from '../store/simStore';
+import { headlightsOn, useSimStore } from '../store/simStore';
 import { MPH_TO_MPS } from '../units';
 
 export const SHORTCUTS: Array<{ keys: string; does: string }> = [
@@ -19,6 +19,7 @@ export const SHORTCUTS: Array<{ keys: string; does: string }> = [
   { keys: '[ / ]', does: 'Set speed −5 / +5 mph' },
   { keys: 'Q / E', does: 'Signal left / right: Assist or FSD changes lane (signal back to return)' },
   { keys: 'Gamepad', does: 'Left stick steers, RT / LT throttle and brake; Y FSD, X Assist, B Cruise, d-pad set speed, LB / RB signal' },
+  { keys: 'H', does: 'Headlights on / off' },
   { keys: '?', does: 'Show / hide this help' },
   { keys: 'Esc', does: 'Close help or an open menu' },
 ];
@@ -58,6 +59,8 @@ export function useShortcuts(): void {
         s.togglePaused();
       } else if (e.key === 'r' || e.key === 'R') {
         s.resetSim();
+      } else if (e.key === 'h' || e.key === 'H') {
+        s.setParam('headlights', headlightsOn(s.params) ? 'off' : 'on');
       } else if (e.key === '?') {
         s.setHelpOpen(!s.helpOpen);
       } else if (e.key === 'f' || e.key === 'F') {
