@@ -87,6 +87,7 @@ from schema import (
 from sim.agents import IdmTraffic, TrafficModel, TrafficWorld
 from sim.contact import Surroundings
 from sim.levels import Levels
+from sim.pedestrians import PedestrianFlow
 from sim.route import estimate_travel_s
 from sim.scorecard import Scorecard
 from sim.vehicle import BicycleModel, VehicleState
@@ -129,6 +130,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # Ambient cars per lane-kilometre on every street, both ways. 0 here keeps
     # tests, contract fixtures and benchmarks pinned; `serve` defaults dense.
     "traffic_density": 0.0,
+    # Walkers per crossing per minute (`sim.pedestrians`), plus a few on the
+    # pavements. 0 here for the same reason as `traffic_density`.
+    "pedestrian_density": 0.0,
     # Mean seconds between spontaneous cut-ins; 0 is off, so no scene gains
     # them unasked. Floored at `_CUTIN_MIN_PERIOD_S` when on.
     "cutin_period_s": 0.0,
@@ -389,6 +393,7 @@ class Simulation:
             levels=self._levels,
             parked=self.scene.parked,
         )
+        self._peds = PedestrianFlow(self.scene, self._seed)
         self._signals = SignalController(self.scene.signal_groups)
         # Built on first need: only a person-driven car ever asks (`_surroundings`).
         self._contact_map: Surroundings | None = None
@@ -512,15 +517,19 @@ class Simulation:
             self.world.pending_steps -= 1
 
         self._fire_due_hazards()
+        # Same `t` `_plan` evaluates below, and the controller is a pure
+        # function of it, so traffic, walkers and ego obey the identical phase.
+        signals = {s.id: s for s in self._signals.state(self.world.t)}
+        self._peds.step(
+            self._traffic, self.world.ego, signals, float(self.world.params["pedestrian_density"]), dt
+        )
         self._traffic.step(
             dt,
             TrafficWorld(
                 ego=self._ego_ahead(),
                 ego_route=self.scene.ego_route,
                 t=self.world.t,
-                # Same `t` `_plan` evaluates below, and the controller is a pure
-                # function of it, so traffic and ego obey the identical phase.
-                signals={s.id: s for s in self._signals.state(self.world.t)},
+                signals=signals,
             ),
         )
 
@@ -1374,7 +1383,7 @@ class Simulation:
             # Render-only and unknown keys are accepted and ignored, so a newer
             # frontend cannot break an older backend.
             return CommandOutcome(ok=True, message=f"{command.key} ignored by the backend")
-        if command.key in ("cutin_period_s", "traffic_density"):
+        if command.key in ("cutin_period_s", "traffic_density", "pedestrian_density"):
             # Read every tick by `_fire_due_hazards`, on the sim thread: a
             # string or a non-finite float would raise there and stop the
             # world. Zero or negative is a valid "off".
