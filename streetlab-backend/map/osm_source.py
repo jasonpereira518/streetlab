@@ -587,6 +587,9 @@ class OsmSceneSource:
         # stops the ego. Only the drawn lists are filtered by the blocker.
         control_lights = build_traffic_lights(graph, origin, keep_out, keep_crowded=True)
         control_signs = build_stop_signs(graph, origin, keep_out, keep_crowded=True)
+        # Yield signs govern ambient traffic only and are not drawn: the ego
+        # has no unsigned-junction rule to give them, and the wire no sign.
+        yield_signs = build_stop_signs(graph, origin, keep_out, keep_crowded=True, tag_value="give_way")
         lights = [l for l in control_lights if not keep_out.blocks_post(l.position)]
         stop_signs = [s for s in control_signs if not keep_out.blocks_post(s.position)]
         trees = clear_trees(build_trees(graph, origin, buildings), keep_out)
@@ -684,8 +687,9 @@ class OsmSceneSource:
         anchors = control_anchors(graph, origin)
         junctions = junction_node_ids(graph)
 
-        def route_controls(route: Route) -> list[ControlPoint]:
-            """The lines `route` must obey: one head per junction facing it."""
+        def route_controls(route: Route, *, yields: bool = True) -> list[ControlPoint]:
+            """The lines `route` must obey: one head per junction facing it,
+            and, unless `yields` is off, the yield signs facing it."""
             from shapely.geometry import LineString, Point
 
             line = LineString(route.points)
@@ -712,7 +716,7 @@ class OsmSceneSource:
             # back from there stopped the car ~9 m short of the line every time.
             # The remaining few are tagged on the junction node itself, where
             # the full setback is exactly right.
-            for sign in control_signs:
+            for sign, kind in [(x, "stop_sign") for x in control_signs] + [(x, "yield") for x in yield_signs if yields]:
                 at = anchors.get(sign.id)
                 if at is None or not near(at):
                     continue
@@ -722,10 +726,10 @@ class OsmSceneSource:
                     else STOP_AT_BAR_SETBACK_M
                 )
                 if faces_the_route(route, sign.heading, at, setback):
-                    candidates.append((sign.id, "stop_sign", at, setback))
+                    candidates.append((sign.id, kind, at, setback))
             return project_control_points(route, candidates)
 
-        control_points = route_controls(ego_route)
+        control_points = route_controls(ego_route, yields=False)
         # An open, point-to-point route needs one more stop the planner
         # already knows how to bisect towards: the trip's own end. A closed
         # loop has no such end -- `arrival_control_point` returns `None` for
