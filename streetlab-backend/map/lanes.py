@@ -897,7 +897,7 @@ def _collapse_short_legs(
     return pts
 
 
-def lane_inset(road: Road) -> float:
+def lane_inset(road: Road, *, kerb: bool = False) -> float:
     """How far right of `road`'s centreline the ego's lane centre sits.
 
     Half a lane -- the leftmost forward lane on a two-way street, where the
@@ -907,9 +907,48 @@ def lane_inset(road: Road) -> float:
     inset put the lane centre ON the kerb of every one-lane oneway (Clay and
     Washington Streets: 250 m of the Nob Hill loop driven with one side on
     the pavement).
+
+    `kerb` asks for the rightmost driven lane instead, beside any parking or
+    bus lane: where a right turn is made from. It differs only on a two-way
+    street with more than one lane each way.
     """
     half = road.half_width_m
+    if kerb:
+        return max(0.0, half - road.edge_m - road.lane_width_m / 2)
     return min(road.lane_width_m / 2, max(0.0, half - road.lane_width_m / 2))
+
+
+#: A vertex turning more than this is a turn the lane before it is chosen for.
+_LANE_CHOICE_TURN_RAD = math.radians(30.0)
+
+
+def _turns_right_next(points: list[tuple[float, float]], *, closed: bool) -> list[bool]:
+    """Per leg: whether the next real turn on or after its end is a right
+    turn. A run of straight legs takes the lane its run ends turning from:
+    the kerb lane for a right, the inner lane for a left. A path's last legs,
+    with no turn ahead, keep to the kerb, to pull over at the end."""
+    n = len(points)
+    legs = n if closed else n - 1
+
+    def turn_at(v: int) -> float:
+        a, b, c = points[(v - 1) % n], points[v % n], points[(v + 1) % n]
+        h1 = math.atan2(b[1] - a[1], b[0] - a[0])
+        h2 = math.atan2(c[1] - b[1], c[0] - b[0])
+        return math.remainder(h2 - h1, math.tau)
+
+    out = []
+    for k in range(legs):
+        right = True
+        for step in range(1, legs + 1):
+            v = k + step
+            if not closed and v >= n - 1:
+                break
+            t = turn_at(v)
+            if abs(t) > _LANE_CHOICE_TURN_RAD:
+                right = t < 0
+                break
+        out.append(right)
+    return out
 
 
 def _right_hand_lane(
@@ -926,9 +965,12 @@ def _right_hand_lane(
     points = _collapse_short_legs(points, closed=closed, min_leg_m=MIN_LOOP_LEG_M)
     raw = Route(points, closed=closed)
     if roads:
+        # The kerb lane into every right turn: from the inner lane the car
+        # turned across the kerb lane, through anything driving in it.
+        right = _turns_right_next(points, closed=closed)
         by_leg = [
-            EGO_LANE_INSET if i is None else lane_inset(roads[i])
-            for i in nearest_road_along(raw, roads)
+            EGO_LANE_INSET if i is None else lane_inset(roads[i], kerb=right[k])
+            for k, i in enumerate(nearest_road_along(raw, roads))
         ]
     else:
         by_leg = [EGO_LANE_INSET] * (len(points) if closed else len(points) - 1)
@@ -1653,9 +1695,11 @@ def street_chains(
     end would teleport every 80 m. Same-name ways are chained end to end, a
     one-way only ever onward. Tunnels and bridges (not yet drawn as such) and
     service roads are left out. Each chain comes with the way it started from,
-    whose lanes it is driven by.
-    ponytail: one lane layout per chain, its first way's; per-segment counts
-    if a street changes lane count mid-chain matters."""
+    carrying the FEWEST lanes each way of any way in it: a lane the street has
+    on only part of its length ran over the pavement where it narrows
+    (California Street, 2+2 to 1+1: a car 3.0 m over the kerb, dense Nob Hill).
+    ponytail: one lane layout per chain, its narrowest; per-segment lanes if
+    a wider stretch's extra lane is ever worth traffic."""
     usable = [
         r for r in roads
         if r.name and r.road_class != "service" and not (r.tunnel or r.bridge) and r.id not in passes_under
@@ -1670,7 +1714,7 @@ def street_chains(
     def heading(a, b):
         return math.atan2(b[1] - a[1], b[0] - a[0])
 
-    def extend(chain: list, oneway: bool, name: str, forward: bool) -> None:
+    def extend(chain: list, oneway: bool, name: str, forward: bool, members: list) -> None:
         while True:
             tip, prev = (chain[-1], chain[-2]) if forward else (chain[0], chain[1])
             best = None
@@ -1694,6 +1738,8 @@ def street_chains(
                 return
             _, j, pts = best
             used.add(j)
+            # Reversed into the chain: its backward lanes run the chain's way.
+            members.append((usable[j], key(pts[0]) != key(usable[j].centerline[0])))
             if forward:
                 chain.extend(pts[1:])
             else:
@@ -1706,10 +1752,16 @@ def street_chains(
         used.add(i)
         road = usable[i]
         chain = list(road.centerline)
-        extend(chain, road.oneway, road.name, True)
-        extend(chain, road.oneway, road.name, False)
+        members = [(road, False)]
+        extend(chain, road.oneway, road.name, True, members)
+        extend(chain, road.oneway, road.name, False, members)
         if LineString(chain).length >= MIN_AMBIENT_STREET_M:
-            out.append((chain, road))
+            fwd = min(r.lanes_backward if rev else r.lanes_forward for r, rev in members)
+            back = min(r.lanes_forward if rev else r.lanes_backward for r, rev in members)
+            width = min(r.lane_width_m for r, _ in members)
+            out.append((chain, road.model_copy(update={
+                "lanes_forward": fwd, "lanes_backward": back, "lane_width_m": width,
+            })))
     return out
 
 

@@ -144,8 +144,10 @@ def test_the_lane_set_keeps_the_road_and_the_offset_it_judged_from(grid_loop):
     # matched to, and `_lane_from_the_right`'s clamp is what keeps the wire's
     # index inside the carriageway there.
     assert all(off < 0.0 for off in lanes.ego_offset_along)
+    # Phase 7c: the kerb lane on the two-lane streets, 5.4 m out, and the
+    # mitre carries that to 5.44 m through the corners; -1.8 m on one-lane.
     assert max(lanes.ego_offset_along) == pytest.approx(-1.800, abs=1e-3)
-    assert min(lanes.ego_offset_along) == pytest.approx(-2.461, abs=1e-3)
+    assert min(lanes.ego_offset_along) == pytest.approx(-5.441, abs=1e-3)
 
 
 @pytest.mark.parametrize("direction", [+1, -1])
@@ -306,7 +308,7 @@ def test_every_two_way_road_the_ego_drives_is_a_symmetric_carriageway(
 
 @pytest.mark.parametrize(
     "scene_name, expected",
-    [("grid_loop", {-1: 2}), ("nob_hill_scene", {-1: 12})],
+    [("grid_loop", {1: 2}), ("nob_hill_scene", {1: 12})],
 )
 def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, request):
     """Non-vacuousness, and the shape of the answer, in one assertion.
@@ -318,10 +320,11 @@ def test_each_scene_admits_exactly_the_measured_changes(scene_name, expected, re
     segments of the 2.7 km loop (5 on the old 1.2 km one). The counts were 18 and 29 while `nearest_road_along` matched by
     midpoint and corner fillet pieces were attributed to whichever street
     was nearest; a corner is a turn now (`_turn_segments`) and admits
-    nothing, and a straight leg is one segment however long. Neither scene
-    admits a left change anywhere, which is the direct consequence of the
-    ego sitting in the inner forward lane -- it passes on the right and
-    returns left.
+    nothing, and a straight leg is one segment however long. Since phase 7c
+    the ego drives the KERB lane wherever two run its way, into the right
+    turn at the end, so every change admitted is to the LEFT: it passes on
+    the left and returns right. Before, from the inner lane, every one was
+    to the right.
     """
     scene = request.getfixturevalue(scene_name)
     seen = Counter(d for s, _ in _segments(scene) for d in scene.lanes.legal_at(s))
@@ -367,7 +370,7 @@ def _agent_samples_where_a_second_forward_lane_runs(scene):
 
 
 @pytest.mark.parametrize(
-    "scene_name, expected_samples", [("grid_loop", 54), ("nob_hill_scene", 80)]
+    "scene_name, expected_samples", [("grid_loop", 42), ("nob_hill_scene", 52)]
 )
 def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     scene_name, expected_samples, request
@@ -388,8 +391,8 @@ def test_no_traffic_is_placed_on_the_oncoming_side_of_a_two_way_centreline(
     this module's independent `_offset_from`, so a scene source that puts
     traffic in the wrong lane fails here whatever the lane model believes.
 
-    `expected_samples` is a measured fixture property: 3 agents x 18 grid-loop
-    stations, and 4 x 20 on Nob Hill's 2.7 km loop -- its California Street
+    `expected_samples` is a measured fixture property: 3 agents x 14 grid-loop
+    stations (18 before the kerb-lane loop of phase 7c), and 4 x 13 on Nob Hill's 2.7 km loop (4 x 20 before it) -- its California Street
     stations of non-zero length. History: 4 x 9 on the old 1.2 km loop once
     millimetre fillet vertices inherited a road instead of matching one, 4 x 26
     before that, 4 x 29 before straight nodes crowding a corner were merged,

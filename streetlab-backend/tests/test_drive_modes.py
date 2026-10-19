@@ -261,7 +261,18 @@ def test_throttle_never_overrides_an_emergency_brake():
     assert sim.ego.accel_mps2 == pytest.approx(-4.5)
 
 
+def _along_the_street(sim):
+    """Point the car down the street it is on. It starts on the first chord of
+    a corner fillet, 5.6 degrees into the turn; with the wheel straight (Cruise
+    does not steer) that left the kerb lane (phase 7c) in ~13 m, and the
+    pavement's drag, not the pedals, set the speed."""
+    route = sim.scene.ego_route
+    behind = route.normalise(route.project((sim.ego.x, sim.ego.y)) - 10.0)
+    sim.ego = replace(sim.ego, heading=route.heading_at(behind))
+
+
 def test_throttle_overrides_ordinary_speed_holding(sim):
+    _along_the_street(sim)
     assert mode(sim, "cruise", set_speed_mps=3.0).ok
     advance(sim, 6.0)
     hold(sim, 2.0, throttle=1.0)
@@ -273,6 +284,7 @@ def test_throttle_overrides_ordinary_speed_holding(sim):
 
 
 def test_a_hard_manual_brake_does_not_count_against_fsd(sim):
+    _along_the_street(sim)
     assert mode(sim, "off").ok
     hold(sim, 6.0, throttle=1.0)
     hold(sim, 1.0, brake=1.0)

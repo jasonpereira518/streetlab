@@ -146,7 +146,9 @@ def test_traffic_agents_stay_out_of_buildings():
 
 
 def test_the_ego_lane_offset_matches_the_configured_inset():
-    """The driven line should sit one half-lane from the centre, not two."""
+    """The driven line sits in the kerb lane: half a lane in from the kerb,
+    so one half-lane from the centre on a one-lane street and three on a
+    two-lane one, where every corner of the loop is a right turn."""
     built = SyntheticGrid().build("grid-loop")
     route = built.ego_route
     for i in range(0, int(route.length_m), 5):
@@ -161,4 +163,4 @@ def test_the_ego_lane_offset_matches_the_configured_inset():
                 abs(x - street.at) if street.axis == "ns" else abs(y - street.at)
             )
             if offset <= street.half_width:
-                assert offset == pytest.approx(LANE_W * 0.5, abs=0.05)
+                assert offset == pytest.approx(street.half_width - LANE_W * 0.5, abs=0.05)

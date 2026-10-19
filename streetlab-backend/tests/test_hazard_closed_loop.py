@@ -15,6 +15,7 @@ spec's wording and why.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -156,7 +157,6 @@ def test_every_hazard_stages_on_every_scene_and_seed(sweep):
 #: seed 2, -3.22 m Nob Hill seeds 1-3. Exact list, so a fix or a new overlap fails.
 KNOWN_OVERLAPS = {
     ("grid", "red_light_runner", 1),
-    ("grid", "red_light_runner", 2),
     ("grid", "red_light_runner", 3),
     ("nob_hill", "red_light_runner", 1),
     ("nob_hill", "red_light_runner", 2),
@@ -257,8 +257,12 @@ def test_the_ego_drives_on_after_the_hazard_has_cleared(sweep):
 # --- hazard-free driving ----------------------------------------------------- #
 
 #: Beyond this bumper-to-bumper distance a hazard-free activation is a phantom:
-#: nothing that far away is a threat the ego has to brake for.
+#: nothing that far away is a threat the ego has to brake for -- unless the ego
+#: is closing on it fast enough to reach it within `PHANTOM_TTC_S`. Measured
+#: 2026-10-18 on grid-merge: a loop car moving back into the ego's lane 15.3 m
+#: ahead, 3.7 m/s slower (4.1 s away), which the ego rightly yields to.
 PHANTOM_GAP_M = 10.0
+PHANTOM_TTC_S = 5.0
 REPLAY_S = 300.0
 
 SHIPPED = (
@@ -299,10 +303,13 @@ def test_hazard_free_driving_never_reacts_to_anything_far_away(scene, scenario_i
         if active:
             ticks += 1
             if not active_before:
-                starts.append((round(sim.t, 1), r.kind, r.source_id, r.source_window.bumper_gap_m))
+                w = r.source_window
+                closing = sim.world.ego.speed_mps - w.along_speed_mps
+                ttc = w.bumper_gap_m / closing if closing > 0 else math.inf
+                starts.append((round(sim.t, 1), r.kind, r.source_id, w.bumper_gap_m, ttc))
         active_before = active
 
-    far = [s for s in starts if s[3] > PHANTOM_GAP_M]
+    far = [s for s in starts if s[3] > PHANTOM_GAP_M and s[4] > PHANTOM_TTC_S]
     assert not far, f"reacted to something more than {PHANTOM_GAP_M} m away: {far}"
     assert ticks <= 2.0 / DT, f"{ticks * DT:.1f} s of reaction in a hazard-free replay: {starts}"
 

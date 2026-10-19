@@ -778,7 +778,7 @@ class OsmSceneSource:
                     )
                     route.segment_limits = speed_limits_along(route, roads)
                     near = min(math.dist(p, q) for p in route.resample(20.0) for q in ego)
-                    lanes.append((near, AmbientLane(route, route_controls(route))))
+                    lanes.append((near, AmbientLane(route, route_controls(route), w)))
         return [lane for _, lane in sorted(lanes, key=lambda pair: pair[0])]
 
     def _bounds(
