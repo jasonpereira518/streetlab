@@ -459,6 +459,13 @@ class _Connection:
         if raw.get("cmd") == "heartbeat":
             return  # `receive` already noted the time; nothing to answer
 
+        # Held driver controls at ~30 Hz: latest-wins into the sim thread's
+        # slot, never queued (they would stack up) and never acked (30 acks a
+        # second would bury every ack the user actually wants to see).
+        if raw.get("cmd") == "drive_input":
+            self.loop.set_drive_input(raw)
+            return
+
         if raw.get("cmd") == "suggest_address":
             # A task, not an await: awaiting here would park this client's
             # receive loop (pause, hazards, the submit itself) behind a slow

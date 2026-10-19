@@ -17,6 +17,7 @@ import type {
   Ack,
   AddressSuggestion,
   Command,
+  CruiseMode,
   Detection,
   LaneNeighbor,
   PerceptionMode,
@@ -59,6 +60,14 @@ const WHEELBASE = 2.96;
 const MAX_LAT_ACCEL = 2.6;
 const MAX_ACCEL = 2.1;
 const MAX_DECEL = -4.4;
+/** Mirrors `plan/manual.py` DEADBAND: below it an axis is a resting finger. */
+const DEADBAND = 0.15;
+const DRIVE_MODE_LABELS: Record<CruiseMode, string> = {
+  off: 'Manual',
+  cruise: 'Cruise',
+  autosteer: 'Assist',
+  fsd: 'FSD',
+};
 
 /**
  * Signal cycle, seconds. Mirrors the backend's `SignalController`: 12 s green,
@@ -112,7 +121,6 @@ interface Agent {
 interface Params {
   cutin_period_s: number;
   traffic_speed_scale: number;
-  assist_enabled: boolean;
   ego_speed_cap_mph: number;
   speed_margin_mph: number;
 }
@@ -120,7 +128,6 @@ interface Params {
 const DEFAULT_PARAMS: Params = {
   cutin_period_s: DEFAULT_CUTIN_PERIOD,
   traffic_speed_scale: 1,
-  assist_enabled: true,
   ego_speed_cap_mph: 45,
   speed_margin_mph: 5,
 };
@@ -171,9 +178,19 @@ export class MockSim {
   private egoAccel = 0;
   private egoLatOffset = 0;
   private planLatTarget = 0;
+  /** A driver-requested lane, as a held lateral shift (+ left). See `lane_change`. */
+  private laneShift = 0;
   private planLat = 0;
   private steering = 0;
   private battery = 78;
+
+  /** Drive modes, mirroring `sim/loop.py`: who drives, the held set speed and
+   * the newest held controls (stamped with the sim time they arrived). */
+  private driveMode: CruiseMode = 'fsd';
+  private gear: 'D' | 'R' = 'D';
+  private shiftHold = 0;
+  private setSpeed: number | null = null;
+  private held = { steer: 0, throttle: 0, brake: 0, t: -Infinity };
 
   /** Cut-in scripting. */
   private nextCutinAt = 8;
@@ -210,8 +227,14 @@ export class MockSim {
     this.egoLatOffset = 0;
     this.planLat = 0;
     this.planLatTarget = 0;
+    this.laneShift = 0;
     this.steering = 0;
     this.battery = 78;
+    this.driveMode = 'fsd';
+    this.gear = 'D';
+    this.shiftHold = 0;
+    this.setSpeed = null;
+    this.held = { steer: 0, throttle: 0, brake: 0, t: -Infinity };
     this.nextCutinAt = 8;
     this.cutinPhase = 'idle';
     this.cutinTimer = 0;
@@ -524,7 +547,7 @@ export class MockSim {
 
   private stepEgo(dt: number): void {
     const limitCap = this.params.ego_speed_cap_mph * 0.44704;
-    const roadLimit = this.targetLimit(limitCap);
+    const roadLimit = this.setSpeed ?? this.targetLimit(limitCap);
 
     // Curve speed: hold lateral acceleration under a comfort ceiling.
     let maxCurv = 0;
@@ -550,15 +573,60 @@ export class MockSim {
       Math.min(roadLimit, curveSpeed, followSpeed, stopSpeed),
     );
     const raw = (target - this.egoSpeed) * 1.35;
-    this.egoAccel = clamp(raw, MAX_DECEL, MAX_ACCEL);
-    this.egoSpeed = Math.max(0, this.egoSpeed + this.egoAccel * dt);
+    const held = this.liveControls();
+    const jerk = 6 * dt;
+    if (this.driveMode === 'off') {
+      // Mirrors `plan/manual.py` + `Simulation._shift`: a hard (8 m/s^2) brake
+      // that bites fast, and a reverse gear entered by holding the brake at a stop.
+      const reverse = this.gear === 'R';
+      const want =
+        reverse ? held.throttle > 0 && this.egoSpeed >= -0.05 : held.brake > 0 && this.egoSpeed <= 0.05;
+      this.shiftHold = want ? this.shiftHold + dt : 0;
+      if (this.shiftHold >= 0.3) {
+        this.gear = reverse ? 'D' : 'R';
+        this.shiftHold = 0;
+      }
+      const sign = this.gear === 'R' ? -1 : 1;
+      const [go, stop] = sign > 0 ? [held.throttle, held.brake] : [held.brake, held.throttle];
+      const top = sign > 0 ? MAX_ACCEL : 1.5;
+      let target = go || stop ? sign * (go * top - stop * 8) : -sign * 0.3;
+      if (sign * this.egoSpeed <= 0 && sign * target < 0) target = 0;
+      const rate = (stop > 0 || sign * this.egoAccel < 0 ? 25 : 6) * dt;
+      this.egoAccel = target === 0 && sign * this.egoSpeed <= 0 ? 0 : clamp(target, this.egoAccel - rate, this.egoAccel + rate);
+    } else {
+      this.egoAccel = clamp(raw, MAX_DECEL, MAX_ACCEL);
+      const pedal = held.throttle * MAX_ACCEL;
+      if (pedal > 0 && pedal > this.egoAccel) {
+        this.egoAccel = clamp(pedal, this.egoAccel - jerk, this.egoAccel + jerk);
+      }
+    }
+    this.egoSpeed =
+      this.gear === 'R'
+        ? clamp(this.egoSpeed + this.egoAccel * dt, -3, 0)
+        : Math.max(0, this.egoSpeed + this.egoAccel * dt);
     this.egoS = this.route.wrap(this.egoS + this.egoSpeed * dt);
-    this.odometer += this.egoSpeed * dt;
+    this.odometer += Math.abs(this.egoSpeed) * dt;
+
+    if (this.driveMode === 'off' || this.driveMode === 'cruise') {
+      // ponytail: the mock's ego rides its route by arc length, so manual
+      // steering only slides it across the lane (±1.6 m). The real backend
+      // runs a bicycle model; this is a UI double for `?mock=1`.
+      this.egoLatOffset = clamp(this.egoLatOffset + held.steer * 1.2 * dt, -1.6, 1.6);
+      this.planLat = this.egoLatOffset;
+      const steerTarget = held.steer * 0.12;
+      this.steering += clamp(steerTarget - this.steering, -1.2 * dt, 1.2 * dt);
+      return;
+    }
 
     // Lane keeping: a slow wander plus an evasive nudge away from a cut-in.
     // Away from it: the cut-in comes from the left, so right, within the kerb lane.
     const evade = this.cutinPhase === 'merging' ? -0.55 : 0;
-    this.planLatTarget = evade + Math.sin(this.t * 0.42) * 0.12;
+    // A signalled change left comes back to the kerb lane in time for the
+    // next corner: every turn on this loop is a right turn.
+    if (this.laneShift !== 0 && this.toCorner(this.egoS, 80) < (Math.abs(this.planLat) / 0.9) * this.egoSpeed + 8) {
+      this.laneShift = 0;
+    }
+    this.planLatTarget = this.laneShift + evade + Math.sin(this.t * 0.42) * 0.12;
     this.planLat += clamp(this.planLatTarget - this.planLat, -0.9 * dt, 0.9 * dt);
     this.egoLatOffset += clamp(
       this.planLat - this.egoLatOffset,
@@ -873,7 +941,7 @@ export class MockSim {
       t: Math.round(this.t * 1000) / 1000,
       sim_rate_hz: SIM_HZ,
       paused: this.paused,
-      assist_active: this.params.assist_enabled,
+      assist_active: this.driveMode !== 'off',
       scenario_id: this.scene.scenario_id,
       ego: {
         pose: { x: ego.x, y: ego.y, heading: ego.heading },
@@ -881,13 +949,19 @@ export class MockSim {
         accel_mps2: this.egoAccel,
         steering_angle: this.steering,
         yaw_rate: this.egoSpeed * ego.curvature,
-        throttle: clamp(this.egoAccel / MAX_ACCEL, 0, 1),
-        brake: clamp(-this.egoAccel / -MAX_DECEL, 0, 1),
-        gear: 'D',
+        // Along the gear's direction, as the backend reports them.
+        throttle: clamp((this.gear === 'R' ? -this.egoAccel : this.egoAccel) / MAX_ACCEL, 0, 1),
+        brake: clamp((this.gear === 'R' ? this.egoAccel : -this.egoAccel) / -MAX_DECEL, 0, 1),
+        gear: this.gear,
         speed_limit_mps: this.currentSpeedLimit(),
         cruise: {
-          mode: this.params.assist_enabled ? 'fsd' : 'off',
-          set_speed_mps: this.targetLimit(this.params.ego_speed_cap_mph * 0.44704),
+          mode: this.driveMode,
+          set_speed_mps:
+            this.setSpeed ??
+            (this.driveMode === 'fsd'
+              ? this.targetLimit(this.params.ego_speed_cap_mph * 0.44704)
+              : Math.abs(this.egoSpeed)),
+          fsd_available: true,
         },
         size: EGO_SIZE,
         // No lookahead here: the mock signals only while the turn or lane
@@ -979,6 +1053,8 @@ export class MockSim {
     if (ahead < -0.02) return 'turn_right';
     if (ahead > 0.02) return 'turn_left';
     if (this.cutinPhase === 'merging') return 'yield';
+    const across = this.laneShift - this.planLat;
+    if (Math.abs(across) > 0.3) return across > 0 ? 'lane_change_left' : 'lane_change_right';
     return 'keep_lane';
   }
 
@@ -1049,6 +1125,37 @@ export class MockSim {
 
   /* ---------------- commands ---------------- */
 
+  /** `drive_input`: never acked, so not part of `apply()` (see `send()`). */
+  driveInput(c: { steer: number; throttle: number; brake: number }): void {
+    // Fresh presses only, as `_cmd_drive_input` does: the tail of a released
+    // key must not undo a mode engaged while it ramps down.
+    const prev = this.liveControls();
+    this.held = { steer: c.steer, throttle: c.throttle, brake: c.brake, t: this.t };
+    const pressedSteer = Math.abs(c.steer) >= DEADBAND && prev.steer === 0;
+    const pressedBrake = c.brake >= DEADBAND && prev.brake === 0;
+    if (pressedSteer && (this.driveMode === 'fsd' || this.driveMode === 'autosteer')) {
+      this.changeDriveMode('cruise');
+    }
+    if (pressedBrake && this.driveMode !== 'off') this.changeDriveMode('off');
+  }
+
+  private changeDriveMode(mode: CruiseMode): void {
+    if (mode === this.driveMode) return;
+    this.driveMode = mode;
+    if (mode === 'off' || mode === 'fsd') this.setSpeed = null;
+    else if (this.setSpeed === null) {
+      this.setSpeed = this.egoSpeed >= 2 ? this.egoSpeed : this.currentSpeedLimit();
+    }
+    this.pushEvent('info', 'drive_mode', `drive mode: ${DRIVE_MODE_LABELS[mode]}`);
+  }
+
+  /** Held controls with the deadband applied, released once 0.5 s stale. */
+  private liveControls(): { steer: number; throttle: number; brake: number } {
+    const fresh = this.t - this.held.t <= 0.5;
+    const axis = (v: number) => (fresh && Math.abs(v) >= DEADBAND ? v : 0);
+    return { steer: axis(this.held.steer), throttle: axis(this.held.throttle), brake: axis(this.held.brake) };
+  }
+
   // `camera_frame` and `suggest_address` are deliberately excluded from this
   // parameter type: the real backend intercepts both at the socket, before
   // the command queue (`ws_server.py` `_handle` -> `_ingest_frame` /
@@ -1057,7 +1164,10 @@ export class MockSim {
   // see either. `createMockTransport`'s `send()` below is the mock's
   // equivalent of `_handle` and does the intercepting.
   apply(
-    command: Exclude<Command, { cmd: 'camera_frame' | 'suggest_address' | 'heartbeat' }>,
+    command: Exclude<
+      Command,
+      { cmd: 'camera_frame' | 'suggest_address' | 'heartbeat' | 'drive_input' }
+    >,
   ): { ok: boolean; message: string | null; scene?: SceneDescription } {
     switch (command.cmd) {
       case 'set_paused':
@@ -1123,6 +1233,41 @@ export class MockSim {
         return { ok: true, message: `${command.layer}=${command.visible}` };
       case 'set_camera':
         return { ok: true, message: command.view };
+      case 'lane_change': {
+        // ponytail: a "lane" here is a held 3.4 m shift into the lane on the
+        // ego's left; the real backend checks lanes, gaps and stops.
+        if (this.driveMode !== 'fsd' && this.driveMode !== 'autosteer') {
+          return { ok: false, message: 'lane changes need Assist or FSD' };
+        }
+        const dir = command.direction === 'left' ? 1 : -1;
+        if (this.laneShift !== 0 && Math.sign(this.laneShift) === -dir) {
+          this.laneShift = 0;
+          return { ok: true, message: 'returning to your lane' };
+        }
+        if (this.laneShift !== 0) return { ok: false, message: 'already changing lanes' };
+        // The ego drives the kerb lane: on its right is the pavement. And a
+        // change left must be over and back before the next (right) turn.
+        if (dir < 0) return { ok: false, message: 'no lane to the right' };
+        if (this.cornerWithin(this.egoS, 60)) return { ok: false, message: 'too close to the junction' };
+        this.laneShift = 3.4 * dir;
+        return { ok: true, message: `changing lane ${command.direction}` };
+      }
+      case 'set_drive_mode':
+        if (command.mode !== 'off' && this.gear === 'R') {
+          if (this.egoSpeed < -0.05) {
+            return { ok: false, message: `${DRIVE_MODE_LABELS[command.mode]}: stop reversing first` };
+          }
+          this.gear = 'D';
+        }
+        // The mock's ego never leaves its route, so Assist/FSD always engage.
+        this.changeDriveMode(command.mode);
+        if (
+          command.set_speed_mps !== undefined &&
+          (command.mode === 'cruise' || command.mode === 'autosteer')
+        ) {
+          this.setSpeed = Math.min(command.set_speed_mps, this.params.ego_speed_cap_mph * 0.44704);
+        }
+        return { ok: true, message: `drive mode: ${DRIVE_MODE_LABELS[command.mode]}` };
       case 'set_perception':
         // The mock never builds an ONNX pipeline, so `ml` refuses — as
         // `sim/loop.py`'s `_cmd_set_perception` does without one. The truth
@@ -1310,6 +1455,11 @@ export function createMockTransport(
       if (command.cmd === 'camera_frame') return;
       // Likewise `heartbeat`: the backend only notes the time, never acks.
       if (command.cmd === 'heartbeat') return;
+      // And `drive_input`: latest-wins into the sim, never acked.
+      if (command.cmd === 'drive_input') {
+        sim.driveInput(command);
+        return;
+      }
       // Same bypass as `camera_frame`, mirroring `ws_server.py`'s
       // `suggest_address` early-out: answered directly, never acked, never
       // routed through `sim.apply()`.

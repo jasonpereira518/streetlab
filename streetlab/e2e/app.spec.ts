@@ -72,7 +72,7 @@ test('the toolbar shows live telemetry and pause halts the clock', async ({ page
   const speed = page.locator('.readout').first().locator('.readout-value');
   await expect(speed).not.toHaveText('—', { timeout: 10_000 });
 
-  await expect(page.getByText('Assist active')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'FSD', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
   await page.getByLabel('Pause simulation').click();
   await expect(page.getByLabel('Resume simulation')).toBeVisible();

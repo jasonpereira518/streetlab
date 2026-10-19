@@ -173,6 +173,67 @@ describe('mock commands', () => {
     );
   });
 
+  it('walks the drive-mode ladder like the backend', () => {
+    const sim = new MockSim();
+    for (let i = 0; i < 120; i++) sim.step();
+    expect(sim.frame().ego.cruise).toMatchObject({ mode: 'fsd', fsd_available: true });
+    sim.driveInput({ steer: 0.6, throttle: 0, brake: 0 });
+    sim.step();
+    const cruise = sim.frame().ego.cruise;
+    expect(cruise.mode).toBe('cruise');
+    expect(cruise.set_speed_mps).toBeGreaterThan(2);
+    sim.driveInput({ steer: 0, throttle: 0, brake: 1 });
+    sim.step();
+    expect(sim.frame()).toMatchObject({ assist_active: false, ego: { cruise: { mode: 'off' } } });
+    expect(sim.apply({ id: 'd', cmd: 'set_drive_mode', mode: 'autosteer', set_speed_mps: 6 }).ok).toBe(true);
+    expect(sim.frame().ego.cruise).toMatchObject({ mode: 'autosteer', set_speed_mps: 6 });
+  });
+
+  it('accelerates under held throttle in Manual, and jerk-limits it', () => {
+    const sim = new MockSim();
+    sim.apply({ id: 'm', cmd: 'set_drive_mode', mode: 'off' });
+    let prev = sim.frame().ego.accel_mps2;
+    const v0 = sim.frame().ego.speed_mps;
+    for (let i = 0; i < 90; i++) {
+      sim.driveInput({ steer: 0, throttle: 1, brake: 0 });
+      sim.step();
+      const a = sim.frame().ego.accel_mps2;
+      expect(Math.abs(a - prev)).toBeLessThanOrEqual(6 / 60 + 1e-9);
+      prev = a;
+    }
+    expect(sim.frame().ego.speed_mps).toBeGreaterThan(v0 + 2);
+  });
+
+  it('reverses after the brake is held at a stop, like the backend', () => {
+    const sim = new MockSim();
+    sim.apply({ id: 'm', cmd: 'set_drive_mode', mode: 'off' });
+    for (let i = 0; i < 240; i++) {
+      sim.driveInput({ steer: 0, throttle: 0, brake: 1 });
+      sim.step();
+      expect(StateUpdateSchema.safeParse(sim.frame()).success).toBe(true);
+    }
+    const f = sim.frame();
+    expect(f.ego.gear).toBe('R');
+    expect(f.ego.speed_mps).toBeLessThan(-0.5);
+    expect(sim.apply({ id: 'f', cmd: 'set_drive_mode', mode: 'fsd' }).ok).toBe(false);
+  });
+
+  it('changes lane on a signal and comes back on the opposite one', () => {
+    const sim = new MockSim();
+    for (let i = 0; i < 60; i++) sim.step();
+    expect(sim.apply({ id: 'l', cmd: 'lane_change', direction: 'left' })).toMatchObject({ ok: true });
+    let signalled = false;
+    for (let i = 0; i < 600; i++) {
+      sim.step();
+      if (sim.frame().ego.turn_signal === 'left') signalled = true;
+    }
+    expect(signalled).toBe(true);
+    expect(sim.frame().ego.turn_signal).toBe('off');
+    expect(sim.apply({ id: 'b', cmd: 'lane_change', direction: 'right' }).message).toBe('returning to your lane');
+    sim.apply({ id: 'm', cmd: 'set_drive_mode', mode: 'off' });
+    expect(sim.apply({ id: 'x', cmd: 'lane_change', direction: 'left' }).ok).toBe(false);
+  });
+
   it('applies a known parameter', () => {
     const sim = new MockSim();
     const res = sim.apply({
@@ -654,5 +715,31 @@ describe('mock turns', () => {
     expect(seen).toBe(true);
     expect(wide).toEqual([]);
     expect(cutins).toBeGreaterThan(3); // and it still cuts in
+  });
+});
+
+describe('mock signalled lane changes', () => {
+  it('turns right only from the kerb lane, however often the driver signals left', () => {
+    const sim = new MockSim();
+    const route = makeEgoRoute();
+    let accepted = 0;
+    const wide: string[] = [];
+    for (let i = 0; i < 60 * 200; i++) {
+      if (i % 30 === 0 && sim.apply({ id: 'l', cmd: 'lane_change', direction: 'left' }).ok) accepted++;
+      sim.step();
+      if (i % 6) continue;
+      const { x, y } = sim.frame().ego.pose;
+      let on = route.sample(0);
+      let off = Infinity;
+      for (let s = 0; s < route.length; s += 0.5) {
+        const p = route.sample(s);
+        const d = Math.hypot(x - p.x, y - p.y);
+        if (d < off) [on, off] = [p, d];
+      }
+      if (Math.abs(on.curvature) > 1e-3 && off > 0.6 && wide.length < 5) wide.push(`t=${(i / 60).toFixed(1)} ${off.toFixed(2)} m out mid-turn`);
+    }
+    expect(accepted).toBeGreaterThan(2);
+    expect(wide).toEqual([]);
+    expect(sim.apply({ id: 'r', cmd: 'lane_change', direction: 'right' })).toMatchObject({ ok: false, message: 'no lane to the right' });
   });
 });

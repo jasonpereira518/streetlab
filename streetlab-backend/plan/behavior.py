@@ -376,6 +376,13 @@ LANE_CHANGE_RETRY_COOLDOWN_S = 20.0
 #: The three phases of one manoeuvre, in order. Strings rather than an Enum to
 #: match `BehaviorState`'s `str` mixin and keep `LaneChange` cheap to inspect
 #: in a debugger.
+#: Beyond the trip-home runout (which alone guarantees the car is back before
+#: the lane ends), how much lane a driver-requested change must have ahead: a
+#: little hold, not a cross-and-straight-back. Measured on grid-loop with
+#: traffic over 120 s of probes every 0.5 s: 30 m let 8 requests through
+#: (the grid's 80 m blocks rarely have it), 15 m 16, 5 m 43.
+LANE_CHANGE_REQUEST_ROOM_M = 10.0
+
 OUTBOUND = "outbound"
 PASSING = "passing"
 RETURNING = "returning"
@@ -425,6 +432,16 @@ class LaneChange:
     #: Less than 1.0 when a junction (or a failed traverse) turned the car round
     #: part-way across.
     blend_at_return: float = 0.0
+    #: The driver asked for this change (turn signal under Assist/FSD), rather
+    #: than the FSM deciding to overtake. There is no lead to pass, so the
+    #: passing phase HOLDS the new lane until the driver signals back -- or a
+    #: lane end or junction sends it home, exactly as for an overtake.
+    requested: bool = False
+
+    @property
+    def holding(self) -> bool:
+        """Settled in a lane the driver asked for: not changing, just keeping it."""
+        return self.requested and self.phase == PASSING
 
     @property
     def returning(self) -> bool:
@@ -1206,6 +1223,9 @@ class BehaviorFSM:
         lc = self.lane_change
         assert lc is not None
         lc.pass_s += dt
+        if lc.requested:
+            # Nothing to pass and no clock: the driver chose this lane.
+            return self._changing()
         lead = next((d for d in detections if d.id == lc.lead_id), None)
         gap = (
             None
@@ -1222,6 +1242,47 @@ class BehaviorFSM:
             self._decline(lc.lead_id)
             self._begin_return()
         return self._changing()
+
+    def request_lane_change(
+        self,
+        direction: int,
+        ego: VehicleState,
+        route: Route,
+        ego_s: float,
+        lanes: "LaneSet | None",
+        detections: Sequence[Detection],
+        control_points: Sequence[ControlPoint] = (),
+        signals: Mapping[str, SignalState] | None = None,
+    ) -> tuple[bool, str]:
+        """The driver signalled `direction` (+1 left, -1 right) under Assist or
+        FSD. Start a lane change that way if it is legal and safe now -- by the
+        very checks an overtake must pass -- or say plainly why not. Signalling
+        back toward home while in (or heading for) a requested lane goes home."""
+        side = "left" if direction > 0 else "right"
+        lc = self.lane_change
+        if lc is not None:
+            if lc.requested and not lc.returning and direction == -lc.direction:
+                self._begin_return()
+                return True, "returning to your lane"
+            return False, "already changing lanes"
+        if lanes is None:
+            return False, "no lane markings here"
+        if self.state is not BehaviorState.CRUISE:
+            return False, "stopping ahead"
+        target = lanes.neighbour(direction)
+        if target is None or not lanes.may_change_at(ego_s, direction):
+            return False, f"no lane to the {side}"
+        runout = self._return_runout_m(ego) + LANE_CHANGE_REQUEST_ROOM_M
+        if self._lane_ends_within(lanes, ego_s, direction, runout):
+            return False, f"the {side} lane ends ahead"
+        if self._next_stop_line_m(route, ego_s, control_points, signals) < runout:
+            return False, "too close to the junction"
+        if not self._gap_is_acceptable(
+            route, ego_s, detections, direction, ego.speed_mps, target.offset_m
+        ):
+            return False, f"traffic in the {side} lane"
+        self.lane_change = LaneChange(lanes.ego.id, target.id, direction, requested=True)
+        return True, f"changing lane {side}"
 
     def _junction_abort(
         self,
@@ -1489,6 +1550,11 @@ class BehaviorFSM:
         label = (
             "lane_change_left" if self.lane_change.direction > 0 else "lane_change_right"
         )
+        if self.lane_change.holding:
+            # In the lane the driver asked for and staying there: that is
+            # keeping a lane, and the indicator (derived from this label in
+            # `plan/control.py`) cancels, as a stalk does once you are across.
+            label = "keep_lane"
         return BehaviorDecision(
             state=BehaviorState.CRUISE,
             speed_ceiling_mps=math.inf,

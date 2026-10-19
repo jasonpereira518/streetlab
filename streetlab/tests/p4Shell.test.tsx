@@ -106,6 +106,21 @@ describe('hazard menu', () => {
     expect(within(status).getByText(/only stages cut_in/)).toBeTruthy();
   });
 
+  it('shows a collision where the driver is looking', () => {
+    harness = createHarness();
+    render(<AckToast />);
+    harness.emitScene();
+    for (let i = 0; i < 5; i++) harness.sim.step();
+    const frame = harness.sim.frame();
+    harness.emit({
+      ...frame,
+      events: [{ t: frame.t, level: 'critical', code: 'collision', message: 'hit a building' }],
+    });
+    const status = screen.getByRole('status');
+    expect(within(status).getByText('Collision')).toBeTruthy();
+    expect(within(status).getByText('hit a building')).toBeTruthy();
+  });
+
   it('stays quiet for routine acks', () => {
     harness = createHarness();
     render(<AckToast />);
@@ -150,6 +165,23 @@ describe('keyboard shortcuts and help', () => {
     for (const k of SHORTCUTS) expect(within(dialog).getByText(k.does)).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('Q and E signal a lane change, and a refusal reaches the toast', () => {
+    harness = createHarness();
+    render(
+      <>
+        <Keys />
+        <AckToast />
+      </>,
+    );
+    harness.emitScene();
+    fireEvent.keyDown(window, { key: 'e' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'right' });
+    // The ego drives the kerb lane: on its right is the pavement.
+    expect(within(screen.getByRole('status')).getByText('no lane to the right')).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'Q' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'left' });
   });
 
   it('leaves keys alone while typing or on a focused button', () => {

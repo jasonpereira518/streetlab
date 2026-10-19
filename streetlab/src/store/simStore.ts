@@ -11,7 +11,7 @@
  *
  *  - `useSimStore` (zustand) holds everything that changes rarely: the scene,
  *    connection status, layer visibility, parameters, scenario catalog. Frame
- *    fields that the DOM genuinely needs (paused, assist, scenario) are mirrored
+ *    fields that the DOM genuinely needs (paused, scenario) are mirrored
  *    into it, but only when the value actually changes.
  *
  * Nothing above this file touches the transport directly.
@@ -21,6 +21,7 @@ import type {
   Ack,
   AddressSuggestion,
   CameraView,
+  CruiseMode,
   Command,
   CommandInput,
   LayerKey,
@@ -135,13 +136,6 @@ export const PARAM_DEFS: ParamDef[] = [
     max: 3,
     step: 0.1,
     unit: 's',
-  },
-  {
-    key: 'assist_enabled',
-    label: 'Assist engaged',
-    kind: 'toggle',
-    group: 'planner',
-    default: true,
   },
   {
     key: 'traffic_density',
@@ -368,7 +362,6 @@ export interface SimStoreState {
 
   /* mirrored frame fields (only updated on change) */
   paused: boolean;
-  assistActive: boolean;
   hasFrames: boolean;
   /** Null when no ML perception is running — distinct from "measured, and
    * zero"; see PerceptionPanel. Updated on every frame, unlike the fields
@@ -436,9 +429,20 @@ export interface SimStoreState {
   resetSim(): void;
   refreshAll(): Promise<void>;
   injectHazard(kind: string): void;
+  /** Ask for a drive mode; the backend refuses Assist/FSD off route (AckToast shows why). */
+  setDriveMode(mode: CruiseMode, setSpeedMps?: number): void;
+  /** A mode key: engage `mode`, or drop to Manual if it is already engaged. */
+  toggleDriveMode(mode: CruiseMode): void;
+  /** Move the cruise/Assist set speed; a no-op in Manual and FSD. */
+  nudgeSetSpeed(deltaMps: number): void;
+  /** The turn signal under Assist/FSD; a refusal says why in the AckToast. */
+  signalLaneChange(direction: 'left' | 'right'): void;
 }
 
 let transportRef: Transport | null = null;
+/** The set speed `nudgeSetSpeed` last sent, so rapid presses stack. */
+let lastSetSpeed: { mps: number; at: number } | null = null;
+const SET_SPEED_STACK_MS = 400;
 let commandSeq = 0;
 
 /** Bounds `addressSuggestions` the same way `commandLog`'s `.slice(0, 50)`
@@ -465,7 +469,6 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   addressSuggestions: {},
 
   paused: false,
-  assistActive: false,
   hasFrames: false,
   perception: null,
   perceptionMode: 'ground-truth',
@@ -566,7 +569,9 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     if (
       command.cmd === 'camera_frame' ||
       command.cmd === 'suggest_address' ||
-      command.cmd === 'heartbeat'
+      command.cmd === 'heartbeat' ||
+      // ~30 Hz while a drive key is held: never acked, would bury the log.
+      command.cmd === 'drive_input'
     )
       return id;
     set((s) => ({
@@ -723,6 +728,38 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     // backend declines, by name, one the scene cannot host.
     get().send({ cmd: 'inject_hazard', kind });
   },
+
+  setDriveMode(mode, setSpeedMps) {
+    get().send({
+      cmd: 'set_drive_mode',
+      mode,
+      ...(setSpeedMps === undefined ? {} : { set_speed_mps: setSpeedMps }),
+    });
+  },
+
+  toggleDriveMode(mode) {
+    // The frame, not React state: a key press must act on what the sim is
+    // doing right now, and the mode changes under us (the ladder) anyway.
+    const current = frameBus.latest?.ego.cruise.mode;
+    get().setDriveMode(current === mode ? 'off' : mode);
+  },
+
+  signalLaneChange(direction) {
+    get().send({ cmd: 'lane_change', direction });
+  },
+
+  nudgeSetSpeed(deltaMps) {
+    const cruise = frameBus.latest?.ego.cruise;
+    if (!cruise || (cruise.mode !== 'cruise' && cruise.mode !== 'autosteer')) return;
+    // Presses faster than a frame round trip (key repeat) must stack, so build
+    // on the value just sent while the frame has not caught up with it yet.
+    const now = Date.now();
+    const base =
+      lastSetSpeed && now - lastSetSpeed.at < SET_SPEED_STACK_MS ? lastSetSpeed.mps : cruise.set_speed_mps;
+    const mps = Math.max(0, base + deltaMps);
+    lastSetSpeed = { mps, at: now };
+    get().setDriveMode(cruise.mode, mps);
+  },
 }));
 
 /* ------------------------------------------------------------------ */
@@ -801,9 +838,6 @@ function applyServerMessage(
       const wireMode = msg.perception?.mode ?? 'ground-truth';
       if (wireMode !== s.perceptionMode) patch.perceptionMode = wireMode;
       if (s.paused !== msg.paused) patch.paused = msg.paused;
-      if (s.assistActive !== msg.assist_active) {
-        patch.assistActive = msg.assist_active;
-      }
       if (!s.hasFrames) patch.hasFrames = true;
       if (s.activeScenarioId !== msg.scenario_id) {
         patch.activeScenarioId = msg.scenario_id;

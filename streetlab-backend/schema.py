@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError,
 
 # The wire protocol version, mirroring PROTOCOL_VERSION in schema.ts. Every
 # message carries it in a field named `protocol`.
-PROTOCOL_VERSION = 12
+PROTOCOL_VERSION = 13
 
 # This Python package's own version. Deliberately distinct from the wire
 # protocol and never serialised — the two version independently.
@@ -577,8 +577,12 @@ CruiseMode = Literal["off", "cruise", "autosteer", "fsd"]
 
 
 class Cruise(Wire):
+    # Who drives: `off` = manual, `cruise` = speed held while you steer,
+    # `autosteer` = Assist (cruise + lane keep), `fsd` = the full planner.
     mode: CruiseMode
     set_speed_mps: NonNeg
+    # Whether Assist/FSD can engage: false while the ego is off its route.
+    fsd_available: bool
 
 
 TurnSignal = Literal["off", "left", "right"]
@@ -832,6 +836,36 @@ class SetPerception(_Cmd):
     mode: PerceptionMode
 
 
+class SetDriveMode(_Cmd):
+    cmd: Literal["set_drive_mode"] = "set_drive_mode"
+    mode: CruiseMode
+    # Absent leaves the set speed alone (or seeds it, entering cruise/autosteer).
+    set_speed_mps: NonNeg | None = None
+
+
+# -1 full right .. +1 full left, matching `Ego.steering_angle`.
+SteerAxis = Annotated[float, Field(ge=-1, le=1, allow_inf_nan=False)]
+
+
+class DriveInput(_Cmd):
+    """Held driver controls at ~30 Hz. Like `heartbeat`, never queued and never
+    acked (see `server/ws_server.py`): the newest one wins at the next tick."""
+
+    cmd: Literal["drive_input"] = "drive_input"
+    steer: SteerAxis
+    throttle: Unit
+    brake: Unit
+
+
+class LaneChangeCmd(_Cmd):
+    """The driver's turn signal under Assist/FSD: change lane that way (or,
+    signalling back from a requested lane, go home). Acked with the reason
+    when it is not legal or safe right now."""
+
+    cmd: Literal["lane_change"] = "lane_change"
+    direction: Literal["left", "right"]
+
+
 class CameraFrameCmd(_Cmd):
     cmd: Literal["camera_frame"] = "camera_frame"
     # Monotonic per connection; the backend drops anything out of order.
@@ -860,6 +894,9 @@ Command = Annotated[
         SetCamera,
         InjectHazard,
         SetPerception,
+        SetDriveMode,
+        DriveInput,
+        LaneChangeCmd,
         CameraFrameCmd,
         Heartbeat,
     ],
