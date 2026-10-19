@@ -272,10 +272,13 @@ def test_traffic_speed_scale_stops_traffic(sim):
     assert all(d.speed_mps == pytest.approx(0.0, abs=1e-6) for d in sim.state_update().detections)
 
 
-def test_assist_enabled_drives_assist_active(sim):
-    assert sim.state_update().assist_active is True
-    sim.apply_dict({"id": "a", "cmd": "set_param", "key": "assist_enabled", "value": False})
-    assert sim.state_update().assist_active is False
+def test_drive_mode_drives_assist_active_and_the_cruise_chip(sim):
+    frame = sim.state_update()
+    assert frame.assist_active is True and frame.ego.cruise.mode == "fsd"
+    assert frame.ego.cruise.fsd_available is True
+    assert sim.apply_dict({"id": "a", "cmd": "set_drive_mode", "mode": "off"}).ok
+    frame = sim.state_update()
+    assert frame.assist_active is False and frame.ego.cruise.mode == "off"
 
 
 def test_inject_hazard_emits_an_event(sim):

@@ -88,6 +88,20 @@ centerline planner, with a blue plan ribbon ahead of it; the six telemetry
 cards along the bottom (speed, lane position, radar, vehicle status,
 trajectory, steering) update live from the real simulation, not the mock.
 
+## Take the wheel
+
+The toolbar's **Manual · Cruise · Assist · FSD** switch says who is driving.
+Click into the viewport and drive with **W/S** or the arrow keys (throttle,
+brake) and **A/D** (steer). Touching the controls hands over the way a
+driver-assist car does: steering under Assist or FSD drops to Cruise (speed
+held, you steer), braking drops to Manual, and the throttle speeds you up
+without taking the wheel. **F**, **L** and **C** engage FSD, Assist and Cruise,
+and **[ / ]** move the set speed by 5 mph. A full brake in Manual stops much harder than FSD's comfort braking, and holding **S** at a standstill shifts into reverse (W brakes; hold W at a stop to go back to Drive). Drive into a building or another car and you stop dead against it (reverse to back out); drive onto the pavement and the car is dragged down to a crawl. Both show a notice over the road. FSD and Assist never leave the road, so none of this applies to them. Under Assist or FSD, **Q / E** signal left / right: the car changes lane when it is legal and safe and holds the new lane (signal back to return); a refusal says why. A gamepad works too: left stick steers, RT / LT are throttle and brake, Y / X / B are FSD / Assist / Cruise, the d-pad moves the set speed and LB / RB signal. Assist and FSD pick up from wherever
+the car is, blending the steering and acceleration back in rather than
+snapping. They grey out while the car is more than 3 m or 45° off its route.
+Only time under Assist or FSD counts toward a run's scorecard. A hint line over the road always shows what the keys do in the current mode, and **On-screen controls** adds gas, brake and steering buttons (on by default on a touch screen). Press **?** for
+the full key list.
+
 ## Run a walkthrough preset
 
 Above the scenario catalog, the left sidebar's **Walkthrough** list holds
