@@ -234,6 +234,23 @@ describe('the height stack does not depend on how many roads there are', () => {
     const walkBottom = Math.min(...tris(scene, 'crosswalks').flatMap((t) => t.h));
     expect(roadTop).toBeLessThan(walkBottom);
   });
+
+  it('turns every crossing, every style, to face the sky', () => {
+    // A clockwise quad faces down and is culled from above: the crossings were
+    // there, at the right height, and invisible from every camera.
+    const scene = gridScene();
+    const one = scene.crosswalks[0];
+    scene.crosswalks = (['continental', 'ladder', 'transverse'] as const).map((style, i) => ({
+      ...one,
+      id: `xw_${style}`,
+      style,
+      heading: one.heading + i * 0.7,
+    }));
+    for (const name of ['roads', 'lane-markings', 'crosswalks']) {
+      const down = tris(scene, name).filter(({ p: [a, b, c] }) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < -1e-9);
+      expect(down.length, name).toBe(0);
+    }
+  });
 });
 
 describe('junctions', () => {

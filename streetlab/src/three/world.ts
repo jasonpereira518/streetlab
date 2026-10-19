@@ -1234,10 +1234,12 @@ export function buildWorld(scene: SceneDescription): World {
       to: number,
       halfDepth: number,
     ): [Vec2, Vec2, Vec2, Vec2] => [
-      [cx + dx * from + px * halfDepth, cy + dy * from + py * halfDepth],
-      [cx + dx * to + px * halfDepth, cy + dy * to + py * halfDepth],
-      [cx + dx * to - px * halfDepth, cy + dy * to - py * halfDepth],
+      // Counter-clockwise, as `flatQuad` needs: clockwise faces down, and is
+      // culled from above.
       [cx + dx * from - px * halfDepth, cy + dy * from - py * halfDepth],
+      [cx + dx * to - px * halfDepth, cy + dy * to - py * halfDepth],
+      [cx + dx * to + px * halfDepth, cy + dy * to + py * halfDepth],
+      [cx + dx * from + px * halfDepth, cy + dy * from + py * halfDepth],
     ];
 
     // Bars run WITH the traffic and are spaced across the road. Continental
@@ -1260,13 +1262,18 @@ export function buildWorld(scene: SceneDescription): World {
     if (xw.style !== 'continental') {
       for (const side of [1, -1]) {
         const at = side * (xw.width_m / 2 - CROSSING_RAIL_W / 2);
-        const corners: [Vec2, Vec2, Vec2, Vec2] = [
-          [cx - dx * (xw.length_m / 2) + px * (at + CROSSING_RAIL_W / 2), cy - dy * (xw.length_m / 2) + py * (at + CROSSING_RAIL_W / 2)],
-          [cx + dx * (xw.length_m / 2) + px * (at + CROSSING_RAIL_W / 2), cy + dy * (xw.length_m / 2) + py * (at + CROSSING_RAIL_W / 2)],
-          [cx + dx * (xw.length_m / 2) + px * (at - CROSSING_RAIL_W / 2), cy + dy * (xw.length_m / 2) + py * (at - CROSSING_RAIL_W / 2)],
-          [cx - dx * (xw.length_m / 2) + px * (at - CROSSING_RAIL_W / 2), cy - dy * (xw.length_m / 2) + py * (at - CROSSING_RAIL_W / 2)],
-        ];
-        walks.flatQuad(corners, Y.crosswalk, C.crosswalk);
+        const half = xw.length_m / 2;
+        const rail = CROSSING_RAIL_W / 2;
+        walks.flatQuad(
+          [
+            [cx - dx * half + px * (at - rail), cy - dy * half + py * (at - rail)],
+            [cx + dx * half + px * (at - rail), cy + dy * half + py * (at - rail)],
+            [cx + dx * half + px * (at + rail), cy + dy * half + py * (at + rail)],
+            [cx - dx * half + px * (at + rail), cy - dy * half + py * (at + rail)],
+          ],
+          Y.crosswalk,
+          C.crosswalk,
+        );
       }
     }
   }
