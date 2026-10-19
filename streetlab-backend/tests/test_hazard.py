@@ -444,7 +444,10 @@ def test_yield_fires_on_a_pedestrian_about_to_step_out_and_aims_at_the_conflict(
     w = strip_window(p, ego_at(10.0), route, EGO_S)
     r = YieldToEntryRule().step(rule_input(route, [w], 10.0))
     assert r.kind == "yield_to_entry" and r.maneuver == "yield" and r.source_id == "p1"
-    distance = (130.0 - 0.3) - EGO_S - EGO_LENGTH_M / 2
+    # Short of where it will be by the yield's own margin, as AEB keeps its.
+    from plan.hazard import YIELD_MARGIN_M
+
+    distance = (130.0 - 0.3) - EGO_S - EGO_LENGTH_M / 2 - YIELD_MARGIN_M
     assert r.speed_ceiling_mps == pytest.approx(stop_ceiling(distance, 10.0))
     assert 0.0 < r.speed_ceiling_mps < 10.0
 

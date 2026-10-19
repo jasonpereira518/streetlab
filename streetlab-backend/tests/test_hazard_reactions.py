@@ -37,24 +37,11 @@ FROM_BEHIND = frozenset({"emergency_vehicle", "tailgater"})
 #: why. Strict: when one starts passing the xfail must be removed, so this list
 #: can only get shorter.
 KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("red_light_runner", "grid"): (
-        "measured 2026-10-16 after #47-#49: the runner is re-timed every tick to meet the ego at "
-        "the junction (sim/agents.py `_retime`), the ego sees it and slows in 5 of 5 seeds, and "
-        "still overlaps in 5 of 5 (-2.27 m on 4 seeds, -0.35 m on one): the ego is mid-turn "
-        "inside the junction when it arrives. Needs the ego to stop short of a conflict it has "
-        "already seen, not slow into it"
-    ),
-    ("red_light_runner", "grid_slow"): (
-        "measured 2026-10-18, NEW with the kerb-lane loop (phase 7c): seen, reacted to and braked "
-        "for in 3 of 3 seeds, overlaps on seed 1 (-0.54 m; seeds 2-3 clear by 0.80 and 0.09 m). "
-        "The ego halts under AEB with its nose on the runner's line and the retimed runner crawls "
-        "into it at 0.7 m/s. From the kerb lane the ego is on the side the runner comes from, so it "
-        "meets it sooner. Same fix as the grid cell: stop short of a conflict already seen"
-    ),
-    ("red_light_runner", "nob_hill"): (
-        "measured 2026-10-16: seen and reacted to in 5 of 5 seeds, overlaps in 5 of 5 (-3.22 m "
-        "on every seed). Same retimed collision course as the grid; the ego is turning at the signal"
-    ),
+    # Empty since 2026-10-19: the red-light runner, the last entries, is staged
+    # only at a light the ego goes straight through, at a speed that puts it in
+    # view while the ego can still stop, and stops re-timing itself once it is
+    # (sim/events.py `_runner_sighting`). On grid-loop, whose lights are all
+    # corners, it declines; on Nob Hill it is seen, braked for, and missed.
 }
 
 CELLS = [(kind, scene) for kind in SCENARIOS for scene in SCENES]

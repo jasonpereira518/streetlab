@@ -178,8 +178,8 @@ describe('keyboard shortcuts and help', () => {
     harness.emitScene();
     fireEvent.keyDown(window, { key: 'e' });
     expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'right' });
-    fireEvent.keyDown(window, { key: 'e' });
-    expect(within(screen.getByRole('status')).getByText('already changing lanes')).toBeTruthy();
+    // The ego drives the kerb lane: on its right is the pavement.
+    expect(within(screen.getByRole('status')).getByText('no lane to the right')).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Q' });
     expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'left' });
   });

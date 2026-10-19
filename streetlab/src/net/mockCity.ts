@@ -18,6 +18,7 @@ import type {
   Building,
   Crosswalk,
   HazardSummary,
+  KerbReturn,
   PresetSummary,
   Road,
   SceneDescription,
@@ -69,8 +70,12 @@ const street = (axis: 'ns' | 'ew', at: number): StreetSpec => {
   return s;
 };
 
-/** The block the ego route circles, in street-centreline coordinates. */
-export const LOOP_BLOCK = { x0: 0, x1: 80, y0: 0, y1: 80 };
+/**
+ * The blocks the ego route circles, in street-centreline coordinates: two, so
+ * its 160 m legs leave a car room to pass and cut in, then be back in the kerb
+ * lane before the next right turn. Round one 80 m block it never could.
+ */
+export const LOOP_BLOCK = { x0: -80, x1: 80, y0: 0, y1: 80 };
 
 /**
  * The line the ego drives: the inner lane of `LOOP_BLOCK`, filleted at the
@@ -84,14 +89,23 @@ export function makeEgoRoute(): Route {
     LOOP_BLOCK.y0 + EGO_LANE_INSET,
     LOOP_BLOCK.x1 - EGO_LANE_INSET,
     LOOP_BLOCK.y1 - EGO_LANE_INSET,
-    10,
+    EGO_TURN_R,
     true,
   );
 }
 
-/** Ego drives the inner (left) lane; a cut-in comes from the kerb lane. */
+/**
+ * The ego drives the KERB lane, 5.4 m out, with the block on its right; a
+ * cut-in comes from the lane beside it on its LEFT, 1.8 m from the centreline.
+ */
 export const EGO_LANE_INSET = LANE_W * 1.5; // 5.4 m from centreline
 export const KERB_LANE_INSET = LANE_W * 0.5; // 1.8 m from centreline
+/**
+ * The ego's right turns, and the kerb returns rounding the loop block's
+ * corners concentric with them. A 10 m turn past a square kerb corner cut
+ * 1.6 m across the pavement.
+ */
+const EGO_TURN_R = 6;
 
 const SIGNALISED: Vec2[] = [
   [0, 0],
@@ -302,6 +316,32 @@ function buildCrosswalks(): Crosswalk[] {
  * arm reaches back over the carriageway (see `world.ts` for the arm convention:
  * it extends along `heading` rotated -90 degrees).
  */
+/**
+ * The loop block's four corners, rounded concentric with the ego's turn so
+ * its lane keeps the same distance from the kerb all the way round. The
+ * other corners stay square: nothing turns at them.
+ */
+function buildKerbReturns(): KerbReturn[] {
+  const out: KerbReturn[] = [];
+  for (const [ix, sx] of [[LOOP_BLOCK.x0, 1], [LOOP_BLOCK.x1, -1]] as const) {
+    for (const [iy, sy] of [[LOOP_BLOCK.y0, 1], [LOOP_BLOCK.y1, -1]] as const) {
+      const hx = halfWidth(street('ns', ix));
+      const hy = halfWidth(street('ew', iy));
+      // Kerb corner, and the turn's centre; the kerb arc shares that centre.
+      const k: Vec2 = [ix + sx * hx, iy + sy * hy];
+      const c: Vec2 = [ix + sx * (EGO_LANE_INSET + EGO_TURN_R), iy + sy * (EGO_LANE_INSET + EGO_TURN_R)];
+      out.push({
+        corner: k,
+        tangent_a: [k[0], c[1]],
+        center: c,
+        tangent_b: [c[0], k[1]],
+        radius_m: c[0] * sx - k[0] * sx,
+      });
+    }
+  }
+  return out;
+}
+
 function buildTrafficLights(): TrafficLight[] {
   const out: TrafficLight[] = [];
   for (const [ix, iy] of SIGNALISED) {
@@ -653,8 +693,7 @@ export function buildScene(scenarioId: string): SceneDescription {
     stop_signs: buildStopSigns(),
     trees: buildTrees(),
     street_signs: buildStreetSigns(),
-    // The offline mock keeps square corners; the backend computes returns.
-    kerb_returns: [],
+    kerb_returns: buildKerbReturns(),
     reference_path: (() => {
       const r = makeEgoRoute();
       return r.polyline(0, r.length, 2);

@@ -763,10 +763,11 @@ def test_the_planner_receives_only_observed_signal_phases():
 
 
 def test_the_context_carries_the_scenes_control_points():
+    """And the crossings on its route, where it waits while anyone is on one."""
     planner = _RecordingPlanner()
     sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
     sim.step()
-    assert list(planner.contexts[-1].control_points) == list(sim.scene.control_points)
+    assert list(planner.contexts[-1].control_points) == [*sim.scene.control_points, *sim.scene.crossings]
 
 
 def test_observed_phases_agree_with_the_wire_when_both_report_a_light():

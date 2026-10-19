@@ -12,7 +12,9 @@ A walker on a crossing does not stop for anything: it is a traffic agent with a
 `lifetime_s`, which traffic's right-of-way and cross-route checks leave alone,
 as they do a staged hazard. Cars give way to it -- the ego through its threat
 layer, traffic through its cross-route leader. A few more stroll the pavements
-near the ego's route, coming round at their ends as ambient traffic does.
+near the ego's route. At a block's end one crosses where a crossing starts
+near, on the same terms, and walks on along the pavement beyond it; with none
+it comes round at its end as ambient traffic does.
 
 0 (the `Simulation` default) is none at all, which keeps tests, contract
 fixtures and benchmarks pinned; `serve` defaults to some.
@@ -57,6 +59,12 @@ STROLL_NEAR_M = 80.0
 STROLL_TRIM_M = 8.0
 STROLL_MIN_M = 30.0
 ID_PREFIX = "ped_"
+#: A stroller hands off to a crossing that starts this near its block's end,
+#: and to a pavement that starts this near the far side.
+HANDOFF_M = 16.0
+#: ...this far short of its end: before traffic brings it round (`_come_round`
+#: at its standstill gap, ~2.8 m short).
+HANDOFF_SHORT_M = 3.5
 
 
 @dataclass(slots=True)
@@ -93,7 +101,11 @@ class PedestrianFlow:
             self._crossings.append(
                 _Crossing(tuple(cw.center), (Route([a, b], closed=False), Route([b, a], closed=False)), 2 * half, head)
             )
-        self._stroll_routes = _pavements(scene)
+        pavements = _pavements(scene)
+        self._stroll_routes = [p for _, p in pavements[:MAX_STROLLERS]]
+        self._handoffs = _handoffs(scene, self._crossings, [p for _, p in pavements])
+        #: Strollers on a crossing: the pavement each walks on along after it.
+        self._onward: dict[str, Route] = {}
 
     def step(self, traffic: "TrafficModel", ego: VehicleState, signals: dict, density: float, dt: float) -> None:
         if density <= 0.0:
@@ -107,6 +119,7 @@ class PedestrianFlow:
             for route in self._stroll_routes:
                 self._add(traffic, route, self._rng.uniform(0.0, route.length_m), None, stroll=True)
             self._strolling = True
+        self._stroll_across(traffic, ego, signals)
         p = density / 60.0 * dt
         crossing = sum(1 for a in traffic.agents if a.id.startswith(ID_PREFIX + "x"))
         for c in self._crossings:
@@ -117,6 +130,28 @@ class PedestrianFlow:
             crossing += 1
             route = c.routes[self._rng.randrange(2)]
             self._add(traffic, route, 0.0, route.length_m / WALK_MPS + 1.0)
+
+    def _stroll_across(self, traffic: "TrafficModel", ego: VehicleState, signals: dict) -> None:
+        """Strollers at a block's end take a crossing when it is theirs to
+        take, and at its far side walk on along the next pavement. Waiting
+        for it, one is held at its end as at any street's end."""
+        for a in traffic.agents:
+            if not a.id.startswith(ID_PREFIX + "s") or a.s < a.route.length_m - HANDOFF_SHORT_M:
+                continue
+            onward = self._onward.pop(a.id, None)
+            if onward is not None:
+                a.route, a.s, a.lifetime_s = onward, onward.project((a.state.x, a.state.y)), None
+                continue
+            options = [h for h in self._handoffs.get(id(a.route), ()) if self._may_cross(h[0], traffic, ego, signals)]
+            if not options:
+                continue
+            _, path, onward = options[self._rng.randrange(len(options))]
+            # A lifetime marks it crossing, as a crossing walker is (traffic
+            # leaves its right of way alone; it stops for bodies in its path);
+            # long enough that only one stuck for good expires.
+            a.route, a.s = path, path.project((a.state.x, a.state.y))
+            a.lifetime_s = 3.0 * path.length_m / WALK_MPS
+            self._onward[a.id] = onward
 
     def _may_cross(self, c: _Crossing, traffic: "TrafficModel", ego: VehicleState, signals: dict) -> bool:
         if c.head_id is not None:
@@ -151,9 +186,50 @@ class PedestrianFlow:
         ))
 
 
-def _pavements(scene: "BuiltScene") -> list[Route]:
-    """Pavement routes along the streets nearest the ego's route, one walker
-    each, along a side that has a pavement -- between junctions only. A grid
+def _handoffs(scene: "BuiltScene", crossings: list[_Crossing], pavements: list[Route]):
+    """For each pavement, the crossings a walker at its end may take: (the
+    crossing, the path over it, the pavement it walks on along after), where
+    neither walk to and from the crossing steps on a carriageway. Each path
+    runs on from the pavement's last metres into the next one's first, so a
+    walker joins and leaves it where it stands. Built once: traffic caches
+    by route identity, and a fresh one per walk could take a freed one's."""
+    from map.clearance import KeepOut
+
+    keep_out = KeepOut(scene.description.roads, [], [])
+    both = pavements + [Route(list(reversed(p.points)), closed=False) for p in pavements]
+
+    def dry(a, b):
+        n = max(1, int(math.dist(a, b)))
+        return not any(keep_out.in_carriageway((a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)) for k in range(n + 1))
+
+    out: dict[int, list] = {}
+    for p in both:
+        end = p.point_at(p.length_m)
+        for c in crossings:
+            for across in c.routes:
+                a, b = across.points[0], across.points[-1]
+                if math.dist(end, a) > HANDOFF_M or not dry(end, a):
+                    continue
+                onward = min(
+                    (q for q in both if math.dist(q.points[0], b) <= HANDOFF_M and dry(b, q.points[0])),
+                    key=lambda q: math.dist(q.points[0], b),
+                    default=None,
+                )
+                if onward is None:
+                    continue
+                lead = max(0.0, p.length_m - 2 * HANDOFF_SHORT_M)
+                tail = min(onward.length_m, 3 * HANDOFF_SHORT_M)
+                path = Route(
+                    [p.point_at(lead), end, *across.points, onward.points[0], onward.point_at(tail)], closed=False
+                )
+                out.setdefault(id(p), []).append((c, path, onward))
+    return out
+
+
+def _pavements(scene: "BuiltScene") -> list[tuple[float, Route]]:
+    """Pavement routes along the streets near the ego's route, nearest first
+    (a walker each on the first `MAX_STROLLERS`), along a side that has a
+    pavement -- between junctions only. A grid
     street runs straight through every junction, and a pavement route along
     its whole length walked people across the carriageway at each one."""
     ego = scene.ego_route.resample(20.0)
@@ -186,4 +262,4 @@ def _pavements(scene: "BuiltScene") -> list[Route]:
                     path = Route(list(reversed(path.points)), closed=False)
                 found.append((near, path))
     found.sort(key=lambda t: t[0])
-    return [p for _, p in found[:MAX_STROLLERS]]
+    return found

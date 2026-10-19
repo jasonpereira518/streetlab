@@ -459,6 +459,11 @@ function mount(
     ground_ = state.scene.terrain ? world.heightAt : null;
     ground.mesh.position.y = Math.min(-0.01, world.groundMin - 1);
     cam.setGround(ground_);
+    const built = world;
+    cam.setSurface((x, y, heading) => {
+      const g = built.groundFor(heading);
+      return g ? g(x, y) : 0;
+    });
     builtEpoch = state.sceneEpoch;
     // A new world means the previous frames describe a different place;
     // nothing in them is worth interpolating from.

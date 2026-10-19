@@ -1843,6 +1843,10 @@ def derive_lanes(ego_route: Route, roads: list[Road]) -> LaneSet:
 _YIELD_CONTROL_REACH_M = 20.0
 _YIELD_PROBE_M = 5.0
 _YIELD_MAJOR_COS = 0.9
+#: A route enters a junction it comes this much outside its box: a right turn
+#: cuts the corner (traffic's `_PASSAGE_REACH_M`); going straight, it passes beside it.
+_YIELD_PASSAGE_REACH_M = 4.0
+_YIELD_TURN_RAD = math.radians(30.0)
 #: The ego's give-way line: this far outside the junction's box.
 YIELD_LINE_OUTSIDE_M = 1.0
 
@@ -1860,7 +1864,8 @@ def junction_yields(
     line = LineString(route.points + ([route.points[0]] if route.closed else []))
     out = []
     for j in junctions:
-        if line.distance(Point(j.centre)) > j.radius_m:
+        off = line.distance(Point(j.centre))
+        if off > j.radius_m + _YIELD_PASSAGE_REACH_M:
             continue
         s = route.project(j.centre)
         governed = any(
@@ -1871,6 +1876,10 @@ def junction_yields(
         if governed:
             continue
         before = route.heading_at(route.normalise(s - j.radius_m - _YIELD_PROBE_M))
+        if off > j.radius_m:
+            after = route.heading_at(route.normalise(s + j.radius_m + _YIELD_PROBE_M))
+            if abs(math.remainder(after - before, math.tau)) < _YIELD_TURN_RAD:
+                continue  # beside the box, not through it
         if any(abs(math.cos(before - b)) > _YIELD_MAJOR_COS for b in j.major_headings):
             continue  # on the priority road: the others give way to it
         line_s = s - j.radius_m - YIELD_LINE_OUTSIDE_M
@@ -1883,6 +1892,38 @@ def junction_yields(
             position=j.centre,
         ))
     return out
+
+
+def crosswalk_points(route: Route, crosswalks) -> list[ControlPoint]:
+    """A `crosswalk` point 1 m short of each crossing `route` drives over,
+    carrying the crossing's rectangle: where the ego stops while anyone is on
+    it (`plan.behavior`). Kept out of the scene's `control_points`, which
+    traffic copies and the ETA reads."""
+    from shapely.geometry import LineString, Polygon
+
+    line = LineString(route.points + ([route.points[0]] if route.closed else []))
+    out = []
+    for cw in crosswalks:
+        c, s_ = math.cos(cw.heading), math.sin(cw.heading)
+        hl, hw = cw.length_m / 2, cw.width_m / 2
+        cx, cy = cw.center
+        poly = Polygon([
+            (cx + c * a - s_ * b, cy + s_ * a + c * b) for a, b in ((hl, hw), (-hl, hw), (-hl, -hw), (hl, -hw))
+        ])
+        hit = line.intersection(poly)
+        if hit.is_empty:
+            continue
+        pieces = getattr(hit, "geoms", [hit])
+        for piece in pieces:
+            coords = list(piece.coords)
+            if not coords:
+                continue
+            near = min(route.project(p) for p in coords[:1] + coords[-1:])
+            out.append(ControlPoint(
+                id=f"{cw.id}@{near:.0f}", kind="crosswalk", s=route.normalise(near - 1.0),
+                position=(cx, cy), extent=(cw.heading, hl + 1.0, hw),
+            ))
+    return sorted(out, key=lambda cp: cp.s)
 
 
 CONTROL_POINT_MATCH_M = 12.0

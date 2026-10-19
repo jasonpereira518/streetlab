@@ -57,8 +57,15 @@ class Run:
     cleared: bool = False
 
 
-def _sim(scene: str, seed: int, nob_hill_scene) -> Simulation:
-    sim = Simulation(SyntheticGrid(), "grid-loop", seed=seed)
+#: The grid scene the red-light runner is swept on. It is staged only at a light
+#: the ego goes straight through (`sim/events.py`), and every light on
+#: grid-loop is a corner; grid-overtake's long leg crosses Hyde St straight.
+RUNNER_GRID = "grid-overtake"
+
+
+def _sim(scene: str, seed: int, nob_hill_scene, kind: str = "") -> Simulation:
+    grid = RUNNER_GRID if kind == "red_light_runner" else "grid-loop"
+    sim = Simulation(SyntheticGrid(), grid, seed=seed)
     if scene == "nob_hill":
         sim.adopt_scene(nob_hill_scene)
     for _ in range(300):
@@ -70,7 +77,9 @@ def _stage(sim: Simulation, kind: str) -> bool:
     """Inject `kind` the moment it will stage. Some hazards decline until
     conditions are right (`red_light_runner` waits for a green that outlasts the
     ego's ETA), so a single shot is the wrong test; see `test_events.py`."""
-    for _ in range(int(120.0 / DT)):
+    # 300 s: on Nob Hill the runner's first fair moment, a straight-through
+    # green it can be seen in time at, comes ~256 s in.
+    for _ in range(int(300.0 / DT)):
         if sim.apply_dict({"id": "h", "cmd": "inject_hazard", "kind": kind}).ok:
             return True
         sim.step()
@@ -80,7 +89,7 @@ def _stage(sim: Simulation, kind: str) -> bool:
 def _drive(scene: str, kind: str, seed: int, nob_hill_scene) -> Run:
     run = Run(scene, kind, seed)
     rng = random.Random(seed * 1000 + sum(map(ord, kind)) % 97)
-    sim = _sim(scene, seed, nob_hill_scene)
+    sim = _sim(scene, seed, nob_hill_scene, kind)
     for _ in range(int(rng.uniform(0.0, 40.0) / DT)):
         sim.step()
     lead = _lead_agent(sim) if kind == "sudden_brake" else None
@@ -148,20 +157,14 @@ def sweep(nob_hill_scene):
 
 def test_every_hazard_stages_on_every_scene_and_seed(sweep):
     missed = [(r.scene, r.kind, r.seed) for r in sweep if not r.staged]
-    assert not missed, f"never staged within 120 s: {missed}"
+    assert not missed, f"never staged within 300 s: {missed}"
 
 
 #: Measured 2026-10-16 after #47-#49: the red-light runner is re-timed every tick
 #: to meet the ego (`sim/agents.py _retime`); the ego sees and slows for it but is
 #: mid-turn in the junction. Overlaps: -2.27 m grid seeds 1 and 3, -0.35 m grid
 #: seed 2, -3.22 m Nob Hill seeds 1-3. Exact list, so a fix or a new overlap fails.
-KNOWN_OVERLAPS = {
-    ("grid", "red_light_runner", 1),
-    ("grid", "red_light_runner", 3),
-    ("nob_hill", "red_light_runner", 1),
-    ("nob_hill", "red_light_runner", 2),
-    ("nob_hill", "red_light_runner", 3),
-}
+KNOWN_OVERLAPS: set[tuple[str, str, int]] = set()  # the runner's healed: see test_hazard_reactions.KNOWN_GAPS
 
 
 def test_the_ego_never_touches_a_hazard(sweep):

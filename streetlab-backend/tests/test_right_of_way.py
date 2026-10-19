@@ -230,3 +230,64 @@ def test_every_signal_traffic_obeys_has_a_phase(nob_hill_scene):
 def test_nob_hill_finds_main_roads_at_its_unsigned_junctions(nob_hill_scene):
     with_major = [j for j in nob_hill_scene.junctions if j.major_headings]
     assert len(with_major) > len(nob_hill_scene.junctions) // 4
+
+
+def test_a_right_turn_cutting_the_corner_still_passes_through_the_junction():
+    """A 6 m fillet from a 1.8 m lane offset comes ~5.0 m from the centre,
+    outside the 4.6 m box: such turns had no passage and skipped right of way."""
+    arc = [(-7.8 + 6 * math.sin(a), -7.8 + 6 * math.cos(a)) for a in (i * math.pi / 2 / 12 for i in range(13))]
+    turn = Route([(-80.0, -1.8), *arc, (-1.8, -80.0)], closed=False)
+    traffic = IdmTraffic(routes=[], speed_limit_mps=11.0, ambient=[AmbientLane(turn, [])], junctions=[BOX], ego_route=FAR_EGO.ego_route)
+    assert [p.turn for p in traffic._passages_of(turn)] == ["right"]
+
+
+def test_only_the_kerb_lane_turns_right_at_a_streets_end():
+    """Two lanes eastbound ending at a north-south street: the kerb lane may
+    turn right onto it, the lane beside it only go left."""
+    from sim.agents import _street_exits
+
+    kerb = Route([(-80.0, -5.4), (-2.0, -5.4)], closed=False)
+    inner = Route([(-80.0, -1.8), (-2.0, -1.8)], closed=False)
+    south = Route([(1.8, 60.0), (1.8, -80.0)], closed=False)
+    north = Route([(-1.8, -80.0), (-1.8, 60.0)], closed=False)
+    exits = _street_exits([kerb, inner, south, north])
+    assert south in exits[id(kerb)]
+    assert exits[id(inner)] == [north]
+    # Told it is the kerb lane at its end, whatever lies beside it.
+    assert south in _street_exits([kerb, inner, south, north], {id(inner): True})[id(inner)]
+
+
+def test_nob_hill_traffic_turns_right_only_from_the_kerb_lane(nob_hill_scene):
+    """Measured 2026-10-19: 6 of 49 right turns were from the second or third
+    lane -- every lane at a street's end ranked a right turn first, and a
+    chained street's lanes sit off the kerb where it widens."""
+    from shapely.geometry import LineString, Point
+
+    lanes = nob_hill_scene.ambient_lanes
+    traffic = IdmTraffic(
+        routes=[], speed_limit_mps=11.0, ambient=lanes, junctions=nob_hill_scene.junctions,
+        ego_route=nob_hill_scene.ego_route,
+    )
+    roads = nob_hill_scene.description.roads
+    wrong, turns = [], 0
+    for lane in lanes:
+        route = lane.route
+        for p in traffic._passages_of(route):
+            if p.turn != "right" or p.s - p.radius_m - 10.0 < 0.0:
+                continue
+            turns += 1
+            s = p.s - p.radius_m - 10.0
+            x, y = route.point_at(s)
+            h = route.heading_at(s)
+            road = min(roads, key=lambda r: LineString(r.centerline).distance(Point(x, y)))
+            line = LineString(road.centerline)
+            d = line.project(Point(x, y))
+            a, b = line.interpolate(d), line.interpolate(min(d + 0.5, line.length))
+            along = math.atan2(b.y - a.y, b.x - a.x)
+            side = math.cos(along) * (y - a.y) - math.sin(along) * (x - a.x)
+            if math.cos(h - along) < 0:
+                side = -side
+            if side + road.half_width_m - road.edge_m > road.lane_width_m + 0.3:
+                wrong.append((road.name, round(x), round(y)))
+    assert turns > 20
+    assert not wrong, wrong

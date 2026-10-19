@@ -23,7 +23,7 @@ moment it committed, so a genuine second lap must stop again.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import replace, dataclass, field
 from enum import Enum
 from typing import Mapping, Sequence
 
@@ -206,6 +206,12 @@ CREEP_MPS = 2.5
 YIELD_APPROACH_MPS = 5.0
 YIELD_GAP_S = 4.0
 YIELD_LOOK_M = 45.0
+#: Crossings: how far ahead one matters, how far past its stop point it no
+#: longer holds the car (it is on the crossing), and how far either side of
+#: its painted band a walker still counts as on it.
+CROSSING_LOOK_M = 40.0
+CROSSING_PAST_M = 0.5
+CROSSING_SIDE_M = 0.5
 
 #: Once the line is this far behind, it is done with.
 CLEARED_M = 2.0
@@ -561,6 +567,8 @@ class BehaviorFSM:
         # would otherwise stay declined for as long as the light held.
         self._tick_cooldown(dt)
         self.clock_s += dt
+        crossings = [cp for cp in control_points if cp.kind == "crosswalk"]
+        control_points = [cp for cp in control_points if cp.kind != "crosswalk"]
 
         # Junction constraints outrank everything: a car about to stop at a
         # red has no business changing lane, and the two ceilings would
@@ -576,7 +584,40 @@ class BehaviorFSM:
             )
             decision = _CRUISE if change is None else change
         self._tick_blend()
+        # Anyone on a crossing ahead: stop short of it, whatever else is going on.
+        ceiling = self._crossing_ceiling(ego, route, ego_s, crossings, detections)
+        if ceiling < decision.speed_ceiling_mps:
+            decision = replace(decision, speed_ceiling_mps=ceiling, maneuver="yield")
         return decision
+
+    @staticmethod
+    def _crossing_ceiling(
+        ego: VehicleState,
+        route: Route,
+        ego_s: float,
+        crossings: Sequence[ControlPoint],
+        detections: Sequence[Detection],
+    ) -> float:
+        """A stop 1 m short of the nearest crossing ahead that anyone is on --
+        the far side included -- or `math.inf`. The threat layer stops only for
+        someone in the car's path; a driver waits for the crossing to clear."""
+        walkers = [d for d in detections if d.cls == "pedestrian"]
+        if not walkers:
+            return math.inf
+        best = math.inf
+        for cp in crossings:
+            gap = route.signed_gap(ego_s, cp.s)
+            if not -CROSSING_PAST_M < gap < CROSSING_LOOK_M or cp.extent is None:
+                continue
+            h, hl, hw = cp.extent
+            c, s_ = math.cos(h), math.sin(h)
+            cx, cy = cp.position
+            for d in walkers:
+                dx, dy = d.pose.x - cx, d.pose.y - cy
+                if abs(dx * c + dy * s_) <= hl and abs(-dx * s_ + dy * c) <= hw + CROSSING_SIDE_M:
+                    best = min(best, stop_ceiling(max(gap, 0.0), ego.speed_mps))
+                    break
+        return best
 
     def _junction_step(
         self,

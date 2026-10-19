@@ -110,6 +110,10 @@ class Agent:
     #: re-times itself every tick to arrive when the ego does.
     meet_s: float | None = None
     meet_ego_s: float | None = None
+    #: Traffic time after which it stops re-timing and holds its speed: the
+    #: last moment the ego could still see it in time to stop. A runner that
+    #: kept re-timing slowed as the ego braked and chased it into a collision.
+    meet_until_s: float | None = None
     #: Seconds held at an unsigned junction's edge, giving way.
     junction_wait_s: float = 0.0
 
@@ -606,6 +610,16 @@ _ACROSS_BEHIND_M = 15.0
 _ROW_NOSE_IN_M = 3.0
 _TURN_PROBE_M = 5.0
 _MAJOR_ALIGN_COS = 0.9
+#: A route passes a junction if it comes this much outside its box: a right
+#: turn on a 6 m fillet cuts the corner ~5 m from the centre (5.8 from a kerb
+#: lane), outside a 4.6 m box, and skipped right of way altogether. Only for
+#: turns: a route going straight that near passes beside the box, not into it.
+_PASSAGE_REACH_M = 4.0
+#: A lane beside a route this far to its right (centre to centre), going its
+#: way, within this of its end, makes it not the kerb lane (`_lane_on_right`).
+_RIGHT_LANE_MIN_M = 2.0
+_RIGHT_LANE_MAX_M = 4.5
+_RIGHT_LANE_PROBE_M = 30.0
 #: How far past a signal's line a route is read for a right on red.
 _RED_TURN_SPAN_M = 25.0
 #: Street ends: how near another lane must pass to be turned onto, the road
@@ -744,7 +758,9 @@ class IdmTraffic(ScriptedTraffic):
         #: Each (route, length)'s tight corners and their sweeps (`_tight_turns`).
         self._turns: dict[tuple[int, float], list] = {}
         self._ego_start = ego_route.point_at(0.0) if ego_route is not None else None
-        self._exits = _street_exits([lane.route for lane in self._ambient])
+        self._exits = _street_exits(
+            [lane.route for lane in self._ambient], {id(lane.route): lane.kerb_at_end for lane in self._ambient}
+        )
         #: Turn routes built so far, by (from lane, to lane), and the street
         #: lane each comes round on.
         self._turns: dict[tuple[int, int, float], Route] = {}
@@ -914,6 +930,9 @@ class IdmTraffic(ScriptedTraffic):
         the ego's current pace. Timed once at staging it missed by 6.4 m: the
         ego slows for the corner it turns at, and the runner was already
         committed to the ego's speed on the straight."""
+        if agent.meet_until_s is not None and self._elapsed > agent.meet_until_s:
+            agent.meet_s = agent.meet_ego_s = None  # committed: no more adapting
+            return
         ego_s, _ = self._ego_on(world.ego_route, world, ego_s_by_route)
         ego_left = world.ego_route.signed_gap(ego_s, agent.meet_ego_s)
         mine_left = agent.meet_s - agent.s
@@ -1647,7 +1666,8 @@ class IdmTraffic(ScriptedTraffic):
             line = LineString(route.points + ([route.points[0]] if route.closed else []))
             controls = self._controls.get(id(route), [])
             for j in self._junctions:
-                if line.distance(Point(j.centre)) > j.radius_m:
+                off = line.distance(Point(j.centre))
+                if off > j.radius_m + _PASSAGE_REACH_M:
                     continue
                 s = route.project(j.centre)
                 kind = next(
@@ -1659,11 +1679,14 @@ class IdmTraffic(ScriptedTraffic):
                     None,
                 )
                 before = route.heading_at(route.normalise(s - j.radius_m - _TURN_PROBE_M))
+                turn = self._movement(route, s, j.radius_m, before)
+                if off > j.radius_m and turn == "straight":
+                    continue
                 major = None
                 if j.major_headings:
                     major = any(abs(math.cos(before - b)) > _MAJOR_ALIGN_COS for b in j.major_headings)
                 out.append(
-                    _Passage(_junction_key(j.centre), j.centre, s, j.radius_m, kind, self._movement(route, s, j.radius_m, before), major)
+                    _Passage(_junction_key(j.centre), j.centre, s, j.radius_m, kind, turn, major)
                 )
         out.sort(key=lambda p: p.s)
         self._passages[id(route)] = out
@@ -2328,16 +2351,22 @@ class _Passage:
     major: bool | None = None
 
 
-def _street_exits(routes: Sequence[Route]) -> dict[int, list[Route]]:
+def _street_exits(routes: Sequence[Route], kerb_at_end: dict[int, bool | None] | None = None) -> dict[int, list[Route]]:
     """For each open route, the routes a car at its end can turn onto: those
     passing within `_EXIT_REACH_M` of its end with room left to drive, right
-    turns first, then straight on, then left -- never back the way it came."""
+    turns first, then straight on, then left -- never back the way it came.
+    A right turn only from the kerb lane: with a lane going its way on its
+    right, a car turns left or goes on (measured, Nob Hill: 6 of 49 right
+    turns were from the second or third lane)."""
     out: dict[int, list[Route]] = {}
     for route in routes:
         if route.closed:
             continue
         end = route.point_at(route.length_m)
         heading = route.heading_at(route.length_m - 1.0)
+        kerb = (kerb_at_end or {}).get(id(route))
+        if kerb is None:
+            kerb = not _lane_on_right(route, routes)
         found = []
         for other in routes:
             if other is route or other.closed:
@@ -2349,9 +2378,33 @@ def _street_exits(routes: Sequence[Route]) -> dict[int, list[Route]]:
             if abs(turn) > _EXIT_MAX_TURN_RAD:
                 continue
             rank = 0 if turn < -_STRAIGHT_RAD else 1 if abs(turn) <= _STRAIGHT_RAD else 2
+            if rank == 0 and not kerb:
+                continue
             found.append((rank, math.dist(other.point_at(s), end), other))
         out[id(route)] = [other for _, _, other in sorted(found, key=lambda f: (f[0], f[1]))]
     return out
+
+
+def _lane_on_right(route: Route, routes: Sequence[Route]) -> bool:
+    """Whether another lane runs `route`'s way just to its right anywhere over
+    its last `_RIGHT_LANE_PROBE_M`: then `route` is not the kerb lane there."""
+    for back in (5.0, 15.0, _RIGHT_LANE_PROBE_M):
+        at = max(0.0, route.length_m - back)
+        x, y = route.point_at(at)
+        h = route.heading_at(at)
+        for other in routes:
+            if other is route:
+                continue
+            s = other.project((x, y))
+            ox, oy = other.point_at(s)
+            side = math.cos(h) * (oy - y) - math.sin(h) * (ox - x)  # + left, - right
+            if (
+                -_RIGHT_LANE_MAX_M <= side <= -_RIGHT_LANE_MIN_M
+                and math.dist((ox, oy), (x, y)) <= _RIGHT_LANE_MAX_M + 0.1
+                and math.cos(other.heading_at(s) - h) > _MAJOR_ALIGN_COS
+            ):
+                return True
+    return False
 
 
 def _within(a: VehicleState, b: VehicleState, d: float) -> bool:

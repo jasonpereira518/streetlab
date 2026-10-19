@@ -939,8 +939,6 @@ export function buildWorld(scene: SceneDescription): World {
   };
 
   scene.roads.forEach((road, i) => {
-    // A tunnel's tarmac is under the hill; only its portals show.
-    if (road.tunnel) return;
     const line = lines[i];
     const half = carriagewayHalfWidth(road);
     const surfaces = surfacesByLayer.get(road.layer ?? 0) ?? roadSurfaces;
@@ -954,6 +952,9 @@ export function buildWorld(scene: SceneDescription): World {
     const col = road.road_class === 'arterial' ? C.asphaltArterial : C.asphalt;
 
     stripe(surface, line, { from: 0, to: line.length }, 0, half * 2, yRoad, col);
+    // A tunnel's tarmac lies on its floor, under the hill: seen only from
+    // inside, where the camera follows the car. No pavements in a bore.
+    if (road.tunnel) return;
 
     // No arc-length holes any more: where a pavement has to stop is decided by
     // the carriageways it actually meets, not by an interval computed from one
@@ -1034,6 +1035,7 @@ export function buildWorld(scene: SceneDescription): World {
         bridgeStructure(struct, st, below, heightAt);
       } else {
         tunnelPortals(struct, st, ends);
+        tunnelTube(struct, st);
       }
     }
     const structMat = surfaceMaterial();
@@ -1049,7 +1051,6 @@ export function buildWorld(scene: SceneDescription): World {
 
   const markings = new MeshBuilder();
   scene.roads.forEach((road, i) => {
-    if (road.tunnel) return;
     markings.ground = laidOn(i);
     const line = lines[i];
     // Markings span the DRIVEN lanes; a parking or bus edge lies outside them.
@@ -1156,12 +1157,50 @@ export function buildWorld(scene: SceneDescription): World {
 
   /* -------- the driven line -------- */
 
+  // What a vehicle heading `heading` stands on: a structure it drives along,
+  // else the ground (see `World.groundFor`).
+  function groundFor(heading: number): HeightFn | null {
+    if (!structures.size) return ground;
+    const hx = Math.cos(heading);
+    const hy = Math.sin(heading);
+    return (x, y) => {
+      for (const st of structures.values()) {
+        const p = project(st.line, x, y);
+        if (p.d <= st.half && Math.abs(p.tx * hx + p.ty * hy) >= ALONG_COS) return elevationAt(st, p.s);
+      }
+      return heightAt(x, y);
+    };
+  }
+
   // The whole circuit the car follows, sent once with the scene. Over the lane
   // markings so it reads as laid on top of them, under the kerbs so it never
   // appears to climb a pavement.
   if (scene.reference_path.length >= 2) {
     const refBuilder = new MeshBuilder();
     refBuilder.ground = ground;
+    if (structures.size) {
+      // Laid on what the car drives on, sample by sample: on the ground it
+      // ran under a bridge deck the route goes over.
+      const pts = scene.reference_path;
+      const heights = pts.map((p, k) => {
+        const q = pts[Math.min(k + 1, pts.length - 1)];
+        const o = pts[Math.max(k - 1, 0)];
+        const g = groundFor(Math.atan2(q[1] - o[1], q[0] - o[0]));
+        return g ? g(p[0], p[1]) : 0;
+      });
+      refBuilder.ground = (x, y) => {
+        let best = 0;
+        let bestD = Infinity;
+        for (let k = 0; k < pts.length; k++) {
+          const d = (pts[k][0] - x) ** 2 + (pts[k][1] - y) ** 2;
+          if (d < bestD) {
+            bestD = d;
+            best = k;
+          }
+        }
+        return heights[best];
+      };
+    }
     polylineBand(
       refBuilder,
       scene.reference_path,
@@ -1195,10 +1234,12 @@ export function buildWorld(scene: SceneDescription): World {
       to: number,
       halfDepth: number,
     ): [Vec2, Vec2, Vec2, Vec2] => [
-      [cx + dx * from + px * halfDepth, cy + dy * from + py * halfDepth],
-      [cx + dx * to + px * halfDepth, cy + dy * to + py * halfDepth],
-      [cx + dx * to - px * halfDepth, cy + dy * to - py * halfDepth],
+      // Counter-clockwise, as `flatQuad` needs: clockwise faces down, and is
+      // culled from above.
       [cx + dx * from - px * halfDepth, cy + dy * from - py * halfDepth],
+      [cx + dx * to - px * halfDepth, cy + dy * to - py * halfDepth],
+      [cx + dx * to + px * halfDepth, cy + dy * to + py * halfDepth],
+      [cx + dx * from + px * halfDepth, cy + dy * from + py * halfDepth],
     ];
 
     // Bars run WITH the traffic and are spaced across the road. Continental
@@ -1221,13 +1262,18 @@ export function buildWorld(scene: SceneDescription): World {
     if (xw.style !== 'continental') {
       for (const side of [1, -1]) {
         const at = side * (xw.width_m / 2 - CROSSING_RAIL_W / 2);
-        const corners: [Vec2, Vec2, Vec2, Vec2] = [
-          [cx - dx * (xw.length_m / 2) + px * (at + CROSSING_RAIL_W / 2), cy - dy * (xw.length_m / 2) + py * (at + CROSSING_RAIL_W / 2)],
-          [cx + dx * (xw.length_m / 2) + px * (at + CROSSING_RAIL_W / 2), cy + dy * (xw.length_m / 2) + py * (at + CROSSING_RAIL_W / 2)],
-          [cx + dx * (xw.length_m / 2) + px * (at - CROSSING_RAIL_W / 2), cy + dy * (xw.length_m / 2) + py * (at - CROSSING_RAIL_W / 2)],
-          [cx - dx * (xw.length_m / 2) + px * (at - CROSSING_RAIL_W / 2), cy - dy * (xw.length_m / 2) + py * (at - CROSSING_RAIL_W / 2)],
-        ];
-        walks.flatQuad(corners, Y.crosswalk, C.crosswalk);
+        const half = xw.length_m / 2;
+        const rail = CROSSING_RAIL_W / 2;
+        walks.flatQuad(
+          [
+            [cx - dx * half + px * (at - rail), cy - dy * half + py * (at - rail)],
+            [cx + dx * half + px * (at - rail), cy + dy * half + py * (at - rail)],
+            [cx + dx * half + px * (at + rail), cy + dy * half + py * (at + rail)],
+            [cx - dx * half + px * (at + rail), cy - dy * half + py * (at + rail)],
+          ],
+          Y.crosswalk,
+          C.crosswalk,
+        );
       }
     }
   }
@@ -1402,18 +1448,7 @@ export function buildWorld(scene: SceneDescription): World {
     root,
     heightAt,
     groundMin: terrain.min,
-    groundFor(heading) {
-      if (!structures.size) return ground;
-      const hx = Math.cos(heading);
-      const hy = Math.sin(heading);
-      return (x, y) => {
-        for (const st of structures.values()) {
-          const p = project(st.line, x, y);
-          if (p.d <= st.half && Math.abs(p.tx * hx + p.ty * hy) >= ALONG_COS) return elevationAt(st, p.s);
-        }
-        return heightAt(x, y);
-      };
-    },
+    groundFor,
     updateSignals(states, time) {
       signals?.update(states, time);
     },
@@ -1986,6 +2021,31 @@ function bridgeStructure(b: MeshBuilder, st: Structure, below: RoadSurfaces[], h
 }
 
 /** A portal at each tunnel end that opens to daylight: walls, lintel, mouth. */
+/** The bore: walls and a ceiling along the whole tunnel, seen from inside. */
+function tunnelTube(b: MeshBuilder, st: Structure): void {
+  const { line, half } = st;
+  const w = half + 0.5;
+  const n = Math.max(1, Math.ceil(line.length / 4));
+  for (let k = 0; k < n; k++) {
+    const s0 = (k / n) * line.length;
+    const s1 = ((k + 1) / n) * line.length;
+    const z0 = elevationAt(st, s0);
+    const z1 = elevationAt(st, s1);
+    for (const side of [1, -1]) {
+      panel(b, line.offsetAt(s0, side * w), line.offsetAt(s1, side * w), z0, z1, z0 + PORTAL_H_M, z1 + PORTAL_H_M, C.tunnelMouth);
+    }
+    const l0 = line.offsetAt(s0, w);
+    const r0 = line.offsetAt(s0, -w);
+    const l1 = line.offsetAt(s1, w);
+    const r1 = line.offsetAt(s1, -w);
+    const top0 = z0 + PORTAL_H_M;
+    const top1 = z1 + PORTAL_H_M;
+    // Both faces: the underside is what the camera sees.
+    b.quad(worldToThree(r0[0], r0[1], top0), worldToThree(l0[0], l0[1], top0), worldToThree(l1[0], l1[1], top1), worldToThree(r1[0], r1[1], top1), [0, -1, 0], C.tunnelMouth);
+    b.quad(worldToThree(r1[0], r1[1], top1), worldToThree(l1[0], l1[1], top1), worldToThree(l0[0], l0[1], top0), worldToThree(r0[0], r0[1], top0), [0, 1, 0], C.tunnelMouth);
+  }
+}
+
 function tunnelPortals(b: MeshBuilder, st: Structure, open: Set<string>): void {
   const { line, half } = st;
   const last = line.points.length - 1;
@@ -2004,8 +2064,7 @@ function tunnelPortals(b: MeshBuilder, st: Structure, open: Set<string>): void {
       at.x - at.ty * lat + at.tx * inward * depth,
       at.y + at.tx * lat + at.ty * inward * depth,
     ];
-    // The dark mouth, a little inside, then the headwall around it.
-    panel(b, across(w, 0.4), across(-w, 0.4), z, z, top, top, C.tunnelMouth);
+    // The headwall round the mouth; the bore behind it is `tunnelTube`.
     panel(b, across(w + PORTAL_WALL_M), across(-w - PORTAL_WALL_M), top, top, crown, crown, C.concrete);
     for (const side of [1, -1]) {
       const inner = side * w;

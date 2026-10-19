@@ -143,10 +143,10 @@ def measure(scenario_id: str, seed: int, run_s: float = RUN_S, density: float = 
                 sep = obb_separation(a, b)
                 if sep < worst_sep[0]:
                     worst_sep = (sep, (sim.t, ida, idb))
-            off = max(world.roads.distance(Point(c)) for c in a)
+            poly = Polygon(a)
+            off = _overhang(world.roads, poly)
             if off > worst_off[0]:
                 worst_off = (off, (sim.t, ida))
-            poly = Polygon(a)
             if world.building_index is not None:
                 for n in world.building_index.query(poly, predicate="intersects"):
                     area = poly.intersection(world.buildings[int(n)]).area
@@ -158,6 +158,19 @@ def measure(scenario_id: str, seed: int, run_s: float = RUN_S, density: float = 
                     if area > worst_prop[0]:
                         worst_prop = (area, (sim.t, ida, int(n)))
     return worst_sep, worst_off, worst_bld, worst_prop
+
+
+def _overhang(roads, body: Polygon) -> float:
+    """How far any part of `body` reaches off `roads`. Its whole outline, not
+    its four corners: on the inside of a turn the pavement's corner pokes into
+    a car's side while all four of its corners are still on the tarmac."""
+    if roads.contains(body):
+        return 0.0
+    rest = body.difference(roads)
+    return max(
+        (roads.distance(Point(v)) for g in getattr(rest, "geoms", [rest]) for v in g.exterior.coords),
+        default=0.0,
+    )
 
 
 def worst_separation(scenario_id: str, seed: int, run_s: float = RUN_S):
@@ -266,7 +279,7 @@ def test_dense_traffic_never_touches_leaves_the_road_or_enters_anything(scenario
 # corner wider needs MORE (5.5-11 m): the body is a rigid box on its path.
 
 
-@pytest.mark.parametrize("scenario_id", ["grid-merge", "grid-arterial"])
+@pytest.mark.parametrize("scenario_id", ["grid-merge", "grid-arterial", "grid-boulevard"])
 def test_the_loop_bus_is_back_on_the_loop(scenario_id):
     sim = Simulation(SyntheticGrid(), scenario_id, seed=7)
     assert next(a for a in sim._traffic.agents if a.id == "veh_04").cls == "bus"

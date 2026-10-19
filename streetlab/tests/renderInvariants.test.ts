@@ -234,6 +234,23 @@ describe('the height stack does not depend on how many roads there are', () => {
     const walkBottom = Math.min(...tris(scene, 'crosswalks').flatMap((t) => t.h));
     expect(roadTop).toBeLessThan(walkBottom);
   });
+
+  it('turns every crossing, every style, to face the sky', () => {
+    // A clockwise quad faces down and is culled from above: the crossings were
+    // there, at the right height, and invisible from every camera.
+    const scene = gridScene();
+    const one = scene.crosswalks[0];
+    scene.crosswalks = (['continental', 'ladder', 'transverse'] as const).map((style, i) => ({
+      ...one,
+      id: `xw_${style}`,
+      style,
+      heading: one.heading + i * 0.7,
+    }));
+    for (const name of ['roads', 'lane-markings', 'crosswalks']) {
+      const down = tris(scene, name).filter(({ p: [a, b, c] }) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < -1e-9);
+      expect(down.length, name).toBe(0);
+    }
+  });
 });
 
 describe('junctions', () => {
@@ -356,6 +373,8 @@ describe('on real terrain, everything sits on the ground', () => {
 
   it('drapes tarmac, paint and pavement at their stack height above the ground', () => {
     const scene = hilly();
+    // A tunnel's floor is under the hill by design ('bridges and tunnels').
+    scene.roads = scene.roads.filter((r) => !r.tunnel);
     const field = TerrainField.from(scene.terrain);
     const bands: Array<[string, number, number]> = [
       ['roads', 0.019, 0.025],
@@ -501,18 +520,23 @@ describe('bridges and tunnels', () => {
     expect(world.groundFor(0)?.(0, 0)).toBeCloseTo(0, 6);
   });
 
-  it('hides a tunnel under the hill and draws its portals', () => {
+  it('lays a tunnel on its floor under a ceiling, and draws its portals', () => {
     const scene = curvyScene();
     scene.roads = [
       road('approach', [[-100, 0], [-30, 0]]),
-      road('bore', [[-30, 0], [30, 0]], { layer: -1, tunnel: true, elevation_m: [0, 0] }),
+      road('bore', [[-30, 0], [30, 0]], { layer: -1, tunnel: true, elevation_m: [-6, -6] }),
     ];
+    // Tarmac on the floor, 6 m down, seen only from inside where the camera
+    // follows the car (it used to be hidden, and the camera rose over the hill).
     const tarmac = tris(scene, 'roads').filter((t) => t.p.every(([x]) => x > -25 && x < 25));
-    expect(tarmac).toHaveLength(0);
+    expect(tarmac.length).toBeGreaterThan(0);
+    expect(tarmac.every((t) => t.h.every((h) => h < -5.9))).toBe(true);
     const portal = tris(scene, 'structures');
+    // A ceiling over the floor, all the way through.
+    expect(portal.some((t) => t.p.every(([x, y]) => Math.abs(x) < 4.5 && Math.abs(y) < 4.5) && t.h.every((h) => Math.abs(h - (-6 + 5.2)) < 0.01))).toBe(true);
     // One portal at each open end, standing taller than a truck.
     for (const end of [-30, 30]) {
-      expect(portal.some((t) => t.p.every(([x]) => Math.abs(x - end) < 2) && t.h.some((h) => h > 5))).toBe(true);
+      expect(portal.some((t) => t.p.every(([x]) => Math.abs(x - end) < 2) && t.h.some((h) => h > -6 + 5))).toBe(true);
     }
   });
 });

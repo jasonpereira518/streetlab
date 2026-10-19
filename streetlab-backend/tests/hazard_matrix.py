@@ -38,7 +38,7 @@ DT = 1 / 60
 EGO_SIZE = (4.7, 1.9)
 SCENES = ("grid", "grid_slow", "nob_hill")
 WINDOW_S = 35.0
-STAGE_TIMEOUT_S = 120.0
+STAGE_TIMEOUT_S = 300.0
 MIN_EGO_MPS = 4.0
 
 

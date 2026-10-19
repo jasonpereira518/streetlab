@@ -2,9 +2,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MockSim, createMockTransport } from '../src/net/mockServer';
-import { SCENARIOS } from '../src/net/mockCity';
+import { SCENARIOS, makeEgoRoute } from '../src/net/mockCity';
 import { StateUpdateSchema, parseServerMessage } from '../src/schema';
 import type { SceneDescription, ServerMessage, StateUpdate } from '../src/schema';
+import { roadHalfWidth } from '../src/schema';
 import { makeRectRoute } from '../src/net/route';
 
 describe('mock scene', () => {
@@ -606,5 +607,139 @@ describe('mock walkthrough presets', () => {
     const sim = new MockSim();
     expect(sim.apply({ id: 'n', cmd: 'set_perception', mode: 'noisy-truth' }).ok).toBe(true);
     expect(sim.apply({ id: 'm', cmd: 'set_perception', mode: 'ml' }).ok).toBe(false);
+  });
+});
+
+describe('mock vehicles stay on the road', () => {
+  /** Whether (x, y) is on tarmac as the renderer draws it: a road's strip or a kerb return. */
+  function onRoad(scene: SceneDescription, x: number, y: number): boolean {
+    const strip = scene.roads.some((r) => {
+      const pts = r.centerline;
+      for (let i = 1; i < pts.length; i++) {
+        const [ax, ay] = pts[i - 1];
+        const [bx, by] = pts[i];
+        const L = (bx - ax) ** 2 + (by - ay) ** 2;
+        const t = L ? Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / L)) : 0;
+        if (Math.hypot(x - (ax + t * (bx - ax)), y - (ay + t * (by - ay))) <= roadHalfWidth(r) + 1e-6) return true;
+      }
+      return false;
+    });
+    if (strip) return true;
+    return (scene.kerb_returns ?? []).some((kr) => {
+      const kite = [kr.corner, kr.tangent_a, kr.center, kr.tangent_b];
+      let inside = false;
+      for (let i = 0, j = kite.length - 1; i < kite.length; j = i++) {
+        const [xi, yi] = kite[i];
+        const [xj, yj] = kite[j];
+        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+      return inside && Math.hypot(x - kr.center[0], y - kr.center[1]) >= kr.radius_m - 1e-6;
+    });
+  }
+
+  /** Points every 0.25 m round a body's outline: its corners alone miss a kerb corner poking into its side. */
+  function outline(x: number, y: number, h: number, length: number, width: number): Array<[number, number]> {
+    const c = Math.cos(h);
+    const s = Math.sin(h);
+    const corners: Array<[number, number]> = [
+      [length / 2, width / 2],
+      [-length / 2, width / 2],
+      [-length / 2, -width / 2],
+      [length / 2, -width / 2],
+    ];
+    const out: Array<[number, number]> = [];
+    for (let i = 0; i < 4; i++) {
+      const [ax, ay] = corners[i];
+      const [bx, by] = corners[(i + 1) % 4];
+      const n = Math.ceil(Math.hypot(bx - ax, by - ay) / 0.25);
+      for (let k = 0; k < n; k++) {
+        const u = ax + ((bx - ax) * k) / n;
+        const v = ay + ((by - ay) * k) / n;
+        out.push([x + u * c - v * s, y + u * s + v * c]);
+      }
+    }
+    return out;
+  }
+
+  it('never puts any part of a car, the ego included, off the carriageway', () => {
+    // Measured before: the cut-in car waited 1.8 m up the pavement on the ego's
+    // right (the ego drives the kerb lane), and the ego's 10 m turn cut 1.6 m
+    // across each square kerb corner.
+    const sim = new MockSim();
+    const scene = sim.scene;
+    const off: string[] = [];
+    for (let i = 0; i < 60 * 150; i++) {
+      sim.step();
+      if (i % 6) continue;
+      const f = sim.frame();
+      const bodies = [
+        { id: 'ego', pose: f.ego.pose, size: { length: 4.9, width: 1.96 } },
+        ...f.world_agents.map((a) => ({ id: a.id, pose: a.pose, size: a.size })),
+      ];
+      for (const b of bodies) {
+        const bad = outline(b.pose.x, b.pose.y, b.pose.heading, b.size.length, b.size.width).find(([x, y]) => !onRoad(scene, x, y));
+        if (bad && off.length < 5) off.push(`${b.id} t=${(i / 60).toFixed(1)} (${bad[0].toFixed(1)}, ${bad[1].toFixed(1)})`);
+      }
+    }
+    expect(off).toEqual([]);
+  });
+});
+
+describe('mock turns', () => {
+  it('takes every right turn from the kerb lane, never the lane beside it', () => {
+    const sim = new MockSim();
+    sim.apply({ id: 'p', cmd: 'set_param', key: 'cutin_period_s', value: 6 });
+    const route = makeEgoRoute();
+    const wide: string[] = [];
+    let cutins = 0;
+    let seen = false;
+    for (let i = 0; i < 60 * 300; i++) {
+      sim.step();
+      const f = sim.frame();
+      const merging = f.events?.some((e) => e.code === 'CUTIN_DETECTED') ?? false;
+      if (merging) cutins++;
+      const car = f.world_agents.find((a) => a.id === 'veh_cutin');
+      if (!car) continue;
+      seen = true;
+      let on = route.sample(0);
+      let off = Infinity;
+      for (let s = 0; s < route.length; s += 0.25) {
+        const p = route.sample(s);
+        const d = Math.hypot(car.pose.x - p.x, car.pose.y - p.y);
+        if (d < off) [on, off] = [p, d];
+      }
+      if (Math.abs(on.curvature) > 1e-3 && off > 0.5 && wide.length < 5) {
+        wide.push(`t=${(i / 60).toFixed(1)} ${off.toFixed(2)} m off the kerb lane mid-turn`);
+      }
+    }
+    expect(seen).toBe(true);
+    expect(wide).toEqual([]);
+    expect(cutins).toBeGreaterThan(3); // and it still cuts in
+  });
+});
+
+describe('mock signalled lane changes', () => {
+  it('turns right only from the kerb lane, however often the driver signals left', () => {
+    const sim = new MockSim();
+    const route = makeEgoRoute();
+    let accepted = 0;
+    const wide: string[] = [];
+    for (let i = 0; i < 60 * 200; i++) {
+      if (i % 30 === 0 && sim.apply({ id: 'l', cmd: 'lane_change', direction: 'left' }).ok) accepted++;
+      sim.step();
+      if (i % 6) continue;
+      const { x, y } = sim.frame().ego.pose;
+      let on = route.sample(0);
+      let off = Infinity;
+      for (let s = 0; s < route.length; s += 0.5) {
+        const p = route.sample(s);
+        const d = Math.hypot(x - p.x, y - p.y);
+        if (d < off) [on, off] = [p, d];
+      }
+      if (Math.abs(on.curvature) > 1e-3 && off > 0.6 && wide.length < 5) wide.push(`t=${(i / 60).toFixed(1)} ${off.toFixed(2)} m out mid-turn`);
+    }
+    expect(accepted).toBeGreaterThan(2);
+    expect(wide).toEqual([]);
+    expect(sim.apply({ id: 'r', cmd: 'lane_change', direction: 'right' })).toMatchObject({ ok: false, message: 'no lane to the right' });
   });
 });

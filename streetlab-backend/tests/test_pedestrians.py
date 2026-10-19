@@ -9,7 +9,7 @@ import pytest
 from map.clearance import KeepOut
 from map.scene_build import SyntheticGrid
 from sim.loop import Simulation
-from sim.pedestrians import ID_PREFIX, MAX_CROSSING, PedestrianFlow
+from sim.pedestrians import ID_PREFIX, KERB_STEP_M, MAX_CROSSING, PedestrianFlow
 from sim.scorecard import _corners, obb_separation
 from tests.test_vehicle_clearance import _nob_hill_source
 
@@ -94,3 +94,64 @@ def test_no_vehicle_ever_touches_a_walker(closest_pass):
 
 def test_the_crossing_walkers_are_bounded(closest_pass):
     assert closest_pass[2] <= MAX_CROSSING
+
+
+def _crossing_drive(walker_y):
+    """The ego on a straight road toward a crossing at x = 42..46; a walker
+    standing on it at `walker_y` (None: nobody). Returns the ego's last x."""
+    from plan.behavior import BehaviorFSM
+    from schema import Detection, Pose, Size
+    from sim.route import ControlPoint
+    from tests.test_junction_yield import DT, _ego, _road
+
+    cp = ControlPoint(id="cw", kind="crosswalk", s=41.0, position=(44.0, 0.0), extent=(math.pi / 2, 7.0, 2.0))
+    walker = [] if walker_y is None else [Detection(
+        id="ped", cls="pedestrian", pose=Pose(x=44.0, y=walker_y, heading=math.pi / 2),
+        size=Size(length=0.6, width=0.6, height=1.75), velocity=(0.0, 0.0), speed_mps=0.0,
+        confidence=1.0, hazard=False, hazard_label=None, ttc_s=None, lane_offset=1, emergency=False,
+    )]
+    fsm, road = BehaviorFSM(), _road()
+    s, v = 0.0, 11.0
+    for _ in range(int(12.0 / DT)):
+        d = fsm.step(_ego(s, v), road, s, [cp], signals={}, dt=DT, detections=walker)
+        want = min(11.0, d.speed_ceiling_mps)
+        v = max(0.0, v + max(-3.0 * DT, min(3.0 * DT, want - v)))
+        s += v * DT
+    return s
+
+
+def test_the_ego_waits_while_anyone_is_on_the_crossing_even_on_its_far_side():
+    """Not just someone in its path: a walker on the far half still holds it,
+    short of the crossing's near edge (x = 42)."""
+    assert _crossing_drive(5.0) < 42.0
+    assert _crossing_drive(0.0) < 42.0
+    assert _crossing_drive(None) > 100.0
+    assert _crossing_drive(9.5) > 100.0  # on the pavement beyond it
+
+
+def test_pavement_walkers_cross_streets_only_on_the_crossings():
+    """At a block's end a stroller takes a crossing and walks on beyond it;
+    on a carriageway it is only ever on a crossing, or stepping off the kerb
+    onto one: the paint stops ~0.75 m short of the kerb."""
+    sim = _sim("grid-loop", traffic=0.0)
+    keep_out = KeepOut(sim.scene.description.roads, [], [])
+    crosswalks = sim.scene.description.crosswalks
+
+    def on_a_crossing(x, y):
+        for cw in crosswalks:
+            dx, dy = x - cw.center[0], y - cw.center[1]
+            c, s = math.cos(cw.heading), math.sin(cw.heading)
+            if abs(dx * c + dy * s) <= cw.length_m / 2 + KERB_STEP_M and abs(-dx * s + dy * c) <= cw.width_m / 2 + 0.5:
+                return True
+        return False
+
+    crossed = set()
+    for i in range(int(RUN_S / sim.dt)):
+        sim.step()
+        if i % 6:
+            continue
+        for a in sim._traffic.agents:
+            if a.id.startswith(ID_PREFIX + "s") and keep_out.in_carriageway((a.state.x, a.state.y)):
+                assert on_a_crossing(a.state.x, a.state.y), (a.id, a.state.x, a.state.y)
+                crossed.add(a.id)
+    assert crossed, "no stroller crossed a street"
