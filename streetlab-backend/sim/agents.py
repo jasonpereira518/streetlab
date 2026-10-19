@@ -584,6 +584,19 @@ _ROW_LOOK_M = 15.0
 _ROW_GAP_S = 4.0
 _ROW_TIE_S = 1.0
 _ROW_MIN_SPEED_MPS = 2.0
+#: Unprotected lefts: the gap in oncoming traffic a left turn needs, longer
+#: than `_ROW_GAP_S` because it crosses the whole oncoming carriageway. How
+#: far either side of a box a route's heading is read for its movement, and
+#: how closely an approach must line up with a major road to be on it.
+_LEFT_GAP_S = 5.0
+#: A car going my way in a lane I turn across counts from this far behind me.
+_ACROSS_BEHIND_M = 15.0
+#: How far a slow vehicle's nose may be inside a box and still give way there.
+_ROW_NOSE_IN_M = 3.0
+_TURN_PROBE_M = 5.0
+_MAJOR_ALIGN_COS = 0.9
+#: How far past a signal's line a route is read for a right on red.
+_RED_TURN_SPAN_M = 25.0
 #: Street ends: how near another lane must pass to be turned onto, the road
 #: it must have left, the sharpest turn taken, what counts as straight on, and
 #: the least gap behind on the new lane even for slow traffic.
@@ -883,7 +896,12 @@ class IdmTraffic(ScriptedTraffic):
         on a jump (measured, dense Nob Hill)."""
         here = (agent.state.x, agent.state.y)
         for lane in self._exits.get(id(agent.route), ()):
-            if self._exit_busy(lane, lane.project(here), agent, world):
+            s_on = lane.project(here)
+            if self._exit_busy(lane, s_on, agent, world):
+                continue
+            exit_heading = lane.heading_at(s_on)
+            turn = math.remainder(exit_heading - agent.route.heading_at(agent.route.length_m - 1.0), math.tau)
+            if turn > _STRAIGHT_RAD and self._left_blocked(agent, exit_heading, world):
                 continue
             turn = self._turn_route(agent.route, lane)
             agent.route = turn
@@ -894,6 +912,25 @@ class IdmTraffic(ScriptedTraffic):
             agent.cleared_control_id = None
             agent.control_dwell_s = 0.0
             return True
+        return False
+
+    def _left_blocked(self, agent: Agent, exit_heading: float, world: TrafficWorld | None) -> bool:
+        """Whether a left out of a street's end would cross anyone about to
+        enter its junction: everyone not already heading the exit's way.
+        ponytail: over-yields to a car from the right turning away; a conflict
+        zone per movement pair would tell them apart."""
+        mine = self._next_pass.get(id(agent))
+        if mine is None:
+            return False
+        rivals = [(id(o), o.state) for o in self._near(mine[0].centre, _IDM_HORIZON_M + _NEAR_PAD_M) if o is not agent]
+        if world is not None:
+            rivals.append(("ego", world.ego))
+        for key, state in rivals:
+            rn = self._next_pass.get(key)
+            if rn is None or rn[0].key != mine[0].key or rn[1] <= 0.0:
+                continue
+            if state.speed_mps > _STANDSTILL_MPS and rn[2] < _LEFT_GAP_S and math.cos(state.heading - exit_heading) < _SAME_WAY_COS:
+                return True
         return False
 
     def _turn_route(self, frm: Route, to: Route) -> Route:
@@ -1329,18 +1366,34 @@ class IdmTraffic(ScriptedTraffic):
             return
 
         speed = agent.state.speed_mps
-        if target.kind == "stop_sign":
+        if target.kind == "yield":
+            return  # gives way to through traffic (`_right_of_way`), stops for no one
+        # Right on red is a driver's option, taken by ambient traffic only: the
+        # scenario's own cars are the ego's designed leads, and one turning
+        # on red left grid_slow with no stopped lead to queue behind in 700 s.
+        red_right = (
+            target.kind == "signal"
+            and id(agent.route) in self._ambient_routes
+            and agent.lifetime_s is None
+            and _phase(world.signals.get(target.id)) == "red"
+            and self._turn_at(agent.route, target) == "right"
+        )
+        if target.kind == "stop_sign" or red_right:
             if agent.cleared_control_id == target.id:
                 self._waiting.pop(agent.id, None)
                 return
-            self._note_waiting(agent, target)
+            if not red_right:
+                self._note_waiting(agent, target)
             if speed < _STANDSTILL_MPS and gap <= _STOP_ZONE_M:
                 agent.control_dwell_s += dt
-                if agent.control_dwell_s >= _STOP_DWELL_S and self._may_take_box(agent, target, world):
+                if agent.control_dwell_s >= _STOP_DWELL_S and (
+                    self._clear_to_turn_on_red(agent, target, world) if red_right else self._may_take_box(agent, target, world)
+                ):
                     agent.cleared_control_id = target.id
                     agent.control_dwell_s = 0.0
                     self._waiting.pop(agent.id, None)
-                    self._box_holder[_junction_key(target.position)] = (agent, self._elapsed)
+                    if not red_right:
+                        self._box_holder[_junction_key(target.position)] = (agent, self._elapsed)
                     return
             else:
                 agent.control_dwell_s = 0.0
@@ -1350,6 +1403,36 @@ class IdmTraffic(ScriptedTraffic):
             must_stop = _signal_says_stop(state, gap, speed)
         if must_stop:
             agent.control_gap_m = max(0.0, gap + _IDM_MIN_GAP_M - _STOP_SHORT_M)
+
+    @staticmethod
+    def _turn_at(route: Route, cp: ControlPoint) -> str:
+        """The movement `route` makes past the line `cp`. Read off the route
+        rather than its passage: a right turn's corner arc runs outside a
+        tight junction's box, so it often has none."""
+        turn = math.remainder(
+            route.heading_at(route.normalise(cp.s + _RED_TURN_SPAN_M)) - route.heading_at(route.normalise(cp.s)), math.tau
+        )
+        return "left" if turn > _STRAIGHT_RAD else "right" if turn < -_STRAIGHT_RAD else "straight"
+
+    def _clear_to_turn_on_red(self, agent: Agent, target: ControlPoint, world: TrafficWorld | None) -> bool:
+        """Right on red, after the full stop: nobody, ego included, in the box
+        or due in it within `_ROW_GAP_S`, other than traffic going my way."""
+        p = min(self._junctions, key=lambda j: math.dist(j.centre, target.position), default=None)
+        if p is None or math.dist(p.centre, target.position) > p.radius_m + _CONTROL_REACH_M:
+            return False
+        key = _junction_key(p.centre)
+        rivals = [(id(o), o.state, o.size.length) for o in self._near(p.centre, _IDM_HORIZON_M + _NEAR_PAD_M) if o is not agent]
+        if world is not None:
+            rivals.append(("ego", world.ego, _EGO_LENGTH_M))
+        for who, state, length in rivals:
+            rn = self._next_pass.get(who)
+            if rn is None or rn[0].key != key or math.cos(state.heading - agent.state.heading) >= _SAME_WAY_COS:
+                continue
+            in_box = rn[1] <= 0.0 and math.dist((state.x, state.y), p.centre) < p.radius_m + length / 2
+            if in_box or (state.speed_mps > _STANDSTILL_MPS and rn[2] < _ROW_GAP_S):
+                return False
+        return True
+
     # -- all-way stops ------------------------------------------------------ #
 
     def _may_take_box(self, agent: Agent, target: ControlPoint, world: TrafficWorld) -> bool:
@@ -1469,14 +1552,34 @@ class IdmTraffic(ScriptedTraffic):
                     (
                         cp.kind
                         for cp in controls
-                        if cp.kind in ("signal", "stop_sign") and 0.0 <= (s - cp.s) % route.length_m <= j.radius_m + _CONTROL_REACH_M
+                        if cp.kind in ("signal", "stop_sign", "yield") and 0.0 <= (s - cp.s) % route.length_m <= j.radius_m + _CONTROL_REACH_M
                     ),
                     None,
                 )
-                out.append(_Passage(_junction_key(j.centre), j.centre, s, j.radius_m, kind))
+                before = route.heading_at(route.normalise(s - j.radius_m - _TURN_PROBE_M))
+                major = None
+                if j.major_headings:
+                    major = any(abs(math.cos(before - b)) > _MAJOR_ALIGN_COS for b in j.major_headings)
+                out.append(
+                    _Passage(_junction_key(j.centre), j.centre, s, j.radius_m, kind, self._movement(route, s, j.radius_m, before), major)
+                )
         out.sort(key=lambda p: p.s)
         self._passages[id(route)] = out
         return out
+
+    def _movement(self, route: Route, s: float, radius: float, before: float) -> str:
+        """Left, right or straight through the box at `s`. A street that ends
+        in it turns onto its first exit, the one `_turn_off` tries first."""
+        after_s = s + radius + _TURN_PROBE_M
+        if not route.closed and after_s > route.length_m:
+            exits = self._exits.get(id(route))
+            if not exits:
+                return "straight"
+            end = route.point_at(route.length_m)
+            turn = math.remainder(exits[0].heading_at(exits[0].project(end)) - before, math.tau)
+        else:
+            turn = math.remainder(route.heading_at(route.normalise(after_s)) - before, math.tau)
+        return "left" if turn > _STRAIGHT_RAD else "right" if turn < -_STRAIGHT_RAD else "straight"
 
     def _next_passage(self, route: Route, s: float, length: float, speed: float):
         """(passage, front bumper to its box edge, seconds to it) for the next
@@ -1512,11 +1615,13 @@ class IdmTraffic(ScriptedTraffic):
         there, else inf. Where a signal governs, the light decides. Otherwise:
 
         * anything already crossing inside the box goes first;
-        * a car leaving a stop sign waits for a gap in through traffic that
-          has no sign -- the two-way stop, most of Nob Hill's junctions;
-        * two cars with nothing to stop them: whoever gets there first goes,
-          and arriving together, the one on the right. The ego is always let
-          go (it does not yet yield at an unsigned junction itself).
+        * a left turn waits for a gap in oncoming traffic, at a green too;
+        * a car with a stop or yield sign waits for a gap in through traffic
+          that has none -- the two-way stop, most of Nob Hill's junctions;
+        * two cars with nothing to stop them: the one on the major road
+          (`Junction.major_headings`) goes; with no major road, whoever gets
+          there first, and arriving together, the one on the right. The ego
+          is always let go (it does not yet yield at an unsigned junction).
 
         Stopped cars arriving together all round each have one on their right;
         whoever has waited longest goes once it has waited `BOX_TIMEOUT_S`.
@@ -1527,7 +1632,11 @@ class IdmTraffic(ScriptedTraffic):
             return math.inf
         p, entry, eta = nxt
         v = agent.state.speed_mps
-        if p.control == "signal" or entry <= 0.0 or entry > v * v / (2 * _IDM_COMFORT_DECEL) + _ROW_LOOK_M:
+        left = p.turn == "left"
+        # Its nose just inside the box but barely moving -- a long vehicle at a
+        # line set back inside a wide junction's disc -- has not gone yet.
+        started = entry <= 0.0 and not (v < _ROW_MIN_SPEED_MPS and entry > -_ROW_NOSE_IN_M)
+        if (p.control == "signal" and p.turn == "straight") or started or entry > v * v / (2 * _IDM_COMFORT_DECEL) + _ROW_LOOK_M:
             agent.junction_wait_s = 0.0
             return math.inf
         mine_free = p.control is None
@@ -1545,10 +1654,29 @@ class IdmTraffic(ScriptedTraffic):
             if rn is None or rn[0].key != p.key:
                 continue
             c = math.cos(state.heading - h)
-            if abs(c) >= _SAME_WAY_COS:
-                continue  # same way (a leader) or straight opposite: no crossing
             r_entry, r_eta = rn[1], rn[2]
-            if r_entry <= 0.0 and math.dist((state.x, state.y), p.centre) < p.radius_m + length / 2:
+            in_box = r_entry <= 0.0 and math.dist((state.x, state.y), p.centre) < p.radius_m + length / 2
+            if p.turn != "straight" and c >= _SAME_WAY_COS:
+                # Turning across a lane going my way -- a bus taking a right
+                # from the inner lane (grid-merge): whoever is in it goes first.
+                dx, dy = state.x - agent.state.x, state.y - agent.state.y
+                side = math.cos(h) * dy - math.sin(h) * dx  # + left, - right
+                ahead = math.cos(h) * dx + math.sin(h) * dy
+                beside = abs(side) > _SAME_LANE_M and (side < 0) == (p.turn == "right")
+                if beside and ahead > -_ACROSS_BEHIND_M and (in_box or (state.speed_mps > _STANDSTILL_MPS and r_eta < eta + _ROW_GAP_S)):
+                    must_yield = True
+                    break
+                continue
+            if left and c <= -_SAME_WAY_COS:
+                # An unprotected left gives way to oncoming traffic, on a green
+                # as anywhere else. Two opposing lefts pass in front of each other.
+                if rn[0].turn != "left" and (in_box or (state.speed_mps > _STANDSTILL_MPS and r_eta < _LEFT_GAP_S)):
+                    must_yield = True
+                    break
+                continue
+            if p.control == "signal" or abs(c) >= _SAME_WAY_COS:
+                continue  # the light governs crossers; same way, or opposite and not turning across
+            if in_box:
                 must_yield = True  # crossing in the box now
                 break
             if rn[0].control == "signal":
@@ -1567,6 +1695,13 @@ class IdmTraffic(ScriptedTraffic):
                 continue
             if who == "ego":
                 if r_eta < eta + _ROW_TIE_S:
+                    must_yield = True
+                    break
+                continue
+            if p.major is not None and rn[0].major is not None and p.major != rn[0].major:
+                # A priority road: the side street waits for a gap in it,
+                # whoever is on the right.
+                if not p.major and r_eta < _ROW_GAP_S:
                     must_yield = True
                     break
                 continue
@@ -1877,6 +2012,10 @@ class IdmTraffic(ScriptedTraffic):
         )
 
 
+def _phase(state: SignalState | None) -> str | None:
+    return None if state is None else state.phase
+
+
 def _signal_says_stop(state: SignalState | None, gap: float, speed: float) -> bool:
     """The ego's red/yellow rule (`BehaviorPlanner._must_stop`), minus its latch.
 
@@ -1884,11 +2023,11 @@ def _signal_says_stop(state: SignalState | None, gap: float, speed: float) -> bo
     would still cross the line -- which is what lets a car that was already on
     top of the line when it changed carry on rather than stop in the junction.
     Yellow stops unless stopping comfortably is no longer possible AND the line
-    can be reached before the yellow runs out. Green, anything else, or no
-    phase at all is go.
+    can be reached before the yellow runs out. No phase at all stops, as the
+    ego does; green or anything else is go.
     """
     if state is None:
-        return False
+        return True  # no known phase: stop, as the ego does
     if state.phase == "red":
         return speed**2 / (2 * _IDM_MAX_BRAKE) < gap
     if state.phase == "yellow":
@@ -2078,6 +2217,11 @@ class _Passage:
     s: float
     radius_m: float
     control: str | None
+    #: The movement through the box: "left", "right" or "straight".
+    turn: str = "straight"
+    #: On the junction's major road (True), a minor one (False), or the
+    #: junction has no major road (None) -- `Junction.major_headings`.
+    major: bool | None = None
 
 
 def _street_exits(routes: Sequence[Route]) -> dict[int, list[Route]]:
