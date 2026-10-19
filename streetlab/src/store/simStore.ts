@@ -226,9 +226,31 @@ export const PARAM_DEFS: ParamDef[] = [
       { value: 'midday', label: 'Midday' },
       { value: 'golden', label: 'Golden hour' },
       { value: 'overcast', label: 'Overcast' },
+      { value: 'night', label: 'Night' },
     ],
   },
+  {
+    key: 'headlights',
+    label: 'Headlights',
+    kind: 'select',
+    group: 'render',
+    default: 'auto',
+    clientOnly: true,
+    options: [
+      { value: 'auto', label: 'Auto' },
+      { value: 'on', label: 'On' },
+      { value: 'off', label: 'Off' },
+    ],
+    hint: 'Auto turns them on at night, golden hour and when overcast. H toggles.',
+  },
 ];
+
+/** Whether the ego's headlights are on under these render params. */
+export function headlightsOn(params: Record<string, unknown>): boolean {
+  const mode = params.headlights ?? 'auto';
+  if (mode !== 'auto') return mode === 'on';
+  return ['night', 'golden', 'overcast'].includes(String(params.time_of_day ?? 'midday'));
+}
 
 const DEFAULT_PARAMS: Record<string, ParamValue> = Object.fromEntries(
   PARAM_DEFS.map((d) => [d.key, d.default]),

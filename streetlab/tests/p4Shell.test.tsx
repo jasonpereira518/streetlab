@@ -184,6 +184,18 @@ describe('keyboard shortcuts and help', () => {
     expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'left' });
   });
 
+  it('H toggles the headlights and L is Assist: the two features never share a key', () => {
+    harness = createHarness();
+    render(<Keys />);
+    harness.emitScene();
+    const before = useSimStore.getState().params.headlights;
+    fireEvent.keyDown(window, { key: 'h' });
+    expect(useSimStore.getState().params.headlights).not.toBe(before);
+    expect(harness.sent.some((c) => c.cmd === 'set_drive_mode')).toBe(false);
+    fireEvent.keyDown(window, { key: 'l' });
+    expect(harness.sent.at(-1)).toMatchObject({ cmd: 'set_drive_mode', mode: 'autosteer' });
+  });
+
   it('leaves keys alone while typing or on a focused button', () => {
     harness = createHarness();
     render(

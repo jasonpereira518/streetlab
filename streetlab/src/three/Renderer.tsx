@@ -20,7 +20,7 @@ import {
 } from 'three/tsl';
 import type { CameraView, LayerKey, StateUpdate } from '../schema';
 import { perfMetrics } from '../perf/perfMetrics';
-import { frameBus, hasPipeline, useSimStore } from '../store/simStore';
+import { frameBus, hasPipeline, headlightsOn, useSimStore } from '../store/simStore';
 import type { SimStoreState } from '../store/simStore';
 import { color as tokens, lighting } from '../ui/theme';
 import type { LightingPreset } from '../ui/theme';
@@ -363,7 +363,8 @@ function mount(
   // between chase/overhead/cockpit/free must never change what perception
   // sees, nor the rate frames are emitted at.
   const detectorCamera = createDetectorCamera(scene, renderer, backend);
-  const ego = new EgoVehicle({ length: 4.9, width: 1.96, height: 1.44 });
+  // Resized to the wire's `ego.size` on the first frame (see applyFrame).
+  const ego = new EgoVehicle({ length: 4.7, width: 1.9, height: 1.5 });
   const fleet = new TrafficFleet();
   const ribbon = new PathRibbon();
   const hazards = new HazardOverlay();
@@ -378,6 +379,10 @@ function mount(
   assignChannel(ego.group, CH.EGO);
   assignChannel(radar.mesh, CH.OVERLAY);
   assignChannel(ribbon.mesh, CH.OVERLAY);
+  // A light only lights for cameras that can see its layer. The beams light
+  // the road for every camera -- cockpit (no EGO channel) and the detector
+  // included: at night, that is what a real camera would see.
+  for (const beam of ego.beams) beam.layers.enableAll();
   // The interior rides on the body mesh, so it rolls and pitches with it.
   // Added after the EGO assignment above: it stays on its own CABIN channel.
   const cabin = new Cabin();
@@ -409,6 +414,7 @@ function mount(
     hemi.color.set(preset.sky);
     hemi.groundColor.set(preset.ground);
     hemi.intensity = preset.ambient;
+    ego.setReflections(preset.ambient / lighting.midday.ambient);
     sun.color.set(preset.sun);
     sun.intensity = preset.intensity;
     sunDir = new THREE.Vector3(
@@ -436,6 +442,7 @@ function mount(
     hazards.setLabelScale(Number(params.label_scale ?? 1));
     hazards.setAccent(String(params.hazard_color ?? tokens.warn));
     applyLighting(String(params.time_of_day ?? 'midday'));
+    ego.setHeadlights(headlightsOn(params));
   };
 
   let ground_: HeightFn | null = null;
@@ -561,9 +568,18 @@ function mount(
   let captureSeq = 0;
 
   const applyFrame = (frame: StateUpdate, sample: RenderSample, dt: number) => {
+    ego.setSize(frame.ego.size);
     const egoGround = world ? world.groundFor(sample.pose.heading) : ground_;
     ego.setPose(sample.pose, egoGround);
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
+    ego.update(
+      sample.speed_mps,
+      sample.steering_angle,
+      frame.ego.brake,
+      frame.ego.turn_signal,
+      performance.now() / 1000,
+      dt,
+    );
     if (cameraView === 'cockpit') {
       cabin.update(
         sample.steering_angle,
