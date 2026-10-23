@@ -35,6 +35,23 @@ describe('drive HUD', () => {
     expect(screen.getByTestId('drive-hint').textContent).toContain(DRIVE_HINTS.off);
   });
 
+  it('a pedal key is sent the moment it moves, not on the next 30 Hz tick', () => {
+    vi.useFakeTimers();
+    harness = createHarness();
+    harness.emitScene();
+    harness.emitFrame(5);
+    render(<Drive />);
+    const h = harness;
+    const drives = () => h.sent.filter((c) => c.cmd === 'drive_input');
+    fireEvent.keyDown(window, { key: 'w' });
+    expect(drives().at(-1)).toMatchObject({ throttle: 1, brake: 0 }); // no timer has run
+    fireEvent.keyDown(window, { key: 'w' }); // key repeat: no extra send
+    const count = drives().length;
+    fireEvent.keyUp(window, { key: 'w' });
+    expect(drives()).toHaveLength(count + 1);
+    expect(drives().at(-1)).toMatchObject({ throttle: 0 });
+  });
+
   it('on-screen Gas drives like a held W key', () => {
     vi.useFakeTimers();
     harness = createHarness();

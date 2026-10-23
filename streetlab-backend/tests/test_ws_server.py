@@ -102,6 +102,41 @@ async def test_state_updates_stream_after_the_scene(server):
         assert all(f.type == "state_update" for f in frames)
 
 
+@pytest.fixture(scope="module")
+def server_60hz():
+    """Production rates (60 Hz sim, 60 Hz stream), unlike the shared 120 Hz
+    `server`: pacing is only meaningful where the two clocks match."""
+    loop = SimLoop(Simulation(SyntheticGrid(), seed=5), hz=60)
+    app = create_app(loop, tick_hz=60)
+    port = _free_port()
+    srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=srv.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if srv.started:
+            break
+        threading.Event().wait(0.05)
+    else:
+        raise RuntimeError("server did not start")
+    yield f"ws://127.0.0.1:{port}/"
+    srv.should_exit = True
+    thread.join(timeout=5)
+    loop.stop()
+
+
+async def test_the_stream_delivers_nearly_every_tick_the_sim_produces(server_60hz):
+    """Paced by the sim, not a timer that slept a full period after each send
+    (which stretched every period and beat against the sim: 47.8 frames/s on
+    Nob Hill, 22% of frames carrying two ticks). Measured as frames per tick,
+    so a slow runner -- which slows the sim too -- cannot fail it."""
+    async with connect(server_60hz) as ws:
+        await recv_typed(ws, "scene_description")
+        frames = [await recv_typed(ws, "state_update") for _ in range(180)]
+    ticks = round((frames[-1].t - frames[0].t) * frames[0].sim_rate_hz)
+    # Measured: 1.01-1.03 now (a late tick is re-sent), 0.927 with the old loop.
+    assert (len(frames) - 1) / ticks >= 0.96
+
+
 async def test_every_message_validates_against_the_shared_schema(server):
     async with connect(server) as ws:
         for _ in range(40):

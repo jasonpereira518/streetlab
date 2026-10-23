@@ -1,11 +1,12 @@
 /**
  * Keyboard driving: held keys -> smoothed analog axes -> `drive_input` at ~30 Hz.
  *
- * A key is binary, a pedal is not. `shapeAxes` ramps each axis toward its
- * key's target (steer reaches full lock over 0.3 s and recentres over 0.2 s;
- * pedals over 0.25 s), so a tap is a nudge and a hold is a sweep. The backend
- * then rate- and jerk-limits on top (`plan/manual.py`): this is feel, that is
- * the guarantee.
+ * Steering is ramped here: `shapeAxes` sweeps it to full lock over 0.3 s and
+ * recentres over 0.2 s, so a tap is a nudge and a hold is a sweep. Pedals are
+ * NOT ramped: a pedal key is pressed or not, and ramping it here stacked a
+ * second delay on the backend's jerk limit (`plan/manual.py`), which alone
+ * shapes how the gas and brake bite. Pedal changes are also sent the moment
+ * the key moves, not on the next 30 Hz tick.
  */
 import { useEffect } from 'react';
 import { useSimStore } from '../store/simStore';
@@ -52,13 +53,12 @@ const KEYS: Record<string, Control> = {
 export const SEND_HZ = 30;
 const STEER_ENGAGE_S = 0.3;
 const STEER_RETURN_S = 0.2;
-const PEDAL_S = 0.25;
-/** The brake key bites faster than the throttle: stopping is the urgent one. */
-const BRAKE_S = 0.12;
 /** Where a fresh press starts: past the backend's 0.15 deadband
  * (`plan/manual.py`), so even a tap registers and walks the hand-over ladder.
  * The car stays smooth: the backend rate- and jerk-limits whatever arrives. */
 export const PRESS_KICK = 0.25;
+
+const isPedal = (c: Control) => c === 'throttle' || c === 'brake';
 
 export function controlFor(key: string): Control | undefined {
   return KEYS[key.toLowerCase()];
@@ -82,8 +82,8 @@ export function shapeAxes(prev: Axes, held: ReadonlySet<Control>, dt: number): A
   const steerRate = 1 / (recentring && prev.steer !== 0 ? STEER_RETURN_S : STEER_ENGAGE_S);
   return {
     steer: approach(prev.steer, steerTarget, steerRate, dt),
-    throttle: approach(prev.throttle, held.has('throttle') ? 1 : 0, 1 / PEDAL_S, dt),
-    brake: approach(prev.brake, held.has('brake') ? 1 : 0, 1 / BRAKE_S, dt),
+    throttle: held.has('throttle') ? 1 : 0,
+    brake: held.has('brake') ? 1 : 0,
   };
 }
 
@@ -128,12 +128,16 @@ export function useDriveKeys(): void {
       const s = useSimStore.getState();
       if (s.failure || s.queue || ownsTheKey(e.target, e.key)) return;
       e.preventDefault(); // arrows would scroll the page
+      const fresh = !held.has(control);
       held.add(control);
       tapped.add(control);
+      if (fresh && isPedal(control)) emit(false);
     };
     const onUp = (e: KeyboardEvent) => {
       const control = controlFor(e.key);
-      if (control) held.delete(control);
+      if (!control) return;
+      held.delete(control);
+      if (isPedal(control)) emit(false);
     };
     // Alt-tab with a key down never delivers its keyup.
     const onBlur = () => {
@@ -141,13 +145,27 @@ export function useDriveKeys(): void {
       virtualHeld.clear();
     };
 
-    const timer = setInterval(() => {
-      // A fixed step, not wall-clock: the ramps are a feel, and a throttled
-      // background timer must not make one tick jump a whole key press.
-      const dt = 1 / SEND_HZ;
-      axes = shapeAxes(axes, new Set([...held, ...tapped, ...virtualHeld, ...virtualTapped]), dt);
-      tapped.clear();
-      virtualTapped.clear();
+    /** Send the controls as they stand. `advance` steps the steering ramp (the
+     * 30 Hz tick); a pedal key event sends at once without advancing it. */
+    const emit = (advance: boolean) => {
+      // Pedals read the keys actually down: a pedal key is sent the moment it
+      // moves, so the tap latch (there for steering, and for on-screen buttons
+      // that cannot send at once) must not hold a released pedal on.
+      const pedals = new Set([...held, ...virtualHeld, ...virtualTapped]);
+      const pedalAxes = {
+        throttle: pedals.has('throttle') ? 1 : 0,
+        brake: pedals.has('brake') ? 1 : 0,
+      };
+      if (advance) {
+        // A fixed step, not wall-clock: the ramps are a feel, and a throttled
+        // background timer must not make one tick jump a whole key press.
+        const keys = new Set([...held, ...tapped, ...virtualHeld, ...virtualTapped]);
+        axes = { ...shapeAxes(axes, keys, 1 / SEND_HZ), ...pedalAxes };
+        tapped.clear();
+        virtualTapped.clear();
+      } else {
+        axes = { ...axes, ...pedalAxes };
+      }
       let next = axes;
       const pad = padOn ? firstPad() : null;
       const s = useSimStore.getState();
@@ -161,7 +179,8 @@ export function useDriveKeys(): void {
         s.send({ cmd: 'drive_input', ...next });
       }
       sent = next;
-    }, 1000 / SEND_HZ);
+    };
+    const timer = setInterval(() => emit(true), 1000 / SEND_HZ);
 
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);

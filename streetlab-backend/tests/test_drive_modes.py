@@ -14,6 +14,7 @@ from plan.manual import (
     COAST_DECEL_MPS2,
     MANUAL_MAX_DECEL_MPS2,
     MAX_JERK_MPS3,
+    THROTTLE_JERK_MPS3,
     Controls,
     ManualDriver,
     live,
@@ -73,7 +74,7 @@ def test_steer_and_accel_stay_inside_their_rate_limits_under_any_key_pattern():
         assert abs(steer - ego.steering_angle) <= MAX_STEER_RATE_RAD_S * DT + EPS
         if ego.speed_mps > 0:
             # Every change is a ramp; only the brake (biting or letting go) may ramp fast.
-            bound = BRAKE_JERK_MPS3 if (inp.brake or ego.accel_mps2 < 0) else MAX_JERK_MPS3
+            bound = BRAKE_JERK_MPS3 if (inp.brake or ego.accel_mps2 < 0) else THROTTLE_JERK_MPS3
             assert abs(accel - ego.accel_mps2) <= bound * DT + EPS
         ego = model.step(ego, accel_mps2=accel, steer_rad=steer, dt=DT)
 

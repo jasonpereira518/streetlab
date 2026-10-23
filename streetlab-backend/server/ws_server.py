@@ -52,6 +52,12 @@ from sim.loop import CommandOutcome, SimLoop, make_ack
 log = logging.getLogger("streetlab.server")
 
 DEFAULT_TICK_HZ = 60.0
+#: How often `stream` looks for a newly published frame: a new frame waits at
+#: most this long. Cheap -- one lock-protected read per connection.
+_STREAM_POLL_S = 0.004
+#: A NEW frame may go out once this fraction of `period` has passed since the
+#: last send (so `--tick-hz` still caps the rate, with slack for timer jitter).
+_MIN_GAP_FRACTION = 0.75
 # Nominatim's own policy is one request/second; a keystroke-driven field
 # fires far faster than that, so results are capped small rather than
 # widened -- five candidates is plenty for a dropdown and keeps each answer
@@ -350,7 +356,19 @@ class _Connection:
         `paused` is a field on `state_update`, so the frames have to keep
         coming. Re-sending an unchanged frame is harmless; the renderer damps
         toward whatever the latest one holds.
+
+        Paced by the SIMULATION, not a timer of its own: each new frame goes
+        out as soon as the sim thread publishes it (checked every
+        `_STREAM_POLL_S`), so delivery follows the sim's own 60 Hz. The old
+        loop slept a full period after each send, so send time stretched every
+        period and the two clocks beat: measured on Nob Hill, 47.8 frames/s,
+        p95 gap 31 ms, max 65 ms, 22% of frames carrying two ticks -- gaps
+        past the renderer's ~25 ms interpolation buffer, i.e. visible hitches.
+        `period` (`--tick-hz`) still caps the rate, and an unchanged frame is
+        re-sent once a period so a paused client keeps hearing it is paused.
         """
+        last_frame = None
+        last_sent = -math.inf
         while True:
             # `epoch` and `frame` MUST come from one `snapshot()` call, not
             # `self.loop.scene_epoch` followed separately by `self.loop.latest`.
@@ -370,7 +388,12 @@ class _Connection:
                 # before any frame that describes it.
                 await self.send_model(self.loop.sim.scene_description())
                 self._sent_epoch = epoch
-            if frame is not None:
+            now = time.monotonic()
+            due = now - last_sent >= self.period or (
+                frame is not last_frame and now - last_sent >= self.period * _MIN_GAP_FRACTION
+            )
+            if frame is not None and due:
+                last_frame, last_sent = frame, now
                 # `seq` is a per-connection counter: a client joining an
                 # hour-old simulation still starts counting from zero.
                 #
@@ -385,7 +408,7 @@ class _Connection:
                     frame.model_copy(update={"seq": self.seq, "events": events})
                 )
                 self.seq += 1
-            await asyncio.sleep(self.period)
+            await asyncio.sleep(_STREAM_POLL_S)
 
     async def receive(self) -> None:
         while True:

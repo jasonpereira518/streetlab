@@ -42,17 +42,11 @@ describe('drive keys', () => {
     expect(run(full, new Set(), 0.2).steer).toBe(0);
   });
 
-  it('the brake key reaches full within ~0.15 s, faster than the throttle', () => {
-    const brake = new Set(['brake'] as const);
-    expect(run(ZERO_AXES, brake, 0.15).brake).toBe(1);
-    expect(run(ZERO_AXES, new Set(['throttle'] as const), 0.15).throttle).toBeLessThan(1);
-  });
-
-  it('ramps pedals over 0.25 s both ways and settles to exact zero', () => {
-    const on = run(ZERO_AXES, new Set(['throttle'] as const), 0.25);
-    expect(on.throttle).toBe(1);
-    const off = run(on, new Set(), 0.25);
-    expect(isZero(off)).toBe(true);
+  it('pedal keys are instant both ways: the backend jerk limit alone shapes them', () => {
+    // A ramp here stacked on the backend's: the gas took 483 ms to bite.
+    const on = shapeAxes(ZERO_AXES, new Set(['throttle', 'brake'] as const), 1 / 30);
+    expect(on).toMatchObject({ throttle: 1, brake: 1 });
+    expect(isZero(shapeAxes(on, new Set(), 1 / 30))).toBe(true);
   });
 
   it('opposite steer keys cancel', () => {

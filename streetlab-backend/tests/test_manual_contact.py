@@ -2,12 +2,13 @@
 off the tarmac. FSD/Assist are unaffected (the contract fixtures prove that)."""
 
 import math
+import time
 from dataclasses import replace
 
 import pytest
 
 from map.scene_build import SyntheticGrid
-from sim.loop import Simulation
+from sim.loop import SimLoop, Simulation
 
 DT = 1 / 60
 
@@ -110,3 +111,34 @@ def test_fsd_never_runs_the_contact_check(monkeypatch):
     for _ in range(120):
         sim.step()
     assert calls == [] and sim._contact_map is None
+
+
+def test_the_sim_loop_builds_the_contact_map_before_anyone_takes_the_wheel():
+    """Built on the first Manual tick it froze the car at takeover (70 ms on
+    Nob Hill). The loop now builds it in the background once per scene."""
+    loop = SimLoop(Simulation(SyntheticGrid(), seed=7))
+    loop.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while loop.sim._contact_map is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert loop.sim._contact_map is not None
+    finally:
+        loop.stop()
+
+
+def test_a_prewarm_finished_after_a_scene_swap_is_thrown_away(monkeypatch):
+    import sim.loop as loop_mod
+
+    sim = Simulation(SyntheticGrid(), seed=7)
+    real = loop_mod.Surroundings
+
+    class SwapMidBuild(real):
+        def __init__(self, description):
+            # A scene lands on the sim thread while this build is running.
+            sim.apply_dict({"id": "r", "cmd": "load_scenario", "scenario_id": description.scenario_id})
+            super().__init__(description)
+
+    monkeypatch.setattr(loop_mod, "Surroundings", SwapMidBuild)
+    sim.prewarm_surroundings()
+    assert sim._contact_map is None  # built for a scene that is gone
