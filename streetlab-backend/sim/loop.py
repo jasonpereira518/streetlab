@@ -55,7 +55,16 @@ from plan.control import (
     PlanResult,
 )
 from plan.hazard import Reaction
-from plan.manual import NO_CONTROLS, Controls, ManualDriver, axis, jerk_limit, live, throttle_accel
+from plan.manual import (
+    NO_CONTROLS,
+    THROTTLE_JERK_MPS3,
+    Controls,
+    ManualDriver,
+    axis,
+    jerk_limit,
+    live,
+    throttle_accel,
+)
 from schema import (
     Ack,
     Cruise,
@@ -624,7 +633,7 @@ class Simulation:
             return accel, steer  # nothing overrides an emergency brake
         pedal = throttle_accel(controls, ego.speed_mps)
         if pedal > 0.0 and pedal > accel:
-            accel = jerk_limit(pedal, ego.accel_mps2, dt)
+            accel = jerk_limit(pedal, ego.accel_mps2, dt, THROTTLE_JERK_MPS3)
         if world.t - world.mode_changed_t < _HANDOVER_S:
             accel = jerk_limit(accel, ego.accel_mps2, dt)
         if mode == "cruise":
@@ -636,6 +645,21 @@ class Simulation:
         if self._contact_map is None:
             self._contact_map = Surroundings(self.scene.description)
         return self._contact_map
+
+    def prewarm_surroundings(self) -> None:
+        """Build the contact map ahead of need, OFF the sim thread (`SimLoop`).
+
+        Built lazily on the first Manual tick it froze the car at the very
+        moment the driver took the wheel: 70 ms on Nob Hill's 2,224 buildings,
+        four dropped frames. A map finished after the scene changed is dropped;
+        if the driver beats this to it, `_surroundings` still builds on demand.
+        """
+        scene = self.scene
+        if self._contact_map is not None:
+            return
+        built = Surroundings(scene.description)
+        if self.scene is scene and self._contact_map is None:
+            self._contact_map = built
 
     def _kerb_drag(self, accel: float) -> float:
         """Off the tarmac the car bumps along: above a crawl it is dragged
@@ -2036,6 +2060,8 @@ class SimLoop:
         # The newest `drive_input`, latest-wins: ~30 Hz of held controls must
         # neither queue up behind each other nor be acked one by one.
         self._drive_input: Any = None
+        # The scene whose contact map has been handed to a background build.
+        self._prewarmed_for: Any = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         # Wall-clock cost of `sim.step()` + `sim.state_update()`, the last
@@ -2253,6 +2279,7 @@ class SimLoop:
             self._take_drive_input()
             self._drain_events()
             self._take_pending_scene()
+            self._prewarm_contact()
             step_start = time.perf_counter()
             self.sim.step()
             frame = self.sim.state_update()
@@ -2308,6 +2335,16 @@ class SimLoop:
                 self.sim.world.events.append(self._events.get_nowait())
             except queue.Empty:
                 return
+
+    def _prewarm_contact(self) -> None:
+        """Once per scene, build its contact map on a background thread."""
+        scene = self.sim.scene
+        if self._prewarmed_for is scene or self.sim._contact_map is not None:
+            return
+        self._prewarmed_for = scene
+        threading.Thread(
+            target=self.sim.prewarm_surroundings, name="streetlab-contact", daemon=True
+        ).start()
 
     def _take_pending_scene(self) -> None:
         """Swap at a step boundary — never mid-step, where half the world would

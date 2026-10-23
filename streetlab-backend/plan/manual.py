@@ -17,10 +17,16 @@ from sim.vehicle import VehicleState
 
 #: Below this an axis is a resting finger, not an input (also the ladder's deadband).
 DEADBAND = 0.15
-#: How fast commanded accel may change on the throttle, m/s^3.
+#: How gently accel may change when Assist/FSD takes the car back (the
+#: hand-over window in `Simulation._drive`): a stale plan must not lurch.
 MAX_JERK_MPS3 = 6.0
-#: ...and on the brake: firm enough to stop fast, still a ramp (full brake in ~0.3 s).
-BRAKE_JERK_MPS3 = 25.0
+#: How fast the driver's own pedals bite and let go, m/s^3. Pedal keys are
+#: binary (the client applies them instantly), so these ramps ARE the feel.
+#: Measured key-to-90% before: gas 483 ms (and still pulling 567 ms after
+#: release, at 6 m/s^3), brake 300 ms (25 m/s^3). Now: full launch in ~0.18 s,
+#: full brake in ~0.16 s -- an EV's throttle and a firm brake, still a ramp.
+THROTTLE_JERK_MPS3 = 20.0
+BRAKE_JERK_MPS3 = 50.0
 #: A driver's full brake, m/s^2 (~0.8 g). Harder than the planner's 4.5 comfort ceiling.
 MANUAL_MAX_DECEL_MPS2 = 8.0
 #: Pulling away in reverse, m/s^2.
@@ -84,8 +90,8 @@ def max_steer(speed_mps: float, wheelbase_m: float = 2.9) -> float:
     return min(_MAX_STEER_RAD, math.atan(wheelbase_m * MANUAL_MAX_LATERAL_MPS2 / (v * v)))
 
 
-def jerk_limit(target: float, previous: float, dt: float) -> float:
-    step = MAX_JERK_MPS3 * dt
+def jerk_limit(target: float, previous: float, dt: float, rate: float = MAX_JERK_MPS3) -> float:
+    step = rate * dt
     return _clamp(target, previous - step, previous + step)
 
 
@@ -128,9 +134,8 @@ class ManualDriver:
             return 0.0
         # The brake bites (and lets go) fast; the throttle eases in.
         braking = stop > 0.0 or sign * ego.accel_mps2 < 0.0
-        rate = BRAKE_JERK_MPS3 if braking else MAX_JERK_MPS3
-        step = rate * dt
-        return _clamp(target, ego.accel_mps2 - step, ego.accel_mps2 + step)
+        rate = BRAKE_JERK_MPS3 if braking else THROTTLE_JERK_MPS3
+        return jerk_limit(target, ego.accel_mps2, dt, rate)
 
     def step(
         self, inp: Controls, ego: VehicleState, dt: float, reverse: bool = False
