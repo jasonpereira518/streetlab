@@ -170,7 +170,9 @@ def test_a_zero_window_hazard_the_scene_declines_is_reported():
 
 
 def test_a_windowed_red_light_runner_waits_for_its_green():
-    sim = Simulation(SyntheticGrid(), "grid-signals", seed=5)
+    # grid-boulevard: a runner stages only at a light the ego goes straight
+    # through, and grid-signals' loop turns at every one.
+    sim = Simulation(SyntheticGrid(), "grid-boulevard", seed=5)
     sim._timeline = [(1.0, 61.0, "red_light_runner")]
     codes = [e.code for e in run(sim, 61.5)]
     assert "red_light_runner" in codes

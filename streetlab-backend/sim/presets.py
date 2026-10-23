@@ -210,9 +210,11 @@ PRESETS: dict[str, Preset] = {
             what_to_watch="min_clearance_m on the oncoming drift; hazard_declined when a window closes.",
             what_varies=(
                 "When a runner fires depends on the signal cycle the ego meets; a runner only "
-                "stages on a green with time to spare."
+                "stages on a green with time to spare, at a light the ego goes straight through."
             ),
-            scene="signals",
+            # The boulevard: grid-signals' loop turns at every light, where no
+            # runner is staged (it came at the ego through the corner block).
+            scene="boulevard",
             seed=None,
             perception="ground-truth",
             params={},
