@@ -48,7 +48,7 @@ the packaged Tauri webview, and the attention sequence (covered by vitest with f
 | backend fast + contract | 1712 passed, 1 skipped; contract fixtures unchanged |
 | backend slow | 333 passed, 7 xfailed |
 | vitest | 459 passed; tsc clean |
-| Playwright (mock) | 36 passed, 2 skipped (backend-only specs) |
+| Playwright (mock) | full run 33 passed, 2 skipped, 1 failed (the FCW spec's selector); fixed, `safety.spec.ts` then 3/3 on its own |
 
 ## Thresholds Tesla does not publish (sim guesses)
 
