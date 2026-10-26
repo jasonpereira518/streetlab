@@ -234,6 +234,19 @@ export const PARAM_DEFS: ParamDef[] = [
     hint: 'Assist and FSD: with no key, click or pad input, prompts, then a strike that stops the car with hazards. Off so FSD can be watched hands-off.',
   },
   {
+    key: 'lane_departure_avoidance',
+    label: 'Lane departure avoidance',
+    kind: 'select',
+    group: 'safety',
+    default: 'warning',
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'warning', label: 'Warning' },
+      { value: 'assist', label: 'Assist' },
+    ],
+    hint: 'Manual and Cruise: warn, or steer back, when a wheel crosses a marked line with no indicator. Unless Off, also steers away from a car alongside or oncoming traffic.',
+  },
+  {
     key: 'chimes',
     label: 'Chimes',
     kind: 'select',

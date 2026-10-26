@@ -153,6 +153,10 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # obstacle-aware acceleration. Planner modes brake for themselves. Presets
     # reset it, which is Tesla's "off for this drive only".
     "aeb": "on",
+    # Lane Departure Avoidance while a person steers: "off", "warning" (the
+    # client warns) or "assist" (the car steers back). Emergency Lane
+    # Departure Avoidance runs whenever it is not "off".
+    "lane_departure_avoidance": "warning",
 }
 
 #: Drive modes in which the planner steers (and so is scored).
@@ -195,6 +199,21 @@ _DRIVER_AEB_STEER = 0.6
 #: accelerator does nothing.
 _OAA_MAX_MPS = 4.4
 _OAA_GAP_M = 3.0
+#: Lane departure avoidance arms above this. Tesla's 48-64 km/h floors would
+#: never arm on a 25 mph Nob Hill street: a sim floor (10 mph), not Tesla's.
+_LDA_MIN_MPS = 4.5
+#: The assist hands back once the car is this close to its lane centre.
+_LDA_DONE_M = 0.5
+#: Past the lane boundary by this much, the car has changed lane on purpose.
+_LDA_COMMITTED_M = 0.5
+#: Emergency LDA's side zone (ego frame, m), as the client's blind-spot box,
+#: and how far ahead an oncoming car counts.
+_SIDE_BEHIND_M = 8.0
+_SIDE_AHEAD_M = 4.0
+_SIDE_INNER_M = 1.2
+_SIDE_OUTER_M = 5.4
+_ONCOMING_AHEAD_M = 60.0
+_MOVING_MPS = 0.5
 #: How long the brake (in D) or throttle (in R) must be held at a stop to shift.
 _SHIFT_HOLD_S = 0.3
 
@@ -284,6 +303,10 @@ class WorldState:
     # Latches so the driver-safety events fire once per intervention.
     aeb_source: str | None = None
     oaa_active: bool = False
+    # The driver's indicator (Manual/Cruise); the planner's under Assist/FSD.
+    driver_signal: str = "off"
+    # Lane departure avoidance steering back: "lda" or "elda", or None.
+    lda_active: str | None = None
 
 
 class SignalController:
@@ -472,6 +495,8 @@ class Simulation:
         self.world.in_contact = False
         self.world.off_road = False
         self.world.aeb_source = None
+        self.world.driver_signal = "off"
+        self.world.lda_active = None
         self.world.oaa_active = False
         self.world.plan_result = None
         self.world.detections = []
@@ -643,6 +668,8 @@ class Simulation:
             steer = result.steer_rad
         else:
             steer = self._manual.steer(controls, ego, dt)
+            if self._lane_departure_avoidance(controls):
+                steer = result.steer_rad  # the planner's own lane keep, these ticks only
             # The planner's own steer-rate clamp starts from here when it takes
             # back over: that is the smooth pick-up, with no second code path.
             if hasattr(self._planner, "last_steer"):
@@ -671,6 +698,77 @@ class Simulation:
         if mode == "cruise":
             accel = self._kerb_drag(accel)
         return accel, steer
+
+    def _lane_departure_avoidance(self, controls: Controls) -> bool:
+        """Whether to steer the car back into its lane this tick (Manual/Cruise).
+
+        Lane Departure Avoidance (Assist setting): a front wheel over the line
+        with no indicator that way and hands off the steer. Emergency LDA (on
+        unless the setting is Off): the same drift toward a moving vehicle
+        beside the car, whatever the indicator says, or across a yellow centre
+        line with oncoming traffic. The steer is the planner's own lane keep, so
+        its 1.2 rad/s clamp blends it in and out; any steer input overpowers it.
+        `ponytail:` it steers to the lane centre, more than Tesla's "safe
+        position"; and only within half a metre past the line, so a car that has
+        changed lane on purpose is never pulled back.
+        """
+        world, ego = self.world, self.world.ego
+        setting = world.params.get("lane_departure_avoidance", "warning")
+        if (
+            setting == "off"
+            or axis(controls.steer)
+            or ego.speed_mps < _LDA_MIN_MPS
+            or world.gear != "D"
+            or not self.route_available()
+        ):
+            world.lda_active = None
+            return False
+        route = self.scene.ego_route
+        off = route.lateral_offset((ego.x, ego.y), route.project((ego.x, ego.y)))
+        if world.lda_active is not None:
+            if abs(off) < _LDA_DONE_M:
+                world.lda_active = None
+            return world.lda_active is not None
+        edge = LANE_W / 2.0 - self._model.width_m / 2.0
+        if not edge < abs(off) < LANE_W / 2.0 + _LDA_COMMITTED_M:
+            return False
+        side = "left" if off > 0 else "right"
+        kind = None
+        if self._side_threat(side):
+            kind = "elda"
+        elif setting == "assist" and world.driver_signal != side:
+            kind = "lda"
+        if kind is None:
+            return False
+        world.lda_active = kind
+        if kind == "elda":
+            self._emit("lane_assist", f"steering away from a vehicle on the {side}", "critical")
+        else:
+            self._emit("lane_assist", "steering back into the lane", "warn")
+        return True
+
+    def _side_threat(self, side: str) -> bool:
+        """Emergency LDA's two vehicle cases on `side`: a moving vehicle
+        alongside, or, across a yellow centre line, one coming the other way.
+        Ground truth, like the client's blind-spot light: the driving feed
+        deliberately cannot see the flanks."""
+        ego = self.world.ego
+        c, s = math.cos(ego.heading), math.sin(ego.heading)
+        sign = 1.0 if side == "left" else -1.0
+        for agent in self._traffic.agents:
+            st = agent.state
+            if agent.cls == "pedestrian" or abs(st.speed_mps) < _MOVING_MPS:
+                continue
+            rx, ry = st.x - ego.x, st.y - ego.y
+            along, lateral = c * rx + s * ry, sign * (-s * rx + c * ry)
+            if not _SIDE_INNER_M <= lateral <= _SIDE_OUTER_M:
+                continue
+            same_way = math.cos(st.heading - ego.heading) > 0.0
+            if same_way and -_SIDE_BEHIND_M <= along <= _SIDE_AHEAD_M:
+                return True
+            if not same_way and side == "left" and 0.0 <= along <= _ONCOMING_AHEAD_M:
+                return True
+        return False
 
     def _driver_safety(self, result: PlanResult, controls: Controls, accel: float, dt: float) -> float:
         """Manual: emergency braking and obstacle-aware acceleration.
@@ -826,6 +924,8 @@ class Simulation:
             return
         world.drive_mode = mode
         world.mode_changed_t = world.t
+        if mode in _PLANNER_STEERS:
+            world.driver_signal = "off"  # the planner signals for itself now
         if mode in ("off", "fsd"):
             world.set_speed_mps = None
         elif world.set_speed_mps is None:
@@ -1303,7 +1403,12 @@ class Simulation:
             # that can drift.
             signals=self.world.signals,
             sim_rate_hz=1 / self.dt,
-            turn_signal=plan.turn_signal,
+            # The planner signals when it steers; a person signals for themself.
+            turn_signal=(
+                plan.turn_signal
+                if self.world.drive_mode in _PLANNER_STEERS
+                else self.world.driver_signal
+            ),
             # Passed in rather than recomputed inside the assembler: this is
             # the same figure the planner was just given, so the speed the HUD
             # posts and the speed the car is actually holding to cannot drift
@@ -1556,6 +1661,8 @@ class Simulation:
             self._change_drive_mode("cruise")
         if pressed_brake and world.drive_mode != "off":
             self._change_drive_mode("off")
+        if command.signal is not None:
+            world.driver_signal = command.signal
         return CommandOutcome(ok=True)
 
     def _cmd_lane_change(self, command) -> CommandOutcome:

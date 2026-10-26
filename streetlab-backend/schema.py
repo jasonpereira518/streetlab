@@ -855,6 +855,9 @@ class DriveInput(_Cmd):
     steer: SteerAxis
     throttle: Unit
     brake: Unit
+    #: The driver's own indicator in Manual/Cruise; absent leaves it as it
+    #: was. Optional on a command, so no protocol bump.
+    signal: TurnSignal | None = None
 
 
 class LaneChangeCmd(_Cmd):
