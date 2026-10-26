@@ -16,6 +16,7 @@
  *
  * Nothing above this file touches the transport directly.
  */
+import type { AttentionStage } from '../ui/attention';
 import { create } from 'zustand';
 import type {
   Ack,
@@ -205,6 +206,32 @@ export const PARAM_DEFS: ParamDef[] = [
     max: 1.6,
     step: 0.05,
     clientOnly: true,
+  },
+  {
+    key: 'aeb',
+    label: 'Emergency braking',
+    kind: 'select',
+    group: 'safety',
+    default: 'on',
+    options: [
+      { value: 'on', label: 'On' },
+      { value: 'off', label: 'Off' },
+    ],
+    hint: 'While you drive (Manual): emergency braking and obstacle-aware acceleration. Assist and FSD always brake for themselves. A preset turns it back on.',
+  },
+  {
+    key: 'attention_monitor',
+    label: 'Driver attention',
+    kind: 'select',
+    group: 'safety',
+    default: 'off',
+    clientOnly: true,
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'normal', label: 'On (30 s)' },
+      { value: 'demo', label: 'On, quick (8 s)' },
+    ],
+    hint: 'Assist and FSD: with no key, click or pad input, prompts, then a strike that stops the car with hazards. Off so FSD can be watched hands-off.',
   },
   {
     key: 'chimes',
@@ -517,6 +544,11 @@ export interface SimStoreState {
 
   /* diagnostics */
   events: SimEvent[];
+  /** The driver's indicator in Manual/Cruise; `driveKeys` sends it. */
+  driverSignal: 'off' | 'left' | 'right';
+  /** Driver attention (`ui/attention.ts`): the banner's stage, and whether
+   * Assist/FSD are locked out for the rest of the drive. */
+  attention: { stage: AttentionStage; locked: boolean };
   lastAck: Ack | null;
   invalidCount: number;
   lastInvalid: string | null;
@@ -537,6 +569,7 @@ export interface SimStoreState {
   setParam(key: string, value: ParamValue): void;
   /** Append events the client derived itself (driver warnings) to the log. */
   pushClientEvents(events: SimEvent[]): void;
+  setAttention(attention: { stage: AttentionStage; locked: boolean }): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
   setPerceptionMode(mode: PerceptionMode): void;
@@ -554,6 +587,7 @@ export interface SimStoreState {
   /** Move the cruise/Assist set speed; a no-op in Manual and FSD. */
   nudgeSetSpeed(deltaMps: number): void;
   /** The turn signal under Assist/FSD; a refusal says why in the AckToast. */
+  /** Q/E: under Assist/FSD a lane change; in Manual/Cruise the indicator. */
   signalLaneChange(direction: 'left' | 'right'): void;
 }
 
@@ -607,6 +641,8 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   reloadPage: DEFAULT_RELOAD_PAGE,
 
   events: [],
+  driverSignal: 'off',
+  attention: { stage: 'ok', locked: false },
   lastAck: null,
   invalidCount: 0,
   lastInvalid: null,
@@ -755,6 +791,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
     set((s) => ({ events: [...s.events, ...events].slice(-40) }));
   },
 
+  setAttention(attention) {
+    set({ attention });
+  },
+
   setParam(key, value) {
     set((s) => ({ params: { ...s.params, [key]: value } }));
     const def = PARAM_DEFS.find((d) => d.key === key);
@@ -852,6 +892,19 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   },
 
   setDriveMode(mode, setSpeedMps) {
+    if ((mode === 'autosteer' || mode === 'fsd') && get().attention.locked) {
+      const t = frameBus.latest?.t ?? 0;
+      get().pushClientEvents([
+        {
+          t,
+          level: 'warn',
+          code: 'attention_locked',
+          message: 'Assist and FSD are unavailable for the rest of this drive (reset to try again)',
+          progress: null,
+        },
+      ]);
+      return;
+    }
     get().send({
       cmd: 'set_drive_mode',
       mode,
@@ -867,6 +920,12 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
   },
 
   signalLaneChange(direction) {
+    const mode = frameBus.latest?.ego.cruise.mode;
+    if (mode === 'off' || mode === 'cruise') {
+      // The stalk: press once to signal, again (or the other way) to change.
+      set((s) => ({ driverSignal: s.driverSignal === direction ? 'off' : direction }));
+      return;
+    }
     get().send({ cmd: 'lane_change', direction });
   },
 

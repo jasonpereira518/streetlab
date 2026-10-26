@@ -8,8 +8,9 @@
  * shapes how the gas and brake bite. Pedal changes are also sent the moment
  * the key moves, not on the next 30 Hz tick.
  */
+import { markDriverActive } from '../ui/attention';
 import { useEffect } from 'react';
-import { useSimStore } from '../store/simStore';
+import { frameBus, useSimStore } from '../store/simStore';
 import { ownsTheKey } from '../ui/HelpDialog';
 import { MPH_TO_MPS } from '../units';
 import { firstPad, mergeAxes, padAxes, pressedSince, type PadAction } from './gamepad';
@@ -112,6 +113,7 @@ export function useDriveKeys(): void {
     const tapped = new Set<Control>();
     let axes: Axes = ZERO_AXES; // the keyboard's ramped axes
     let sent: Axes = ZERO_AXES; // what went out last, keyboard and pad merged
+    let sentSignal: 'off' | 'left' | 'right' = 'off';
     // Polled only while a pad is connected; Chrome exposes one only after a
     // button is pressed with the page focused, which fires `gamepadconnected`.
     let padOn = firstPad() !== null;
@@ -175,8 +177,18 @@ export function useDriveKeys(): void {
         padButtons = now;
         actions.forEach(runPadAction);
       }
-      if (!isZero(next) || !isZero(sent)) {
-        s.send({ cmd: 'drive_input', ...next });
+      if (!isZero(next)) markDriverActive();
+      // The driver's indicator rides on every drive_input (latest-wins, so a
+      // one-off could be overwritten), and changing it sends one even at rest.
+      // Assist/FSD signal for themselves: the stalk resets on engaging.
+      const mode = frameBus.latest?.ego.cruise.mode;
+      if ((mode === 'autosteer' || mode === 'fsd') && s.driverSignal !== 'off') {
+        useSimStore.setState({ driverSignal: 'off' });
+      }
+      const signal = useSimStore.getState().driverSignal;
+      if (!isZero(next) || !isZero(sent) || signal !== sentSignal) {
+        s.send({ cmd: 'drive_input', ...next, signal });
+        sentSignal = signal;
       }
       sent = next;
     };

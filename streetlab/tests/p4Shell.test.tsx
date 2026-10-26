@@ -184,6 +184,18 @@ describe('keyboard shortcuts and help', () => {
     expect(harness.sent.at(-1)).toMatchObject({ cmd: 'lane_change', direction: 'left' });
   });
 
+  it('Q and E work the indicator while a person drives, and it rides on drive_input', () => {
+    harness = createHarness();
+    render(<Keys />);
+    harness.emitScene();
+    harness.emit({ ...harness.sim.frame(), ego: { ...harness.sim.frame().ego, cruise: { ...harness.sim.frame().ego.cruise, mode: 'off' } } });
+    fireEvent.keyDown(window, { key: 'q' });
+    expect(useSimStore.getState().driverSignal).toBe('left');
+    expect(harness.sent.some((c) => c.cmd === 'lane_change')).toBe(false);
+    fireEvent.keyDown(window, { key: 'q' });
+    expect(useSimStore.getState().driverSignal).toBe('off');
+  });
+
   it('H toggles the headlights and L is Assist: the two features never share a key', () => {
     harness = createHarness();
     render(<Keys />);

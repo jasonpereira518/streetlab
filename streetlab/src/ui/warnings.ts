@@ -44,6 +44,23 @@ const STOPPED_MPS = 0.3;
  * limit dip at junction service roads cannot trip it. */
 const SPEED_HOLD_S = 1;
 
+/** Lane Departure Warning arms above this. Tesla's 64 km/h floor would never
+ * arm on a 25 mph Nob Hill street; `ponytail:` a sim floor (10 mph), not
+ * Tesla's figure. */
+export const LDW_MIN_MPS = 4.5;
+/** Back this far inside the line before a departure warning can re-arm. */
+const LDW_HYSTERESIS_M = 0.25;
+/** Blind-spot zone in the ego's frame, metres: from 8 m behind the centre to
+ * 1 m ahead of it, one lane either side. Tesla's is unpublished. */
+const BSW_BEHIND_M = 8;
+const BSW_AHEAD_M = 1;
+const BSW_INNER_M = 1.2;
+const BSW_OUTER_M = 5.4;
+/** Tesla's blind-spot monitor works above about 7 mph. */
+const BSW_MIN_MPS = 3;
+/** Slower than this a car beside you is parked, not passing. */
+const BSW_MOVING_MPS = 0.5;
+
 const DRIVER_MODES = new Set(['off', 'cruise']);
 const ENGAGED_MODES = new Set(['autosteer', 'fsd']);
 
@@ -58,10 +75,36 @@ export function overSpeedLimit(frame: StateUpdate, params: Params): boolean {
   return mph > toMph(frame.ego.speed_limit_mps) + Number(params.speed_limit_offset_mph ?? 5);
 }
 
+/** Which blind spots hold a moving vehicle. Ground truth (`world_agents`):
+ * the driving feed deliberately cannot see these sectors, so this stands in
+ * for Tesla's side sensors. `ponytail:` no occlusion, and an ego-frame box
+ * ignores road curvature (a few false frames on a tight corner). */
+export function blindSpots(frame: StateUpdate): { left: boolean; right: boolean } {
+  const out = { left: false, right: false };
+  const { ego } = frame;
+  if (Math.abs(ego.speed_mps) < BSW_MIN_MPS) return out;
+  const c = Math.cos(ego.pose.heading);
+  const sn = Math.sin(ego.pose.heading);
+  for (const a of frame.world_agents) {
+    if (a.cls === 'pedestrian' || Math.abs(a.speed_mps) < BSW_MOVING_MPS) continue;
+    const rx = a.pose.x - ego.pose.x;
+    const ry = a.pose.y - ego.pose.y;
+    if (rx * rx + ry * ry > 100) continue; // cheap reject: nothing past 10 m
+    const along = c * rx + sn * ry;
+    const side = -sn * rx + c * ry; // + = left
+    if (along < -BSW_BEHIND_M || along > BSW_AHEAD_M) continue;
+    if (Math.abs(side) < BSW_INNER_M || Math.abs(side) > BSW_OUTER_M) continue;
+    if (side > 0) out.left = true;
+    else out.right = true;
+  }
+  return out;
+}
+
 export class WarningMonitor {
   private active = new Set<string>();
   private prevManeuver: string | null = null;
   private overSince: number | null = null;
+  private ldwSide: 'left' | 'right' | null = null;
   private lastT = -Infinity;
 
   /** The warnings that started on this frame. */
@@ -107,7 +150,10 @@ export class WarningMonitor {
       });
     }
 
-    if (plan.maneuver === 'emergency_brake') {
+    // Where the planner's braking is the car's. In Manual the backend's own
+    // `aeb` event announces it, and only when it actually acts.
+    const plannerBrakes = ENGAGED_MODES.has(mode) || (mode === 'cruise' && ego.cruise.fsd_available);
+    if (plannerBrakes && plan.maneuver === 'emergency_brake') {
       out.push({ code: 'aeb', level: 'critical', message: 'Automatic emergency braking', sound: 'critical' });
     }
 
@@ -129,6 +175,33 @@ export class WarningMonitor {
       this.overSince = null;
     }
 
+    const ldw = this.laneDeparture(frame, params);
+    if (ldw) {
+      out.push({ code: 'lane_departure', level: 'warn', message: `Drifting ${ldw}`, sound: 'warn' });
+    }
+
+    // Blind spot: only a warning once the indicator points into an occupied
+    // side (Tesla's blinking light); the steady light is the HUD pill.
+    const spots = blindSpots(frame);
+    for (const side of ['left', 'right'] as const) {
+      if (spots[side] && ego.turn_signal === side) {
+        out.push({
+          code: 'blind_spot',
+          level: 'warn',
+          message: `Vehicle in the ${side} blind spot`,
+          sound: params.blind_spot_chime === 'on' ? 'warn' : null,
+        });
+      }
+    }
+
+    // An emergency vehicle: the planner pulls over for one behind (FSD,
+    // Assist, on-route Cruise); anyone else is told it is there.
+    if (plannerBrakes && plan.maneuver === 'pull_over') {
+      out.push({ code: 'pull_over', level: 'warn', message: 'Pulling over for an emergency vehicle', sound: 'warn' });
+    } else if (frame.detections.some((d) => d.emergency)) {
+      out.push({ code: 'emergency_vehicle', level: 'info', message: 'Emergency vehicle nearby', sound: 'info' });
+    }
+
     if (ENGAGED_MODES.has(mode) && !ego.cruise.fsd_available) {
       out.push({ code: 'take_over', level: 'critical', message: 'Take over immediately', sound: 'critical' });
     }
@@ -136,18 +209,52 @@ export class WarningMonitor {
     return out;
   }
 
+  /** The side a front wheel has crossed an unsignalled marking on, if any. */
+  private laneDeparture(frame: StateUpdate, params: Params): 'left' | 'right' | null {
+    const { ego, telemetry } = frame;
+    const lane = telemetry.lane;
+    if (
+      (params.lane_departure_avoidance ?? 'warning') === 'off' ||
+      !DRIVER_MODES.has(ego.cruise.mode) ||
+      Math.abs(ego.speed_mps) < LDW_MIN_MPS
+    ) {
+      this.ldwSide = null;
+      return null;
+    }
+    // A front wheel on the line: half a lane less half the car.
+    const edge = lane.lane_width_m / 2 - ego.size.width / 2;
+    const side = lane.offset_m > 0 ? 'left' : 'right';
+    const marking = side === 'left' ? lane.left_marking : lane.right_marking;
+    const held = this.ldwSide !== null && Math.abs(lane.offset_m) > edge - LDW_HYSTERESIS_M;
+    const crossing = Math.abs(lane.offset_m) > edge && marking !== 'none';
+    this.ldwSide = (held || crossing) && ego.turn_signal !== side ? (held ? this.ldwSide : side) : null;
+    return this.ldwSide;
+  }
+
   reset(): void {
     this.active.clear();
     this.prevManeuver = null;
     this.overSince = null;
+    this.ldwSide = null;
   }
 }
 
+/** Backend events that sound like the client's warnings: interventions the
+ * sim made while a person drives, and the incidents themselves. */
+export const EVENT_SOUNDS: Record<string, ChimeKind> = {
+  aeb: 'critical',
+  obstacle_aware: 'warn',
+  lane_assist: 'warn',
+  collision_evasion: 'critical',
+  collision: 'critical',
+  off_road: 'warn',
+};
+
 /** The loudest chime among new warnings: one sound per frame, not a chord. */
-export function loudest(warnings: Warning[]): ChimeKind | null {
+export function loudest(sounds: Array<ChimeKind | null>): ChimeKind | null {
   let best: ChimeKind | null = null;
-  for (const w of warnings) {
-    if (w.sound && (best === null || CHIME_RANK[w.sound] > CHIME_RANK[best])) best = w.sound;
+  for (const s of sounds) {
+    if (s && (best === null || CHIME_RANK[s] > CHIME_RANK[best])) best = s;
   }
   return best;
 }
@@ -160,11 +267,15 @@ export function useWarningEffects(): void {
     const off = frameBus.subscribe((frame) => {
       const { params, pushClientEvents } = useSimStore.getState();
       const fresh = monitor.update(frame, params);
-      if (!fresh.length) return;
-      pushClientEvents(
-        fresh.map((w) => ({ t: frame.t, level: w.level, code: w.code, message: w.message, progress: null })),
-      );
-      const sound = loudest(fresh);
+      if (fresh.length) {
+        pushClientEvents(
+          fresh.map((w) => ({ t: frame.t, level: w.level, code: w.code, message: w.message, progress: null })),
+        );
+      }
+      const sound = loudest([
+        ...fresh.map((w) => w.sound),
+        ...frame.events.map((e) => EVENT_SOUNDS[e.code] ?? null),
+      ]);
       if (sound && params.chimes !== 'off') chime(sound);
     });
     return () => {

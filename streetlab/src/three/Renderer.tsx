@@ -576,6 +576,8 @@ function mount(
     const egoGround = world ? world.groundFor(sample.pose.heading) : ground_;
     ego.setPose(sample.pose, egoGround);
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
+    // The attention stop keeps the hazards on until the driver takes over.
+    egoLights.force(useSimStore.getState().attention.stage === 'stopping');
     lampSignal = egoLights.update(frame);
     ego.update(
       sample.speed_mps,
@@ -596,6 +598,7 @@ function mount(
       );
     }
     fleet.update(frame.world_agents, dt, world ? world.groundFor : null);
+    fleet.setEmergency(new Set(frame.detections.filter((d) => d.emergency).map((d) => d.id)), performance.now() / 1000);
     ribbon.update(sample.plan, ground_);
     ribbon.setIntent(frame.plan.maneuver);
     hazards.update(frame.detections, cam.camera, ground_);

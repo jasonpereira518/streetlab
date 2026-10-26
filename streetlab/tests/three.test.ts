@@ -844,6 +844,31 @@ describe('EgoVehicle', () => {
   });
 });
 
+describe('TrafficFleet emergency lights', () => {
+  it('puts a red/blue bar on an emergency vehicle, alternating, and takes it off after', () => {
+    const fleet = new TrafficFleet();
+    const agent = {
+      id: 'veh_1',
+      cls: 'car' as const,
+      pose: { x: 0, y: 0, heading: 0 },
+      size: { length: 4.6, width: 1.9, height: 1.46 },
+      speed_mps: 10,
+    };
+    fleet.update([agent], 1 / 60);
+    fleet.setEmergency(new Set(['veh_1']), 0.1);
+    const red = fleet.group.getObjectByName('emergency-light-red')!;
+    const blue = fleet.group.getObjectByName('emergency-light-blue')!;
+    expect(red.visible).toBe(true);
+    expect(blue.visible).toBe(false);
+    fleet.setEmergency(new Set(['veh_1']), 0.35);
+    expect(red.visible).toBe(false);
+    expect(blue.visible).toBe(true);
+    fleet.setEmergency(new Set(), 0.5);
+    expect(fleet.group.getObjectByName('emergency-light-red')).toBeUndefined();
+    fleet.dispose();
+  });
+});
+
 describe('ChaseCamera on the real Nob Hill route', () => {
   /**
    * The test the original occlusion fix never had.

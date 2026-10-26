@@ -730,6 +730,9 @@ export const CommandSchema = z.discriminatedUnion('cmd', [
     steer: z.number().min(-1).max(1),
     throttle: z.number().min(0).max(1),
     brake: z.number().min(0).max(1),
+    /** The driver's own indicator in Manual/Cruise; absent leaves it as it
+     * was. Optional on a command, so no protocol bump. */
+    signal: z.enum(['off', 'left', 'right']).optional(),
   }),
   /** Answered directly by the server's connection handler, not routed
    * through the sim command queue — see `SuggestAddress` in schema.py. */

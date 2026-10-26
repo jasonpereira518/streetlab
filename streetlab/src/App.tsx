@@ -17,6 +17,8 @@ import { TelemetryRow } from './ui/TelemetryRow';
 import { TopToolbar } from './ui/TopToolbar';
 import { QueueOverlay, SessionNoticeBanner, useWaitlistEffects } from './ui/Waitlist';
 import { useWarningEffects } from './ui/warnings';
+import { AttentionBanner } from './ui/AttentionBanner';
+import { useAttentionEffects } from './ui/attention';
 
 type BootPhase = 'starting' | 'ready' | 'error';
 
@@ -27,6 +29,7 @@ export default function App() {
   useDriveKeys();
   useWaitlistEffects();
   useWarningEffects();
+  useAttentionEffects();
   const failure = useSimStore((s) => s.failure);
   const retryConnection = useSimStore((s) => s.retryConnection);
   const [boot, setBoot] = useState<BootPhase>('starting');
@@ -94,6 +97,7 @@ export default function App() {
       {!collapsed.telemetry && <TelemetryRow />}
       <PerfOverlay />
       <AckToast />
+      <AttentionBanner />
       <HelpDialog />
       <SessionNoticeBanner />
       {boot === 'ready' && !failure && <QueueOverlay onUseMock={useMock} />}

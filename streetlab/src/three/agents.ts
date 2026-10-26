@@ -27,9 +27,16 @@ const REFERENCE_SIZE: Record<string, { length: number; width: number; height: nu
   unknown: { length: 4.4, width: 1.9, height: 1.5 },
 };
 
+/** An emergency vehicle's roof bar: red and blue, alternating at 2 Hz. */
+const LIGHT_HZ = 2;
+const LIGHT_SIZE = { length: 0.3, height: 0.14, width: 0.45 };
+
 interface Slot {
   group: THREE.Group;
   cls: string;
+  height: number;
+  /** The roof light bar, while the vehicle runs lights and siren. */
+  lights: { red: THREE.Mesh; blue: THREE.Mesh } | null;
   /** Damped pose, so agents glide rather than teleport between frames. */
   x: number;
   z: number;
@@ -43,6 +50,9 @@ export class TrafficFleet {
   private readonly geometries = new Map<string, THREE.BufferGeometry>();
   private readonly slots = new Map<string, Slot>();
   private readonly free: THREE.Group[] = [];
+  private readonly lightGeometry = new THREE.BoxGeometry(LIGHT_SIZE.length, LIGHT_SIZE.height, LIGHT_SIZE.width);
+  private readonly red = new THREE.MeshBasicNodeMaterial({ color: '#ff1f2d' });
+  private readonly blue = new THREE.MeshBasicNodeMaterial({ color: '#1f5bff' });
 
   constructor() {
     this.group.name = 'traffic';
@@ -89,6 +99,8 @@ export class TrafficFleet {
         slot = {
           group: holder,
           cls: d.cls,
+          height: d.size.height,
+          lights: null,
           x: d.pose.x,
           z: -d.pose.y,
           heading: d.pose.heading,
@@ -115,6 +127,37 @@ export class TrafficFleet {
     }
   }
 
+  /**
+   * Light bars on the vehicles in `ids` (the detections marked `emergency`,
+   * whose ids are the agents'), flashing on the wall clock `t`. Only
+   * ground-truth perception marks them, so under noisy-truth or ML the
+   * vehicle still runs but shows no lights.
+   */
+  setEmergency(ids: ReadonlySet<string>, t: number): void {
+    const redOn = (t * LIGHT_HZ) % 1 < 0.5;
+    for (const [id, slot] of this.slots) {
+      const on = ids.has(id);
+      if (on && !slot.lights) {
+        const red = new THREE.Mesh(this.lightGeometry, this.red);
+        const blue = new THREE.Mesh(this.lightGeometry, this.blue);
+        const y = slot.height + LIGHT_SIZE.height / 2;
+        red.position.set(0, y, -LIGHT_SIZE.width / 2);
+        blue.position.set(0, y, LIGHT_SIZE.width / 2);
+        red.name = 'emergency-light-red';
+        blue.name = 'emergency-light-blue';
+        slot.group.add(red, blue);
+        slot.lights = { red, blue };
+      } else if (!on && slot.lights) {
+        slot.group.remove(slot.lights.red, slot.lights.blue);
+        slot.lights = null;
+      }
+      if (slot.lights) {
+        slot.lights.red.visible = redOn;
+        slot.lights.blue.visible = !redOn;
+      }
+    }
+  }
+
   private release(id: string, slot: Slot): void {
     slot.group.clear();
     slot.group.visible = false;
@@ -127,6 +170,9 @@ export class TrafficFleet {
     for (const g of this.geometries.values()) g.dispose();
     this.geometries.clear();
     this.material.dispose();
+    this.lightGeometry.dispose();
+    this.red.dispose();
+    this.blue.dispose();
     this.slots.clear();
     this.group.clear();
   }

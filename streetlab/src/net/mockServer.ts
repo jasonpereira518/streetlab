@@ -187,6 +187,8 @@ export class MockSim {
   /** Drive modes, mirroring `sim/loop.py`: who drives, the held set speed and
    * the newest held controls (stamped with the sim time they arrived). */
   private driveMode: CruiseMode = 'fsd';
+  /** The driver's indicator in Manual/Cruise (`drive_input.signal`). */
+  private driverSignal: 'off' | 'left' | 'right' = 'off';
   private gear: 'D' | 'R' = 'D';
   private shiftHold = 0;
   private setSpeed: number | null = null;
@@ -231,6 +233,7 @@ export class MockSim {
     this.steering = 0;
     this.battery = 78;
     this.driveMode = 'fsd';
+    this.driverSignal = 'off';
     this.gear = 'D';
     this.shiftHold = 0;
     this.setSpeed = null;
@@ -966,7 +969,14 @@ export class MockSim {
         size: EGO_SIZE,
         // No lookahead here: the mock signals only while the turn or lane
         // change is its current manoeuvre. The real planner signals ahead.
-        turn_signal: maneuver.endsWith('_left') ? 'left' : maneuver.endsWith('_right') ? 'right' : 'off',
+        turn_signal:
+          this.driveMode === 'off' || this.driveMode === 'cruise'
+            ? this.driverSignal
+            : maneuver.endsWith('_left')
+              ? 'left'
+              : maneuver.endsWith('_right')
+                ? 'right'
+                : 'off',
       },
       detections,
       world_agents: detections.map((d) => ({
@@ -1126,7 +1136,8 @@ export class MockSim {
   /* ---------------- commands ---------------- */
 
   /** `drive_input`: never acked, so not part of `apply()` (see `send()`). */
-  driveInput(c: { steer: number; throttle: number; brake: number }): void {
+  driveInput(c: { steer: number; throttle: number; brake: number; signal?: 'off' | 'left' | 'right' }): void {
+    if (c.signal !== undefined) this.driverSignal = c.signal;
     // Fresh presses only, as `_cmd_drive_input` does: the tail of a released
     // key must not undo a mode engaged while it ramps down.
     const prev = this.liveControls();
@@ -1142,6 +1153,7 @@ export class MockSim {
   private changeDriveMode(mode: CruiseMode): void {
     if (mode === this.driveMode) return;
     this.driveMode = mode;
+    if (mode === 'fsd' || mode === 'autosteer') this.driverSignal = 'off';
     if (mode === 'off' || mode === 'fsd') this.setSpeed = null;
     else if (this.setSpeed === null) {
       this.setSpeed = this.egoSpeed >= 2 ? this.egoSpeed : this.currentSpeedLimit();

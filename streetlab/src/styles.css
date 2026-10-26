@@ -268,6 +268,38 @@ canvas {
   transition: width 0.4s ease;
 }
 
+.attention-banner {
+  position: fixed;
+  top: calc(var(--toolbar-h) + var(--gutter) + 13px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 61;
+  padding: 10px 18px;
+  border-radius: var(--r-sm, 6px);
+  background: #1f6feb;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(22, 25, 29, 0.24);
+}
+
+/* Escalated: Tesla's prompt flashes. */
+.attention-banner--escalated {
+  animation: attention-flash 0.5s steps(1, end) infinite;
+}
+
+.attention-banner--stopping {
+  background: #d93d42;
+}
+
+@keyframes attention-flash {
+  50% { background: #fff; color: #1f6feb; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attention-banner--escalated { animation: none; outline: 3px solid #fff; }
+}
+
 .session-notice {
   position: fixed;
   top: calc(var(--toolbar-h) + var(--gutter) + 13px);
@@ -1912,6 +1944,38 @@ canvas {
   text-align: center;
   pointer-events: auto;
   backdrop-filter: blur(6px);
+}
+
+.blind-spots {
+  display: flex;
+  justify-content: space-between;
+  width: min(420px, 100%);
+}
+
+.blind-spot {
+  padding: 3px 10px;
+  border-radius: var(--r-pill, 999px);
+  background: rgba(229, 72, 77, 0.88);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.blind-spot--right {
+  margin-left: auto;
+}
+
+/* Indicator into an occupied side: Tesla's light blinks. */
+.blind-spot--warn {
+  animation: blind-spot-blink 0.66s steps(1, end) infinite;
+}
+
+@keyframes blind-spot-blink {
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blind-spot--warn { animation: none; outline: 2px solid #fff; }
 }
 
 .drive-gear {

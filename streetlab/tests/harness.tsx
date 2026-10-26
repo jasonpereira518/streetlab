@@ -50,6 +50,8 @@ const INITIAL = {
   rightTab: 'parameters' as const,
   collapsed: { scenarios: false, inspector: false, telemetry: false },
   events: [],
+  driverSignal: 'off' as const,
+  attention: { stage: 'ok' as const, locked: false },
   lastAck: null,
   invalidCount: 0,
   lastInvalid: null,

@@ -70,18 +70,74 @@ def test_reversing_out_of_contact_is_allowed(sim):
     assert overlap(sim) == 0.0
 
 
-def test_driving_into_a_stopped_car_stops_at_it(sim):
+def _behind_an_obstacle(sim, gap_m):
+    """Stage an obstacle and square the ego behind it, centre to centre, in
+    whichever lane it was staged in (the ego's)."""
     sim.ego = replace(sim.ego, x=1.8, y=0.0, heading=math.pi / 2)
     assert sim.apply_dict({"id": "h", "cmd": "inject_hazard", "kind": "obstacle"}).ok
     obstacle = next(a for a in sim._traffic.agents if a.id.startswith("hzd_obstacle"))
-    # Square behind it, in whichever lane it was staged in (the ego's).
-    sim.ego = replace(sim.ego, x=obstacle.state.x, y=obstacle.state.y - 15.0)
+    sim.ego = replace(sim.ego, x=obstacle.state.x, y=obstacle.state.y - gap_m)
+    return obstacle
+
+
+def _bumper_gap(sim, obstacle):
+    return obstacle.state.y - sim.ego.y - (sim._model.length_m + obstacle.size.length) / 2
+
+
+def test_driving_into_a_stopped_car_stops_at_it(sim):
+    assert sim.apply_dict({"id": "p", "cmd": "set_param", "key": "aeb", "value": "off"}).ok
+    obstacle = _behind_an_obstacle(sim, 15.0)
     seen = collect(sim, 8.0, throttle=1.0)
     hits = [e for e in seen if e.code == "collision"]
     assert [e.message for e in hits] == [f"hit an obstacle ({obstacle.id})"]
     assert sim.ego.speed_mps == 0.0
     gap = obstacle.state.y - sim.ego.y
     assert gap < (sim._model.length_m + obstacle.size.length) / 2 + 0.5  # touching, not through
+
+
+def test_emergency_braking_stops_a_driver_short_of_a_stopped_car(sim):
+    obstacle = _behind_an_obstacle(sim, 15.0)
+    seen = collect(sim, 8.0, throttle=1.0)  # foot to the floor the whole time
+    assert not [e for e in seen if e.code == "collision"]
+    assert [e.code for e in seen if e.code == "aeb"] == ["aeb"]
+    assert sim.ego.speed_mps == 0.0
+    assert 0.0 < _bumper_gap(sim, obstacle) < 3.0
+
+
+def test_emergency_braking_lets_a_harder_driver_brake_win(sim):
+    obstacle = _behind_an_obstacle(sim, 30.0)
+    hold(sim, 2.0, throttle=1.0)
+    braking = []
+    for _ in range(round(3.0 / DT)):
+        hold(sim, DT, brake=1.0)
+        braking.append(sim.ego.accel_mps2)
+    assert min(braking) <= -8.0  # never softened
+    assert _bumper_gap(sim, obstacle) > 0.0
+
+
+def test_emergency_braking_stands_down_for_a_swerve(sim):
+    _behind_an_obstacle(sim, 15.0)
+    hold(sim, 1.5, throttle=1.0)
+    seen = collect(sim, 1.0, throttle=1.0, steer=1.0)
+    assert not [e for e in seen if e.code == "aeb"]
+
+
+def test_the_accelerator_does_nothing_with_an_obstacle_right_ahead(sim):
+    obstacle = _behind_an_obstacle(sim, 5.5)  # ~2.5 m bumper to bumper
+    start = _bumper_gap(sim, obstacle)
+    assert start < 3.0
+    seen = collect(sim, 3.0, throttle=1.0)
+    assert [e.code for e in seen if e.code == "obstacle_aware"] == ["obstacle_aware"]
+    assert not [e for e in seen if e.code == "collision"]
+    assert _bumper_gap(sim, obstacle) == pytest.approx(start)
+
+
+def test_with_active_braking_off_the_car_drives_into_it(sim):
+    assert sim.apply_dict({"id": "p", "cmd": "set_param", "key": "aeb", "value": "off"}).ok
+    _behind_an_obstacle(sim, 5.5)
+    seen = collect(sim, 3.0, throttle=1.0)
+    assert not [e for e in seen if e.code in ("aeb", "obstacle_aware")]
+    assert [e.code for e in seen if e.code == "collision"] == ["collision"]
 
 
 def test_leaving_the_tarmac_drags_the_car_down_to_a_crawl(sim):

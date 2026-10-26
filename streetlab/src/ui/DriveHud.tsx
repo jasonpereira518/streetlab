@@ -12,10 +12,11 @@ import { pressVirtual, releaseVirtual, type Control } from '../input/driveKeys';
 import type { CruiseMode } from '../schema';
 import { useFrameValue } from '../store/hooks';
 import { useSimStore } from '../store/simStore';
+import { blindSpots } from './warnings';
 
 export const DRIVE_HINTS: Record<CruiseMode, string> = {
-  off: 'W gas · S brake (hold at a stop to reverse) · A/D steer · F FSD',
-  cruise: 'A/D steer · W faster · S take over · [ ] set speed · L Assist',
+  off: 'W gas · S brake (hold at a stop to reverse) · A/D steer · Q/E signal · F FSD',
+  cruise: 'A/D steer · W faster · S take over · Q/E signal · [ ] set speed · L Assist',
   autosteer: 'Steer or brake to take over · Q/E change lane · [ ] set speed',
   fsd: 'Steer or brake to take over · Q/E change lane · F to drive yourself',
 };
@@ -54,11 +55,25 @@ function HoldButton({ control, label, className }: { control: Control; label: st
 export function DriveHud() {
   const mode = useFrameValue((f) => f.ego.cruise.mode, 10);
   const reversing = useFrameValue((f) => f.ego.gear === 'R', 10);
+  // Tesla's blind-spot light: steady while a vehicle is there, blinking when
+  // the indicator points at it.
+  const spots = useFrameValue((f) => {
+    const b = blindSpots(f);
+    const blink = (side: 'left' | 'right') => (f.ego.turn_signal === side ? '!' : '');
+    return `${b.left ? `L${blink('left')}` : ''}|${b.right ? `R${blink('right')}` : ''}`;
+  }, 10);
   const toggleDriveMode = useSimStore((s) => s.toggleDriveMode);
   const [pad, setPad] = useState(coarsePointer);
   if (!mode) return null;
+  const [left, right] = (spots ?? '|').split('|');
   return (
     <div className="drive-hud">
+      {(left || right) && (
+        <div className="blind-spots" role="status" aria-label="Blind spot">
+          {left && <span className={`blind-spot${left.endsWith('!') ? ' blind-spot--warn' : ''}`}>◀ Blind spot</span>}
+          {right && <span className={`blind-spot blind-spot--right${right.endsWith('!') ? ' blind-spot--warn' : ''}`}>Blind spot ▶</span>}
+        </div>
+      )}
       <p className="drive-hint" data-testid="drive-hint">
         {reversing && <span className="drive-gear">R</span>}
         {DRIVE_HINTS[mode]}

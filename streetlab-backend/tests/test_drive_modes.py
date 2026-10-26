@@ -9,6 +9,7 @@ import pytest
 
 from map.scene_build import SyntheticGrid
 from plan.control import MAX_STEER_RATE_RAD_S, CenterlineFollower
+from plan.hazard import Reaction
 from plan.manual import (
     BRAKE_JERK_MPS3,
     COAST_DECEL_MPS2,
@@ -215,6 +216,7 @@ class _StalePlanner(CenterlineFollower):
 
     demand: float | None = None
     label: str | None = None
+    reaction: Reaction | None = None
 
     def plan(self, ego, route, detections, limits, context):
         r = CenterlineFollower.plan(self, ego, route, detections, limits, context)
@@ -222,6 +224,8 @@ class _StalePlanner(CenterlineFollower):
             r = replace(r, accel_mps2=self.demand)
         if self.label is not None:
             r = replace(r, plan=r.plan.model_copy(update={"maneuver": self.label}))
+        if self.reaction is not None:
+            r = replace(r, reaction=self.reaction)
         return r
 
 
@@ -258,6 +262,17 @@ def test_throttle_never_overrides_an_emergency_brake():
     sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
     advance(sim, 4.0)
     planner.demand, planner.label = -4.5, "emergency_brake"
+    hold(sim, 1.0, throttle=1.0)
+    assert sim.ego.accel_mps2 == pytest.approx(-4.5)
+
+
+def test_a_lane_change_label_does_not_hide_an_emergency_brake_from_the_throttle():
+    # `_label` lets a lane change relabel the plan while the AEB rule brakes.
+    planner = _StalePlanner()
+    sim = Simulation(SyntheticGrid(), seed=7, planner=planner)
+    advance(sim, 4.0)
+    planner.demand, planner.label = -4.5, "lane_change_left"
+    planner.reaction = Reaction(kind="aeb", speed_ceiling_mps=0.0, maneuver="emergency_brake")
     hold(sim, 1.0, throttle=1.0)
     assert sim.ego.accel_mps2 == pytest.approx(-4.5)
 

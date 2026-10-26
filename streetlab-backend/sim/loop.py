@@ -53,9 +53,13 @@ from plan.control import (
     PlanLimits,
     Planner,
     PlanResult,
+    _closest_lead,
 )
 from plan.hazard import Reaction
 from plan.manual import (
+    BRAKE_JERK_MPS3,
+    COAST_DECEL_MPS2,
+    MANUAL_MAX_DECEL_MPS2,
     NO_CONTROLS,
     THROTTLE_JERK_MPS3,
     Controls,
@@ -145,6 +149,10 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # Mean seconds between spontaneous cut-ins; 0 is off, so no scene gains
     # them unasked. Floored at `_CUTIN_MIN_PERIOD_S` when on.
     "cutin_period_s": 0.0,
+    # Active safety for a person driving (Manual): emergency braking and
+    # obstacle-aware acceleration. Planner modes brake for themselves. Presets
+    # reset it, which is Tesla's "off for this drive only".
+    "aeb": "on",
 }
 
 #: Drive modes in which the planner steers (and so is scored).
@@ -171,6 +179,22 @@ _CONTACT_EPS = 1e-6
 _CONTACT_RELEASE_M = 0.5
 #: Slower than this the car counts as stopped, for shifting gear.
 _STOPPED_MPS = 0.05
+
+# Active safety while a person drives (see `_driver_safety`). The planner's own
+# AEB fires early (3.0 m/s^2 demand, 2 m margin, on its tapering 4.5 m/s^2
+# stopping model): right for a car that brakes itself, but it would brake a
+# person creeping up to a queue. A person gets Tesla's last-moment kind: act
+# when stopping short needs this much, then brake as hard as they could.
+#: Manual AEB acts when stopping this far short needs at least this, m/s^2.
+_DRIVER_AEB_MARGIN_M = 0.5
+_DRIVER_AEB_TRIGGER_MPS2 = 5.0
+#: A steer at least this hard is the driver swerving: AEB stands down.
+_DRIVER_AEB_STEER = 0.6
+#: Obstacle-Aware Acceleration: below Tesla's 16 km/h, with something this
+#: close in the path (bumper to bumper; "immediate path" is unpublished), the
+#: accelerator does nothing.
+_OAA_MAX_MPS = 4.4
+_OAA_GAP_M = 3.0
 #: How long the brake (in D) or throttle (in R) must be held at a stop to shift.
 _SHIFT_HOLD_S = 0.3
 
@@ -257,6 +281,9 @@ class WorldState:
     # Latches so `collision` / `off_road` fire once per contact, not per tick.
     in_contact: bool = False
     off_road: bool = False
+    # Latches so the driver-safety events fire once per intervention.
+    aeb_source: str | None = None
+    oaa_active: bool = False
 
 
 class SignalController:
@@ -444,6 +471,8 @@ class Simulation:
         self.world.shift_hold_s = 0.0
         self.world.in_contact = False
         self.world.off_road = False
+        self.world.aeb_source = None
+        self.world.oaa_active = False
         self.world.plan_result = None
         self.world.detections = []
         self.world.detections_shadow = None
@@ -606,7 +635,9 @@ class Simulation:
         world, ego = self.world, self.world.ego
         mode = world.drive_mode
         controls = live(world.controls, world.t)
-        aeb = result.plan.maneuver == "emergency_brake"
+        # The reaction, not the label: a lane change relabels the plan while
+        # the AEB rule is still braking.
+        aeb = result.reaction.kind == "aeb" or result.plan.maneuver == "emergency_brake"
 
         if mode in _PLANNER_STEERS:
             steer = result.steer_rad
@@ -620,6 +651,7 @@ class Simulation:
         if mode == "off":
             self._shift(controls, dt)
             accel = self._manual.accel(controls, ego, dt, reverse=world.gear == "R")
+            accel = self._driver_safety(result, controls, accel, dt)
             return self._kerb_drag(accel), steer
 
         accel = result.accel_mps2
@@ -639,6 +671,66 @@ class Simulation:
         if mode == "cruise":
             accel = self._kerb_drag(accel)
         return accel, steer
+
+    def _driver_safety(self, result: PlanResult, controls: Controls, accel: float, dt: float) -> float:
+        """Manual: emergency braking and obstacle-aware acceleration.
+
+        Both look at the nearest object in the car's lane ahead. Not the
+        planner's AEB reaction: in Manual the planner's strip follows the line
+        the planner WOULD drive (round the obstacle, say), not the car. Lanes
+        are measured along the ego route, so both stand down off it
+        (`route_available`), as Assist/FSD do. Neither touches a planner mode,
+        so the contract fixtures cannot move.
+        """
+        world, ego = self.world, self.world.ego
+        on = (
+            world.gear == "D"
+            and world.params.get("aeb", "on") != "off"
+            and abs(axis(controls.steer)) < _DRIVER_AEB_STEER
+            and self.route_available()
+        )
+        lead, bumper, closing = None, math.inf, 0.0
+        if on:
+            route = self.scene.ego_route
+            lead, gap = _closest_lead(world.detections, route, route.project((ego.x, ego.y)))
+            if lead is not None:
+                bumper = gap - (self._model.length_m + lead.size.length) / 2.0
+                lead_s = route.project((lead.pose.x, lead.pose.y))
+                along = lead.speed_mps * math.cos(lead.pose.heading - route.heading_at(lead_s))
+                closing = max(ego.speed_mps - along, 0.0)
+
+        # Emergency braking: latched on one object until the car stops, the
+        # object leaves the lane, or the driver swerves or switches it off.
+        if (
+            lead is None
+            or lead.id != world.aeb_source
+            or closing <= 0.0  # matched its speed, or it pulled away
+            or ego.speed_mps <= _STOPPED_MPS
+        ):
+            world.aeb_source = None
+        if world.aeb_source is None and lead is not None and closing > 0.0:
+            room = bumper - _DRIVER_AEB_MARGIN_M
+            demand = math.inf if room <= 0.0 else closing * closing / (2.0 * room)
+            if demand >= _DRIVER_AEB_TRIGGER_MPS2:
+                world.aeb_source = lead.id
+                self._emit("aeb", f"emergency braking for {lead.cls}", "critical")
+        if world.aeb_source is not None:
+            # A harder brake than this is the driver's own: `min` keeps it.
+            return min(accel, jerk_limit(-MANUAL_MAX_DECEL_MPS2, ego.accel_mps2, dt, BRAKE_JERK_MPS3))
+
+        # Obstacle-Aware Acceleration: the accelerator does nothing.
+        blocked = (
+            lead is not None
+            and bool(axis(controls.throttle))
+            and ego.speed_mps < _OAA_MAX_MPS
+            and bumper < _OAA_GAP_M
+        )
+        if blocked and not world.oaa_active:
+            self._emit("obstacle_aware", "accelerator limited: obstacle ahead", "warn")
+        world.oaa_active = blocked
+        if blocked:
+            return min(accel, -COAST_DECEL_MPS2 if ego.speed_mps > _STOPPED_MPS else 0.0)
+        return accel
 
     @property
     def _surroundings(self) -> Surroundings:

@@ -4,7 +4,7 @@ import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { MockSim } from '../src/net/mockServer';
 import { AckToast } from '../src/ui/AckToast';
 import { setAudioContextForTest } from '../src/ui/chime';
-import { WarningMonitor, loudest, overSpeedLimit, useWarningEffects } from '../src/ui/warnings';
+import { WarningMonitor, blindSpots, loudest, overSpeedLimit, useWarningEffects } from '../src/ui/warnings';
 import { PARAM_DEFS, useSimStore } from '../src/store/simStore';
 import type { StateUpdate } from '../src/schema';
 import { createHarness, resetStore, type Harness } from './harness';
@@ -69,9 +69,15 @@ describe('WarningMonitor', () => {
       .toEqual(['fcw']);
   });
 
-  it('announces emergency braking in any mode', () => {
+  it("announces the planner's emergency braking where the planner drives", () => {
     expect(codes(new WarningMonitor(), frame({ maneuver: 'emergency_brake', mode: 'fsd', brake: 1 })))
       .toEqual(['aeb']);
+    expect(codes(new WarningMonitor(), frame({ maneuver: 'emergency_brake', mode: 'cruise', brake: 1 })))
+      .toEqual(['aeb']);
+    // Off-route Cruise holds speed, and Manual says so with a backend event.
+    expect(codes(new WarningMonitor(), frame({ maneuver: 'emergency_brake', mode: 'cruise', fsdAvailable: false })))
+      .toEqual([]);
+    expect(codes(new WarningMonitor(), frame({ maneuver: 'emergency_brake', mode: 'off' }))).toEqual([]);
   });
 
   it('warns a driver closing on a stop too fast, not one the car is stopping for', () => {
@@ -119,10 +125,72 @@ describe('WarningMonitor', () => {
     expect(codes(new WarningMonitor(), frame({ mode: 'off', fsdAvailable: false }))).toEqual([]);
   });
 
+  it('warns of an unsignalled lane departure in Manual and Cruise, once per drift', () => {
+    const lane = (offset: number, left: 'dashed_white' | 'none' = 'dashed_white') => ({
+      ...BASE.telemetry.lane,
+      lane_width_m: 3.6,
+      offset_m: offset,
+      left_marking: left,
+      right_marking: 'solid_white' as const,
+    });
+    const at = (t: number, offset: number, extra: Partial<StateUpdate['ego']> = {}, left?: 'none') => {
+      const f = frame({ t, speed: 8 });
+      return {
+        ...f,
+        ego: { ...f.ego, size: { ...f.ego.size, width: 1.9 }, ...extra },
+        telemetry: { ...f.telemetry, lane: lane(offset, left) },
+      };
+    };
+    const m = new WarningMonitor();
+    expect(codes(m, at(1, 0.5))).toEqual([]);
+    expect(codes(m, at(1.1, 0.9))).toEqual(['lane_departure']); // edge = 1.8 - 0.95 = 0.85
+    expect(codes(m, at(1.2, 0.7))).toEqual([]); // inside the hysteresis: still the same drift
+    expect(codes(m, at(1.3, 0.4))).toEqual([]); // back in lane
+    expect(codes(m, at(1.4, 0.9))).toEqual(['lane_departure']); // a new drift
+    // Signalled, unmarked, engaged, or slow: quiet.
+    expect(codes(new WarningMonitor(), at(1, 0.9, { turn_signal: 'left' }))).toEqual([]);
+    expect(codes(new WarningMonitor(), at(1, 0.9, {}, 'none'))).toEqual([]);
+    const fsd = at(1, -0.9);
+    expect(codes(new WarningMonitor(), { ...fsd, ego: { ...fsd.ego, cruise: { ...fsd.ego.cruise, mode: 'fsd' } } }))
+      .toEqual([]);
+    expect(codes(new WarningMonitor(), at(1, 0.9, { speed_mps: 3 }))).toEqual([]);
+    expect(codes(new WarningMonitor(), at(1, 0.9), { ...DEFAULTS, lane_departure_avoidance: 'off' })).toEqual([]);
+  });
+
+  it('finds a moving car in a blind spot, not one ahead, far behind, or parked', () => {
+    // Ego heading north (+y) at the origin: its left is -x.
+    const withAgent = (x: number, y: number, speed = 8, egoSpeed = 10) => {
+      const f = frame({ speed: egoSpeed });
+      return {
+        ...f,
+        ego: { ...f.ego, pose: { x: 0, y: 0, heading: Math.PI / 2 } },
+        world_agents: [{ id: 'a', cls: 'car' as const, pose: { x, y, heading: Math.PI / 2 }, size: f.ego.size, speed_mps: speed }],
+      };
+    };
+    expect(blindSpots(withAgent(-3.6, -4))).toEqual({ left: true, right: false });
+    expect(blindSpots(withAgent(3.6, -2))).toEqual({ left: false, right: true });
+    expect(blindSpots(withAgent(-3.6, -12))).toEqual({ left: false, right: false }); // far behind
+    expect(blindSpots(withAgent(-3.6, 6))).toEqual({ left: false, right: false }); // ahead: visible
+    expect(blindSpots(withAgent(-3.6, -4, 0))).toEqual({ left: false, right: false }); // parked
+    expect(blindSpots(withAgent(-3.6, -4, 8, 1))).toEqual({ left: false, right: false }); // ego crawling
+    // The warning itself waits for the indicator to point into it.
+    const f = withAgent(-3.6, -4);
+    expect(codes(new WarningMonitor(), f)).toEqual([]);
+    expect(codes(new WarningMonitor(), { ...f, ego: { ...f.ego, turn_signal: 'left' } })).toEqual(['blind_spot']);
+  });
+
+  it('says it is pulling over for an emergency vehicle, or just that one is there', () => {
+    expect(codes(new WarningMonitor(), frame({ maneuver: 'pull_over', mode: 'fsd' }))).toEqual(['pull_over']);
+    const ev = { ...BASE.detections[0] ?? {}, id: 'ev', emergency: true } as StateUpdate['detections'][number];
+    const manual = { ...frame({ mode: 'off' }), detections: [ev] };
+    expect(codes(new WarningMonitor(), manual)).toEqual(['emergency_vehicle']);
+  });
+
   it('plays the loudest sound of a batch', () => {
     const m = new WarningMonitor();
-    const batch = m.update(frame({ ttc: 2, maneuver: 'emergency_brake' }), DEFAULTS);
-    expect(loudest(batch)).toBe('critical');
+    const batch = m.update(frame({ ttc: 2 }), DEFAULTS);
+    expect(loudest(batch.map((w) => w.sound))).toBe('critical');
+    expect(loudest(['info', 'warn', null])).toBe('warn');
     expect(loudest([])).toBeNull();
   });
 });
@@ -177,6 +245,19 @@ describe('useWarningEffects', () => {
     expect(beeps).toBeGreaterThan(0);
     harness.emit(frame({ t: 1.2, ttc: 2.0 })); // still on: silent
     expect(audio.oscillators).toBe(beeps);
+  });
+
+  it('chimes for an intervention the backend made, without logging it twice', () => {
+    const audio = new FakeAudio();
+    setAudioContextForTest(audio as unknown as AudioContext);
+    harness = createHarness();
+    render(<Warnings />);
+    harness.emitScene();
+    const aeb = { t: 1, level: 'critical' as const, code: 'aeb', message: 'emergency braking for car', progress: null };
+    harness.emit({ ...frame({ t: 1 }), events: [aeb] });
+    expect(audio.oscillators).toBeGreaterThan(0);
+    expect(useSimStore.getState().events.filter((e) => e.code === 'aeb')).toHaveLength(1);
+    expect(within(screen.getByRole('status')).getByText('Emergency braking')).toBeTruthy();
   });
 
   it('stays silent with chimes off', () => {

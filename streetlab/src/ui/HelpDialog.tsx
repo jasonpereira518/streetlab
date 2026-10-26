@@ -17,7 +17,7 @@ export const SHORTCUTS: Array<{ keys: string; does: string }> = [
   { keys: 'L', does: 'Assist (cruise + lane keep) on / off' },
   { keys: 'C', does: 'Cruise on / off' },
   { keys: '[ / ]', does: 'Set speed −5 / +5 mph' },
-  { keys: 'Q / E', does: 'Signal left / right: Assist or FSD changes lane (signal back to return)' },
+  { keys: 'Q / E', does: 'Signal left / right. Under Assist or FSD the car changes lane (signal back to return); in Manual or Cruise press again to cancel' },
   { keys: 'Gamepad', does: 'Left stick steers, RT / LT throttle and brake; Y FSD, X Assist, B Cruise, d-pad set speed, LB / RB signal' },
   { keys: 'H', does: 'Headlights on / off' },
   { keys: '?', does: 'Show / hide this help' },
