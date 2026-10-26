@@ -157,6 +157,10 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # client warns) or "assist" (the car steers back). Emergency Lane
     # Departure Avoidance runs whenever it is not "off".
     "lane_departure_avoidance": "warning",
+    # Automatic Collision Evasion: "on" lets a Manual car about to hit a
+    # vehicle hand itself to FSD, which steers round or brakes. Off by
+    # default, as Tesla's is opt-in.
+    "collision_evasion": "off",
 }
 
 #: Drive modes in which the planner steers (and so is scored).
@@ -199,6 +203,15 @@ _DRIVER_AEB_STEER = 0.6
 #: accelerator does nothing.
 _OAA_MAX_MPS = 4.4
 _OAA_GAP_M = 3.0
+#: Automatic Collision Evasion hands a Manual car to FSD at this textbook
+#: demand, earlier than Manual AEB's: the planner then has the room its own
+#: AEB (4.5 m/s^2 on its tapering law) needs if it cannot steer round.
+_ACE_TRIGGER_MPS2 = 3.0
+#: Above Tesla's 22.5 mph floor would never arm on Nob Hill; a sim floor.
+_ACE_MIN_MPS = 6.0
+#: The accelerator is muted this long after an evasion engages FSD.
+_ACE_MUTE_S = 8.0
+_VEHICLES = frozenset({"car", "truck", "bus", "motorcycle"})
 #: Lane departure avoidance arms above this. Tesla's 48-64 km/h floors would
 #: never arm on a 25 mph Nob Hill street: a sim floor (10 mph), not Tesla's.
 _LDA_MIN_MPS = 4.5
@@ -305,6 +318,8 @@ class WorldState:
     oaa_active: bool = False
     # The driver's indicator (Manual/Cruise); the planner's under Assist/FSD.
     driver_signal: str = "off"
+    # Until when an evasion's FSD ignores the accelerator.
+    evasion_until: float = -math.inf
     # Lane departure avoidance steering back: "lda" or "elda", or None.
     lda_active: str | None = None
 
@@ -497,6 +512,7 @@ class Simulation:
         self.world.aeb_source = None
         self.world.driver_signal = "off"
         self.world.lda_active = None
+        self.world.evasion_until = -math.inf
         self.world.oaa_active = False
         self.world.plan_result = None
         self.world.detections = []
@@ -691,6 +707,8 @@ class Simulation:
         if aeb:
             return accel, steer  # nothing overrides an emergency brake
         pedal = throttle_accel(controls, ego.speed_mps)
+        if world.t < world.evasion_until:
+            pedal = 0.0  # Tesla mutes the accelerator through an evasion
         if pedal > 0.0 and pedal > accel:
             accel = jerk_limit(pedal, ego.accel_mps2, dt, THROTTLE_JERK_MPS3)
         if world.t - world.mode_changed_t < _HANDOVER_S:
@@ -796,6 +814,22 @@ class Simulation:
                 lead_s = route.project((lead.pose.x, lead.pose.y))
                 along = lead.speed_mps * math.cos(lead.pose.heading - route.heading_at(lead_s))
                 closing = max(ego.speed_mps - along, 0.0)
+
+        # Automatic Collision Evasion: about to hit a vehicle, hand the car to
+        # FSD early enough that its own AEB still fits if it cannot steer round.
+        if (
+            lead is not None
+            and world.params.get("collision_evasion", "off") == "on"
+            and lead.cls in _VEHICLES
+            and ego.speed_mps >= _ACE_MIN_MPS
+            and closing > 0.0
+        ):
+            room = bumper - _DRIVER_AEB_MARGIN_M
+            if room <= 0.0 or closing * closing / (2.0 * room) >= _ACE_TRIGGER_MPS2:
+                self._change_drive_mode("fsd")
+                world.evasion_until = world.t + _ACE_MUTE_S
+                self._emit("collision_evasion", "FSD (Supervised) engaged for your safety", "critical")
+                return accel
 
         # Emergency braking: latched on one object until the car stops, the
         # object leaves the lane, or the driver swerves or switches it off.
@@ -2185,7 +2219,7 @@ def _trajectory(world: WorldState, offset: float) -> TrajectoryPrediction:
     )
 
 
-_REACTION_VERBS = {"aeb": "Emergency braking", "yield_to_entry": "Yielding"}
+_REACTION_VERBS = {"aeb": "Emergency braking", "yield_to_entry": "Yielding", "pull_over": "Pulling over"}
 
 
 def _threat_series(

@@ -247,6 +247,18 @@ export const PARAM_DEFS: ParamDef[] = [
     hint: 'Manual and Cruise: warn, or steer back, when a wheel crosses a marked line with no indicator. Unless Off, also steers away from a car alongside or oncoming traffic.',
   },
   {
+    key: 'collision_evasion',
+    label: 'Collision evasion',
+    kind: 'select',
+    group: 'safety',
+    default: 'off',
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
+    ],
+    hint: 'Manual: about to hit a vehicle, the car hands itself to FSD, which steers round or brakes. The accelerator is muted for a few seconds.',
+  },
+  {
     key: 'chimes',
     label: 'Chimes',
     kind: 'select',

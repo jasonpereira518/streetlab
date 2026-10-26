@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, Sequence
 
 from perception.service import MAX_RANGE_M
-from plan.behavior import stop_ceiling
+from plan.behavior import COMFORT_DECEL_MPS2, stop_ceiling
 from plan.ttc import HAZARD_TTC_S
 from schema import Detection, Maneuver
 from sim.route import Route
@@ -383,6 +383,8 @@ class RuleInput:
     route: Route
     ego_s: float
     dt: float
+    #: Every detection, for rules that look beyond the strip (behind, say).
+    detections: Sequence[Detection] = ()
 
 
 class Rule(Protocol):
@@ -522,9 +524,89 @@ class YieldToEntryRule:
         )
 
 
+#: `pull_over` fires for an emergency vehicle this far behind, or nearer.
+PULL_OVER_BEHIND_M = 45.0
+#: Its lights must be in the ego's lane or the next one to count.
+PULL_OVER_LATERAL_M = 5.4
+#: Released once the vehicle is this far ahead (it has passed), once it has
+#: gone unseen this long, or after this long held (it queued behind and is
+#: not coming past: drive on rather than block it for ever).
+PULL_OVER_PASSED_M = 30.0
+PULL_OVER_LOST_S = 3.0
+PULL_OVER_MAX_S = 60.0
+
+
+@dataclass(slots=True)
+class PullOverRule:
+    """Slow to a stop for an emergency vehicle coming up behind.
+
+    Tesla's FSD (Supervised) pulls over or yields for police, fire and
+    ambulance. This stops in lane at comfort decel (`COMFORT_DECEL_MPS2`), the
+    hazards come on at rest (the client's lamp latch), and it drives on once
+    the vehicle has passed, been lost, or held it for `PULL_OVER_MAX_S`.
+    `ponytail:` no move to the kerb (needs the cycle-6 edge-room geometry), so
+    on a single-lane street the vehicle queues behind until the cap releases.
+    Not "closing": through car-following an emergency vehicle settles at an
+    ordinary gap and stops closing, and it still wants past. Only ground-truth
+    perception marks `emergency`, so noisy-truth and ML runs never fire it.
+    """
+
+    active_id: str | None = None
+    lost_s: float = 0.0
+    held_s: float = 0.0
+
+    def reset(self) -> None:
+        self.active_id = None
+        self.lost_s = 0.0
+        self.held_s = 0.0
+
+    def step(self, inp: RuleInput) -> Reaction | None:
+        route, ego = inp.route, inp.ego
+        ego_lat = route.lateral_offset((ego.x, ego.y), inp.ego_s)
+        seen: dict[str, float] = {}
+        for d in inp.detections:
+            if not d.emergency:
+                continue
+            d_s = route.project((d.pose.x, d.pose.y))
+            if math.cos(d.pose.heading - route.heading_at(d_s)) <= 0.0:
+                continue  # coming the other way
+            if abs(route.lateral_offset((d.pose.x, d.pose.y), d_s) - ego_lat) > PULL_OVER_LATERAL_M:
+                continue
+            seen[d.id] = route.signed_gap(inp.ego_s, d_s)
+
+        if self.active_id is not None:
+            gap = seen.get(self.active_id)
+            self.held_s += inp.dt
+            self.lost_s = 0.0 if gap is not None else self.lost_s + inp.dt
+            if (gap is not None and gap >= PULL_OVER_PASSED_M) or self.lost_s >= PULL_OVER_LOST_S:
+                self.reset()
+                return None
+            if self.held_s >= PULL_OVER_MAX_S:
+                # Gave way long enough. Stay latched, so this vehicle cannot
+                # stop the ego again, until it passes or is lost.
+                return None
+        else:
+            behind = {k: g for k, g in seen.items() if -PULL_OVER_BEHIND_M <= g < 0.0}
+            if not behind:
+                return None
+            self.active_id = max(behind, key=behind.get)  # the nearest
+            self.lost_s = self.held_s = 0.0
+
+        # A ceiling one comfort-decel step under the current speed, every tick:
+        # the tracker's `SPEED_GAIN * (ceiling - v)` then brakes at
+        # `COMFORT_DECEL_MPS2`, where a ceiling of 0 would saturate at 4.5.
+        ceiling = max(0.0, ego.speed_mps - COMFORT_DECEL_MPS2 / SPEED_GAIN)
+        return Reaction(
+            kind="pull_over",
+            speed_ceiling_mps=ceiling,
+            source_id=self.active_id,
+            maneuver="pull_over",
+        )
+
+
 #: Highest priority first. Combining takes the minimum ceiling regardless, but
 #: the label, source and window come from the first rule that fired.
-_DEFAULT_PRIORITY = ("aeb", "yield_to_entry")
+_DEFAULT_PRIORITY = ("aeb", "yield_to_entry", "pull_over")
 
 
 @dataclass(slots=True)
@@ -537,7 +619,7 @@ class ThreatAssessor:
     """
 
     rules: list[Rule] = field(
-        default_factory=lambda: [AebRule(), YieldToEntryRule()]
+        default_factory=lambda: [AebRule(), YieldToEntryRule(), PullOverRule()]
     )
 
     def reset(self) -> None:
@@ -554,7 +636,7 @@ class ThreatAssessor:
         centre_m: float = 0.0,
     ) -> Reaction:
         inp = RuleInput(
-            windows(detections, ego, route, ego_s, centre_m), ego, route, ego_s, dt
+            windows(detections, ego, route, ego_s, centre_m), ego, route, ego_s, dt, detections
         )
         # Every rule steps every tick, fired or not: a rule's dwell timers and
         # latches must keep running while another rule is the one reported.
