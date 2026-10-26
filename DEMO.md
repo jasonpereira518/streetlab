@@ -102,6 +102,49 @@ snapping. They grey out while the car is more than 3 m or 45° off its route.
 Only time under Assist or FSD counts toward a run's scorecard. A hint line over the road always shows what the keys do in the current mode, and **On-screen controls** adds gas, brake and steering buttons (on by default on a touch screen). Press **?** for
 the full key list.
 
+## Active safety while you drive
+
+StreetLab imitates the active-safety features Tesla documents for its cars
+(owner's manuals, 2024-2026 release notes). It is a simulator: none of this is
+a safety system, and the thresholds Tesla does not publish are sim guesses
+(`docs/measurements/2026-10-25-active-safety.md` lists them). Settings live in
+**Parameters → Active safety**.
+
+- **Warnings with a chime**, in any mode: Forward Collision Warning (Off, Late,
+  Medium, Early), a speed-limit warning that enlarges the limit sign (Display or
+  Chime, relative to the limit or a fixed speed), "Stop ahead" when you are
+  closing on a red light or stop sign too fast in Manual or Cruise, an optional
+  green-light chime, lane departure (Manual and Cruise, over a marked line with
+  no indicator), and a blind-spot light that blinks when you signal toward a
+  moving car beside you. The first key or click unlocks sound.
+- **Emergency braking in Manual.** Drive at a stopped car and, at the last
+  moment, the car brakes as hard as you could. Swerving or switching it off
+  (**Emergency braking: Off**, back on with the next preset) stands it down.
+  Below 10 mph with something within 3 m, the accelerator does nothing.
+- **Lane Departure Avoidance.** Set it to Assist and, with your hands off the
+  keys, a drift over the line is steered back. Even on Warning, drifting toward
+  a moving car beside you, or across a yellow line with oncoming traffic, is
+  steered back (Tesla's Emergency Lane Departure Avoidance).
+- **Q / E** are the indicator in Manual and Cruise (press again to cancel); they
+  silence the lane-departure warning that way and blink the blind-spot light.
+- **Hazard lights** come on by themselves after an emergency or hard stop, after
+  a collision, and when the car stops for an emergency vehicle; the
+  accelerator turns them off. Above 50 km/h hard braking strobes the brake
+  lights.
+- **Driver attention** (off by default, so FSD can be watched hands-off): under
+  Assist or FSD with no key, click or pad input, a prompt, then a flashing
+  banner and chimes, then a strike: FSD drops to Assist, the car slows to a stop
+  with its hazards on, and Assist and FSD stay unavailable until you reset.
+  **On, quick** uses 8 / 12 / 16 s instead of 30 / 40 / 50 s.
+- **Automatic Collision Evasion** (off by default, as Tesla's is opt-in): in
+  Manual, about to hit a vehicle, the car hands itself to FSD, which steers round
+  where it legally can and brakes where it cannot; the accelerator is muted for
+  a few seconds.
+
+All of the Manual interventions measure the car against its route, so they go
+quiet once you are more than 3 m or 45° off it, the same rule that greys out
+Assist and FSD.
+
 ## Run a walkthrough preset
 
 Above the scenario catalog, the left sidebar's **Walkthrough** list holds
@@ -236,7 +279,8 @@ show it.
 | `red_light_runner` | Emergency-brakes if it is moving; a car already stopped at the red has nothing to do |
 | `obstacle`, `stalled_vehicle` | Changes lane around it where that is legal; emergency-brakes if it cannot; otherwise stops short and waits |
 | `oncoming_drift` | Emergency-brakes or yields as it crosses the line (measured on every scene); the nudge to the right is Cycle 6 Phase 3 |
-| `emergency_vehicle`, `tailgater` | **No reaction yet** — Cycle 6 Phase 3 |
+| `emergency_vehicle` | Slows to a stop in its lane at comfort braking (`Pulling over`), hazards on, and drives on once it has passed or after 60 s; no move to the kerb, so on a one-lane street it waits behind. Only ground-truth perception sees its lights |
+| `tailgater` | **No reaction yet** — Cycle 6 Phase 3 |
 
 Measured on `grid-loop`, `grid-loop` at 0.45x traffic speed and Nob Hill across
 five seeds each (`docs/measurements/2026-10-09-hazard-reactions.md`), the ego

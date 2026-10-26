@@ -104,3 +104,24 @@ C attention (13); D showpieces (16, 15); E measurements, DEMO.md, help text and 
   and off, the chime after the first key press, hazards after the stop, the attention sequence.
 - `docs/measurements/2026-10-<dd>-active-safety.md` with commit and date: Manual-AEB stopping distances,
   pull-over and evasion outcomes, every unpublished threshold chosen.
+
+## As built (2026-10-26): where the build departed from this design
+
+- **Manual AEB is its own rule, not the planner's reaction.** In Manual the planner's threat strip
+  follows the line the planner *would* drive (it plans a lane change round a stalled car), so its AEB
+  reaction released 0.2 s after firing while the car still pointed at the obstacle. Manual AEB reads
+  the nearest in-lane object (`_closest_lead`), fires at a textbook 5 m/s^2 demand with a 0.5 m
+  margin, and brakes at the driver's full 8 m/s^2. Reusing the planner's trigger (3.0 m/s^2, 2 m
+  margin, on its tapering 4.5 m/s^2 law) would have hard-braked a person creeping up to a queue.
+  Planner modes keep their 4.5 cap.
+- **Multi-Collision Braking (#5) is not a separate feature.** The contact referee already sets the
+  speed to zero on the impact step; a brake hold while in contact only stopped the driver driving
+  forward away from what they hit. Post-crash hazards come from the lamp latch.
+- **Automatic Collision Evasion triggers at a 3.0 m/s^2 textbook demand**, earlier than Manual AEB,
+  so FSD's own 4.5 m/s^2 AEB still fits if it cannot steer round, and mutes the accelerator for 8 s.
+- **Driver attention is off by default** (`attention_monitor`: off / normal / demo): the self-serve
+  demo is someone watching FSD hands-off, and a 50 s strike would stop the car on them.
+- **The backend's lane steer-back event is `lane_assist`**, distinct from the client's
+  `lane_departure` warning, so the two never double-log.
+- **The client sends `signal` on every `drive_input`**: the command is latest-wins, so a one-off
+  could be overwritten before a tick read it.
