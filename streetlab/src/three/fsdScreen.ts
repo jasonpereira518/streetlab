@@ -222,8 +222,8 @@ export class FsdScreen {
       ctx.closePath();
       ctx.fill();
     };
-    arrow(panelW + 40, -1, lit && signal === 'left');
-    arrow(W - 40, 1, lit && signal === 'right');
+    arrow(panelW + 40, -1, lit && (signal === 'left' || signal === 'hazard'));
+    arrow(W - 40, 1, lit && (signal === 'right' || signal === 'hazard'));
 
     // Current manoeuvre, bottom of the view.
     const m = frame.plan.maneuver;

@@ -204,7 +204,9 @@ export function vehicleMaterial(): THREE.MeshStandardNodeMaterial {
 /* Ego vehicle                                                         */
 /* ------------------------------------------------------------------ */
 
-export type TurnSignal = 'off' | 'left' | 'right';
+/** The wire's indicator, plus `hazard` (both sides), which the client's lamp
+ * latch (`egoLights.ts`) derives; the wire never carries it. */
+export type TurnSignal = 'off' | 'left' | 'right' | 'hazard';
 
 /** Indicator cadence: 1.5 Hz, half on, half off. */
 export const BLINK_HZ = 1.5;
@@ -212,6 +214,13 @@ export const blinkOn = (t: number): boolean => (t * BLINK_HZ) % 1 < 0.5;
 
 /** Above this pedal the brake lights come on. */
 const BRAKE_ON = 0.05;
+
+/** Dynamic brake lights: Tesla strobes the brake lamps under forceful braking
+ * above about 50 km/h. "Forceful" is unpublished; 0.9 of the wire's pedal is
+ * >= 4.05 m/s^2 (the wire normalises by 4.5). A sim guess, not Tesla's figure. */
+export const DBL_BRAKE = 0.9;
+export const DBL_MIN_MPS = 13.9;
+const DBL_HZ = 4;
 
 const LAMP = {
   head: { glow: '#EAF4FF', on: 2.4 },
@@ -397,11 +406,13 @@ export class EgoVehicle {
       w.pivot.rotation.y = w.front ? steering : 0;
     }
 
+    const strobeOff = brake >= DBL_BRAKE && speed > DBL_MIN_MPS && (t * DBL_HZ) % 1 >= 0.5;
     this.lampMats.tail.emissiveIntensity =
-      brake > BRAKE_ON ? LAMP.tail.brake : this.headlights ? LAMP.tail.running : 0;
+      brake > BRAKE_ON && !strobeOff ? LAMP.tail.brake : this.headlights ? LAMP.tail.running : 0;
     const blink = signal !== 'off' && blinkOn(t);
-    this.lampMats.indicatorLeft.emissiveIntensity = blink && signal === 'left' ? LAMP.amber.on : 0;
-    this.lampMats.indicatorRight.emissiveIntensity = blink && signal === 'right' ? LAMP.amber.on : 0;
+    const both = signal === 'hazard';
+    this.lampMats.indicatorLeft.emissiveIntensity = blink && (both || signal === 'left') ? LAMP.amber.on : 0;
+    this.lampMats.indicatorRight.emissiveIntensity = blink && (both || signal === 'right') ? LAMP.amber.on : 0;
   }
 
   dispose(): void {

@@ -27,7 +27,8 @@ import type { LightingPreset } from '../ui/theme';
 import { buildWorld } from './world';
 import type { HeightFn } from './terrain';
 import type { World } from './world';
-import { EgoVehicle } from './ego';
+import { EgoVehicle, type TurnSignal } from './ego';
+import { EgoLights } from './egoLights';
 import { Cabin } from './cabin';
 import { FsdScreen } from './fsdScreen';
 import { TrafficFleet } from './agents';
@@ -365,6 +366,9 @@ function mount(
   const detectorCamera = createDetectorCamera(scene, renderer, backend);
   // Resized to the wire's `ego.size` on the first frame (see applyFrame).
   const ego = new EgoVehicle({ length: 4.7, width: 1.9, height: 1.5 });
+  // Hazards and the wire's indicator, one decision per frame for every lamp.
+  const egoLights = new EgoLights();
+  let lampSignal: TurnSignal = 'off';
   const fleet = new TrafficFleet();
   const ribbon = new PathRibbon();
   const hazards = new HazardOverlay();
@@ -572,11 +576,12 @@ function mount(
     const egoGround = world ? world.groundFor(sample.pose.heading) : ground_;
     ego.setPose(sample.pose, egoGround);
     ego.setAttitude(sample.steering_angle, sample.accel_mps2);
+    lampSignal = egoLights.update(frame);
     ego.update(
       sample.speed_mps,
       sample.steering_angle,
       frame.ego.brake,
-      frame.ego.turn_signal,
+      lampSignal,
       performance.now() / 1000,
       dt,
     );
@@ -585,7 +590,7 @@ function mount(
         sample.steering_angle,
         sample.accel_mps2,
         sample.speed_mps,
-        frame.ego.turn_signal,
+        lampSignal,
         performance.now() / 1000,
         dt,
       );
@@ -652,7 +657,7 @@ function mount(
       // The centre screen's view first, so this tick's main render shows it.
       // Same slot, same gate; synchronous and restored before it returns.
       if (frame && cameraView === 'cockpit') {
-        fsdScreen.update(renderer, scene, ego.group, frame, frame.ego.turn_signal, now / 1000, dt);
+        fsdScreen.update(renderer, scene, ego.group, frame, lampSignal, now / 1000, dt);
       }
       renderer.render(scene, cam.camera);
     }

@@ -817,6 +817,31 @@ describe('EgoVehicle', () => {
     expect(left.geometry.boundingBox!.max.z).toBeLessThan(0);
     ego.dispose();
   });
+  it('lights both indicators for hazards, in phase', () => {
+    const ego = new EgoVehicle(SIZE);
+    ego.update(0, 0, 0, 'hazard', 0.1, 0); // on-phase
+    expect(glow(ego, 'indicatorLeft')).toBeGreaterThan(0);
+    expect(glow(ego, 'indicatorRight')).toBeGreaterThan(0);
+    ego.update(0, 0, 0, 'hazard', 0.5, 0); // off-phase
+    expect(glow(ego, 'indicatorLeft')).toBe(0);
+    expect(glow(ego, 'indicatorRight')).toBe(0);
+    ego.dispose();
+  });
+
+  it('strobes the brake lights under forceful braking above 50 km/h only', () => {
+    const ego = new EgoVehicle(SIZE);
+    ego.update(20, 0, 1, 'off', 0, 0);
+    const lit = glow(ego, 'tail');
+    expect(lit).toBeGreaterThan(0);
+    ego.update(20, 0, 1, 'off', 0.125, 0); // 4 Hz: the dark half
+    expect(glow(ego, 'tail')).toBe(0);
+    // Slow, or gentle braking: steady.
+    ego.update(5, 0, 1, 'off', 0.125, 0);
+    expect(glow(ego, 'tail')).toBe(lit);
+    ego.update(20, 0, 0.5, 'off', 0.125, 0);
+    expect(glow(ego, 'tail')).toBe(lit);
+    ego.dispose();
+  });
 });
 
 describe('ChaseCamera on the real Nob Hill route', () => {
