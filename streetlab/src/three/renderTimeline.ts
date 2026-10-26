@@ -18,9 +18,9 @@
  * class keeps a short history of frames, runs a local clock that advances
  * with real display `dt` and is phase-locked to the stream a fraction of a
  * frame in the past, and interpolates between the two frames bracketing it.
- * The cost is that buffered fraction of latency (~25 ms at 60 Hz), which is
- * well under what anyone can see and is the standard price for smooth
- * playback of a discretely-sampled stream. Traffic agents already solve the
+ * The cost is that buffered latency: ~25 ms on a steady stream, more on one
+ * whose delivery is uneven (see `GAP_DECAY`), which is the standard price for
+ * smooth playback of a discretely-sampled stream. Traffic agents already solve the
  * same problem their own way (a critically-damped follow in `agents.ts`); the
  * ego was the one moving object left snapping, which is exactly why it was
  * the one that looked wrong.
@@ -50,12 +50,23 @@ interface Keyframe extends RenderSample {
 }
 
 /**
- * How far behind the newest frame the clock sits, as a multiple of the
+ * The least the clock sits behind the newest frame, as a multiple of the
  * measured delivery interval. Needs to exceed 1 so an ordinary skipped frame
- * still has a frame on both sides of the clock to interpolate between; much
- * beyond 1.5 is latency spent for nothing.
+ * still has a frame on both sides of the clock to interpolate between.
  */
 const BUFFER_FRAMES = 1.5;
+
+/**
+ * The buffer also has to outlast the longest wait between new frames, or the
+ * clock runs past the newest one, the car stops, and the late frame then
+ * yanks it forward: the back-and-forth itch. 1.5 frames is not enough on the
+ * real backend: on Nob Hill the sim runs ~2% slower than real time, so the
+ * push loop re-sends a stale frame every ~0.75 s, and with ordinary socket
+ * jitter on top the wait reaches 50-65 ms (measured). So the longest recent
+ * wait is tracked as a peak that fades by this fraction each second, and the
+ * buffer covers it plus a frame.
+ */
+const GAP_DECAY = 0.9;
 const MIN_BUFFER_S = 1 / 120;
 const MAX_BUFFER_S = 0.12;
 
@@ -73,10 +84,14 @@ const INITIAL_INTERVAL_S = 1 / 60;
 /**
  * Fraction of the clock's phase error left after one second. The clock runs
  * at real time and this pulls it back onto the stream, so it is a phase-locked
- * loop rather than a follower: a one-tick correction is spread over ~250 ms,
- * far below the threshold where a speed change is visible.
+ * loop rather than a follower: a one-tick correction is spread over ~430 ms,
+ * far below the threshold where a speed change is visible. Its target jumps
+ * a frame at a time and sags through every late frame, so a stiffer loop
+ * reads that jitter as phase error: at 0.02 it slowed the car ~12% through
+ * each 50 ms wait on the Nob Hill capture. Much softer and it trails the
+ * sim's own drift from real time far enough to overrun the buffer.
  */
-const CLOCK_SMOOTHING = 0.02;
+const CLOCK_SMOOTHING = 0.1;
 
 /**
  * A sim-time discontinuity larger than this is a scenario load, a reset or a
@@ -84,16 +99,6 @@ const CLOCK_SMOOTHING = 0.02;
  * clock jumps instead.
  */
 const RESYNC_S = 0.5;
-
-/**
- * Real seconds without a *new* frame after which the stream counts as
- * stalled and the clock is allowed to close the buffer gap. This is the
- * ordinary paused case: the server keeps re-sending the same frame (`paused`
- * is a field on it), those arrive as duplicates and are dropped, and without
- * this the car would sit frozen a buffer's worth behind the pose the
- * telemetry panels are reading off the same frame.
- */
-const STALL_FRAMES = 3;
 
 function keyframe(frame: StateUpdate): Keyframe {
   const { ego } = frame;
@@ -157,11 +162,16 @@ export class RenderTimeline {
   private clock = 0;
   private locked = false;
   private interval = INITIAL_INTERVAL_S;
+  /** Real seconds since the last new frame. */
   private sinceFrame = 0;
+  /** The longest recent wait between new frames, fading (`GAP_DECAY`). */
+  private gapPeak = 0;
+  private paused = false;
 
   /** Sim seconds the rendered pose trails the newest frame by. */
   get bufferSeconds(): number {
-    return clamp(this.interval * BUFFER_FRAMES, MIN_BUFFER_S, MAX_BUFFER_S);
+    const b = Math.max(this.interval * BUFFER_FRAMES, this.gapPeak + this.interval);
+    return clamp(b, MIN_BUFFER_S, MAX_BUFFER_S);
   }
 
   /**
@@ -172,6 +182,9 @@ export class RenderTimeline {
    * the history.
    */
   push(frame: StateUpdate): void {
+    // Read before the duplicate check: a paused server re-sends one frame,
+    // so the first frame that says so may well be a duplicate.
+    this.paused = !!frame.paused;
     const next = keyframe(frame);
     const latest = this.frames[this.frames.length - 1];
     if (latest) {
@@ -182,6 +195,7 @@ export class RenderTimeline {
         this.locked = false;
       } else if (dt < RESYNC_S) {
         this.interval = lerp(this.interval, dt, INTERVAL_EMA);
+        this.gapPeak = Math.max(this.gapPeak, this.sinceFrame);
       } else {
         this.frames.length = 0; // long gap: the two sides are unrelated
         this.locked = false;
@@ -197,11 +211,14 @@ export class RenderTimeline {
     const latest = this.frames[this.frames.length - 1];
     if (!latest) return;
     this.sinceFrame += dt;
+    this.gapPeak *= Math.pow(GAP_DECAY, dt);
 
-    // A stream that has gone quiet has no future to interpolate toward, so
-    // stop holding the buffer open and settle on the newest pose.
-    const stalled = this.sinceFrame > this.interval * STALL_FRAMES;
-    const target = latest.t - (stalled ? 0 : this.bufferSeconds);
+    // Paused, the server re-sends one frame with no future to interpolate
+    // toward, so settle on it: otherwise the car would sit a buffer's worth
+    // behind the pose the telemetry panels read off that same frame. The
+    // flag, not a guess from silence -- a silence long enough to guess from
+    // is also what an ordinary late frame looks like.
+    const target = latest.t - (this.paused ? 0 : this.bufferSeconds);
 
     if (!this.locked || Math.abs(this.clock - target) > RESYNC_S) {
       this.clock = target;
@@ -243,5 +260,7 @@ export class RenderTimeline {
     this.locked = false;
     this.interval = INITIAL_INTERVAL_S;
     this.sinceFrame = 0;
+    this.gapPeak = 0;
+    this.paused = false;
   }
 }

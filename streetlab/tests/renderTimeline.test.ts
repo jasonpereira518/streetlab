@@ -20,11 +20,12 @@ const TICK = 1 / 60;
 /** Constant 20 m/s due east, so exact positions are trivially known. */
 const SPEED = 20;
 
-function frameAt(t: number, over: Partial<{ heading: number; speed: number }> = {}) {
+function frameAt(t: number, over: Partial<{ heading: number; speed: number; paused: boolean }> = {}) {
   const speed = over.speed ?? SPEED;
   const x = speed * t;
   return {
     t,
+    paused: over.paused ?? false,
     ego: {
       pose: { x, y: 0, heading: over.heading ?? 0 },
       speed_mps: speed,
@@ -112,8 +113,7 @@ describe('RenderTimeline', () => {
     const tl = new RenderTimeline();
     tl.push(frameAt(0, { heading: Math.PI - 0.1 }));
     tl.push(frameAt(TICK, { heading: -Math.PI + 0.1 }));
-    tl.advance(TICK * 10); // clamps to the newest frame
-    expect(tl.sample()!.pose.heading).toBeCloseTo(-Math.PI + 0.1, 6);
+    expect(tl.sampleAt(TICK * 10)!.pose.heading).toBeCloseTo(-Math.PI + 0.1, 6);
 
     const mid = new RenderTimeline();
     mid.push(frameAt(0, { heading: Math.PI - 0.1 }));
@@ -132,6 +132,20 @@ describe('RenderTimeline', () => {
     expect(held).toBeCloseTo(SPEED * TICK, 6);
     for (let i = 0; i < 120; i++) tl.advance(1 / 120);
     expect(tl.sample()!.pose.x).toBeCloseTo(held, 6);
+  });
+
+  it('settles on the newest frame while paused', () => {
+    const tl = new RenderTimeline();
+    for (let i = 0; i <= 60; i++) {
+      tl.push(frameAt(i * TICK));
+      tl.advance(TICK);
+    }
+    // Paused, the server re-sends its last frame with the flag set.
+    for (let i = 0; i < 120; i++) {
+      tl.push(frameAt(60 * TICK, { paused: true }));
+      tl.advance(TICK);
+    }
+    expect(tl.sample()!.pose.x).toBeCloseTo(SPEED * 60 * TICK, 3);
   });
 
   it('resyncs instead of sliding when the sim time jumps (scenario load, reset)', () => {
@@ -196,9 +210,18 @@ interface WireFrame {
  * 60 Hz sim thread, a real websocket push loop, real arrival times. This is
  * the actual cadence the defect came from, not a model of it.
  */
-const WIRE: WireFrame[] = JSON.parse(
-  readFileSync(resolve(__dirname, 'fixtures/wire-stream.json'), 'utf8'),
-);
+const load = (name: string): WireFrame[] =>
+  JSON.parse(readFileSync(resolve(__dirname, 'fixtures', name), 'utf8'));
+const WIRE = load('wire-stream.json');
+
+/**
+ * 10 s of the same off `streetlab serve --source osm` (Nob Hill), and the
+ * capture the itch was reproduced on. Its sim runs ~2% slower than real time,
+ * so a stale frame is re-sent every ~0.75 s, and with socket jitter on top
+ * the wait between new frames reaches 50-65 ms. The 25 ms buffer the clock
+ * used to hold ran out in each one: the car stopped, then lurched forward.
+ */
+const NOB_HILL = load('wire-stream-nob-hill.json');
 
 function wireToFrame(f: WireFrame): StateUpdate {
   return {
@@ -214,7 +237,8 @@ function wireToFrame(f: WireFrame): StateUpdate {
 }
 
 /** Per-display-frame distance travelled by the rendered ego. */
-function replay(displayHz: number, mode: 'snap' | 'timeline'): number[] {
+function replay(displayHz: number, mode: 'snap' | 'timeline', wire: WireFrame[] = WIRE): number[] {
+  const WIRE = wire;
   const tl = new RenderTimeline();
   const displayDt = 1 / displayHz;
   const start = WIRE[0].at;
@@ -281,6 +305,26 @@ describe('RenderTimeline against a captured backend stream', () => {
       // The new one: near-uniform motion.
       expect(smoothed).toBeLessThan(0.05);
       expect(smoothed).toBeLessThan(snapped / 10);
+    });
+  }
+
+  for (const hz of [60, 120, 144]) {
+    it(`never stops or lurches through late frames at ${hz} Hz display`, () => {
+      // Per-frame rendered speed against the sim's own. `speed_mps` changes
+      // by under 0.1 m/s per frame here, so a frame that is metres per
+      // second off is the car stopping or catching up. Was 13-31 m/s.
+      const tl = new RenderTimeline();
+      let next = 0;
+      let prev: { x: number; y: number } | null = null;
+      let worst = 0;
+      for (let now = NOB_HILL[0].at, i = 0; now <= NOB_HILL[NOB_HILL.length - 1].at; now += 1 / hz, i++) {
+        while (next < NOB_HILL.length && NOB_HILL[next].at <= now) tl.push(wireToFrame(NOB_HILL[next++]));
+        tl.advance(1 / hz);
+        const s = tl.sample()!;
+        if (prev && i > hz) worst = Math.max(worst, Math.abs(Math.hypot(s.pose.x - prev.x, s.pose.y - prev.y) * hz - s.speed_mps));
+        prev = { x: s.pose.x, y: s.pose.y };
+      }
+      expect(worst).toBeLessThan(3);
     });
   }
 
