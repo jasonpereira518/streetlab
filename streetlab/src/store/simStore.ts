@@ -89,7 +89,7 @@ export interface ParamDef {
   key: string;
   label: string;
   kind: ParamKind;
-  group: 'planner' | 'traffic' | 'render';
+  group: 'planner' | 'safety' | 'traffic' | 'render';
   default: ParamValue;
   min?: number;
   max?: number;
@@ -205,6 +205,100 @@ export const PARAM_DEFS: ParamDef[] = [
     max: 1.6,
     step: 0.05,
     clientOnly: true,
+  },
+  {
+    key: 'chimes',
+    label: 'Chimes',
+    kind: 'select',
+    group: 'safety',
+    default: 'on',
+    clientOnly: true,
+    options: [
+      { value: 'on', label: 'On' },
+      { value: 'off', label: 'Off' },
+    ],
+    hint: 'Sound for every warning below',
+  },
+  {
+    key: 'fcw_sensitivity',
+    label: 'Forward collision warning',
+    kind: 'select',
+    group: 'safety',
+    default: 'medium',
+    clientOnly: true,
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'late', label: 'Late' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'early', label: 'Early' },
+    ],
+    hint: 'Warns at a time to collision of 2.0 / 2.5 / 3.0 s',
+  },
+  {
+    key: 'speed_limit_warning',
+    label: 'Speed limit warning',
+    kind: 'select',
+    group: 'safety',
+    default: 'display',
+    clientOnly: true,
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'display', label: 'Display' },
+      { value: 'chime', label: 'Chime' },
+    ],
+    hint: 'Display enlarges the limit sign; Chime also sounds',
+  },
+  {
+    key: 'speed_limit_mode',
+    label: 'Speed limit mode',
+    kind: 'select',
+    group: 'safety',
+    default: 'relative',
+    clientOnly: true,
+    options: [
+      { value: 'relative', label: 'Relative' },
+      { value: 'absolute', label: 'Absolute' },
+    ],
+    hint: 'Relative warns at the limit plus the offset; Absolute at a fixed speed',
+  },
+  {
+    key: 'speed_limit_offset_mph',
+    label: 'Speed limit offset',
+    kind: 'slider',
+    group: 'safety',
+    default: 5,
+    min: -10,
+    max: 20,
+    step: 1,
+    unit: 'mph',
+    clientOnly: true,
+    hint: 'Relative mode: how far over the limit before it warns',
+  },
+  {
+    key: 'speed_limit_absolute_mph',
+    label: 'Absolute speed',
+    kind: 'slider',
+    group: 'safety',
+    default: 70,
+    min: 20,
+    max: 90,
+    step: 1,
+    unit: 'mph',
+    clientOnly: true,
+    hint: 'Absolute mode: the speed it warns at',
+  },
+  {
+    key: 'green_light_chime',
+    label: 'Green light chime',
+    kind: 'select',
+    group: 'safety',
+    default: 'off',
+    clientOnly: true,
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
+    ],
+    hint: 'Manual and Cruise: a chime when the stop you are waiting at releases',
   },
   {
     key: 'hazard_color',
@@ -441,6 +535,8 @@ export interface SimStoreState {
    * caller can look its result up in `addressSuggestions` once it arrives. */
   suggestAddress(query: string): string;
   setParam(key: string, value: ParamValue): void;
+  /** Append events the client derived itself (driver warnings) to the log. */
+  pushClientEvents(events: SimEvent[]): void;
   setLayer(layer: LayerKey, visible: boolean): void;
   setCameraView(view: CameraView): void;
   setPerceptionMode(mode: PerceptionMode): void;
@@ -653,6 +749,10 @@ export const useSimStore = create<SimStoreState>((set, get) => ({
 
   suggestAddress(query) {
     return get().send({ cmd: 'suggest_address', query });
+  },
+
+  pushClientEvents(events) {
+    set((s) => ({ events: [...s.events, ...events].slice(-40) }));
   },
 
   setParam(key, value) {

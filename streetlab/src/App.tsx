@@ -16,6 +16,7 @@ import { StartupOverlay } from './ui/StartupOverlay';
 import { TelemetryRow } from './ui/TelemetryRow';
 import { TopToolbar } from './ui/TopToolbar';
 import { QueueOverlay, SessionNoticeBanner, useWaitlistEffects } from './ui/Waitlist';
+import { useWarningEffects } from './ui/warnings';
 
 type BootPhase = 'starting' | 'ready' | 'error';
 
@@ -25,6 +26,7 @@ export default function App() {
   useShortcuts();
   useDriveKeys();
   useWaitlistEffects();
+  useWarningEffects();
   const failure = useSimStore((s) => s.failure);
   const retryConnection = useSimStore((s) => s.retryConnection);
   const [boot, setBoot] = useState<BootPhase>('starting');

@@ -55,6 +55,7 @@ const LAYER_HINTS: Partial<Record<LayerKey, string>> = {
 
 const GROUP_TITLES = {
   planner: 'Planner',
+  safety: 'Active safety',
   traffic: 'Traffic',
   render: 'Rendering',
 } as const;
@@ -154,7 +155,7 @@ function ParametersTab() {
   const lastAck = useSimStore((s) => s.lastAck);
   const perception = useSimStore((s) => s.perception);
 
-  const groups = (['planner', 'traffic', 'render'] as const).map((g) => ({
+  const groups = (['planner', 'safety', 'traffic', 'render'] as const).map((g) => ({
     key: g,
     defs: PARAM_DEFS.filter((d) => d.group === g),
   }));

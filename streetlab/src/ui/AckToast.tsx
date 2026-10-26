@@ -9,8 +9,19 @@ import { useEffect, useState } from 'react';
 import { useSimStore } from '../store/simStore';
 
 const SHOW_MS = 5000;
-/** Sim events a driver needs to see where they are looking. */
-const DRIVING_EVENTS = new Set(['collision', 'off_road']);
+/** Events a driver needs to see where they are looking, and what to call
+ * them: the sim's own incidents and the client's driver warnings
+ * (`warnings.ts`). */
+const DRIVING_EVENTS: Record<string, string> = {
+  collision: 'Collision',
+  off_road: 'Off road',
+  fcw: 'Forward collision',
+  aeb: 'Emergency braking',
+  stop_warning: 'Stop ahead',
+  green_light: 'Green light',
+  speed_limit: 'Speed limit',
+  take_over: 'Take over',
+};
 
 interface Toast {
   key: unknown;
@@ -23,7 +34,7 @@ export function AckToast() {
   const ack = useSimStore((s) => s.lastAck);
   const incident = useSimStore((s) => {
     for (let i = s.events.length - 1; i >= 0; i--) {
-      if (DRIVING_EVENTS.has(s.events[i].code)) return s.events[i];
+      if (s.events[i].code in DRIVING_EVENTS) return s.events[i];
     }
     return null;
   });
@@ -45,9 +56,9 @@ export function AckToast() {
     if (!incident) return;
     return show({
       key: incident,
-      label: incident.code === 'collision' ? 'Collision' : 'Off road',
+      label: DRIVING_EVENTS[incident.code],
       message: incident.message,
-      error: true,
+      error: incident.level !== 'info',
     });
   }, [incident]);
 

@@ -3,9 +3,11 @@
  * cruise set-speed marked on the rim as "45 MAX".
  */
 import { useTelemetryCanvas } from '../../store/hooks';
+import { useSimStore } from '../../store/simStore';
 import { clamp, toMph } from '../../units';
 import { TelemetryCard } from '../controls';
 import { color } from '../theme';
+import { overSpeedLimit } from '../warnings';
 import { arc, dot, placeholder, text } from './draw';
 
 const START = Math.PI * 0.72;
@@ -103,15 +105,19 @@ export function Speedometer() {
       baseline: 'middle',
     });
 
-    // The posted limit, top-left, boxed like the sign it is.
+    // The posted limit, top-left, boxed like the sign it is. Speed Assist:
+    // over the threshold, the sign grows and takes an accent outline, as
+    // Tesla's does in Display mode.
+    const over = overSpeedLimit(frame, useSimStore.getState().params);
+    const k = over ? 1.3 : 1;
     const limitLabel = `LIMIT ${Math.round(limitMph)}`;
     ctx.save();
-    ctx.strokeStyle = color.textMuted;
-    ctx.lineWidth = 1;
-    ctx.strokeRect(6.5, 2.5, 52, 13);
+    ctx.strokeStyle = over ? color.accent : color.textMuted;
+    ctx.lineWidth = over ? 2 : 1;
+    ctx.strokeRect(6.5, 2.5, 52 * k, 13 * k);
     ctx.restore();
-    text(ctx, limitLabel, 10, 9, {
-      size: 9.5,
+    text(ctx, limitLabel, 10, 9 * k, {
+      size: 9.5 * k,
       weight: 700,
       color: color.text,
       baseline: 'middle',

@@ -16,6 +16,8 @@
 import * as THREE from 'three/webgpu';
 import { texture, uv, vec2 } from 'three/tsl';
 import type { StateUpdate } from '../schema';
+import { useSimStore } from '../store/simStore';
+import { overSpeedLimit } from '../ui/warnings';
 import { toMph } from '../units';
 import { type Cabin, type TurnSignal, SCREEN, blinkOn } from './cabin';
 import { CH, assignChannel } from './layers';
@@ -167,9 +169,20 @@ export class FsdScreen {
     ctx.fillStyle = 'rgba(255,255,255,0.6)';
     ctx.fillText('MPH', cx, 152);
 
-    // Speed-limit sign.
+    // Speed-limit sign. Speed Assist: over the threshold it grows and takes a
+    // blue outline, as Tesla's does in Display mode.
     const sx = cx - 26;
     const sy = 172;
+    const over = overSpeedLimit(frame, useSimStore.getState().params);
+    ctx.save();
+    if (over) {
+      ctx.translate(cx, sy + 31);
+      ctx.scale(1.3, 1.3);
+      ctx.translate(-cx, -(sy + 31));
+      ctx.strokeStyle = '#3E8BFF';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(sx - 4, sy - 4, 60, 70);
+    }
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(sx, sy, 52, 62);
     ctx.strokeStyle = '#000000';
@@ -181,6 +194,7 @@ export class FsdScreen {
     ctx.fillText('LIMIT', cx, sy + 26);
     ctx.font = font(700, 24);
     ctx.fillText(String(Math.round(toMph(ego.speed_limit_mps))), cx, sy + 52);
+    ctx.restore();
 
     // Autopilot state and set speed: blue when engaged.
     const engaged = ego.cruise.mode !== 'off';
